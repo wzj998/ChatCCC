@@ -1,6 +1,6 @@
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 
-import { CLAUDE_EFFORT, CLAUDE_MODEL, fileLog, ts } from "./config.ts";
+import { CLAUDE_EFFORT, CLAUDE_MODEL, fileLog, getWorkingDir, ts } from "./config.ts";
 import { buildThinkingCardV2, getToolEmoji, truncateContent } from "./cards.ts";
 import {
   createCardKitCard,
@@ -61,6 +61,7 @@ export async function initClaudeSession(): Promise<string> {
   const session = unstable_v2_createSession({
     model: CLAUDE_MODEL,
     effort: CLAUDE_EFFORT,
+    cwd: await getWorkingDir(),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
@@ -107,6 +108,7 @@ export async function resumeAndPrompt(
   const session = unstable_v2_resumeSession(sessionId, {
     model: CLAUDE_MODEL,
     effort: CLAUDE_EFFORT,
+    cwd: await getWorkingDir(),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
