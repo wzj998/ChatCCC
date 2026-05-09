@@ -34,10 +34,20 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 npm install -g chatccc
 ```
 
-要求 Node.js >= 20。安装完成后在项目目录创建 `.env`文件（参照.env.example文件），然后输入启动指令就启动了：
+要求 Node.js >= 20。安装完成后，**先进入你的项目根目录**（该目录里应有 `src/`、`.env`，可参照 `.env.example` 创建 `.env`），再启动：
 
 ```bash
+cd /path/to/your/project   # Windows 示例: cd D:\code\ChatCCC
 chatccc
+```
+
+所有相对路径（`.env`、`src/index.ts`）都相对**当前终端所在目录**。若在用户主目录（如 `C:\Users\1`）执行，会出现 `.env: not found` 或找不到 `src/index.ts`。
+
+若不用全局命令、改用 tsx 直接跑，同样要在项目根目录执行：
+
+```bash
+cd /path/to/your/project
+npx tsx --env-file=.env src/index.ts
 ```
 
 #### 从源码安装
