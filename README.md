@@ -6,7 +6,7 @@
 
 ## 解决的核心痛点
 
-Claude Code 是命令行 AI 编程助手，能力很强，但你必须坐在电脑前开终端才能用。**离开电脑就没法用了。**
+传统的 Claude Code（尤其是使用第三方 API 的，如 DeepSeek），需要坐在电脑桌前才能用。**离开电脑就没法用了。**
 
 ChatCCC 把 Claude Code 接入了飞书群聊：
 
@@ -56,6 +56,24 @@ cp .env.example .env
 FEISHU_CLAUDER_APP_ID=cli_xxxxxxxxxxxx
 FEISHU_CLAUDER_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
+
+可选的高级配置：
+
+```env
+# Claude 模型（见下方优先级说明）
+CHATCCC_ANTHROPIC_MODEL=dashscope/deepseek-v4-pro-anthropic
+
+# 思考深度，可选值: low | medium | high | max
+CHATCCC_ANTHROPIC_EFFORT=max
+```
+
+**`CHATCCC_ANTHROPIC_MODEL` 优先级**：环境变量设置的值 > 代码内默认值 `dashscope/deepseek-v4-pro-anthropic`。不设或设为空白时自动使用默认模型。
+
+**`CHATCCC_ANTHROPIC_EFFORT` 优先级**：环境变量设置的值 > 代码内默认值 `max`。
+
+> **权限说明**：目前 ChatCCC 以 `bypassPermissions` 模式运行，即跳过所有权限确认、允许所有操作。后续会考虑引入细粒度权限控制，让你可以按需放行特定操作。
+
+> **Linux 用户注意**：不能将项目装在 `/root` 目录下运行。
 
 ### 4. 安装依赖并启动
 
