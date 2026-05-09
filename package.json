@@ -1,11 +1,11 @@
 {
   "name": "chatccc",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Feishu bot bridge for Claude Code",
   "type": "module",
   "main": "./src/index.ts",
   "bin": {
-    "chatccc": "./bin/chatccc.js"
+    "chatccc": "bin/chatccc.mjs"
   },
   "files": [
     "src/",
