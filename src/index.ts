@@ -495,7 +495,7 @@ async function main(): Promise<void> {
 
     "card.action.trigger": async (data: Evt) => {
       try {
-      // 拦截关闭按钮：更新卡片为已收起（不撤回，避免客户端报错）
+      // 拦截关闭按钮：先置空内容，再尝试撤回（撤回结果不影响后续流程）
       const raw2 = (data as Record<string, unknown>).event ?? data;
       const action2 = (raw2 as Record<string, unknown>)?.action as { value?: unknown } | undefined;
       const actionVal2 = action2?.value as Record<string, unknown> | undefined;
@@ -506,23 +506,19 @@ async function main(): Promise<void> {
         console.log(`[${ts()}] [CLOSE] open_message_id=${messageId ?? "MISSING"}`);
         if (messageId) {
           const closeToken = await getTenantAccessToken();
-          // 先置空卡片内容，再延迟撤回，避免飞书客户端因卡片被直接删除而报错
-          const collapsedCard = JSON.stringify({
+          updateCardMessage(closeToken, messageId, JSON.stringify({
             config: { wide_screen_mode: true },
             elements: [{ tag: "markdown", content: " " }],
-          });
-          await updateCardMessage(closeToken, messageId, collapsedCard).catch((err) => {
+          })).catch((err) => {
             console.error(`[${ts()}] [CLOSE] updateCardMessage failed: ${(err as Error).message}`);
           });
-          setTimeout(() => {
-            recallMessage(closeToken, messageId).then((recalled) => {
-              console.log(`[${ts()}] [CLOSE] recall result: ${recalled ? "OK" : "FAILED"}`);
-            }).catch((err) => {
-              console.error(`[${ts()}] [CLOSE] recall failed: ${(err as Error).message}`);
-            });
-          }, 300);
+          recallMessage(closeToken, messageId).then((recalled) => {
+            console.log(`[${ts()}] [CLOSE] recall result: ${recalled ? "OK" : "FAILED"}`);
+          }).catch((err) => {
+            console.error(`[${ts()}] [CLOSE] recall failed: ${(err as Error).message}`);
+          });
         } else {
-          console.error(`[${ts()}] [CLOSE] no open_message_id in event, cannot collapse`);
+          console.error(`[${ts()}] [CLOSE] no open_message_id in event, cannot close`);
         }
         return;
       }
