@@ -5,8 +5,6 @@ import { buildThinkingCardV2, getToolEmoji, truncateContent } from "./cards.ts";
 import {
   createCardKitCard,
   sendCardKitMessage,
-  setCardKitSettings,
-  streamCardKitElement,
   updateCardKitCard,
 } from "./cardkit.ts";
 import { sendTextReply } from "./feishu-api.ts";
@@ -115,7 +113,6 @@ export async function resumeAndPrompt(
   } as any);
 
   let cardId: string | null = null;
-  let streamingEnabled = false;
   chatSessionMap.set(chatId, {
     gen: ++sessionGen,
     close: () => session.close(),
@@ -152,25 +149,16 @@ export async function resumeAndPrompt(
   });
   if (cardId) {
     const cEntry = chatSessionMap.get(chatId);
-    if (cEntry) { cEntry.cardId = cardId; }
-    const settingsOk = await setCardKitSettings(token, cardId, { streaming_mode: true }, 1).catch((err) => {
-      console.error(`[${ts()}] [CARDIKT] enableStreaming FAIL: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
-      fileLog.flush();
-      return false;
-    });
-    const settingsSucceeded = settingsOk !== false;
-    if (settingsSucceeded && cEntry) { cEntry.sequence = 1; }
-    const sendOk = settingsSucceeded ? await sendCardKitMessage(token, chatId, cardId).catch((err) => {
+    if (cEntry) { cEntry.cardId = cardId; cEntry.sequence = 1; }
+    const sendOk = await sendCardKitMessage(token, chatId, cardId).catch((err) => {
       console.error(`[${ts()}] [CARDIKT] sendMessage FAIL: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
       fileLog.flush();
       return false;
-    }) : false;
+    });
     if (!sendOk) {
       sendTextReply(token, chatId, "⚠️ 卡片发送失败，将使用文本回复。").catch(() => {});
       cardId = null;
       if (cEntry) { cEntry.cardId = null; cEntry.sequence = 0; }
-    } else {
-      streamingEnabled = true;
     }
   }
 
@@ -181,8 +169,6 @@ export async function resumeAndPrompt(
   let finalText = "";
 
   let cardCreatedAt = Date.now();
-  let cardStartThinkingLen = 0;
-  let cardStartTextLen = 0;
   const CARD_ROTATE_MS = 9 * 60 * 1000; // 飞书 CardKit 流式超时 10 分钟，提前 1 分钟切换
 
   let dotCount = 0;
@@ -199,26 +185,20 @@ export async function resumeAndPrompt(
       cEntry.cardBusy = true;
       const oldCardId = cardId;
       try {
-        // 1. 结束旧卡片的流式模式
+        // 1. 用当前累积内容更新旧卡片为静态版本
         const oldSeqBase = cEntry.sequence;
-        await setCardKitSettings(token, oldCardId!, { streaming_mode: false }, oldSeqBase + 1).catch(() => {});
-        // 2. 用当前累积内容更新旧卡片为静态版本
         const oldDisplay = truncateContent(accumulatedThinking + finalText) || "处理中...";
         const oldCard = buildThinkingCardV2(oldDisplay, { showStop: false, headerTitle: "生成中...（上轮）" });
-        await updateCardKitCard(token, oldCardId!, oldCard, oldSeqBase + 2).catch(() => {});
-        // 3. 创建新卡片
+        await updateCardKitCard(token, oldCardId!, oldCard, oldSeqBase + 1).catch(() => {});
+        // 2. 创建新卡片并发送
         const newCardId = await createCardKitCard(token, buildThinkingCardV2("", { showStop: true, headerTitle: "生成中..." }));
         if (!newCardId) throw new Error("createCardKitCard returned empty");
-        // 4. 开启流式模式并发送
-        await setCardKitSettings(token, newCardId, { streaming_mode: true }, 1);
         await sendCardKitMessage(token, chatId, newCardId);
-        // 5. 切换到新卡片
+        // 3. 切换到新卡片
         cardId = newCardId;
         cEntry.cardId = newCardId;
         cEntry.sequence = 1;
         cardCreatedAt = Date.now();
-        cardStartThinkingLen = accumulatedThinking.length;
-        cardStartTextLen = finalText.length;
         lastSentContent = "";
         streamErrorNotified = false;
         console.log(`[${ts()}] [CARDIKT] rotated: old=${oldCardId} new=${newCardId} (9min timeout)`);
@@ -231,27 +211,27 @@ export async function resumeAndPrompt(
     }
 
     dotCount = (dotCount % 9) + 1;
-    const currentContent = accumulatedThinking.slice(cardStartThinkingLen) + finalText.slice(cardStartTextLen);
-    const content = truncateContent(currentContent + "\n" + ".".repeat(dotCount));
+    const content = truncateContent(accumulatedThinking + finalText + "\n" + "。".repeat(dotCount));
     if (content === lastSentContent) return;
 
     lastSentContent = content;
     cEntry.cardBusy = true;
     const mySeq = cEntry.sequence + 1;
     try {
-      await streamCardKitElement(token, cardId!, "main_content", content, mySeq);
+      const card = buildThinkingCardV2(content, { showStop: true, headerTitle: "生成中..." });
+      await updateCardKitCard(token, cardId!, card, mySeq);
       cEntry.sequence = mySeq;
       cEntry.accumulatedThinking = accumulatedThinking;
       streamErrorNotified = false;
       healthLogTicks++;
       if (healthLogTicks % 10 === 0) {
-        console.log(`[${ts()}] [CARDIKT] stream health: seq=${mySeq} thinking=${accumulatedThinking.length}chars text=${finalText.length}chars cardAge=${Math.round((Date.now() - cardCreatedAt) / 1000)}s`);
+        console.log(`[${ts()}] [CARDIKT] update health: seq=${mySeq} thinking=${accumulatedThinking.length}chars text=${finalText.length}chars cardAge=${Math.round((Date.now() - cardCreatedAt) / 1000)}s`);
       }
     } catch (err) {
-      console.error(`[${ts()}] CardKit stream error: chatId=${chatId} cardId=${cardId} seq=${mySeq} ${(err as Error).message}`);
+      console.error(`[${ts()}] CardKit update error: chatId=${chatId} cardId=${cardId} seq=${mySeq} ${(err as Error).message}`);
       if (!streamErrorNotified) {
         streamErrorNotified = true;
-        sendTextReply(token, chatId, "⚠️ 卡片流式更新失败，结果将以文本形式发送。").catch(() => {});
+        sendTextReply(token, chatId, "⚠️ 卡片更新失败，结果将以文本形式发送。").catch(() => {});
       }
     } finally {
       cEntry.cardBusy = false;
@@ -335,10 +315,7 @@ export async function resumeAndPrompt(
     while (cEntry.cardBusy) {
       await new Promise(r => setTimeout(r, 20));
     }
-    let nextSeq = cEntry.sequence + 1;
-    if (streamingEnabled) {
-      await setCardKitSettings(token, cardId, { streaming_mode: false }, nextSeq++).catch(() => {});
-    }
+    const nextSeq = cEntry.sequence + 1;
     if (wasStopped) {
       const stopCard = buildThinkingCardV2(accumulatedThinking || "已停止", { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
       await updateCardKitCard(token, cardId, stopCard, nextSeq).catch((err) => {

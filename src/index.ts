@@ -58,7 +58,7 @@ import {
   sendRestartCard,
 } from "./feishu-api.ts";
 import { buildHelpCard, buildStatusCard, buildThinkingCardV2, buildCdContent } from "./cards.ts";
-import { setCardKitSettings, updateCardKitCard } from "./cardkit.ts";
+import { updateCardKitCard } from "./cardkit.ts";
 import {
   MAX_PROCESSED,
   chatSessionMap,
@@ -386,7 +386,6 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
             { showStop: false, headerTitle: "已中断", headerTemplate: "yellow" }
           );
           let nextSeq = existing.sequence + 1;
-          await setCardKitSettings(freshToken, cardId, { streaming_mode: false }, nextSeq++).catch(() => {});
           await updateCardKitCard(freshToken, cardId, interruptedCard, nextSeq).catch((err) => {
             console.error(`[${ts()}] [INTERRUPT] CardKit update failed: ${(err as Error).message}`);
           });
