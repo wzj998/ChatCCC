@@ -146,3 +146,6 @@ local/
 .claude/settings.local.json
 .claude/chat_logs/
 .claude/working_dir.txt
+
+# Sync script (local only)
+sync.bat
