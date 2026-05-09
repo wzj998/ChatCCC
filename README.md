@@ -1,5 +1,3 @@
-飞书聊天控制 Claude Code，未来支持 Cursor、Codex
-
 # FeishuClauder
 
 **飞书聊天控制 Claude Code，未来支持 Cursor、Codex**
