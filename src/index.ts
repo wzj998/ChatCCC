@@ -1,5 +1,5 @@
 /**
- * FeishuClauder — Feishu Bot Bridge for Claude Code (TypeScript)
+ * ChatCCC — Feishu Bot Bridge for Claude Code (TypeScript)
  * =================================================================
  * When a user sends "/new" to the bot:
  *   1. Create a Claude session via Agent SDK, get session ID from init event
@@ -439,7 +439,7 @@ async function main(): Promise<void> {
 
   const modeTag = USE_LOCAL ? " (local relay mode)" : "";
   console.log(`${"=".repeat(60)}`);
-  console.log(`  FeishuClauder — Feishu Bot Bridge for Claude Code${modeTag}`);
+  console.log(`  ChatCCC — Feishu Bot Bridge for Claude Code${modeTag}`);
   console.log(`${"=".repeat(60)}`);
   console.log(`  Send "/new" to the bot to create a new group + Claude session.`);
   console.log(`  In a Claude session group, send any message to resume & prompt.`);

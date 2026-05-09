@@ -109,7 +109,7 @@ export function buildThinkingCardV2(
 export function buildHelpCard(userText: string): string {
   return JSON.stringify({
     config: { wide_screen_mode: true },
-    header: { template: "blue", title: { content: "FeishuClauder", tag: "plain_text" } },
+    header: { template: "blue", title: { content: "ChatCCC", tag: "plain_text" } },
     elements: [
       { tag: "div", text: { tag: "lark_md", content: `你发送了: ${userText}` } },
       buildButtons([

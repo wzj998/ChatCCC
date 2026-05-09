@@ -1,9 +1,18 @@
 {
-  "name": "feishu-clauder",
+  "name": "chatccc",
   "version": "0.1.0",
-  "private": true,
   "description": "Feishu bot bridge for Claude Code",
   "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "chatccc": "./bin/chatccc.js"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "package.json",
+    "README.md"
+  ],
   "scripts": {
     "dev": "tsx --env-file=.env src/index.ts",
     "chatccc": "tsx --env-file=.env src/index.ts",
@@ -17,12 +26,12 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.133",
     "@larksuiteoapi/node-sdk": "^1.59.0",
+    "tsx": "^4.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   },
   "engines": {

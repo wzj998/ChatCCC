@@ -37,7 +37,7 @@ export function killAllProjectProcesses(port?: number): void {
   try {
     const psCmd =
       `Get-CimInstance Win32_Process -Filter 'name=''node.exe'' or name=''tsx.exe''' | ` +
-      `Where-Object { $_.CommandLine -like '*FeishuClauder*' -and $_.ProcessId -ne ${process.pid} -and $_.ProcessId -ne ${process.ppid} } | ` +
+      `Where-Object { $_.CommandLine -like '*ChatCCC*' -and $_.ProcessId -ne ${process.pid} -and $_.ProcessId -ne ${process.ppid} } | ` +
       `Select-Object -ExpandProperty ProcessId`;
     const out = execSync(`powershell -NoProfile -Command "${psCmd}"`, {
       encoding: "utf8",
@@ -58,7 +58,7 @@ export function killAllProjectProcesses(port?: number): void {
       );
       const lines = out.trim().split("\n");
       for (const line of lines) {
-        if (!line.includes("FeishuClauder") || line.includes(process.pid!.toString()) || line.includes(process.ppid!.toString())) continue;
+        if (!line.includes("ChatCCC") || line.includes(process.pid!.toString()) || line.includes(process.ppid!.toString())) continue;
         const fields = line.split(",");
         const pid = fields[1]?.trim();
         if (pid && /^\d+$/.test(pid)) {
