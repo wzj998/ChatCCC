@@ -87,10 +87,25 @@ CHATCCC_PORT=18081
 
 > **Linux 用户注意**：不能将项目装在 `/root` 目录下运行。
 
-### 4. 安装依赖并启动
+### 4. 安装并启动
+
+#### npm 全局安装（推荐）
 
 ```bash
-# 要求 Node.js >= 20
+npm install -g chatccc
+```
+
+要求 Node.js >= 20。安装完成后在项目目录创建 `.env`，然后启动：
+
+```bash
+chatccc
+```
+
+#### 从源码安装
+
+```bash
+git clone https://github.com/wzj998/ChatCCC.git
+cd ChatCCC
 npm install
 npm run dev
 ```
