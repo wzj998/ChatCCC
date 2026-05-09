@@ -71,6 +71,18 @@ CHATCCC_ANTHROPIC_EFFORT=max
 
 **`CHATCCC_ANTHROPIC_EFFORT` 优先级**：环境变量设置的值 > 代码内默认值 `max`。
 
+**`CHATCCC_PORT` 端口配置**：默认端口为 `18080`。如果你需要在一台机器上同时运行多个 ChatCCC 实例（例如用不同飞书应用分别接入不同项目），可以在各自的 `.env` 中设置不同的端口：
+
+```env
+# 实例 A（项目1）的 .env
+CHATCCC_PORT=18080
+
+# 实例 B（项目2）的 .env
+CHATCCC_PORT=18081
+```
+
+不同端口的实例互不冲突，启动时会自动清理各自端口上的旧进程。
+
 > **权限说明**：目前 ChatCCC 以 `bypassPermissions` 模式运行，即跳过所有权限确认、允许所有操作。后续会考虑引入细粒度权限控制，让你可以按需放行特定操作。
 
 > **Linux 用户注意**：不能将项目装在 `/root` 目录下运行。

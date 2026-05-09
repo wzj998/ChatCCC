@@ -149,3 +149,4 @@ local/
 
 # Sync script (local only)
 sync.bat
+sync.ps1
