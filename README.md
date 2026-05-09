@@ -1,8 +1,6 @@
-飞书聊天控制 Claude Code，未来支持 Cursor、Codex
+# ChatCCC
 
-# FeishuClauder
-
-**在飞书中使用 Claude Code，无需终端。**
+**飞书聊天控制 Claude Code，未来支持 Cursor、Codex**
 
 ---
 
@@ -10,7 +8,7 @@
 
 Claude Code 是命令行 AI 编程助手，能力很强，但你必须坐在电脑前开终端才能用。**离开电脑就没法用了。**
 
-FeishuClauder 把 Claude Code 接入了飞书群聊：
+ChatCCC 把 Claude Code 接入了飞书群聊：
 
 - **手机上也能用 Claude Code** —— 在飞书群里发消息就等于在终端输入指令，Claude 的思考和回复会流式展示在群卡片里
 - **团队共享会话** —— 群成员都能看到 Claude 的思考过程和结果，不需要屏幕共享或截图

@@ -190,7 +190,7 @@ export async function sendRestartCard(token: string): Promise<void> {
 
     const restartCard = JSON.stringify({
       config: { wide_screen_mode: true },
-      header: { template: "green", title: { content: "FeishuClauder Started", tag: "plain_text" } },
+      header: { template: "green", title: { content: "ChatCCC Started", tag: "plain_text" } },
       elements: [
         { tag: "div", text: { tag: "lark_md", content: "Bot 已启动完成，可以继续使用。\n\n发送 **/new** 创建新会话，或直接在已有会话群中发消息。" } },
         buildButtons([
