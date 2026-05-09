@@ -16,7 +16,11 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 
 一句话：**在任何设备上打开飞书，就能让 Claude 帮你写代码、排查问题、分析项目。**
 
- 
+<p align="center">
+  <img src="images/img_readme_0.jpg" alt="飞书群聊中使用 ChatCCC" width="280" />
+  &emsp;
+  <img src="images/img_readme_1.jpg" alt="思考过程和工具调用" width="280" />
+</p>
 
 ---
 
