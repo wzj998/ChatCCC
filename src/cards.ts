@@ -93,7 +93,7 @@ export function buildThinkingCardV2(
     schema: "2.0",
     config: {
       update_multi: true,
-      streaming_mode: showStop,
+      streaming_mode: false,
     },
     header: {
       template: headerTemplate,
