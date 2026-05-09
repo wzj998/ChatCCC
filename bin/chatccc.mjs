@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const pkgRoot = dirname(fileURLToPath(new URL("..", import.meta.url)));
+// bin/ 的上一级才是 chatccc 包根；勿对 new URL("..") 再 dirname，否则会退到 node_modules
+const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const indexTs = join(pkgRoot, "src", "index.ts");
 const tsxCli = require.resolve("tsx/cli");
 
