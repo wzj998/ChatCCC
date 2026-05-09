@@ -38,6 +38,8 @@ export const APP_SECRET: string = process.env.FEISHU_CLAUDER_APP_SECRET ?? "";
 export const BASE_URL = "https://open.feishu.cn/open-apis";
 export const LOCAL_RELAY_URL = "ws://127.0.0.1:18080";
 
+export const CHATCCC_PORT = parseInt(process.env.CHATCCC_PORT?.trim() ?? "18080", 10);
+
 export const CLAUDE_MODEL =
   process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "dashscope/deepseek-v4-pro-anthropic";
 
