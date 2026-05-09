@@ -1,10 +1,18 @@
 #!/usr/bin/env node
-import { createRequire, register } from "node:module";
-import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const pkgRoot = new URL("../", import.meta.url);
-// 勿用 pathToFileURL("./")：会相对于进程 cwd。用 createRequire 从本脚本所在包解析 tsx
 const require = createRequire(import.meta.url);
-register(pathToFileURL(require.resolve("tsx/esm")), pkgRoot);
+const pkgRoot = dirname(fileURLToPath(new URL("..", import.meta.url)));
+const indexTs = join(pkgRoot, "src", "index.ts");
+const tsxCli = require.resolve("tsx/cli");
 
-await import(new URL("../src/index.ts", import.meta.url));
+const result = spawnSync(
+  process.execPath,
+  [tsxCli, indexTs, ...process.argv.slice(2)],
+  { stdio: "inherit", cwd: process.cwd(), env: process.env }
+);
+
+process.exit(result.status === null ? 1 : result.status);
