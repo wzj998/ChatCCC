@@ -16,9 +16,7 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 
 一句话：**在任何设备上打开飞书，就能让 Claude 帮你写代码、排查问题、分析项目。**
 
-![飞书群聊中使用 ChatCCC](images/img_readme_0.jpg)
-
-![移动端飞书中使用 ChatCCC](images/img_readme_1.jpg)
+ 
 
 ---
 
@@ -32,7 +30,7 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 npm install -g chatccc
 ```
 
-要求 Node.js >= 20。安装完成后在项目目录创建 `.env`，然后启动：
+要求 Node.js >= 20。安装完成后在项目目录创建 `.env`文件（参照.env.example文件），然后输入启动指令就启动了：
 
 ```bash
 chatccc
@@ -57,13 +55,15 @@ npm run dev
 
 **权限配置**（在「权限管理」中搜索并开通以下权限）：
 
-| 权限 | 用途 |
-|------|------|
-| `im:chat` | 创建和管理群聊 |
-| `im:message` | 收发消息 |
-| `im:message:send_as_bot` | 以机器人身份发消息 |
-| `im:message.p2p_msg:readonly` | 读取私聊消息 |
-| `im:message.group_msg:readonly` | 读取群聊消息 |
+
+| 权限                              | 用途        |
+| ------------------------------- | --------- |
+| `im:chat`                       | 创建和管理群聊   |
+| `im:message`                    | 收发消息      |
+| `im:message:send_as_bot`        | 以机器人身份发消息 |
+| `im:message.p2p_msg:readonly`   | 读取私聊消息    |
+| `im:message.group_msg:readonly` | 读取群聊消息    |
+
 
 **事件订阅**（在「事件与回调」中）：订阅 `im.message.receive_v1` 和 `card.action.trigger` 事件。
 
@@ -96,11 +96,11 @@ CHATCCC_ANTHROPIC_MODEL=dashscope/deepseek-v4-pro-anthropic
 CHATCCC_ANTHROPIC_EFFORT=max
 ```
 
-**`CHATCCC_ANTHROPIC_MODEL` 优先级**：环境变量设置的值 > 代码内默认值 `dashscope/deepseek-v4-pro-anthropic`。不设或设为空白时自动使用默认模型。
+`**CHATCCC_ANTHROPIC_MODEL` 优先级**：环境变量设置的值 > 代码内默认值 `dashscope/deepseek-v4-pro-anthropic`。不设或设为空白时自动使用默认模型。
 
-**`CHATCCC_ANTHROPIC_EFFORT` 优先级**：环境变量设置的值 > 代码内默认值 `max`。
+`**CHATCCC_ANTHROPIC_EFFORT` 优先级**：环境变量设置的值 > 代码内默认值 `max`。
 
-**`CHATCCC_PORT` 端口配置**：默认端口为 `18080`。如果你需要在一台机器上同时运行多个 ChatCCC 实例（例如用不同飞书应用分别接入不同项目），可以在各自的 `.env` 中设置不同的端口：
+`**CHATCCC_PORT` 端口配置**：默认端口为 `18080`。如果你需要在一台机器上同时运行多个 ChatCCC 实例（例如用不同飞书应用分别接入不同项目），可以在各自的 `.env` 中设置不同的端口：
 
 ```env
 # 实例 A（项目1）的 .env
@@ -122,13 +122,15 @@ CHATCCC_PORT=18081
 
 ### 可用指令
 
-| 指令 | 作用 |
-|------|------|
-| `/new` | 创建新的 Claude 会话（绑定一个新群聊） |
-| `/stop` | 停止当前正在生成的回复 |
-| `/status` | 查看当前会话的状态（轮数、模型、上下文 token 等） |
-| `/cd` | 查看/切换工作目录 |
-| `/restart` | 重启机器人进程 |
+
+| 指令         | 作用                           |
+| ---------- | ---------------------------- |
+| `/new`     | 创建新的 Claude 会话（绑定一个新群聊）      |
+| `/stop`    | 停止当前正在生成的回复                  |
+| `/status`  | 查看当前会话的状态（轮数、模型、上下文 token 等） |
+| `/cd`      | 查看/切换工作目录                    |
+| `/restart` | 重启机器人进程                      |
+
 
 ---
 
