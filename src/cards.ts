@@ -133,8 +133,8 @@ export function buildCdContent(
   const listing = display.map(e => e.isDir ? `📁 ${e.name}/` : `📄 ${e.name}`).join("\n");
 
   const statusLine = isUpdate
-    ? `**工作路径已更新为:** \`${dirPath}\``
-    : `**当前工作路径:** \`${dirPath}\``;
+    ? `**新会话工作路径已切换至:** \`${dirPath}\``
+    : `**新会话默认工作路径:** \`${dirPath}\``;
 
   return [
     statusLine,

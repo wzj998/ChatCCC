@@ -1,6 +1,6 @@
-import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 
-import { CLAUDE_EFFORT, CLAUDE_MODEL, fileLog, getWorkingDir, ts } from "./config.ts";
+import { CLAUDE_EFFORT, CLAUDE_MODEL, fileLog, getDefaultCwd, ts } from "./config.ts";
 import { buildThinkingCardV2, getToolEmoji, truncateContent } from "./cards.ts";
 import {
   createCardKitCard,
@@ -56,7 +56,7 @@ export function resetState(): void {
 // ---------------------------------------------------------------------------
 
 export async function initClaudeSession(): Promise<string> {
-  const cwd = await getWorkingDir();
+  const cwd = await getDefaultCwd();
   console.log(`[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT}, cwd=${cwd})`);
 
   const session = unstable_v2_createSession({
@@ -104,11 +104,13 @@ export async function resumeAndPrompt(
   chatId: string,
   msgTimestamp: number
 ): Promise<void> {
-  console.log(`[${ts()}] Resuming Claude session: ${sessionId} (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT})`);
+  const cwd = (await getSessionInfo(sessionId))?.cwd ?? (await getDefaultCwd());
+  console.log(`[${ts()}] Resuming Claude session: ${sessionId} (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT}, cwd=${cwd})`);
 
   const session = unstable_v2_resumeSession(sessionId, {
     model: CLAUDE_MODEL,
     effort: CLAUDE_EFFORT,
+    cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,

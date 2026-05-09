@@ -41,8 +41,8 @@ import {
   USE_LOCAL,
   appendChatLog,
   fileLog,
-  getWorkingDir,
-  setWorkingDir,
+  getDefaultCwd,
+  setDefaultCwd,
   ts,
 } from "./config.ts";
 import {
@@ -172,7 +172,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
   if (text === "/cd" || text.startsWith("/cd ")) {
     const cdToken = await getTenantAccessToken();
-    const currentDir = await getWorkingDir();
+    const currentDir = await getDefaultCwd();
     const arg = text.slice(3).trim(); // everything after "/cd" (may be empty)
 
     // Resolve target directory
@@ -189,18 +189,18 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     try {
       const s = await stat(targetDir);
       if (!s.isDirectory()) {
-        await sendCardReply(cdToken, chatId, "工作路径", `路径存在但不是目录:\n\`${targetDir}\``, "red");
+        await sendCardReply(cdToken, chatId, "新会话工作路径", `路径存在但不是目录:\n\`${targetDir}\``, "red");
         return;
       }
     } catch {
-      await sendCardReply(cdToken, chatId, "工作路径", `路径不存在:\n\`${targetDir}\``, "red");
+      await sendCardReply(cdToken, chatId, "新会话工作路径", `路径不存在:\n\`${targetDir}\``, "red");
       return;
     }
 
     // Change working dir if user provided a path
     const isUpdate = !!arg && targetDir !== currentDir;
     if (isUpdate) {
-      await setWorkingDir(targetDir);
+      await setDefaultCwd(targetDir);
     }
 
     // Read directory entries
@@ -208,7 +208,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     try {
       entries = await readdir(targetDir);
     } catch (err) {
-      await sendCardReply(cdToken, chatId, "工作路径", `无法读取目录:\n\`${targetDir}\`\n\n${(err as Error).message}`, "red");
+      await sendCardReply(cdToken, chatId, "新会话工作路径", `无法读取目录:\n\`${targetDir}\`\n\n${(err as Error).message}`, "red");
       return;
     }
 
@@ -226,7 +226,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     });
 
     const content = buildCdContent(targetDir, withStats, isUpdate);
-    await sendCardReply(cdToken, chatId, "工作路径", content, "blue");
+    await sendCardReply(cdToken, chatId, "新会话工作路径", content, "blue");
     return;
   }
 

@@ -46,11 +46,14 @@ export const CLAUDE_MODEL =
 export const CLAUDE_EFFORT =
   process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "max";
 
-export const WORKING_DIR_FILE = join(PROJECT_ROOT, ".claude", "working_dir.txt");
+// 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
+// 该路径仅影响通过 /new 新建的 Claude 会话，不影响已有会话的 resume。
+export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, ".claude", "working_dir.txt");
 
-export async function getWorkingDir(): Promise<string> {
+/** 读取 /cd 设置的默认工作路径。若文件不存在或路径已失效，回退到 PROJECT_ROOT。 */
+export async function getDefaultCwd(): Promise<string> {
   try {
-    const content = await readFile(WORKING_DIR_FILE, "utf-8");
+    const content = await readFile(DEFAULT_CWD_FILE, "utf-8");
     const dir = content.trim();
     if (dir) {
       try {
@@ -62,8 +65,9 @@ export async function getWorkingDir(): Promise<string> {
   return PROJECT_ROOT;
 }
 
-export async function setWorkingDir(dir: string): Promise<void> {
-  await writeFile(WORKING_DIR_FILE, dir, "utf-8");
+/** 设置新建会话的默认工作路径（由 /cd 命令调用） */
+export async function setDefaultCwd(dir: string): Promise<void> {
+  await writeFile(DEFAULT_CWD_FILE, dir, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
