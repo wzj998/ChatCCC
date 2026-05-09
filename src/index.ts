@@ -30,6 +30,7 @@ import WebSocket from "ws";
 
 import { ensureSingleInstance, createRelayServer } from "./shared.ts";
 import {
+  CHATCCC_PORT,
   APP_ID,
   APP_SECRET,
   BASE_URL,
@@ -426,14 +427,14 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  ensureSingleInstance(PID_FILE, 18080);
+  ensureSingleInstance(PID_FILE, CHATCCC_PORT);
 
   if (!APP_ID || !APP_SECRET) {
     console.log("ERROR: FEISHU_CLAUDER_APP_ID / FEISHU_CLAUDER_APP_SECRET not set");
     process.exit(1);
   }
 
-  const { server: relayServer, broadcast } = createRelayServer(18080);
+  const { server: relayServer, broadcast } = createRelayServer(CHATCCC_PORT);
   broadcastToRelay = broadcast;
 
   const modeTag = USE_LOCAL ? " (local relay mode)" : "";
