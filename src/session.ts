@@ -1,0 +1,429 @@
+import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
+
+import { CLAUDE_EFFORT, CLAUDE_MODEL, fileLog, ts } from "./config.ts";
+import { buildThinkingCardV2, getToolEmoji, truncateContent } from "./cards.ts";
+import {
+  createCardKitCard,
+  sendCardKitMessage,
+  setCardKitSettings,
+  streamCardKitElement,
+  updateCardKitCard,
+} from "./cardkit.ts";
+import { sendTextReply } from "./feishu-api.ts";
+
+// ---------------------------------------------------------------------------
+// Shared state (imported by index.ts)
+// ---------------------------------------------------------------------------
+
+export const processedMessages = new Set<string>();
+export const MAX_PROCESSED = 5000;
+
+export let sessionGen = 0;
+export const chatSessionMap = new Map<string, {
+  gen: number;
+  close: () => void;
+  cardId: string | null;
+  stopped: boolean;
+  accumulatedThinking: string;
+  finalText: string;
+  spinnerTimer: ReturnType<typeof setInterval> | null;
+  msgTimestamp: number;
+  sequence: number;
+  cardBusy: boolean;
+}>();
+
+// 持久化会话信息，流式结束后不清除，供 /status 查询
+export const sessionInfoMap = new Map<string, {
+  sessionId: string;
+  turnCount: number;
+  lastContextTokens: number;
+  startTime: number;
+  model: string;
+  effort: string;
+}>();
+
+export function resetState(): void {
+  for (const entry of chatSessionMap.values()) {
+    if (entry.spinnerTimer) clearInterval(entry.spinnerTimer);
+    try { entry.close(); } catch { /* ignore */ }
+  }
+  chatSessionMap.clear();
+  sessionInfoMap.clear();
+  processedMessages.clear();
+  console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions)`);
+}
+
+// ---------------------------------------------------------------------------
+// Claude session management
+// ---------------------------------------------------------------------------
+
+export async function initClaudeSession(): Promise<string> {
+  console.log(`[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT})`);
+
+  const session = unstable_v2_createSession({
+    model: CLAUDE_MODEL,
+    effort: CLAUDE_EFFORT,
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    autoCompactEnabled: true,
+  } as any);
+
+  await session.send("ok");
+
+  const stream = session.stream();
+
+  const first = await stream.next();
+  if (first.done || !(first.value as { session_id?: string }).session_id) {
+    session.close();
+    throw new Error("No session ID in Claude init event");
+  }
+
+  const initMsg = first.value as { session_id: string };
+  const sessionId = initMsg.session_id;
+  console.log(`[${ts()}]   → sessionId: ${sessionId}`);
+
+  (async () => {
+    try {
+      for await (const _msg of stream) {
+        // 静默消费，不做额外处理
+      }
+    } catch {
+      // stream 异常不阻塞主流程
+    } finally {
+      session.close();
+    }
+  })();
+
+  return sessionId;
+}
+
+export async function resumeAndPrompt(
+  sessionId: string,
+  userText: string,
+  token: string,
+  chatId: string,
+  msgTimestamp: number
+): Promise<void> {
+  console.log(`[${ts()}] Resuming Claude session: ${sessionId} (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT})`);
+
+  const session = unstable_v2_resumeSession(sessionId, {
+    model: CLAUDE_MODEL,
+    effort: CLAUDE_EFFORT,
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    autoCompactEnabled: true,
+  } as any);
+
+  let cardId: string | null = null;
+  let streamingEnabled = false;
+  chatSessionMap.set(chatId, {
+    gen: ++sessionGen,
+    close: () => session.close(),
+    cardId: null,
+    stopped: false,
+    accumulatedThinking: "",
+    finalText: "",
+    spinnerTimer: null,
+    msgTimestamp,
+    sequence: 0,
+    cardBusy: false,
+  });
+  const myGen = sessionGen;
+
+  // 更新持久化会话信息
+  const now = Date.now();
+  const existingInfo = sessionInfoMap.get(chatId);
+  sessionInfoMap.set(chatId, {
+    sessionId,
+    turnCount: (existingInfo?.turnCount ?? 0) + 1,
+    lastContextTokens: existingInfo?.lastContextTokens ?? 0,
+    startTime: now,
+    model: CLAUDE_MODEL,
+    effort: CLAUDE_EFFORT,
+  });
+
+  await session.send(userText);
+
+  cardId = await createCardKitCard(token, buildThinkingCardV2("", { showStop: true, headerTitle: "生成中..." })).catch((err) => {
+    console.error(`[${ts()}] [CARDIKT] createCard FAIL: chatId=${chatId} ${(err as Error).message}`);
+    fileLog.flush();
+    sendTextReply(token, chatId, "⚠️ 流式卡片创建失败（可能因限流），将使用文本回复。").catch(() => {});
+    return null;
+  });
+  if (cardId) {
+    const cEntry = chatSessionMap.get(chatId);
+    if (cEntry) { cEntry.cardId = cardId; }
+    const settingsOk = await setCardKitSettings(token, cardId, { streaming_mode: true }, 1).catch((err) => {
+      console.error(`[${ts()}] [CARDIKT] enableStreaming FAIL: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
+      fileLog.flush();
+      return false;
+    });
+    const settingsSucceeded = settingsOk !== false;
+    if (settingsSucceeded && cEntry) { cEntry.sequence = 1; }
+    const sendOk = settingsSucceeded ? await sendCardKitMessage(token, chatId, cardId).catch((err) => {
+      console.error(`[${ts()}] [CARDIKT] sendMessage FAIL: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
+      fileLog.flush();
+      return false;
+    }) : false;
+    if (!sendOk) {
+      sendTextReply(token, chatId, "⚠️ 卡片发送失败，将使用文本回复。").catch(() => {});
+      cardId = null;
+      if (cEntry) { cEntry.cardId = null; cEntry.sequence = 0; }
+    } else {
+      streamingEnabled = true;
+    }
+  }
+
+  const stream = session.stream();
+
+  let thinkingCount = 0;
+  let accumulatedThinking = "";
+  let finalText = "";
+
+  let cardCreatedAt = Date.now();
+  let cardStartThinkingLen = 0;
+  let cardStartTextLen = 0;
+  const CARD_ROTATE_MS = 9 * 60 * 1000; // 飞书 CardKit 流式超时 10 分钟，提前 1 分钟切换
+
+  let dotCount = 0;
+  let lastSentContent = "";
+  let streamErrorNotified = false;
+  let healthLogTicks = 0;
+  const sendInterval = cardId ? setInterval(async () => {
+    const cEntry = chatSessionMap.get(chatId);
+    if (!cEntry || cEntry.stopped || cEntry.cardBusy) return;
+    if (cEntry.cardId !== cardId) return;
+
+    // 9 分钟超时：主动结束当前卡片流，创建新卡片继续
+    if (Date.now() - cardCreatedAt > CARD_ROTATE_MS) {
+      cEntry.cardBusy = true;
+      const oldCardId = cardId;
+      try {
+        // 1. 结束旧卡片的流式模式
+        const oldSeqBase = cEntry.sequence;
+        await setCardKitSettings(token, oldCardId!, { streaming_mode: false }, oldSeqBase + 1).catch(() => {});
+        // 2. 用当前累积内容更新旧卡片为静态版本
+        const oldDisplay = truncateContent(accumulatedThinking + finalText) || "处理中...";
+        const oldCard = buildThinkingCardV2(oldDisplay, { showStop: false, headerTitle: "生成中...（上轮）" });
+        await updateCardKitCard(token, oldCardId!, oldCard, oldSeqBase + 2).catch(() => {});
+        // 3. 创建新卡片
+        const newCardId = await createCardKitCard(token, buildThinkingCardV2("", { showStop: true, headerTitle: "生成中..." }));
+        if (!newCardId) throw new Error("createCardKitCard returned empty");
+        // 4. 开启流式模式并发送
+        await setCardKitSettings(token, newCardId, { streaming_mode: true }, 1);
+        await sendCardKitMessage(token, chatId, newCardId);
+        // 5. 切换到新卡片
+        cardId = newCardId;
+        cEntry.cardId = newCardId;
+        cEntry.sequence = 1;
+        cardCreatedAt = Date.now();
+        cardStartThinkingLen = accumulatedThinking.length;
+        cardStartTextLen = finalText.length;
+        lastSentContent = "";
+        streamErrorNotified = false;
+        console.log(`[${ts()}] [CARDIKT] rotated: old=${oldCardId} new=${newCardId} (9min timeout)`);
+      } catch (err) {
+        console.error(`[${ts()}] [CARDIKT] rotation FAIL: ${(err as Error).message}`);
+      } finally {
+        cEntry.cardBusy = false;
+      }
+      return;
+    }
+
+    dotCount = (dotCount % 9) + 1;
+    const currentContent = accumulatedThinking.slice(cardStartThinkingLen) + finalText.slice(cardStartTextLen);
+    const content = truncateContent(currentContent + "\n" + ".".repeat(dotCount));
+    if (content === lastSentContent) return;
+
+    lastSentContent = content;
+    cEntry.cardBusy = true;
+    const mySeq = cEntry.sequence + 1;
+    try {
+      await streamCardKitElement(token, cardId!, "main_content", content, mySeq);
+      cEntry.sequence = mySeq;
+      cEntry.accumulatedThinking = accumulatedThinking;
+      streamErrorNotified = false;
+      healthLogTicks++;
+      if (healthLogTicks % 10 === 0) {
+        console.log(`[${ts()}] [CARDIKT] stream health: seq=${mySeq} thinking=${accumulatedThinking.length}chars text=${finalText.length}chars cardAge=${Math.round((Date.now() - cardCreatedAt) / 1000)}s`);
+      }
+    } catch (err) {
+      console.error(`[${ts()}] CardKit stream error: chatId=${chatId} cardId=${cardId} seq=${mySeq} ${(err as Error).message}`);
+      if (!streamErrorNotified) {
+        streamErrorNotified = true;
+        sendTextReply(token, chatId, "⚠️ 卡片流式更新失败，结果将以文本形式发送。").catch(() => {});
+      }
+    } finally {
+      cEntry.cardBusy = false;
+    }
+  }, 3000) : null;
+  if (sendInterval) {
+    const entry = chatSessionMap.get(chatId);
+    if (entry) entry.spinnerTimer = sendInterval;
+  }
+
+  try {
+    for await (const msg of stream) {
+      const sdkMsg = msg as {
+        type?: string;
+        message?: { content?: Array<{ type: string; thinking?: string; text?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean }> };
+      };
+      if ((sdkMsg.type === "assistant" || sdkMsg.type === "user") && sdkMsg.message?.content) {
+        for (const block of sdkMsg.message.content) {
+
+          if (block.type === "thinking" && block.thinking) {
+            thinkingCount++;
+            accumulatedThinking += block.thinking;
+          } else if (block.type === "tool_use") {
+            const toolName = (block as { name?: string }).name ?? "unknown";
+            const toolInput = (block as { input?: unknown }).input;
+            const inputStr = typeof toolInput === "object" ? JSON.stringify(toolInput) : String(toolInput ?? "");
+            const shortInput = inputStr.length > 300 ? inputStr.slice(0, 300) + "..." : inputStr;
+            accumulatedThinking += `\n\n${getToolEmoji(toolName)} **${toolName}**\n\`${shortInput}\`\n`;
+          } else if (block.type === "tool_result") {
+            const toolUseId = (block as { tool_use_id?: string }).tool_use_id ?? "";
+            const resultContent = (block as { content?: unknown }).content;
+            let resultStr = "";
+            if (typeof resultContent === "string") {
+              resultStr = resultContent;
+            } else if (Array.isArray(resultContent)) {
+              resultStr = resultContent.map((c: { type?: string; text?: string }) => c.text ?? "").join("");
+            } else if (resultContent) {
+              resultStr = JSON.stringify(resultContent);
+            }
+            const shortResult = resultStr.length > 200 ? resultStr.slice(0, 200) + "..." : resultStr;
+            const isError = (block as { is_error?: boolean }).is_error;
+            const icon = isError ? "❌" : "✅";
+            accumulatedThinking += `${icon} *${toolUseId.slice(-6)}*: ${shortResult}\n`;
+          } else if (block.type === "redacted_thinking") {
+            accumulatedThinking += "\n\n⚠️ 思考内容被安全过滤\n";
+          } else if (block.type === "search_result") {
+            const searchQuery = (block as { query?: string }).query ?? "";
+            accumulatedThinking += `\n\n🔍 联网搜索: **${searchQuery}**\n`;
+          } else if (block.type === "text" && block.text) {
+            finalText += block.text;
+            const entry = chatSessionMap.get(chatId);
+            if (entry) entry.finalText = finalText;
+          }
+        }
+      } else if (sdkMsg.type === "system" && (sdkMsg as { subtype?: string }).subtype === "compact_boundary") {
+        const compactMeta = (sdkMsg as { compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number } }).compact_metadata;
+        if (compactMeta) {
+          const triggerLabel = compactMeta.trigger === "manual" ? "手动" : "自动";
+          accumulatedThinking += `\n\n🔄 上下文压缩(${triggerLabel}): **${compactMeta.pre_tokens}** → **${compactMeta.post_tokens}** tokens\n`;
+          // 更新持久化上下文 token 数
+          if (compactMeta.post_tokens) {
+            const info = sessionInfoMap.get(chatId);
+            if (info) { info.lastContextTokens = compactMeta.post_tokens; }
+          }
+        }
+      }
+    }
+  } catch (streamErr) {
+    console.error(`[${ts()}] [STREAM] Error in stream loop: ${(streamErr as Error).message}`);
+  } finally {
+    if (sendInterval) clearInterval(sendInterval);
+    session.close();
+  }
+
+  const cEntry = chatSessionMap.get(chatId);
+  if (!cEntry || cEntry.gen !== myGen) return;
+  const wasStopped = cEntry.stopped;
+  chatSessionMap.delete(chatId);
+
+  if (cardId && accumulatedThinking) {
+    while (cEntry.cardBusy) {
+      await new Promise(r => setTimeout(r, 20));
+    }
+    let nextSeq = cEntry.sequence + 1;
+    if (streamingEnabled) {
+      await setCardKitSettings(token, cardId, { streaming_mode: false }, nextSeq++).catch(() => {});
+    }
+    if (wasStopped) {
+      const stopCard = buildThinkingCardV2(accumulatedThinking || "已停止", { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
+      await updateCardKitCard(token, cardId, stopCard, nextSeq).catch((err) => {
+        console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
+        fileLog.flush();
+      });
+    } else {
+      const doneCard = buildThinkingCardV2(accumulatedThinking, { showStop: false, headerTitle: "完成" });
+      await updateCardKitCard(token, cardId, doneCard, nextSeq).catch((err) => {
+        console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
+        fileLog.flush();
+        sendTextReply(token, chatId, "⚠️ 卡片最终更新失败。").catch(() => {});
+      });
+    }
+  }
+
+  // Text fallback: if CardKit streaming broke, always send full result as text
+  if (wasStopped) {
+    if (finalText.trim()) {
+      await sendTextReply(token, chatId, finalText.trim()).catch((err) =>
+        console.error(`[${ts()}] Failed to send partial text: ${(err as Error).message}`)
+      );
+    }
+    console.log(`[${ts()}] Session ${sessionId} stopped by user (thinking chunks: ${thinkingCount})`);
+    return;
+  }
+
+  if (streamErrorNotified) {
+    // CardKit streaming failed — send everything as text to ensure user sees the result
+    if (accumulatedThinking.trim()) {
+      const shortThinking = truncateContent(accumulatedThinking, 30, 4000);
+      await sendTextReply(token, chatId, `[思考过程]\n${shortThinking}`).catch((err) =>
+        console.error(`[${ts()}] Failed to send thinking fallback: ${(err as Error).message}`)
+      );
+    }
+    if (finalText.trim()) {
+      await sendTextReply(token, chatId, finalText.trim()).catch((err) =>
+        console.error(`[${ts()}] Failed to send text fallback: ${(err as Error).message}`)
+      );
+    }
+  } else {
+    // Normal path: card streaming worked fine
+    if (finalText.trim()) {
+      await sendTextReply(token, chatId, finalText.trim()).catch((err) =>
+        console.error(`[${ts()}] Failed to send final text: ${(err as Error).message}`)
+      );
+    } else if (!cardId && accumulatedThinking.trim()) {
+      const shortThinking = truncateContent(accumulatedThinking, 30, 4000);
+      await sendTextReply(token, chatId, `[思考过程]\n${shortThinking}`).catch((err) =>
+        console.error(`[${ts()}] Failed to send thinking text: ${(err as Error).message}`)
+      );
+    }
+  }
+
+  console.log(`[${ts()}] Session ${sessionId} stream complete (thinking chunks: ${thinkingCount})`);
+}
+
+// ---------------------------------------------------------------------------
+// Session status query (供 /status 命令使用)
+// ---------------------------------------------------------------------------
+
+export interface SessionStatus {
+  sessionId: string;
+  running: boolean;
+  turnCount: number;
+  lastContextTokens: number;
+  startTime: number;
+  model: string;
+  effort: string;
+  accumulatedLength: number;
+}
+
+export function getSessionStatus(chatId: string): SessionStatus | null {
+  const info = sessionInfoMap.get(chatId);
+  if (!info) return null;
+
+  const active = chatSessionMap.get(chatId);
+  return {
+    sessionId: info.sessionId,
+    running: active !== undefined && !active.stopped,
+    turnCount: info.turnCount,
+    lastContextTokens: info.lastContextTokens,
+    startTime: info.startTime,
+    model: info.model,
+    effort: info.effort,
+    accumulatedLength: active ? active.accumulatedThinking.length + active.finalText.length : 0,
+  };
+}
