@@ -20,7 +20,32 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 
 ## 怎么部署
 
-### 1. 创建飞书应用
+### 1. 安装
+
+#### npm 全局安装（推荐）
+
+```bash
+npm install -g chatccc
+```
+
+要求 Node.js >= 20。安装完成后在项目目录创建 `.env`，然后启动：
+
+```bash
+chatccc
+```
+
+#### 从源码安装
+
+```bash
+git clone https://github.com/wzj998/ChatCCC.git
+cd ChatCCC
+npm install
+npm run dev
+```
+
+启动后机器人通过 WebSocket 连接飞书服务器，日志会写入 `logs/` 目录。
+
+### 2. 创建飞书应用
 
 打开 [飞书开放平台](https://open.feishu.cn)，创建一个**企业自建应用**。
 
@@ -40,11 +65,11 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 
 **发布版本**：配置完成后创建应用版本并发布（仅企业内部可用即可）。
 
-### 2. 获取凭证
+### 3. 获取凭证
 
 在飞书应用详情页的「凭证与基础信息」中，复制 **App ID** 和 **App Secret**。
 
-### 3. 配置环境变量
+### 4. 配置环境变量
 
 ```bash
 cp .env.example .env
@@ -86,31 +111,6 @@ CHATCCC_PORT=18081
 > **权限说明**：目前 ChatCCC 以 `bypassPermissions` 模式运行，即跳过所有权限确认、允许所有操作。后续会考虑引入细粒度权限控制，让你可以按需放行特定操作。
 
 > **Linux 用户注意**：不能将项目装在 `/root` 目录下运行。
-
-### 4. 安装并启动
-
-#### npm 全局安装（推荐）
-
-```bash
-npm install -g chatccc
-```
-
-要求 Node.js >= 20。安装完成后在项目目录创建 `.env`，然后启动：
-
-```bash
-chatccc
-```
-
-#### 从源码安装
-
-```bash
-git clone https://github.com/wzj998/ChatCCC.git
-cd ChatCCC
-npm install
-npm run dev
-```
-
-启动后机器人通过 WebSocket 连接飞书服务器，日志会写入 `logs/` 目录。
 
 ### 5. 开始使用
 
