@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
 import { setupFileLogging } from "./shared.ts";
 
@@ -52,7 +52,12 @@ export async function getWorkingDir(): Promise<string> {
   try {
     const content = await readFile(WORKING_DIR_FILE, "utf-8");
     const dir = content.trim();
-    if (dir) return dir;
+    if (dir) {
+      try {
+        const s = await stat(dir);
+        if (s.isDirectory()) return dir;
+      } catch { /* path gone, fall through */ }
+    }
   } catch { /* file doesn't exist yet */ }
   return PROJECT_ROOT;
 }

@@ -56,12 +56,13 @@ export function resetState(): void {
 // ---------------------------------------------------------------------------
 
 export async function initClaudeSession(): Promise<string> {
-  console.log(`[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT})`);
+  const cwd = await getWorkingDir();
+  console.log(`[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT}, cwd=${cwd})`);
 
   const session = unstable_v2_createSession({
     model: CLAUDE_MODEL,
     effort: CLAUDE_EFFORT,
-    cwd: await getWorkingDir(),
+    cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
@@ -108,7 +109,6 @@ export async function resumeAndPrompt(
   const session = unstable_v2_resumeSession(sessionId, {
     model: CLAUDE_MODEL,
     effort: CLAUDE_EFFORT,
-    cwd: await getWorkingDir(),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
