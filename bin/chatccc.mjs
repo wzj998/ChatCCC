@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
-// bin/ 的上一级才是 chatccc 包根；勿对 new URL("..") 再 dirname，否则会退到 node_modules
-const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+// 相对 bin/chatccc.mjs 解析 package.json，包根目录不依赖 cwd，也不会多退一级到 node_modules
+const pkgRoot = dirname(require.resolve("../package.json"));
 const indexTs = join(pkgRoot, "src", "index.ts");
 const tsxCli = require.resolve("tsx/cli");
 
