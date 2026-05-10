@@ -42,35 +42,37 @@ export function truncateContent(text: string, maxLines = 20, maxChars = 8000): s
   return displayText;
 }
 
+const TOOL_EMOJI_MAP: Record<string, string> = {
+  Read: "\u{1F4D6}",          // 📖
+  Write: "\u{270D}\u{FE0F}",  // ✍️
+  Edit: "\u{270F}\u{FE0F}",   // ✏️
+  Grep: "\u{1F50E}",          // 🔎
+  Glob: "\u{1F4C2}",          // 📂
+  Bash: "\u{1F5A5}\u{FE0F}",  // 🖥️
+  WebSearch: "\u{1F310}",     // 🌐
+  WebFetch: "\u{1F4E5}",      // 📥
+  TodoWrite: "\u{2705}",      // ✅
+  Agent: "\u{1F916}",         // 🤖
+  NotebookEdit: "\u{1F4D3}",  // 📓
+  AskUserQuestion: "\u{2753}",// ❓
+};
+
 export function getToolEmoji(name: string): string {
-  const n = name.toLowerCase();
-  if (n.includes("read") || n.includes("cat")) return "\u{1F4D6}";        // 📖
-  if (n.includes("write")) return "\u{270D}\u{FE0F}";                    // ✍️
-  if (n.includes("edit")) return "\u{270F}\u{FE0F}";                     // ✏️
-  if (n.includes("grep") || n.includes("search")) return "\u{1F50E}";    // 🔎
-  if (n.includes("glob") || n.includes("find") || n.includes("ls")) return "\u{1F4C2}"; // 📂
-  if (n.includes("bash") || n.includes("shell") || n.includes("exec")) return "\u{1F5A5}\u{FE0F}"; // 🖥️
-  if (n.includes("websearch") || n.includes("web_search")) return "\u{1F310}"; // 🌐
-  if (n.includes("webfetch") || n.includes("web_fetch") || n.includes("fetch")) return "\u{1F4E5}"; // 📥
-  if (n.includes("todo") || n.includes("task")) return "\u{2705}";       // ✅
-  if (n.includes("agent")) return "\u{1F916}";                           // 🤖
-  if (n.includes("notebook")) return "\u{1F4D3}";                        // 📓
-  if (n.includes("ask") || n.includes("question")) return "\u{2753}";    // ❓
-  return "\u{1F527}";                                                     // 🔧
+  return TOOL_EMOJI_MAP[name] ?? "\u{1F527}"; // 🔧
 }
 
 // ---------------------------------------------------------------------------
 // Card builders
 // ---------------------------------------------------------------------------
 
-// CardKit schema 2.0 思考卡片（带停止按钮，支持打字机流式更新）
-export function buildThinkingCardV2(
-  thinkingText: string,
+// CardKit schema 2.0 进度卡片（带停止按钮，支持流式更新）
+export function buildProgressCard(
+  text: string,
   opts: { showStop?: boolean; headerTitle?: string; headerTemplate?: string } = {}
 ): string {
-  const { showStop = true, headerTitle = "思考中...", headerTemplate = "blue" } = opts;
+  const { showStop = true, headerTitle = "生成中...", headerTemplate = "blue" } = opts;
   const elements: object[] = [
-    { tag: "markdown", content: truncateContent(thinkingText), element_id: "main_content" },
+    { tag: "markdown", content: truncateContent(text), element_id: "main_content" },
   ];
   if (showStop) {
     elements.push({ tag: "hr" });

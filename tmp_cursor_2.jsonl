@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"F:\\Users\\weizhangjian\\feishuclauderprivate","session_id":"45f15c89-d987-40da-9657-863467eb50d5","model":"Composer 2 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"'只回复数字: 3+4=?'"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"7"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411832136}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"7"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5"}
+{"type":"result","subtype":"success","duration_ms":6516,"duration_api_ms":6516,"is_error":false,"result":"7","session_id":"45f15c89-d987-40da-9657-863467eb50d5","request_id":"8ecf7f33-68f8-4be6-a85f-0459d51a0d3e","usage":{"inputTokens":9568,"outputTokens":93,"cacheReadTokens":576,"cacheWriteTokens":0}}

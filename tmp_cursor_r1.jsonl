@@ -1,0 +1,13 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"F:\\Users\\weizhangjian\\feishuclauderprivate","session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","model":"Composer 2 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"'刚才你算的是什么题?'"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"你"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927583}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"上一题问"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927587}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"的是 **1"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927587}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"+"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927588}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"2=?"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927588}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"**（一加"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927588}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"二"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927589}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"等于几"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927589}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"）。"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411927589}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"你上一题问的是 **1+2=?**（一加二等于几）。"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8"}
+{"type":"result","subtype":"success","duration_ms":5811,"duration_api_ms":5811,"is_error":false,"result":"你上一题问的是 **1+2=?**（一加二等于几）。","session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","request_id":"ab6f7855-8c3d-414e-b749-ce8ecc062a00","usage":{"inputTokens":34,"outputTokens":92,"cacheReadTokens":10208,"cacheWriteTokens":0}}
