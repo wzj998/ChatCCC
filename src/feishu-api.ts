@@ -16,7 +16,13 @@ import { buildButtons } from "./cards.ts";
 // Auth
 // ---------------------------------------------------------------------------
 
+let cachedToken: { token: string; expiresAt: number } | null = null;
+const TOKEN_TTL_MS = 1.9 * 60 * 60 * 1000; // 1.9 hours
+
 export async function getTenantAccessToken(): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt) {
+    return cachedToken.token;
+  }
   const resp = await fetch(`${BASE_URL}/auth/v3/tenant_access_token/internal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -24,6 +30,7 @@ export async function getTenantAccessToken(): Promise<string> {
   });
   const data = (await resp.json()) as { code: number; msg?: string; tenant_access_token: string };
   if (data.code !== 0) throw new Error(`Failed to get token: ${data.msg}`);
+  cachedToken = { token: data.tenant_access_token, expiresAt: Date.now() + TOKEN_TTL_MS };
   return data.tenant_access_token;
 }
 
