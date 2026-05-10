@@ -513,9 +513,11 @@ async function main(): Promise<void> {
     console.error("  失败：无法获取 tenant_access_token。");
     console.error(`  接口: POST ${BASE_URL}/auth/v3/tenant_access_token/internal`);
     console.error("  常见原因:");
+    console.error(
+      "    - 本机网络无法访问 open.feishu.cn（可尝试：关闭系统/终端代理、检查防火墙；Windows 可管理员运行 netsh winsock reset 后重启）",
+    );
     console.error("    - App ID / App Secret 与开放平台「凭证与基础信息」不一致");
     console.error("    - 自建应用尚未创建/发布可用版本");
-    console.error("    - 本机网络无法访问 open.feishu.cn");
     console.error(`  详情: ${msg}`);
     printServiceDidNotStart("无法从飞书开放平台获取 tenant_access_token（凭证或网络问题）");
     process.exit(1);
