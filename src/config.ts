@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
-import { setupFileLogging } from "./shared.ts";
+import { printServiceDidNotStart } from "./exit-banner.ts";
+import { appendStartupTrace, setupFileLogging } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Paths & logging
@@ -32,19 +34,32 @@ export async function appendChatLog(chatId: string, sender: string, text: string
 // ---------------------------------------------------------------------------
 
 export const USE_LOCAL = process.argv.includes("--local");
-export const APP_ID: string = process.env.FEISHU_CLAUDER_APP_ID ?? "";
-export const APP_SECRET: string = process.env.FEISHU_CLAUDER_APP_SECRET ?? "";
+export const APP_ID: string = process.env.CHATCCC_APP_ID ?? "";
+export const APP_SECRET: string = process.env.CHATCCC_APP_SECRET ?? "";
+
+/** 当前工作目录下的 .env（全局 chatccc 会尝试用 tsx --env-file 加载此文件） */
+export const ENV_FILE_CWD = join(process.cwd(), ".env");
 
 export const BASE_URL = "https://open.feishu.cn/open-apis";
-export const LOCAL_RELAY_URL = "ws://127.0.0.1:18080";
 
 export const CHATCCC_PORT = parseInt(process.env.CHATCCC_PORT?.trim() ?? "18080", 10);
 
-export const CLAUDE_MODEL =
-  process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "dashscope/deepseek-v4-pro-anthropic";
+/** 与 CHATCCC_PORT 一致，供 --local 连接本机中继 */
+export const LOCAL_RELAY_URL = `ws://127.0.0.1:${CHATCCC_PORT}`;
 
-export const CLAUDE_EFFORT =
-  process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "max";
+/** 未设置时为 `default`；不区分大小写的 `default` 表示交给 SDK/CLI，调用时不传对应字段 */
+export function isSdkAnthropicDefault(value: string): boolean {
+  return value.trim().toLowerCase() === "default";
+}
+
+/** 状态展示用：default 族一律显示为小写 `default` */
+export function anthropicConfigDisplay(value: string): string {
+  return isSdkAnthropicDefault(value) ? "default" : value;
+}
+
+export const CLAUDE_MODEL = process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "default";
+
+export const CLAUDE_EFFORT = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "default";
 
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
 // 该路径仅影响通过 /new 新建的 Claude 会话，不影响已有会话的 resume。
@@ -76,6 +91,134 @@ export async function setDefaultCwd(dir: string): Promise<void> {
 
 export function ts(): string {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+/** 仅用于日志确认「已读到某个 App」，不泄露 Secret */
+export function maskAppId(id: string): string {
+  if (!id) return "(空)";
+  if (id.length <= 10) return `${id.slice(0, 4)}***`;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
+
+/**
+ * 启动时逐项说明环境变量：成功=已从进程环境读入非空值；失败=必填缺失；默认=未设置则使用内置默认。
+ * （.env 需由 tsx --env-file 或系统注入到 process.env 后才算「已读入」。）
+ */
+export function reportEnvironmentVariableReadout(): void {
+  const get = (key: string): string => process.env[key]?.trim() ?? "";
+
+  const rawId = get("CHATCCC_APP_ID");
+  const rawSecret = get("CHATCCC_APP_SECRET");
+  const rawPort = process.env.CHATCCC_PORT?.trim();
+  const rawModel = process.env.CHATCCC_ANTHROPIC_MODEL?.trim();
+  const rawEffort = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim();
+
+  const portBad =
+    rawPort !== undefined &&
+    rawPort !== "" &&
+    (Number.isNaN(CHATCCC_PORT) || CHATCCC_PORT < 1 || CHATCCC_PORT > 65535);
+
+  const row = (label: string, name: string, kind: "必填" | "可选", ok: boolean, detail: string): void => {
+    const state = ok ? "成功" : "失败";
+    console.log(`  [${state}] [${kind}] ${name}`);
+    console.log(`         ${label}: ${detail}`);
+  };
+
+  console.log("  --- 环境变量读取结果（成功=已读入；失败=必填缺失或格式错误；默认=未设置则用内置值）---");
+
+  const envExists = existsSync(ENV_FILE_CWD);
+  console.log(
+    `  [信息] 工作目录下 .env: ${envExists ? "存在" : "不存在"} → ${ENV_FILE_CWD}`
+  );
+  if (!envExists) {
+    console.log(
+      "         若使用全局 chatccc：当前目录无 .env 时不会自动加载；请 cd 到含 .env 的目录或设置系统环境变量。"
+    );
+  }
+
+  row(
+    "飞书应用",
+    "CHATCCC_APP_ID",
+    "必填",
+    Boolean(rawId),
+    rawId ? `已读入，摘要 ${maskAppId(rawId)}` : "未读入或为空"
+  );
+  row(
+    "飞书应用",
+    "CHATCCC_APP_SECRET",
+    "必填",
+    Boolean(rawSecret),
+    rawSecret ? "已读入（内容不在日志中显示）" : "未读入或为空"
+  );
+
+  if (portBad) {
+    row("监听端口", "CHATCCC_PORT", "可选", false, `值无效 "${rawPort}"，解析得到 ${CHATCCC_PORT}，请填写 1–65535 的整数`);
+  } else if (rawPort) {
+    row("监听端口", "CHATCCC_PORT", "可选", true, `已读入，使用 ${CHATCCC_PORT}`);
+  } else {
+    console.log(`  [默认] [可选] CHATCCC_PORT`);
+    console.log(`         监听端口: 未在环境中设置，使用内置默认 ${CHATCCC_PORT}`);
+  }
+
+  if (rawModel) {
+    row("Claude 模型", "CHATCCC_ANTHROPIC_MODEL", "可选", true, `已读入 → ${rawModel}`);
+  } else {
+    console.log(`  [默认] [可选] CHATCCC_ANTHROPIC_MODEL`);
+    console.log(
+      `         Claude 模型: 未设置 → ${anthropicConfigDisplay(CLAUDE_MODEL)}（不区分大小写的 default 时不传入 SDK）`
+    );
+  }
+
+  if (rawEffort) {
+    row("思考深度", "CHATCCC_ANTHROPIC_EFFORT", "可选", true, `已读入 → ${rawEffort}`);
+  } else {
+    console.log(`  [默认] [可选] CHATCCC_ANTHROPIC_EFFORT`);
+    console.log(
+      `         思考深度: 未设置 → ${anthropicConfigDisplay(CLAUDE_EFFORT)}（不区分大小写的 default 时不传入 SDK）`
+    );
+  }
+
+  console.log("  ------------------------------------------------------------------");
+}
+
+/** 飞书凭证缺失时打印可操作的说明并退出 */
+export function explainMissingFeishuCredentialsAndExit(): never {
+  appendStartupTrace("explainMissingFeishuCredentialsAndExit: exiting", {
+    hasAppId: Boolean(APP_ID.trim()),
+    hasAppSecret: Boolean(APP_SECRET.trim()),
+  });
+  const hasEnvFile = existsSync(ENV_FILE_CWD);
+  const missing: string[] = [];
+  if (!APP_ID.trim()) missing.push("CHATCCC_APP_ID");
+  if (!APP_SECRET.trim()) missing.push("CHATCCC_APP_SECRET");
+
+  console.error("\n" + "=".repeat(64));
+  console.error("  ChatCCC 启动失败：飞书应用凭证未就绪");
+  console.error("=".repeat(64));
+  console.error("\n【失败步骤】环境与变量检查（在连接飞书之前）");
+  console.error(`\n【未配置的环境变量】\n  - ${missing.join("\n  - ")}`);
+  console.error(`\n【当前工作目录】\n  ${process.cwd()}`);
+  console.error(`\n【.env 文件】\n  路径: ${ENV_FILE_CWD}`);
+  if (hasEnvFile) {
+    console.error(
+      "  状态: 文件存在，但上述变量仍为空。请打开 .env 检查：\n" +
+        "    - 变量名是否完全一致（区分大小写）\n" +
+        "    - 等号两侧不要加引号除非值里需要\n" +
+        "    - 保存为 UTF-8，避免错误编码\n" +
+        "    - 若用全局命令 chatccc：必须在放 .env 的目录下执行（先 cd 到项目根）"
+    );
+  } else {
+    console.error(
+      "  状态: 文件不存在。\n" +
+        "  处理: 复制 .env.example 为 .env 并填入飞书开放平台的 App ID / App Secret；\n" +
+        "        或在系统环境变量中设置上述两个变量后重开终端。\n" +
+        "  若使用全局 chatccc：请先 cd 到项目根目录再运行，以便加载该目录下的 .env。"
+    );
+  }
+  console.error(`\n【程序包根目录（与「工作目录」可能不同）】\n  ${PROJECT_ROOT}`);
+  console.error("\n" + "=".repeat(64) + "\n");
+  printServiceDidNotStart(`未配置: ${missing.join("、")}`);
+  process.exit(1);
 }
 
 export const SESSION_DESC_PREFIX = "Claude Session:";

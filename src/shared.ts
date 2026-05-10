@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import {
+  appendFileSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -7,8 +8,73 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
+
+import { printServiceDidNotStart } from "./exit-banner.ts";
+
+/** 与 config.LOG_DIR 一致（避免 shared 依赖 config 造成循环引用） */
+const BANNER_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "logs");
+
+const STARTUP_TRACE_FILE = join(BANNER_LOG_DIR, "startup-trace.log");
+
+/**
+ * 同步写入启动诊断日志（不依赖 console 劫持与 stream 缓冲）。
+ * 用于单实例清理 / taskkill 等可能导致进程突然退出的场景，便于对照 index-*.log 排查。
+ */
+export function appendStartupTrace(message: string, extra?: Record<string, unknown>): void {
+  try {
+    mkdirSync(BANNER_LOG_DIR, { recursive: true });
+    const suffix = extra !== undefined && Object.keys(extra).length ? ` ${JSON.stringify(extra)}` : "";
+    appendFileSync(
+      STARTUP_TRACE_FILE,
+      `[${new Date().toISOString()}] pid=${process.pid} ppid=${process.ppid} cwd=${process.cwd()} | ${message}${suffix}\n`,
+      "utf-8"
+    );
+  } catch {
+    // 诊断日志自身不得影响主流程
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 进程树：当前进程及其所有祖先（用于避免 taskkill /T 误杀启动链）
+// ---------------------------------------------------------------------------
+
+/** 自当前 PID 沿父链上溯直到系统进程，包含自身 */
+export function getProcessAncestorPidSet(): Set<number> {
+  const ancestors = new Set<number>();
+  let cur: number = process.pid;
+  const maxHops = 48;
+  for (let i = 0; i < maxHops; i++) {
+    ancestors.add(cur);
+    if (cur <= 4) break;
+    let parent: number | undefined;
+    if (process.platform === "win32") {
+      try {
+        const out = execSync(
+          `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${cur}' -ErrorAction SilentlyContinue).ParentProcessId"`,
+          { encoding: "utf8", timeout: 3000, stdio: "pipe", windowsHide: true }
+        ).trim();
+        parent = parseInt(out, 10);
+      } catch {
+        parent = undefined;
+      }
+    } else {
+      try {
+        const st = readFileSync(`/proc/${cur}/stat`, "utf8");
+        const rp = st.lastIndexOf(")");
+        const fields = st.slice(rp + 2).trim().split(/\s+/);
+        parent = parseInt(fields[1] ?? "", 10);
+      } catch {
+        parent = undefined;
+      }
+    }
+    if (parent === undefined || Number.isNaN(parent) || parent === cur) break;
+    cur = parent;
+  }
+  return ancestors;
+}
 
 // ---------------------------------------------------------------------------
 // 杀死进程
@@ -16,80 +82,91 @@ import { WebSocketServer, WebSocket } from "ws";
 
 export function killByPid(pid: string | number): void {
   const pidNum = typeof pid === "string" ? parseInt(pid, 10) : pid;
+  appendStartupTrace("killByPid: begin", { target: pidNum, self: process.pid, ppid: process.ppid });
   try {
     process.kill(pidNum, "SIGTERM");
   } catch {
     // 不存在，忽略
   }
+  let taskkillOut = "";
   try {
-    execSync(`taskkill /PID ${pidNum} /F /T`, { encoding: "utf8", stdio: "pipe" });
-  } catch {
-    // taskkill 失败通常意味着进程已不在
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 清理指定端口上的旧进程 + 杀所有本项目的 node/tsx 残留进程
-// ---------------------------------------------------------------------------
-
-export function killAllProjectProcesses(port?: number): void {
-  // PowerShell 找出所有跑本项目脚本的 node/tsx 进程
-  try {
-    const psCmd =
-      `Get-CimInstance Win32_Process -Filter 'name=''node.exe'' or name=''tsx.exe''' | ` +
-      `Where-Object { $_.CommandLine -like '*ChatCCC*' -and $_.ProcessId -ne ${process.pid} -and $_.ProcessId -ne ${process.ppid} } | ` +
-      `Select-Object -ExpandProperty ProcessId`;
-    const out = execSync(`powershell -NoProfile -Command "${psCmd}"`, {
-      encoding: "utf8",
-      timeout: 10000,
+    taskkillOut = execSync(`taskkill /PID ${pidNum} /F /T`, { encoding: "utf8", stdio: "pipe" });
+  } catch (e: unknown) {
+    const err = e as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
+    const s = (x: Buffer | string | undefined) =>
+      (typeof x === "string" ? x : x?.toString("utf8") ?? "").trim().slice(0, 500);
+    appendStartupTrace("killByPid: taskkill threw (often 进程不存在)", {
+      target: pidNum,
+      status: err.status,
+      stdout: s(err.stdout),
+      stderr: s(err.stderr),
     });
-    for (const pid of out.trim().split(/\s+/)) {
-      if (pid && pid !== String(process.pid)) {
-        console.log(`[KILL] Killing project process PID ${pid}...`);
-        killByPid(pid);
-      }
-    }
-  } catch {
-    // 回退到 wmic
-    try {
-      const out = execSync(
-        'wmic process where "name=\'node.exe\' or name=\'tsx.exe\'" get processid,commandline /format:csv',
-        { encoding: "utf8", timeout: 5000 }
-      );
-      const lines = out.trim().split("\n");
-      for (const line of lines) {
-        if (!line.includes("ChatCCC") || line.includes(process.pid!.toString()) || line.includes(process.ppid!.toString())) continue;
-        const fields = line.split(",");
-        const pid = fields[1]?.trim();
-        if (pid && /^\d+$/.test(pid)) {
-          console.log(`[KILL] Killing project process PID ${pid}...`);
-          killByPid(pid);
-        }
-      }
-    } catch {
-      // 都不行，不阻塞启动
-    }
+    return;
   }
-
-  // 端口补刀
-  if (port !== undefined) {
-    try {
-      const portOut = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8" });
-      for (const line of portOut.trim().split("\n")) {
-        const m = line.match(/(\d+)\s*$/);
-        if (m && m[1] !== process.pid!.toString() && m[1] !== process.ppid!.toString()) {
-          console.log(`[KILL] Killing process on port ${port} PID ${m[1]}...`);
-          killByPid(m[1]);
-        }
-      }
-    } catch {
-      // 端口无人占用
-    }
-  }
+  appendStartupTrace("killByPid: taskkill ok", { target: pidNum, stdout: String(taskkillOut).trim().slice(0, 500) });
 }
 
 // ---------------------------------------------------------------------------
-// 单实例保证：PID 文件互斥 + 激进杀残余进程
+// 在绑定中继端口之前：结束占用该端口的 LISTENING/UDP 绑定进程（任意类型，非祖先链）
+// ---------------------------------------------------------------------------
+
+function collectListeningPidsOnPortWindows(port: number, netstatOut: string): number[] {
+  const portToken = `:${port}`;
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const rawLine of netstatOut.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const upper = line.toUpperCase();
+    if (upper.startsWith("TCP")) {
+      if (!upper.includes("LISTENING")) continue;
+      if (!line.includes(portToken)) continue;
+    } else if (upper.startsWith("UDP")) {
+      if (!line.includes(portToken)) continue;
+    } else {
+      continue;
+    }
+    const m = line.match(/(\d+)\s*$/);
+    if (!m) continue;
+    const n = parseInt(m[1], 10);
+    if (Number.isNaN(n) || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
+/** 在 createRelayServer 之前调用：清掉本机该端口上仍在监听的旧进程（不杀当前进程树祖先） */
+export function freeRelayListenPort(port: number): void {
+  const ancestors = getProcessAncestorPidSet();
+  appendStartupTrace("freeRelayListenPort: begin", {
+    port,
+    ancestorPids: [...ancestors].sort((a, b) => a - b).join(","),
+  });
+
+  if (process.platform !== "win32") {
+    appendStartupTrace("freeRelayListenPort: skip (non-Windows)", { port });
+    return;
+  }
+
+  try {
+    const portOut = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8", windowsHide: true });
+    const pids = collectListeningPidsOnPortWindows(port, portOut);
+    appendStartupTrace("freeRelayListenPort: listening PIDs", { port, pids: pids.join(",") || "(none)" });
+    for (const pidNum of pids) {
+      if (ancestors.has(pidNum)) continue;
+      console.log(`[KILL] Free port ${port}: killing LISTENING/UDP holder PID ${pidNum}...`);
+      appendStartupTrace("freeRelayListenPort: killByPid", { port, pid: pidNum });
+      killByPid(pidNum);
+    }
+  } catch {
+    appendStartupTrace("freeRelayListenPort: netstat/findstr (no rows or error)", { port });
+  }
+  appendStartupTrace("freeRelayListenPort: end", { port });
+}
+
+// ---------------------------------------------------------------------------
+// 单实例保证：PID 文件互斥（端口占用在 freeRelayListenPort + 监听前处理）
 // ---------------------------------------------------------------------------
 
 export function cleanupPidFile(pidFile: string): void {
@@ -100,23 +177,37 @@ export function cleanupPidFile(pidFile: string): void {
   } catch { /* ok */ }
 }
 
-export function ensureSingleInstance(pidFile: string, port?: number): void {
+export function ensureSingleInstance(pidFile: string): void {
+  const ancestors = getProcessAncestorPidSet();
+  appendStartupTrace("ensureSingleInstance: begin", { pidFile });
   if (existsSync(pidFile)) {
     const oldPid = readFileSync(pidFile, "utf8").trim();
+    const oldPidNum = parseInt(oldPid, 10);
     if (oldPid && oldPid !== String(process.pid)) {
-      console.log(`[INSTANCE] Killing old PID from file: ${oldPid}...`);
-      killByPid(oldPid);
+      if (!Number.isNaN(oldPidNum) && ancestors.has(oldPidNum)) {
+        appendStartupTrace("ensureSingleInstance: skip killing pid from file (in ancestor chain)", { oldPid });
+      } else {
+        console.log(`[INSTANCE] Killing old PID from file: ${oldPid}...`);
+        appendStartupTrace("ensureSingleInstance: killing pid from file", { oldPid });
+        killByPid(oldPid);
+      }
+    } else {
+      appendStartupTrace("ensureSingleInstance: pid file present, skip self", { oldPid, self: process.pid });
     }
+  } else {
+    appendStartupTrace("ensureSingleInstance: no pid file yet");
   }
-
-  killAllProjectProcesses(port);
 
   mkdirSync(join(pidFile, ".."), { recursive: true });
   writeFileSync(pidFile, String(process.pid));
   console.log(`[INSTANCE] Registered PID ${process.pid}`);
+  appendStartupTrace("ensureSingleInstance: registered", { pid: process.pid });
 
   // 进程退出时自动清理 PID 文件；SIGINT/SIGTERM 由各 main() 自行接管
-  process.on("exit", () => cleanupPidFile(pidFile));
+  process.on("exit", (code) => {
+    appendStartupTrace("process exit handler", { code, pid: process.pid });
+    cleanupPidFile(pidFile);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +252,15 @@ export function createRelayServer(port: number): {
 } {
   const clients = new Set<WebSocket>();
   const server = new WebSocketServer({ host: "127.0.0.1", port });
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    console.error(`[启动] 本地中继 WebSocket 监听失败：端口 ${port}（${err.code ?? "?"} — ${err.message}）`);
+    console.error(
+      "  处理建议: 关闭占用该端口的其它程序，或在 .env 中设置 CHATCCC_PORT=其它未占用端口（如 18081）。"
+    );
+    printServiceDidNotStart(`本地中继端口 ${port} 无法监听（${err.code ?? "?"} — ${err.message}）`);
+    process.exit(1);
+  });
 
   server.on("connection", (ws) => {
     console.log(`[RELAY] Client connected (total: ${clients.size + 1})`);

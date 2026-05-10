@@ -96,25 +96,23 @@ cp .env.example .env
 编辑 `.env`，填入上一步拿到的凭证：
 
 ```env
-FEISHU_CLAUDER_APP_ID=cli_xxxxxxxxxxxx
-FEISHU_CLAUDER_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxx
+CHATCCC_APP_ID=cli_xxxxxxxxxxxx
+CHATCCC_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-可选的高级配置：
+若你曾使用旧版变量名 `FEISHU_CLAUDER_APP_ID` / `FEISHU_CLAUDER_APP_SECRET`，请改为上表中的 `CHATCCC_APP_ID` / `CHATCCC_APP_SECRET`。
+
+可选：Claude 模型与思考深度（**默认均为 `default`**）：
 
 ```env
-# Claude 模型（见下方优先级说明）
-CHATCCC_ANTHROPIC_MODEL=dashscope/deepseek-v4-pro-anthropic
+# 网关或服务商文档中的 model；设为 default（任意大小写）或不写则交给 SDK/CLI 默认，且 /status 中显示为 default
+CHATCCC_ANTHROPIC_MODEL=default
 
-# 思考深度，可选值: low | medium | high | max
-CHATCCC_ANTHROPIC_EFFORT=max
+# 如 low / medium / high / max；设为 default（任意大小写）或不写则不向 SDK 传入 effort，/status 显示 default
+CHATCCC_ANTHROPIC_EFFORT=default
 ```
 
-`**CHATCCC_ANTHROPIC_MODEL` 优先级**：环境变量设置的值 > 代码内默认值 `dashscope/deepseek-v4-pro-anthropic`。不设或设为空白时自动使用默认模型。
-
-`**CHATCCC_ANTHROPIC_EFFORT` 优先级**：环境变量设置的值 > 代码内默认值 `max`。
-
-`**CHATCCC_PORT` 端口配置**：默认端口为 `18080`。如果你需要在一台机器上同时运行多个 ChatCCC 实例（例如用不同飞书应用分别接入不同项目），可以在各自的 `.env` 中设置不同的端口：
+`**CHATCCC_PORT`（可选）**：默认端口为 `18080`。若在一台机器上同时运行多个 ChatCCC 实例，可在各自的 `.env` 中设置不同端口：
 
 ```env
 # 实例 A（项目1）的 .env
