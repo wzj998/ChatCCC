@@ -16,6 +16,12 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 
 一句话：**在任何设备上打开飞书，就能让 Claude 帮你写代码、排查问题、分析项目。**
 
+<p align="center">
+  <img src="images/img_readme_0.jpg" alt="飞书群聊中使用 ChatCCC" width="280" />
+  &emsp;
+  <img src="images/img_readme_1.jpg" alt="思考过程和工具调用" width="280" />
+</p>
+
 ---
 
 ## 怎么部署
@@ -28,10 +34,20 @@ ChatCCC 把 Claude Code 接入了飞书群聊：
 npm install -g chatccc
 ```
 
-要求 Node.js >= 20。安装完成后在项目目录创建 `.env`，然后启动：
+要求 Node.js >= 20。安装完成后，**先进入你的项目根目录**（该目录里应有 `src/`、`.env`，可参照 `.env.example` 创建 `.env`），再启动：
 
 ```bash
+cd /path/to/your/project   # Windows 示例: cd D:\code\ChatCCC
 chatccc
+```
+
+所有相对路径（`.env`、`src/index.ts`）都相对**当前终端所在目录**。若在用户主目录（如 `C:\Users\1`）执行，会出现 `.env: not found` 或找不到 `src/index.ts`。
+
+若不用全局命令、改用 tsx 直接跑，同样要在项目根目录执行：
+
+```bash
+cd /path/to/your/project
+npx tsx --env-file=.env src/index.ts
 ```
 
 #### 从源码安装
@@ -53,13 +69,15 @@ npm run dev
 
 **权限配置**（在「权限管理」中搜索并开通以下权限）：
 
-| 权限 | 用途 |
-|------|------|
-| `im:chat` | 创建和管理群聊 |
-| `im:message` | 收发消息 |
-| `im:message:send_as_bot` | 以机器人身份发消息 |
-| `im:message.p2p_msg:readonly` | 读取私聊消息 |
-| `im:message.group_msg:readonly` | 读取群聊消息 |
+
+| 权限                              | 用途        |
+| ------------------------------- | --------- |
+| `im:chat`                       | 创建和管理群聊   |
+| `im:message`                    | 收发消息      |
+| `im:message:send_as_bot`        | 以机器人身份发消息 |
+| `im:message.p2p_msg:readonly`   | 读取私聊消息    |
+| `im:message.group_msg:readonly` | 读取群聊消息    |
+
 
 **事件订阅**（在「事件与回调」中）：订阅 `im.message.receive_v1` 和 `card.action.trigger` 事件。
 
@@ -78,25 +96,23 @@ cp .env.example .env
 编辑 `.env`，填入上一步拿到的凭证：
 
 ```env
-FEISHU_CLAUDER_APP_ID=cli_xxxxxxxxxxxx
-FEISHU_CLAUDER_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxx
+CHATCCC_APP_ID=cli_xxxxxxxxxxxx
+CHATCCC_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-可选的高级配置：
+若你曾使用旧版变量名 `FEISHU_CLAUDER_APP_ID` / `FEISHU_CLAUDER_APP_SECRET`，请改为上表中的 `CHATCCC_APP_ID` / `CHATCCC_APP_SECRET`。
+
+可选：Claude 模型与思考深度（**默认均为 `default`**）：
 
 ```env
-# Claude 模型（见下方优先级说明）
-CHATCCC_ANTHROPIC_MODEL=dashscope/deepseek-v4-pro-anthropic
+# 网关或服务商文档中的 model；设为 default（任意大小写）或不写则交给 SDK/CLI 默认，且 /status 中显示为 default
+CHATCCC_ANTHROPIC_MODEL=default
 
-# 思考深度，可选值: low | medium | high | max
-CHATCCC_ANTHROPIC_EFFORT=max
+# 如 low / medium / high / max；设为 default（任意大小写）或不写则不向 SDK 传入 effort，/status 显示 default
+CHATCCC_ANTHROPIC_EFFORT=default
 ```
 
-**`CHATCCC_ANTHROPIC_MODEL` 优先级**：环境变量设置的值 > 代码内默认值 `dashscope/deepseek-v4-pro-anthropic`。不设或设为空白时自动使用默认模型。
-
-**`CHATCCC_ANTHROPIC_EFFORT` 优先级**：环境变量设置的值 > 代码内默认值 `max`。
-
-**`CHATCCC_PORT` 端口配置**：默认端口为 `18080`。如果你需要在一台机器上同时运行多个 ChatCCC 实例（例如用不同飞书应用分别接入不同项目），可以在各自的 `.env` 中设置不同的端口：
+`**CHATCCC_PORT`（可选）**：默认端口为 `18080`。若在一台机器上同时运行多个 ChatCCC 实例，可在各自的 `.env` 中设置不同端口：
 
 ```env
 # 实例 A（项目1）的 .env
@@ -118,13 +134,15 @@ CHATCCC_PORT=18081
 
 ### 可用指令
 
-| 指令 | 作用 |
-|------|------|
-| `/new` | 创建新的 Claude 会话（绑定一个新群聊） |
-| `/stop` | 停止当前正在生成的回复 |
-| `/status` | 查看当前会话的状态（轮数、模型、上下文 token 等） |
-| `/cd` | 查看/切换工作目录 |
-| `/restart` | 重启机器人进程 |
+
+| 指令         | 作用                           |
+| ---------- | ---------------------------- |
+| `/new`     | 创建新的 Claude 会话（绑定一个新群聊）      |
+| `/stop`    | 停止当前正在生成的回复                  |
+| `/status`  | 查看当前会话的状态（轮数、模型、上下文 token 等） |
+| `/cd`      | 查看/切换工作目录                    |
+| `/restart` | 重启机器人进程                      |
+
 
 ---
 

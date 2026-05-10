@@ -16,6 +16,9 @@ import { buildButtons } from "./cards.ts";
 // Auth
 // ---------------------------------------------------------------------------
 
+// 不缓存 token：飞书会在某些情况下（多实例同 APP_ID 反复签发、控制台重置 secret、限流回收等）
+// 让旧 token 在标称有效期内被服务端提前失效。一旦缓存命中失效 token，进程在 TTL 内
+// 所有飞书调用会持续返回 99991663。每次现签可让"被服务端干掉"的 token 自然被新 token 覆盖。
 export async function getTenantAccessToken(): Promise<string> {
   const resp = await fetch(`${BASE_URL}/auth/v3/tenant_access_token/internal`, {
     method: "POST",
@@ -23,7 +26,9 @@ export async function getTenantAccessToken(): Promise<string> {
     body: JSON.stringify({ app_id: APP_ID, app_secret: APP_SECRET }),
   });
   const data = (await resp.json()) as { code: number; msg?: string; tenant_access_token: string };
-  if (data.code !== 0) throw new Error(`Failed to get token: ${data.msg}`);
+  if (data.code !== 0) {
+    throw new Error(`飞书返回 code=${data.code}，msg=${data.msg ?? "(无)"}（请核对 App ID / Secret 与应用发布状态）`);
+  }
   return data.tenant_access_token;
 }
 
