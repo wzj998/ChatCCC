@@ -480,8 +480,12 @@ async function main(): Promise<void> {
       appendChatLog(chatId, openId, text);
 
       if (messageId) {
-        addReaction(token, messageId).catch((err) =>
-          console.error(`[${ts()}] Reaction failed: ${(err as Error).message}`)
+        getTenantAccessToken().then((freshToken) =>
+          addReaction(freshToken, messageId).catch((err) =>
+            console.error(`[${ts()}] Reaction failed: ${(err as Error).message}`)
+          )
+        ).catch((err) =>
+          console.error(`[${ts()}] Reaction token failed: ${(err as Error).message}`)
         );
       }
 
