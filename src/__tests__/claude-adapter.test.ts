@@ -331,8 +331,8 @@ describe("createClaudeAdapter", () => {
       effort: "high",
       isDefault: (v) => v.trim().toLowerCase() === "default",
     });
-    expect(adapter.displayName).toBe("Claude");
-    expect(adapter.sessionDescPrefix).toBe("Claude Session:");
+    expect(adapter.displayName).toBe("Claude Code");
+    expect(adapter.sessionDescPrefix).toBe("Claude Code Session:");
   });
 
   it("createSession returns sessionId from init event", async () => {

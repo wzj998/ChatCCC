@@ -72,6 +72,7 @@ function buildSessionOptions(
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
+    settingSources: ["project", "local"],
   };
   if (!isDefault(model)) o.model = model;
   if (!isDefault(effort)) o.effort = effort;
@@ -145,8 +146,8 @@ export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage |
 // ---------------------------------------------------------------------------
 
 class ClaudeAdapter implements ToolAdapter {
-  readonly displayName = "Claude";
-  readonly sessionDescPrefix = "Claude Session:";
+  readonly displayName = "Claude Code";
+  readonly sessionDescPrefix = "Claude Code Session:";
   private model: string;
   private effort: string;
   private isDefault: (value: string) => boolean;

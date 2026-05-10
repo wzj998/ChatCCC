@@ -3,6 +3,7 @@ import {
   buildProgressCard,
   buildHelpCard,
   buildCdContent,
+  buildCdCard,
   buildSessionsCard,
   buildStatusCard,
   buildButtons,
@@ -148,9 +149,9 @@ describe("buildHelpCard", () => {
   it("includes action buttons", () => {
     const card = buildHelpCard("test");
     const parsed = JSON.parse(card);
-    const action = parsed.elements[1];
+    const action = parsed.elements[2];
     expect(action.tag).toBe("action");
-    expect(action.actions).toHaveLength(3);
+    expect(action.actions).toHaveLength(4);
   });
 });
 
@@ -200,6 +201,99 @@ describe("buildCdContent", () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildCdCard
+// ---------------------------------------------------------------------------
+
+describe("buildCdCard", () => {
+  const entries = [
+    { name: "src", isDir: true },
+    { name: "README.md", isDir: false },
+  ];
+
+  it("returns valid JSON with correct schema", () => {
+    const card = buildCdCard("/home/project", entries, []);
+    const parsed = JSON.parse(card);
+    expect(parsed.schema).toBe("2.0");
+    expect(parsed.header.title.content).toBe("工作路径");
+    expect(parsed.header.template).toBe("blue");
+    expect(parsed.config.wide_screen_mode).toBe(true);
+  });
+
+  it("shows current working directory in markdown", () => {
+    const card = buildCdCard("/home/project", entries, []);
+    const parsed = JSON.parse(card);
+    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
+    const cwdMd = mdElements.find((e: any) => e.content.includes("新会话默认工作路径"));
+    expect(cwdMd).toBeDefined();
+    expect(cwdMd.content).toContain("/home/project");
+  });
+
+  it("shows sessionCwd when provided", () => {
+    const card = buildCdCard("/default", entries, [], "/session/path");
+    const parsed = JSON.parse(card);
+    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
+    const sessionMd = mdElements.find((e: any) => e.content.includes("当前会话工作路径"));
+    expect(sessionMd).toBeDefined();
+    expect(sessionMd.content).toContain("/session/path");
+  });
+
+  it("does not show sessionCwd when not provided", () => {
+    const card = buildCdCard("/default", entries, []);
+    const parsed = JSON.parse(card);
+    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
+    const sessionMd = mdElements.find((e: any) => e.content.includes("当前会话工作路径"));
+    expect(sessionMd).toBeUndefined();
+  });
+
+  it("shows recent dirs section with buttons", () => {
+    const recentDirs = ["/home/user/project1", "/home/user/project2"];
+    const card = buildCdCard("/current", entries, recentDirs);
+    const parsed = JSON.parse(card);
+    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
+    const recentMd = mdElements.find((e: any) => e.content.includes("最近使用过的路径"));
+    expect(recentMd).toBeDefined();
+
+    const actionElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "action");
+    expect(actionElements.length).toBeGreaterThanOrEqual(1);
+    const recentAction = actionElements.find((e: any) =>
+      e.actions.some((a: any) => a.value?.action === "cd")
+    );
+    expect(recentAction).toBeDefined();
+    expect(recentAction.actions).toHaveLength(2);
+    expect(recentAction.actions[0].value.action).toBe("cd");
+    expect(recentAction.actions[0].value.path).toBe("/home/user/project1");
+    expect(recentAction.actions[1].value.path).toBe("/home/user/project2");
+  });
+
+  it("does not show recent dirs section when empty", () => {
+    const card = buildCdCard("/current", entries, []);
+    const parsed = JSON.parse(card);
+    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
+    const recentMd = mdElements.find((e: any) => e.content.includes("最近使用过的路径"));
+    expect(recentMd).toBeUndefined();
+  });
+
+  it("truncates long paths in button text", () => {
+    const longPath = "/home/user/very/long/path/that/exceeds/thirty/six/chars";
+    const card = buildCdCard("/current", entries, [longPath]);
+    const parsed = JSON.parse(card);
+    const action: any = parsed.body.elements.find((e: any) => e.tag === "action");
+    const btnText = action.actions[0].text.content;
+    expect(btnText.startsWith("...")).toBe(true);
+    expect(btnText.length).toBeLessThanOrEqual(36);
+  });
+
+  it("shows directory listing", () => {
+    const card = buildCdCard("/current", entries, []);
+    const parsed = JSON.parse(card);
+    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
+    const listingMd = mdElements.find((e: any) => e.content.includes("📁 src/"));
+    expect(listingMd).toBeDefined();
+    expect(listingMd.content).toContain("📄 README.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildSessionsCard
 // ---------------------------------------------------------------------------
 
@@ -208,21 +302,23 @@ describe("buildSessionsCard", () => {
     const card = buildSessionsCard([]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("没有会话记录");
+    expect(parsed.elements[0].text.content).toContain("/new");
   });
 
   it("returns valid JSON with session listing", () => {
     const card = buildSessionsCard([
-      { sessionId: "abc123", active: true, turnCount: 5, elapsedSeconds: 120, model: "Claude Opus 4.7" },
+      { sessionId: "abc123", active: true, turnCount: 5, elapsedSeconds: 120, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("共 **1** 个会话");
     expect(parsed.elements[0].text.content).toContain("abc123");
     expect(parsed.elements[0].text.content).toContain("🟢 活跃");
+    expect(parsed.elements[0].text.content).toContain("Claude Code");
   });
 
   it("shows idle status for inactive sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "xyz", active: false, turnCount: 0, elapsedSeconds: null, model: "Claude Sonnet 4.6" },
+      { sessionId: "xyz", active: false, turnCount: 0, elapsedSeconds: null, model: "Claude Sonnet 4.6", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("⚪ 空闲");
@@ -230,10 +326,31 @@ describe("buildSessionsCard", () => {
 
   it("shows elapsed time for active sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "active123", active: true, turnCount: 3, elapsedSeconds: 95, model: "Claude Opus 4.7" },
+      { sessionId: "active123", active: true, turnCount: 3, elapsedSeconds: 95, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("1分35秒");
+  });
+
+  it("separates Claude Code and Cursor sessions", () => {
+    const card = buildSessionsCard([
+      { sessionId: "c1", active: false, turnCount: 1, elapsedSeconds: null, model: "default", tool: "claude" },
+      { sessionId: "c2", active: false, turnCount: 2, elapsedSeconds: null, model: "default", tool: "cursor" },
+    ]);
+    const parsed = JSON.parse(card);
+    const content: string = parsed.elements[0].text.content;
+    expect(content).toContain("Claude Code 会话");
+    expect(content).toContain("Cursor 会话");
+  });
+
+  it("omits Cursor section when no Cursor sessions", () => {
+    const card = buildSessionsCard([
+      { sessionId: "c1", active: false, turnCount: 1, elapsedSeconds: null, model: "default", tool: "claude" },
+    ]);
+    const parsed = JSON.parse(card);
+    const content: string = parsed.elements[0].text.content;
+    expect(content).toContain("Claude Code 会话");
+    expect(content).not.toContain("Cursor 会话");
   });
 
   it("includes close button", () => {

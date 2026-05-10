@@ -62,12 +62,55 @@ export const CLAUDE_MODEL = process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "defa
 
 export const CLAUDE_EFFORT = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "default";
 
-/** AI 工具选择：claude | cursor | codex（未设置时默认 claude） */
-export const AI_TOOL = process.env.CHATCCC_AI_TOOL?.trim().toLowerCase() || "claude";
+/** 探测 cursor-agent 安装路径（优先环境变量，其次 LocalAppData，最后默认 agent） */
+function detectCursorAgent(): string {
+  if (process.env.CHATCCC_CURSOR_COMMAND?.trim()) return process.env.CHATCCC_CURSOR_COMMAND.trim();
+  const localAppData = process.env.LOCALAPPDATA;
+  if (localAppData) {
+    const defaultPath = join(localAppData, "cursor-agent", "agent.cmd");
+    if (existsSync(defaultPath)) return defaultPath;
+  }
+  return "agent";
+}
+export const CURSOR_AGENT_COMMAND = detectCursorAgent();
+/** Cursor agent 参数：-p 非交互模式，stream-json 流式 JSONL 输出 */
+export const CURSOR_AGENT_ARGS = (process.env.CHATCCC_CURSOR_ARGS?.trim() || "-p --output-format stream-json --stream-partial-output").split(/\s+/).filter(Boolean);
 
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
-// 该路径仅影响通过 /new 新建的 Claude 会话，不影响已有会话的 resume。
+// 该路径仅影响通过 /new 新建的会话，不影响已有会话的 resume。
 export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, ".claude", "working_dir.txt");
+
+/** 会话工具类型持久化文件 */
+export const SESSIONS_FILE = join(PROJECT_ROOT, ".claude", "sessions.json");
+
+/** 最近成功新建会话的工作路径记录（最多 10 条） */
+export const RECENT_DIRS_FILE = join(PROJECT_ROOT, ".claude", "recent_dirs.json");
+export const MAX_RECENT_DIRS = 10;
+
+/** 读取最近使用过的工作路径列表（最新的在前） */
+export async function getRecentDirs(): Promise<string[]> {
+  try {
+    const raw = await readFile(RECENT_DIRS_FILE, "utf-8");
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) return arr.filter((d: unknown) => typeof d === "string");
+  } catch { /* file doesn't exist or corrupted */ }
+  return [];
+}
+
+/** 添加一个路径到最近使用列表（去重、限制数量、最新的在前） */
+export async function addRecentDir(dir: string): Promise<void> {
+  const dirs = await getRecentDirs();
+  const filtered = dirs.filter(d => d !== dir);
+  filtered.unshift(dir);
+  const trimmed = filtered.slice(0, MAX_RECENT_DIRS);
+  try {
+    await mkdir(dirname(RECENT_DIRS_FILE), { recursive: true });
+    await writeFile(RECENT_DIRS_FILE, JSON.stringify(trimmed, null, 2), "utf-8");
+  } catch (err) {
+    console.error(`[${ts()}] Failed to save recent_dirs.json: ${(err as Error).message}`);
+    fileLog.flush();
+  }
+}
 
 /** 读取 /cd 设置的默认工作路径。若文件不存在或路径已失效，回退到用户主目录。 */
 export async function getDefaultCwd(): Promise<string> {
@@ -227,4 +270,19 @@ export function explainMissingFeishuCredentialsAndExit(): never {
   process.exit(1);
 }
 
-export let SESSION_DESC_PREFIX: string = "Claude Session:";
+/** 群描述中用于识别 Claude Code 会话的前缀 */
+export const CLAUDE_SESSION_PREFIX = "Claude Code Session:";
+/** 群描述中用于识别 Cursor 会话的前缀 */
+export const CURSOR_SESSION_PREFIX = "Cursor Session:";
+
+/** 根据 tool 名称返回对应的群描述前缀 */
+export function sessionPrefixForTool(tool: string): string {
+  if (tool === "cursor") return CURSOR_SESSION_PREFIX;
+  return CLAUDE_SESSION_PREFIX;
+}
+
+/** 根据 tool 名称返回用于状态展示的标签 */
+export function toolDisplayName(tool: string): string {
+  if (tool === "cursor") return "Cursor";
+  return "Claude Code";
+}
