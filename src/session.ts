@@ -1,5 +1,3 @@
-import { getSessionInfo, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
-
 import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
@@ -16,6 +14,9 @@ import {
   updateCardKitCard,
 } from "./cardkit.ts";
 import { sendTextReply } from "./feishu-api.ts";
+import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
+import type { ToolAdapter } from "./adapters/adapter-interface.ts";
+import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -38,7 +39,6 @@ export const chatSessionMap = new Map<string, {
   cardBusy: boolean;
 }>();
 
-// 持久化会话信息，流式结束后不清除，供 /status 查询
 export const sessionInfoMap = new Map<string, {
   sessionId: string;
   turnCount: number;
@@ -60,54 +60,108 @@ export function resetState(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Claude session management
+// Adapter singleton
 // ---------------------------------------------------------------------------
 
-function claudeSdkSessionOptions(cwd: string): Record<string, unknown> {
-  const o: Record<string, unknown> = {
-    cwd,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    autoCompactEnabled: true,
-  };
-  if (!isSdkAnthropicDefault(CLAUDE_MODEL)) o.model = CLAUDE_MODEL;
-  if (!isSdkAnthropicDefault(CLAUDE_EFFORT)) o.effort = CLAUDE_EFFORT;
-  return o;
+let adapter: ToolAdapter | null = null;
+
+export function initAdapter(): ToolAdapter {
+  adapter = createClaudeAdapter({
+    model: CLAUDE_MODEL,
+    effort: CLAUDE_EFFORT,
+    isDefault: isSdkAnthropicDefault,
+  });
+  return adapter;
 }
+
+export function getAdapter(): ToolAdapter {
+  if (!adapter) throw new Error("Adapter not initialized. Call initAdapter() first.");
+  return adapter;
+}
+
+// ---------------------------------------------------------------------------
+// accumulateBlockContent — 将 UnifiedBlock 累积到渲染状态（纯函数，可测试）
+// ---------------------------------------------------------------------------
+
+export interface AccumulatorState {
+  accumulatedContent: string;
+  finalText: string;
+  chunkCount: number;
+}
+
+export function accumulateBlockContent(
+  block: UnifiedBlock,
+  state: AccumulatorState,
+): void {
+  switch (block.type) {
+    case "thinking":
+      state.chunkCount++;
+      state.accumulatedContent += block.thinking;
+      break;
+    case "tool_use": {
+      const inputStr =
+        typeof block.input === "object"
+          ? JSON.stringify(block.input)
+          : String(block.input ?? "");
+      const shortInput =
+        inputStr.length > 300 ? inputStr.slice(0, 300) + "..." : inputStr;
+      state.accumulatedContent +=
+        `\n\n${getToolEmoji(block.name)} **${block.name}**\n\`${shortInput}\`\n`;
+      break;
+    }
+    case "tool_result": {
+      const toolUseId = block.tool_use_id;
+      const resultContent = block.content;
+      let resultStr = "";
+      if (typeof resultContent === "string") {
+        resultStr = resultContent;
+      } else if (Array.isArray(resultContent)) {
+        resultStr = resultContent
+          .map((c: { type?: string; text?: string }) => c.text ?? "")
+          .join("");
+      } else if (resultContent) {
+        resultStr = JSON.stringify(resultContent);
+      }
+      const shortResult =
+        resultStr.length > 200 ? resultStr.slice(0, 200) + "..." : resultStr;
+      const isError = block.is_error;
+      const icon = isError ? "❌" : "✅"; // ❌ : ✅
+      state.accumulatedContent +=
+        `${icon} *${toolUseId.slice(-6)}*: ${shortResult}\n`;
+      break;
+    }
+    case "redacted_thinking":
+      state.accumulatedContent += "\n\n⚠️ 内容被安全过滤\n"; // ⚠️
+      break;
+    case "search_result":
+      state.accumulatedContent +=
+        `\n\n🔍 联网搜索: **${block.query}**\n`; // 🔍
+      break;
+    case "text":
+      state.finalText += block.text;
+      break;
+    case "compact_boundary": {
+      const triggerLabel = block.trigger === "manual" ? "手动" : "自动"; // 手动 / 自动
+      state.accumulatedContent +=
+        `\n\n🔄 上下文压缩(${triggerLabel}): **${block.pre_tokens}** → **${block.post_tokens}** tokens\n`; // 🔄 / →
+      break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Claude session management
+// ---------------------------------------------------------------------------
 
 export async function initClaudeSession(): Promise<string> {
   const cwd = await getDefaultCwd();
   console.log(
-    `[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+    `[${ts()}] [STEP 1/5] Creating ${getAdapter().displayName} session (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
   );
 
-  const session = unstable_v2_createSession(claudeSdkSessionOptions(cwd) as any);
-
-  await session.send("ok");
-
-  const stream = session.stream();
-
-  const first = await stream.next();
-  if (first.done || !(first.value as { session_id?: string }).session_id) {
-    session.close();
-    throw new Error("No session ID in Claude init event");
-  }
-
-  const initMsg = first.value as { session_id: string };
-  const sessionId = initMsg.session_id;
+  const result = await getAdapter().createSession(cwd);
+  const sessionId = result.sessionId;
   console.log(`[${ts()}]   → sessionId: ${sessionId}`);
-
-  (async () => {
-    try {
-      for await (const _msg of stream) {
-        // 静默消费，不做额外处理
-      }
-    } catch {
-      // stream 异常不阻塞主流程
-    } finally {
-      session.close();
-    }
-  })();
 
   return sessionId;
 }
@@ -119,17 +173,17 @@ export async function resumeAndPrompt(
   chatId: string,
   msgTimestamp: number
 ): Promise<void> {
-  const cwd = (await getSessionInfo(sessionId))?.cwd ?? (await getDefaultCwd());
+  const info = await getAdapter().getSessionInfo(sessionId);
+  const cwd = info?.cwd ?? (await getDefaultCwd());
   console.log(
-    `[${ts()}] Resuming Claude session: ${sessionId} (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+    `[${ts()}] Resuming ${getAdapter().displayName} session: ${sessionId} (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
   );
 
-  const session = unstable_v2_resumeSession(sessionId, claudeSdkSessionOptions(cwd) as any);
+  const controller = new AbortController();
 
-  let cardId: string | null = null;
   chatSessionMap.set(chatId, {
     gen: ++sessionGen,
-    close: () => session.close(),
+    close: () => controller.abort(),
     cardId: null,
     stopped: false,
     accumulatedContent: "",
@@ -141,7 +195,6 @@ export async function resumeAndPrompt(
   });
   const myGen = sessionGen;
 
-  // 更新持久化会话信息
   const now = Date.now();
   const existingInfo = sessionInfoMap.get(chatId);
   sessionInfoMap.set(chatId, {
@@ -153,8 +206,7 @@ export async function resumeAndPrompt(
     effort: anthropicConfigDisplay(CLAUDE_EFFORT),
   });
 
-  await session.send(userText);
-
+  let cardId: string | null = null;
   cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch((err) => {
     console.error(`[${ts()}] [CARDIKT] createCard FAIL: chatId=${chatId} ${(err as Error).message}`);
     fileLog.flush();
@@ -176,14 +228,14 @@ export async function resumeAndPrompt(
     }
   }
 
-  const stream = session.stream();
-
-  let chunkCount = 0;
-  let accumulatedContent = "";
-  let finalText = "";
+  const state: AccumulatorState = {
+    accumulatedContent: "",
+    finalText: "",
+    chunkCount: 0,
+  };
 
   let cardCreatedAt = Date.now();
-  const CARD_ROTATE_MS = 9 * 60 * 1000; // 飞书 CardKit 流式超时 10 分钟，提前 1 分钟切换
+  const CARD_ROTATE_MS = 9 * 60 * 1000;
 
   let dotCount = 0;
   let lastSentContent = "";
@@ -194,28 +246,23 @@ export async function resumeAndPrompt(
     if (!cEntry || cEntry.stopped || cEntry.cardBusy) return;
     if (cEntry.cardId !== cardId) return;
 
-    // 9 分钟超时：主动结束当前卡片流，创建新卡片继续
     if (Date.now() - cardCreatedAt > CARD_ROTATE_MS) {
       cEntry.cardBusy = true;
-      const oldCardId = cardId;
       try {
-        // 1. 用当前累积内容更新旧卡片为静态版本
         const oldSeqBase = cEntry.sequence;
-        const oldDisplay = truncateContent(accumulatedContent + finalText) || "处理中...";
+        const oldDisplay = truncateContent(state.accumulatedContent + state.finalText) || "处理中...";
         const oldCard = buildProgressCard(oldDisplay, { showStop: false, headerTitle: "生成中...（上轮）" });
-        await updateCardKitCard(token, oldCardId!, oldCard, oldSeqBase + 1).catch(() => {});
-        // 2. 创建新卡片并发送
+        await updateCardKitCard(token, cardId!, oldCard, oldSeqBase + 1).catch(() => {});
         const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
         if (!newCardId) throw new Error("createCardKitCard returned empty");
         await sendCardKitMessage(token, chatId, newCardId);
-        // 3. 切换到新卡片
         cardId = newCardId;
         cEntry.cardId = newCardId;
         cEntry.sequence = 1;
         cardCreatedAt = Date.now();
         lastSentContent = "";
         streamErrorNotified = false;
-        console.log(`[${ts()}] [CARDIKT] rotated: old=${oldCardId} new=${newCardId} (9min timeout)`);
+        console.log(`[${ts()}] [CARDIKT] rotated: old=${oldSeqBase} new=${newCardId} (9min timeout)`);
       } catch (err) {
         console.error(`[${ts()}] [CARDIKT] rotation FAIL: ${(err as Error).message}`);
       } finally {
@@ -225,7 +272,7 @@ export async function resumeAndPrompt(
     }
 
     dotCount = (dotCount % 9) + 1;
-    const content = truncateContent(accumulatedContent + finalText + "\n" + "。".repeat(dotCount));
+    const content = truncateContent(state.accumulatedContent + state.finalText + "\n" + "。".repeat(dotCount));
     if (content === lastSentContent) return;
 
     lastSentContent = content;
@@ -235,11 +282,11 @@ export async function resumeAndPrompt(
       const card = buildProgressCard(content, { showStop: true, headerTitle: "生成中..." });
       await updateCardKitCard(token, cardId!, card, mySeq);
       cEntry.sequence = mySeq;
-      cEntry.accumulatedContent = accumulatedContent;
+      cEntry.accumulatedContent = state.accumulatedContent;
       streamErrorNotified = false;
       healthLogTicks++;
       if (healthLogTicks % 10 === 0) {
-        console.log(`[${ts()}] [CARDIKT] update health: seq=${mySeq} content=${accumulatedContent.length}chars text=${finalText.length}chars cardAge=${Math.round((Date.now() - cardCreatedAt) / 1000)}s`);
+        console.log(`[${ts()}] [CARDIKT] update health: seq=${mySeq} content=${state.accumulatedContent.length}chars text=${state.finalText.length}chars cardAge=${Math.round((Date.now() - cardCreatedAt) / 1000)}s`);
       }
     } catch (err) {
       console.error(`[${ts()}] CardKit update error: chatId=${chatId} cardId=${cardId} seq=${mySeq} ${(err as Error).message}`);
@@ -257,59 +304,14 @@ export async function resumeAndPrompt(
   }
 
   try {
-    for await (const msg of stream) {
-      const sdkMsg = msg as {
-        type?: string;
-        message?: { content?: Array<{ type: string; thinking?: string; text?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean }> };
-      };
-      if ((sdkMsg.type === "assistant" || sdkMsg.type === "user") && sdkMsg.message?.content) {
-        for (const block of sdkMsg.message.content) {
+    for await (const unifiedMsg of getAdapter().prompt(sessionId, userText, cwd, controller.signal)) {
+      for (const block of unifiedMsg.blocks) {
+        accumulateBlockContent(block, state);
 
-          if (block.type === "thinking" && block.thinking) {
-            chunkCount++;
-            accumulatedContent += block.thinking;
-          } else if (block.type === "tool_use") {
-            const toolName = (block as { name?: string }).name ?? "unknown";
-            const toolInput = (block as { input?: unknown }).input;
-            const inputStr = typeof toolInput === "object" ? JSON.stringify(toolInput) : String(toolInput ?? "");
-            const shortInput = inputStr.length > 300 ? inputStr.slice(0, 300) + "..." : inputStr;
-            accumulatedContent += `\n\n${getToolEmoji(toolName)} **${toolName}**\n\`${shortInput}\`\n`;
-          } else if (block.type === "tool_result") {
-            const toolUseId = (block as { tool_use_id?: string }).tool_use_id ?? "";
-            const resultContent = (block as { content?: unknown }).content;
-            let resultStr = "";
-            if (typeof resultContent === "string") {
-              resultStr = resultContent;
-            } else if (Array.isArray(resultContent)) {
-              resultStr = resultContent.map((c: { type?: string; text?: string }) => c.text ?? "").join("");
-            } else if (resultContent) {
-              resultStr = JSON.stringify(resultContent);
-            }
-            const shortResult = resultStr.length > 200 ? resultStr.slice(0, 200) + "..." : resultStr;
-            const isError = (block as { is_error?: boolean }).is_error;
-            const icon = isError ? "❌" : "✅";
-            accumulatedContent += `${icon} *${toolUseId.slice(-6)}*: ${shortResult}\n`;
-          } else if (block.type === "redacted_thinking") {
-            accumulatedContent += "\n\n⚠️ 内容被安全过滤\n";
-          } else if (block.type === "search_result") {
-            const searchQuery = (block as { query?: string }).query ?? "";
-            accumulatedContent += `\n\n🔍 联网搜索: **${searchQuery}**\n`;
-          } else if (block.type === "text" && block.text) {
-            finalText += block.text;
-            const entry = chatSessionMap.get(chatId);
-            if (entry) entry.finalText = finalText;
-          }
-        }
-      } else if (sdkMsg.type === "system" && (sdkMsg as { subtype?: string }).subtype === "compact_boundary") {
-        const compactMeta = (sdkMsg as { compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number } }).compact_metadata;
-        if (compactMeta) {
-          const triggerLabel = compactMeta.trigger === "manual" ? "手动" : "自动";
-          accumulatedContent += `\n\n🔄 上下文压缩(${triggerLabel}): **${compactMeta.pre_tokens}** → **${compactMeta.post_tokens}** tokens\n`;
-          // 更新持久化上下文 token 数
-          if (compactMeta.post_tokens) {
-            const info = sessionInfoMap.get(chatId);
-            if (info) { info.lastContextTokens = compactMeta.post_tokens; }
-          }
+        // 更新持久化上下文 token 数（compact_boundary 事件）
+        if (block.type === "compact_boundary" && block.post_tokens) {
+          const info = sessionInfoMap.get(chatId);
+          if (info) { info.lastContextTokens = block.post_tokens; }
         }
       }
     }
@@ -317,7 +319,6 @@ export async function resumeAndPrompt(
     console.error(`[${ts()}] [STREAM] Error in stream loop: ${(streamErr as Error).message}`);
   } finally {
     if (sendInterval) clearInterval(sendInterval);
-    session.close();
   }
 
   const cEntry = chatSessionMap.get(chatId);
@@ -325,19 +326,19 @@ export async function resumeAndPrompt(
   const wasStopped = cEntry.stopped;
   chatSessionMap.delete(chatId);
 
-  if (cardId && accumulatedContent) {
+  if (cardId && state.accumulatedContent) {
     while (cEntry.cardBusy) {
       await new Promise(r => setTimeout(r, 20));
     }
     const nextSeq = cEntry.sequence + 1;
     if (wasStopped) {
-      const stopCard = buildProgressCard(accumulatedContent || "已停止", { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
+      const stopCard = buildProgressCard(state.accumulatedContent || "已停止", { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
       await updateCardKitCard(token, cardId, stopCard, nextSeq).catch((err) => {
         console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
         fileLog.flush();
       });
     } else {
-      const doneCard = buildProgressCard(accumulatedContent, { showStop: false, headerTitle: "完成" });
+      const doneCard = buildProgressCard(state.accumulatedContent, { showStop: false, headerTitle: "完成" });
       await updateCardKitCard(token, cardId, doneCard, nextSeq).catch((err) => {
         console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
         fileLog.flush();
@@ -346,45 +347,42 @@ export async function resumeAndPrompt(
     }
   }
 
-  // Text fallback: if CardKit streaming broke, always send full result as text
   if (wasStopped) {
-    if (finalText.trim()) {
-      await sendTextReply(token, chatId, finalText.trim()).catch((err) =>
+    if (state.finalText.trim()) {
+      await sendTextReply(token, chatId, state.finalText.trim()).catch((err) =>
         console.error(`[${ts()}] Failed to send partial text: ${(err as Error).message}`)
       );
     }
-    console.log(`[${ts()}] Session ${sessionId} stopped by user (content chunks: ${chunkCount})`);
+    console.log(`[${ts()}] Session ${sessionId} stopped by user (content chunks: ${state.chunkCount})`);
     return;
   }
 
   if (streamErrorNotified) {
-    // CardKit streaming failed — send everything as text to ensure user sees the result
-    if (accumulatedContent.trim()) {
-      const shortContent = truncateContent(accumulatedContent, 30, 4000);
+    if (state.accumulatedContent.trim()) {
+      const shortContent = truncateContent(state.accumulatedContent, 30, 4000);
       await sendTextReply(token, chatId, `[生成过程]\n${shortContent}`).catch((err) =>
         console.error(`[${ts()}] Failed to send content fallback: ${(err as Error).message}`)
       );
     }
-    if (finalText.trim()) {
-      await sendTextReply(token, chatId, finalText.trim()).catch((err) =>
+    if (state.finalText.trim()) {
+      await sendTextReply(token, chatId, state.finalText.trim()).catch((err) =>
         console.error(`[${ts()}] Failed to send text fallback: ${(err as Error).message}`)
       );
     }
   } else {
-    // Normal path: card streaming worked fine
-    if (finalText.trim()) {
-      await sendTextReply(token, chatId, finalText.trim()).catch((err) =>
+    if (state.finalText.trim()) {
+      await sendTextReply(token, chatId, state.finalText.trim()).catch((err) =>
         console.error(`[${ts()}] Failed to send final text: ${(err as Error).message}`)
       );
-    } else if (!cardId && accumulatedContent.trim()) {
-      const shortContent = truncateContent(accumulatedContent, 30, 4000);
+    } else if (!cardId && state.accumulatedContent.trim()) {
+      const shortContent = truncateContent(state.accumulatedContent, 30, 4000);
       await sendTextReply(token, chatId, `[生成过程]\n${shortContent}`).catch((err) =>
         console.error(`[${ts()}] Failed to send content text: ${(err as Error).message}`)
       );
     }
   }
 
-  console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${chunkCount})`);
+  console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -419,9 +417,6 @@ export function getSessionStatus(chatId: string): SessionStatus | null {
   };
 }
 
-/**
- * 获取所有已记录的会话状态列表（供 /sessions 命令使用）
- */
 export function getAllSessionsStatus(): Array<{
   chatId: string;
   sessionId: string;

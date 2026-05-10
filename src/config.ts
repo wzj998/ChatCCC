@@ -62,6 +62,9 @@ export const CLAUDE_MODEL = process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "defa
 
 export const CLAUDE_EFFORT = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "default";
 
+/** AI 工具选择：claude | cursor | codex（未设置时默认 claude） */
+export const AI_TOOL = process.env.CHATCCC_AI_TOOL?.trim().toLowerCase() || "claude";
+
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
 // 该路径仅影响通过 /new 新建的 Claude 会话，不影响已有会话的 resume。
 export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, ".claude", "working_dir.txt");
@@ -224,4 +227,4 @@ export function explainMissingFeishuCredentialsAndExit(): never {
   process.exit(1);
 }
 
-export const SESSION_DESC_PREFIX = "Claude Session:";
+export let SESSION_DESC_PREFIX: string = "Claude Session:";
