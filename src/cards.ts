@@ -148,6 +148,51 @@ export function buildCdContent(
   ].join("\n");
 }
 
+// 所有会话列表卡片
+export function buildSessionsCard(sessions: Array<{
+  sessionId: string;
+  active: boolean;
+  turnCount: number;
+  elapsedSeconds: number | null;
+  model: string;
+}>): string {
+  const text = sessions.length === 0
+    ? "当前没有会话记录。"
+    : [
+        `共 **${sessions.length}** 个会话:`,
+        ``,
+        ...sessions.map((s, i) => {
+          const status = s.active ? "🟢 活跃" : "⚪ 空闲";
+          const shortId = s.sessionId.length > 16 ? s.sessionId.slice(0, 16) + "..." : s.sessionId;
+          let extra = "";
+          if (s.active && s.elapsedSeconds !== null) {
+            const mins = Math.floor(s.elapsedSeconds / 60);
+            const secs = s.elapsedSeconds % 60;
+            extra = ` | 本轮: ${mins}分${secs}秒`;
+          }
+          return `**${i + 1}.** \`${shortId}\` ${status} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
+        }),
+      ].join("\n");
+
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: text } },
+      { tag: "hr" },
+      {
+        tag: "action",
+        actions: [{
+          tag: "button",
+          text: { tag: "plain_text", content: "收起" },
+          type: "default",
+          value: { action: "close" },
+        }],
+      },
+    ],
+  });
+}
+
 // 状态卡片（带关闭按钮）
 export function buildStatusCard(statusText: string, template = "blue"): string {
   return JSON.stringify({

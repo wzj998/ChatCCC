@@ -6,7 +6,7 @@
  *   2. Create a new Feishu group chat and add the user
  *   3. Rename the group (name + description) to the session ID
  *   4. Stream SDK output to logs/session-<session-id>.jsonl
- *   5. Reply to the user with session ID and resume instructions
+ *   5. Reply to the new group with session info and welcome message
  *
  * Auto-resume: when any message is received in a Claude session group
  * (group description contains "Claude Session:"), the bot extracts the
@@ -28,23 +28,29 @@ import { resolve, dirname, basename } from "node:path";
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
-import { ensureSingleInstance, createRelayServer } from "./shared.ts";
+import { appendStartupTrace, ensureSingleInstance, createRelayServer, freeRelayListenPort } from "./shared.ts";
 import {
   CHATCCC_PORT,
   APP_ID,
   APP_SECRET,
   BASE_URL,
+  CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  anthropicConfigDisplay,
   LOCAL_RELAY_URL,
   PID_FILE,
   PROJECT_ROOT,
   USE_LOCAL,
   appendChatLog,
+  explainMissingFeishuCredentialsAndExit,
   fileLog,
+  reportEnvironmentVariableReadout,
   getDefaultCwd,
+  maskAppId,
   setDefaultCwd,
   ts,
 } from "./config.ts";
+import { printServiceDidNotStart, printServiceRunningHint } from "./exit-banner.ts";
 import {
   addReaction,
   createGroupChat,
@@ -58,12 +64,13 @@ import {
   updateChatInfo,
   sendRestartCard,
 } from "./feishu-api.ts";
-import { buildHelpCard, buildStatusCard, buildThinkingCardV2, buildCdContent } from "./cards.ts";
+import { buildHelpCard, buildStatusCard, buildThinkingCardV2, buildCdContent, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
 import {
   MAX_PROCESSED,
   chatSessionMap,
   getSessionStatus,
+  getAllSessionsStatus,
   initClaudeSession,
   processedMessages,
   resetState,
@@ -128,7 +135,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", restart: "/restart", status: "/status", cd: "/cd" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions" };
   const text = CMD_MAP[cmd] ?? "";
   if (!text) return null;
 
@@ -280,15 +287,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       "green"
     );
 
-    const resumeCmd = `claude --resume ${sessionId}`;
-    await sendCardReply(
-      freshToken, chatId, "Group + Claude Session Ready",
-      `**Session ID:** ${sessionId}\n` +
-      `**Group:** created (check your chat list)\n\n` +
-      `Resume Claude session:\n\`\`\`\n${resumeCmd}\n\`\`\``,
-      "green"
-    );
-    console.log(`[${ts()}] [STEP 4/4] Replied to user  → OK`);
+    console.log(`[${ts()}] [STEP 4/4] Replied to new group → OK`);
     console.log(`${"=".repeat(60)}`);
     return;
   }
@@ -338,8 +337,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           `**Session ID:** \`${status?.sessionId ?? sessionId}\``,
           `**状态:** ${isActive ? "🟢 运行中" : "⚪ 空闲"}`,
           `**已对话轮数:** ${status?.turnCount ?? 0}`,
-          `**模型:** ${status?.model ?? CLAUDE_MODEL}`,
-          `**Effort:** ${status?.effort ?? "N/A"}`,
+          `**模型:** ${status?.model ?? anthropicConfigDisplay(CLAUDE_MODEL)}`,
+          `**Effort:** ${status?.effort ?? anthropicConfigDisplay(CLAUDE_EFFORT)}`,
         ];
         if (isActive) {
           const elapsed = Math.floor((Date.now() - (status!.startTime)) / 1000);
@@ -362,6 +361,30 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         });
         const statusRespData: Record<string, any> = await statusResp.json().catch(() => ({}));
         console.log(`[${ts()}] [STATUS] card sent, code=${statusRespData.code}, msgId=${statusRespData.data?.message_id ?? "N/A"}`);
+        return;
+      }
+
+      if (text === "/sessions") {
+        const allSessions = getAllSessionsStatus();
+        const now = Date.now();
+        const cardData = allSessions.map(s => ({
+          sessionId: s.sessionId,
+          active: s.active,
+          turnCount: s.turnCount,
+          elapsedSeconds: s.active ? Math.floor((now - s.startTime) / 1000) : null,
+          model: s.model,
+        }));
+        const card = buildSessionsCard(cardData);
+        const sessionsResp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${freshToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
+        });
+        const sessionsRespData: Record<string, any> = await sessionsResp.json().catch(() => ({}));
+        console.log(`[${ts()}] [SESSIONS] card sent, code=${sessionsRespData.code}, count=${allSessions.length}`);
         return;
       }
 
@@ -427,15 +450,48 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  ensureSingleInstance(PID_FILE, CHATCCC_PORT);
+  appendStartupTrace("main: entered", {
+    argv: process.argv.join(" ").slice(0, 400),
+    CHATCCC_PORT,
+    PROJECT_ROOT,
+  });
 
-  if (!APP_ID || !APP_SECRET) {
-    console.log("ERROR: FEISHU_CLAUDER_APP_ID / FEISHU_CLAUDER_APP_SECRET not set");
+  if (Number.isNaN(CHATCCC_PORT) || CHATCCC_PORT < 1 || CHATCCC_PORT > 65535) {
+    console.error("\n[启动] 预检失败: CHATCCC_PORT 不是有效端口号（1–65535）。");
+    console.error(`  当前解析结果: ${String(process.env.CHATCCC_PORT)} → ${CHATCCC_PORT}`);
+    reportEnvironmentVariableReadout();
+    printServiceDidNotStart("CHATCCC_PORT 配置无效（须为 1–65535 的整数）");
     process.exit(1);
   }
 
+  console.log(`\n[启动 1/6] 单实例：按 PID 文件清理旧 ChatCCC 进程`);
+  console.log(`  PID 文件: ${PID_FILE}`);
+  appendStartupTrace("main: before ensureSingleInstance", { PID_FILE, CHATCCC_PORT });
+  ensureSingleInstance(PID_FILE);
+  appendStartupTrace("main: after ensureSingleInstance");
+  console.log("  完成。\n");
+
+  console.log(`[启动 2/6] 环境与凭证检查`);
+  reportEnvironmentVariableReadout();
+  console.log(`  工作目录: ${process.cwd()}`);
+  console.log(`  包根目录: ${PROJECT_ROOT}`);
+  appendStartupTrace("main: before feishu credential check", {
+    hasAppId: Boolean(APP_ID.trim()),
+    hasAppSecret: Boolean(APP_SECRET.trim()),
+  });
+  if (!APP_ID.trim() || !APP_SECRET.trim()) {
+    explainMissingFeishuCredentialsAndExit();
+  }
+  console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
+  appendStartupTrace("main: feishu credentials ok", { appIdMask: maskAppId(APP_ID) });
+
+  console.log(`[启动 3/6] 启动本地 WebSocket 中继（ws://127.0.0.1:${CHATCCC_PORT}）…`);
+  appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
+  freeRelayListenPort(CHATCCC_PORT);
+  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT });
   const { server: relayServer, broadcast } = createRelayServer(CHATCCC_PORT);
   broadcastToRelay = broadcast;
+  console.log("  完成。\n");
 
   const modeTag = USE_LOCAL ? " (local relay mode)" : "";
   console.log(`${"=".repeat(60)}`);
@@ -445,7 +501,24 @@ async function main(): Promise<void> {
   console.log(`  In a Claude session group, send any message to resume & prompt.`);
   console.log(`${"=".repeat(60)}`);
 
-  const token = await getTenantAccessToken();
+  console.log(`\n[启动 4/6] 向飞书开放平台申请 tenant_access_token …`);
+  let token: string;
+  try {
+    token = await getTenantAccessToken();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("  失败：无法获取 tenant_access_token。");
+    console.error(`  接口: POST ${BASE_URL}/auth/v3/tenant_access_token/internal`);
+    console.error("  常见原因:");
+    console.error("    - App ID / App Secret 与开放平台「凭证与基础信息」不一致");
+    console.error("    - 自建应用尚未创建/发布可用版本");
+    console.error("    - 本机网络无法访问 open.feishu.cn");
+    console.error(`  详情: ${msg}`);
+    printServiceDidNotStart("无法从飞书开放平台获取 tenant_access_token（凭证或网络问题）");
+    process.exit(1);
+  }
+  console.log(`  完成。当前 App ID 摘要: ${maskAppId(APP_ID)}\n`);
+
   console.log(`[${ts()}] [AUTH] Token obtained`);
 
   const eventDispatcher = new EventDispatcher({});
@@ -480,8 +553,12 @@ async function main(): Promise<void> {
       appendChatLog(chatId, openId, text);
 
       if (messageId) {
-        addReaction(token, messageId).catch((err) =>
-          console.error(`[${ts()}] Reaction failed: ${(err as Error).message}`)
+        getTenantAccessToken().then((freshToken) =>
+          addReaction(freshToken, messageId).catch((err) =>
+            console.error(`[${ts()}] Reaction failed: ${(err as Error).message}`)
+          )
+        ).catch((err) =>
+          console.error(`[${ts()}] Reaction token failed: ${(err as Error).message}`)
         );
       }
 
@@ -536,9 +613,16 @@ async function main(): Promise<void> {
   });
 
   if (USE_LOCAL) {
-    console.log(`[WS] Connecting to local relay: ${LOCAL_RELAY_URL}`);
+    console.log(`\n[启动 5/6] 本地区 relay 模式：正在连接 ${LOCAL_RELAY_URL} …`);
+    console.log("  若失败：请先在 SDK 模式下启动主进程，或确认本机中继已在该地址监听。");
+    let localRelayOpened = false;
     const ws = new WebSocket(LOCAL_RELAY_URL);
-    ws.on("open", () => console.log("[WS] Connected to local relay"));
+    ws.on("open", () => {
+      localRelayOpened = true;
+      console.log("[WS] Connected to local relay");
+      console.log("[启动 6/6] 已连接本地中继，可接收转发事件。\n");
+      printServiceRunningHint("local");
+    });
     ws.on("message", (raw: Buffer) => {
       try {
         const data = JSON.parse(raw.toString()) as Evt;
@@ -562,7 +646,16 @@ async function main(): Promise<void> {
       } catch { /* ignore */ }
     });
     ws.on("close", () => { console.log("[WS] Local relay disconnected"); process.exit(0); });
-    ws.on("error", (err: Error) => console.error(`[WS] Local relay error: ${err.message}`));
+    ws.on("error", (err: Error) => {
+      if (!localRelayOpened) {
+        console.error(`[启动 5/6] 失败：无法连接本地中继。`);
+        console.error(`  ${err.message}`);
+        console.error(`  目标: ${LOCAL_RELAY_URL}`);
+        printServiceDidNotStart(`无法连接本地中继 ${LOCAL_RELAY_URL}`);
+        process.exit(1);
+      }
+      console.error(`[WS] Local relay error: ${err.message}`);
+    });
   } else {
     resetState();
 
@@ -573,8 +666,20 @@ async function main(): Promise<void> {
       onReconnected: () => resetState(),
     });
 
-    await wsClient.start({ eventDispatcher });
+    console.log(`\n[启动 5/6] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
+    try {
+      await wsClient.start({ eventDispatcher });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("  失败：飞书 WebSocket 未能启动。");
+      console.error("  常见原因: 应用权限未开通、事件订阅未配置、网络问题、或 SDK 内部错误。");
+      console.error(`  详情: ${msg}`);
+      printServiceDidNotStart("飞书 SDK WebSocket 未能建立（权限、事件订阅或网络）");
+      process.exit(1);
+    }
     console.log("[WS] Feishu WebSocket connected (SDK)");
+    console.log("[启动 6/6] 服务已就绪，等待飞书消息（群聊 / 卡片回调）。\n");
+    printServiceRunningHint("sdk");
 
     sendRestartCard(token).catch((err) =>
       console.error(`[${ts()}] [RESTART] sendRestartCard failed: ${(err as Error).message}`)
@@ -595,6 +700,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: Error) => {
-  console.error("Fatal error:", err);
+  appendStartupTrace("main: catch fatal", { message: err.message, stack: err.stack?.slice(0, 800) });
+  console.error("\n[启动] 未捕获的致命错误（main 异步链）");
+  console.error(`  ${err.message}`);
+  if (err.stack) console.error(err.stack);
+  printServiceDidNotStart(`main() 异常: ${err.message}`);
   process.exit(1);
 });
