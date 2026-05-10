@@ -67,21 +67,29 @@ npm run dev
 
 **添加应用能力**：开启「机器人」功能。
 
-**权限配置**（在「权限管理」中搜索并开通以下权限）：
+**权限配置（重要）**（在「权限管理」中按前缀搜索，**将以下三类前缀开头的权限全部开通**）：
 
+| 前缀 | 用途（简要） |
+| ---- | ------------ |
+| `im:message` | 收发与读取消息、以机器人身份发言、与会话相关的消息能力等 |
+| `im:chat` | 创建与管理群聊、与会话绑定、群成员与聊天场景相关能力等 |
+| `cardkit:` | 群卡片展示、流式更新、卡片按钮与交互回调相关能力等 |
 
-| 权限                              | 用途        |
-| ------------------------------- | --------- |
-| `im:chat`                       | 创建和管理群聊   |
-| `im:message`                    | 收发消息      |
-| `im:message:send_as_bot`        | 以机器人身份发消息 |
-| `im:message.p2p_msg:readonly`   | 读取私聊消息    |
-| `im:message.group_msg:readonly` | 读取群聊消息    |
+控制台中同一前缀下往往有多条子权限，请逐项勾选开通，避免遗漏导致收不到消息或卡片异常。
 
+<p align="center">
+  <img src="images/img_readme_permission.png" alt="飞书应用权限配置" width="280" />
+</p>
 
-**事件订阅**（在「事件与回调」中）：订阅 `im.message.receive_v1` 和 `card.action.trigger` 事件。
+**事件订阅（重要）**（在「事件与回调」中）：订阅 `im.message.receive_v1` 和 `card.action.trigger` 事件。
 
-**发布版本**：配置完成后创建应用版本并发布（仅企业内部可用即可）。
+<p align="center">
+  <img src="images/img_readme_event.png" alt="飞书事件订阅" width="280" />
+  &emsp;
+  <img src="images/img_readme_callback.png" alt="飞书请求网址与回调" width="280" />
+</p>
+
+**发布版本（不要忘了）**：配置完成后创建应用版本并发布（仅企业内部可用即可）。
 
 ### 3. 获取凭证
 
@@ -111,6 +119,36 @@ CHATCCC_ANTHROPIC_MODEL=default
 # 如 low / medium / high / max；设为 default（任意大小写）或不写则不向 SDK 传入 effort，/status 显示 default
 CHATCCC_ANTHROPIC_EFFORT=default
 ```
+
+#### 注意！第三方 API（如 DeepSeek）与鉴权 403
+
+若你通过 **Anthropic 兼容网关**（例如 DeepSeek 的 `/anthropic` 端点）调用模型，除了官方 Claude 以外，需要配置 **`ANTHROPIC_API_KEY`**（API 密钥）与 **`ANTHROPIC_BASE_URL`**（写入系统环境变量，见下表）。
+
+不少用户会把这些写在 **`~/.claude/settings.json`**（Windows 一般为 `C:\Users\<用户名>\.claude\settings.json`）的 `env` 字段里，供本机 **交互式 Claude Code** 使用。但 **Claude Agent SDK 在启动时拉起的是子进程**，其行为与直接打开终端跑 Claude Code 并不完全一致，**子进程未必会按你预期读取 `.claude` 目录下 `settings.json` 里的 `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL` 等**，从而出现类似：
+
+`Failed to authenticate. API Error: 403 Request not allowed`
+
+**建议（最稳妥）**：把 **`ANTHROPIC_BASE_URL`** 与 **`ANTHROPIC_API_KEY`**（API 密钥）写进 **操作系统环境变量**（当前用户的「用户变量」即可，一般无需管理员），例如：
+
+| 变量名 | 说明 |
+| ------ | ---- |
+| `ANTHROPIC_API_KEY` | 在服务商控制台获取的 **API 密钥**，填入本环境变量。Anthropic 兼容网关普遍使用该名称；若服务商文档要求使用其它环境变量名，以文档为准。 |
+| `ANTHROPIC_BASE_URL` | 兼容 Anthropic API 的 base URL，例如 DeepSeek：`https://api.deepseek.com/anthropic` |
+
+若你在 `settings.json` 里还为 Sonnet/Haiku/Opus 配置了默认模型名，可一并同步到用户环境变量（如 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 等），与文档及网关要求保持一致。
+
+修改环境变量后，请 **完全退出并重新打开** 终端、IDE（如 Cursor）以及 ChatCCC 进程，再试飞书对话或本地 `npm run demo:claude-hi`，确保子进程继承到新变量。
+
+在 **Windows** 上可用 PowerShell 写入当前用户的持久变量（示例，请把第二行里的字符串换成你在服务商控制台复制的 **API 密钥**，即 **`ANTHROPIC_API_KEY`** 的值）：
+
+```powershell
+[Environment]::SetEnvironmentVariable("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic", "User")
+[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "你的_API_密钥", "User")
+```
+
+也可在 **系统属性 → 环境变量** 中手动添加。Linux / macOS 可将 `export` 写入 `~/.bashrc`、`~/.zshrc` 等，或使用 systemd、`launchctl` 等按你的部署方式注入。
+
+> **说明**：项目根目录的 `.env` 若通过 `tsx --env-file=.env` 加载，其中的变量会进入 Node 进程环境，**多数情况下**会随进程继承给 SDK 子进程；但各家网关与 Claude Code 版本组合较多，**仍推荐**将 **`ANTHROPIC_API_KEY`** 与 **`ANTHROPIC_BASE_URL`** 放在系统/用户环境变量中，与 `settings.json` 形成双保险，避免仅依赖 `.claude/settings.json` 时在 SDK 场景下踩坑。
 
 `**CHATCCC_PORT`（可选）**：默认端口为 `18080`。若在一台机器上同时运行多个 ChatCCC 实例，可在各自的 `.env` 中设置不同端口：
 

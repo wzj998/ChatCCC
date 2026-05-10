@@ -22,10 +22,11 @@
     "demo:bot-test:local": "tsx --env-file=.env demo/bot_test.ts --local",
     "demo:create-group": "tsx --env-file=.env src/index.ts",
     "demo:create-group:local": "tsx --env-file=.env src/index.ts --local",
-    "demo:permission-check": "tsx --env-file=.env demo/permission_check.ts"
+    "demo:permission-check": "tsx --env-file=.env demo/permission_check.ts",
+    "demo:claude-hi": "tsx --env-file=.env demo/claude_say_hi.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.133",
+    "@anthropic-ai/claude-agent-sdk": "0.2.133",
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "tsx": "^4.0.0",
     "ws": "^8.18.0"
