@@ -63,23 +63,43 @@ npm run dev
 
 #### Cursor Agent CLI（使用 Cursor 会话时需要）
 
-ChatCCC **不捆绑** Cursor Agent CLI，需要用户自行安装。Cursor Agent CLI 目前主要有两种来源：
+ChatCCC **不捆绑** Cursor Agent CLI，需要用户自行安装。
+
+**推荐安装方式（Windows）：**
+
+在 PowerShell 中执行：
+
+```powershell
+irm 'https://cursor.com/install?win32=true' | iex
+```
+
+安装完成后 `agent` 命令会出现在系统 PATH 中。
+
+**其他安装方式：**
 
 1. **Cursor IDE 自带**：安装 [Cursor IDE](https://cursor.com) 后，部分版本会自带 `agent` 或 `cursor-agent` 命令
-2. **独立安装**：Cursor 正在逐步提供独立的 CLI 安装方式，安装后 `agent` 命令会出现在系统 PATH 中
+2. **独立安装**：Cursor 正在逐步提供独立的 CLI 安装方式
 
-验证是否已安装：
+验证是否已安装（任一可用即可）：
 
 ```bash
 agent --version
+cursor-agent --version
 ```
 
-若 `agent` 不在 PATH 中，可通过环境变量指定自定义命令：
+ChatCCC 启动时会按以下顺序探测 Cursor Agent CLI：
+
+1. 环境变量 `CHATCCC_CURSOR_COMMAND` 指定的路径（若已设置）
+2. Windows 上 Cursor IDE 默认安装位置 `%LOCALAPPDATA%\cursor-agent\agent.cmd`（自动识别）
+3. PATH 中的 `agent` 命令
+
+若以上都找不到，或你想用一个非默认的可执行文件（例如 `cursor-agent`），在 `.env` 中显式指定：
 
 ```env
 CHATCCC_CURSOR_COMMAND=/path/to/agent
-CHATCCC_CURSOR_ARGS=-p --output-format stream-json --stream-partial-output
 ```
+
+> 高级用户如需覆盖默认 CLI 参数，可设置 `CHATCCC_CURSOR_ARGS`，一般无需修改。
 
 > **说明**：只使用 Claude Code（`/new claude` 或 `/new`）的用户无需安装 Cursor CLI。
 
@@ -132,14 +152,25 @@ CHATCCC_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxx
 
 若你曾使用旧版变量名 `FEISHU_CLAUDER_APP_ID` / `FEISHU_CLAUDER_APP_SECRET`，请改为上表中的 `CHATCCC_APP_ID` / `CHATCCC_APP_SECRET`。
 
-可选：Claude 模型与思考深度（**默认均为 `default`**）：
+可选：Claude 模型与思考深度：
 
 ```env
-# 网关或服务商文档中的 model；设为 default（任意大小写）或不写则交给 SDK/CLI 默认，且 /status 中显示为 default
+# 网关或服务商文档中的 model；设为 default（任意大小写）或不写则交给 SDK/CLI 默认
 CHATCCC_ANTHROPIC_MODEL=default
 
-# 如 low / medium / high / max；设为 default（任意大小写）或不写则不向 SDK 传入 effort，/status 显示 default
-CHATCCC_ANTHROPIC_EFFORT=default
+# 如 low / medium / high / max；设为 default（任意大小写）或不写则不向 SDK 传入 effort
+CHATCCC_ANTHROPIC_EFFORT=max
+```
+
+Cursor Agent CLI 模型（仅 Cursor 会话相关，省略或 `default` 时不传 `--model`）：
+
+```env
+# Cursor 会话实际使用的模型 ID（如 claude-opus-4-7-max / claude-opus-4-7-thinking-max 等）
+# 可用 `agent --list-models` 查看所有支持的模型 ID
+CHATCCC_CURSOR_MODEL=claude-opus-4-7-max
+
+# 高级用户可覆盖默认 CLI 参数（一般无需修改）
+# CHATCCC_CURSOR_ARGS=-p --force --output-format stream-json --stream-partial-output
 ```
 
 #### 注意！第三方 API（如 DeepSeek）与鉴权 403
@@ -172,7 +203,7 @@ CHATCCC_ANTHROPIC_EFFORT=default
 
 > **说明**：项目根目录的 `.env` 若通过 `tsx --env-file=.env` 加载，其中的变量会进入 Node 进程环境，**多数情况下**会随进程继承给 SDK 子进程；但各家网关与 Claude Code 版本组合较多，**仍推荐**将 **`ANTHROPIC_API_KEY`** 与 **`ANTHROPIC_BASE_URL`** 放在系统/用户环境变量中，与 `settings.json` 形成双保险，避免仅依赖 `.claude/settings.json` 时在 SDK 场景下踩坑。
 
-`**CHATCCC_PORT`（可选）**：默认端口为 `18080`。若在一台机器上同时运行多个 ChatCCC 实例，可在各自的 `.env` 中设置不同端口：
+**`CHATCCC_PORT`（可选）**：默认端口为 `18080`。若在一台机器上同时运行多个 ChatCCC 实例，可在各自的 `.env` 中设置不同端口：
 
 ```env
 # 实例 A（项目1）的 .env
@@ -183,6 +214,13 @@ CHATCCC_PORT=18081
 ```
 
 不同端口的实例互不冲突，启动时会自动清理各自端口上的旧进程。
+
+**`CHATCCC_GIT_TIMEOUT_SECONDS`（可选）**：`/git <子命令>` 在会话工作目录执行 git 命令时的单次超时秒数，默认 `180`，允许范围 `1–3600`。配置非法（非整数、越界等）时启动日志会标红提示并回退为默认值；命令超时则会被 `SIGKILL` 强制终止，并把已收集到的输出（带「⏱️ 命令超时被强制终止」标记）回发到群里。
+
+```env
+# 调高到 600 秒，适合 git fsck、git gc 等耗时操作
+CHATCCC_GIT_TIMEOUT_SECONDS=600
+```
 
 > **权限说明**：目前 ChatCCC 以 `bypassPermissions` 模式运行，即跳过所有权限确认、允许所有操作。后续会考虑引入细粒度权限控制，让你可以按需放行特定操作。
 
@@ -204,6 +242,7 @@ CHATCCC_PORT=18081
 | `/status`       | 查看当前会话的状态（轮数、模型、上下文 token 等） |
 | `/cd`           | 查看/切换工作目录                    |
 | `/sessions`     | 查看所有会话状态                    |
+| `/git <子命令>` | 在**当前会话工作目录**执行 `git ...` 并把 stdout/stderr 回发到群里（仅会话群内可用，超时见 `CHATCCC_GIT_TIMEOUT_SECONDS`） |
 | `/restart`      | 重启机器人进程                      |
 
 
@@ -211,4 +250,4 @@ CHATCCC_PORT=18081
 
 ## 技术栈
 
-TypeScript / Node.js >= 20 / tsx / Anthropic Claude Agent SDK / 飞书 WebSocket API / CardKit
+TypeScript / Node.js >= 20 / tsx / Anthropic Claude Agent SDK / Cursor Agent CLI / 飞书 WebSocket API / CardKit

@@ -1,0 +1,12 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp","session_id":"sid-tool","model":"Composer 2 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"列出当前目录"}]},"session_id":"sid-tool"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"我"}]},"session_id":"sid-tool","timestamp_ms":1}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"看下"}]},"session_id":"sid-tool","timestamp_ms":2}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"。"}]},"session_id":"sid-tool","timestamp_ms":3}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"我看下。"},{"type":"tool_use","name":"ls","input":{"path":"."}}]},"session_id":"sid-tool","timestamp_ms":4,"model_call_id":"mc-1"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"file1\nfile2","is_error":false}]},"session_id":"sid-tool"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"两"}]},"session_id":"sid-tool","timestamp_ms":5}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"个文件"}]},"session_id":"sid-tool","timestamp_ms":6}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"。"}]},"session_id":"sid-tool","timestamp_ms":7}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"两个文件。"}]},"session_id":"sid-tool"}
+{"type":"result","subtype":"success","duration_ms":1000,"is_error":false,"result":"我看下。两个文件。","session_id":"sid-tool","request_id":"req-tool","usage":{"inputTokens":1,"outputTokens":2}}

@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"F:\\Users\\weizhangjian\\feishuclauderprivate","session_id":"abc-only-partial","model":"Composer 2 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"'hi'"}]},"session_id":"abc-only-partial"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"session_id":"abc-only-partial","timestamp_ms":1778411927583}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" world"}]},"session_id":"abc-only-partial","timestamp_ms":1778411927587}
+{"type":"result","subtype":"success","duration_ms":1000,"duration_api_ms":1000,"is_error":false,"result":"hello world","session_id":"abc-only-partial","request_id":"req-only-partial","usage":{"inputTokens":1,"outputTokens":2}}

@@ -343,7 +343,7 @@ export async function sendRestartCard(token: string): Promise<void> {
           { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
           { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
           { text: "重启Chat CCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
-          { text: "查看/切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
+          { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
         ]),
       ],
     });

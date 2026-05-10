@@ -36,6 +36,7 @@ import {
   BASE_URL,
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  GIT_TIMEOUT_MS,
   anthropicConfigDisplay,
   LOCAL_RELAY_URL,
   PID_FILE,
@@ -72,6 +73,7 @@ import {
 } from "./feishu-api.ts";
 import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
+import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
   chatSessionMap,
@@ -371,7 +373,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const adapter = getAdapterForTool(tool);
     await sendCardReply(
       freshToken, newChatId, `${toolLabel} Session Ready`,
-      `群聊已创建，这是你的 **${toolLabel}** 会话群。\n\n**Session ID:** ${sessionId}\n**工作目录:** \`${cwd}\`\n\n直接在这里发消息即可与 ${toolLabel} 对话。\n\n发送 **/sessions** 查看所有会话状态。`,
+      `群聊已创建，这是你的 **${toolLabel}** 会话群。\n\n` +
+        `**Session ID:** ${sessionId}\n` +
+        `**工作目录:** \`${cwd}\`\n\n` +
+        `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
+        `发送 **/sessions** 查看所有会话状态。\n` +
+        `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
       "green"
     );
 
@@ -421,7 +428,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
 
       if (text === "/status") {
-        const status = getSessionStatus(chatId);
+        const status = await getSessionStatus(chatId);
         const running = chatSessionMap.get(chatId);
         const isActive = running && !running.stopped;
         const statusText = [
@@ -430,8 +437,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           `**状态:** ${isActive ? "🟢 运行中" : "⚪ 空闲"}`,
           `**已对话轮数:** ${status?.turnCount ?? 0}`,
           `**模型:** ${status?.model ?? anthropicConfigDisplay(CLAUDE_MODEL)}`,
-          `**Effort:** ${status?.effort ?? anthropicConfigDisplay(CLAUDE_EFFORT)}`,
         ];
+        // effort 仅在该工具有此概念时显示（status?.effort 为 null 表示
+        // 当前工具没有 effort，如 Cursor，应隐藏整行避免误导）
+        if (status?.effort != null) {
+          statusText.push(`**Effort:** ${status.effort}`);
+        }
         if (isActive) {
           const elapsed = Math.floor((Date.now() - (status!.startTime)) / 1000);
           const mins = Math.floor(elapsed / 60);
@@ -457,7 +468,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
 
       if (text === "/sessions") {
-        const allSessions = getAllSessionsStatus();
+        const allSessions = await getAllSessionsStatus();
         const now = Date.now();
         const cardData = allSessions.map(s => ({
           sessionId: s.sessionId,
@@ -478,6 +489,49 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         });
         const sessionsRespData: Record<string, any> = await sessionsResp.json().catch(() => ({}));
         console.log(`[${ts()}] [SESSIONS] card sent, code=${sessionsRespData.code}, count=${allSessions.length}`);
+        return;
+      }
+
+      // /git <args>：在「当前会话工作目录」执行 git 命令，把输出回发到群里。
+      // 注意 cwd 必须取自 adapter.getSessionInfo（会话真实 cwd），而非
+      // getDefaultCwd（下一次 /new 才会使用的默认路径）。
+      if (text.startsWith("/git ") || text === "/git") {
+        const args = text === "/git" ? "" : text.slice(5).trim();
+        if (!args) {
+          await sendCardReply(
+            freshToken, chatId, "/git",
+            "用法：`/git <子命令> [参数]`，例如 `/git status`、`/git log --oneline -n 5`。",
+            "yellow"
+          );
+          return;
+        }
+
+        const adapter = getAdapterForTool(descriptionTool);
+        let cwd: string | undefined;
+        try {
+          const info = await adapter.getSessionInfo(sessionId);
+          cwd = info?.cwd;
+        } catch (err) {
+          console.error(`[${ts()}] [GIT] getSessionInfo FAIL: ${(err as Error).message}`);
+        }
+        if (!cwd) {
+          // Cursor 会话的 cwd 依赖 .claude/cursor-session-cwd.json 持久化映射；
+          // 升级前创建的旧会话或映射文件丢失时，向会话发送一次普通消息即可触发
+          // adapter 自动学习并补全（resume 流首条 init 事件携带 cwd）。
+          const isCursor = descriptionTool === "cursor";
+          const hint = isCursor
+            ? "无法获取当前 Cursor 会话的工作目录（缺少 sessionId→cwd 持久化映射）。请先在本群发送一条普通消息（让 adapter 从 cursor-agent 流中自动补回 cwd），然后再试 /git；若仍失败，可用 /new 重建会话。"
+            : `无法获取当前会话的工作目录（${toolLabel} adapter 未返回 cwd）。请先与 AI 对话一次再试，或检查会话是否仍存在。`;
+          await sendCardReply(freshToken, chatId, "/git", hint, "red");
+          return;
+        }
+
+        console.log(`[${ts()}] [GIT] chat=${chatId} cwd=${cwd} cmd="git ${args}" timeoutMs=${GIT_TIMEOUT_MS}`);
+        const result = await runGitCommand(args, cwd, { timeoutMs: GIT_TIMEOUT_MS });
+        console.log(`[${ts()}] [GIT] exitCode=${result.exitCode}, durationMs=${result.durationMs}, truncated=${result.truncated}, timedOut=${result.timedOut}`);
+        const content = formatGitResult(args, cwd, result);
+        const template = gitResultHeaderTemplate(result);
+        await sendCardReply(freshToken, chatId, "/git 输出", content, template);
         return;
       }
 

@@ -16,6 +16,10 @@ import type {
   SessionInfo,
 } from "./adapter-interface.ts";
 import { CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS } from "../config.ts";
+import {
+  defaultCursorSessionMetaStore,
+  type CursorSessionMetaStore,
+} from "./cursor-session-meta-store.ts";
 
 // ---------------------------------------------------------------------------
 // 类型：Cursor JSONL 消息行
@@ -37,6 +41,24 @@ interface CursorMessageLine {
     inputTokens?: number;
     outputTokens?: number;
   };
+  /**
+   * 三类 assistant 事件的判定字段之一。详见 normalizeCursorMessage。
+   * 官方文档：cursor.com/docs/cli/reference/output-format
+   */
+  timestamp_ms?: number;
+  /**
+   * 三类 assistant 事件的判定字段之一：
+   *   - has timestamp_ms, no model_call_id  → Streaming delta（真增量）
+   *   - has timestamp_ms, has model_call_id → Buffered flush before tool call（重复快照）
+   *   - no  timestamp_ms                    → Final flush at end of turn（重复快照）
+   */
+  model_call_id?: string;
+  /** thinking delta 消息的文本内容 */
+  text?: string;
+  /** tool_call 消息的 call_id */
+  call_id?: string;
+  /** tool_call 消息的 tool_call 载荷 */
+  tool_call?: Record<string, unknown>;
 }
 
 interface CursorContentBlock {
@@ -56,10 +78,38 @@ interface CursorContentBlock {
 // normalizeCursorMessage — Cursor 消息 → UnifiedStreamMessage | null
 // ---------------------------------------------------------------------------
 
+/** Cursor tool_call 内部 key → 统一工具名 */
+function mapToolCallKey(key: string): string {
+  const KEY_MAP: Record<string, string> = {
+    globToolCall: "Glob",
+    shellToolCall: "Bash",
+    readToolCall: "Read",
+    writeToolCall: "Write",
+    editToolCall: "Edit",
+    grepToolCall: "Grep",
+    webSearchToolCall: "WebSearch",
+    webFetchToolCall: "WebFetch",
+    taskToolCall: "Agent",
+    notebookEditToolCall: "NotebookEdit",
+  };
+  return KEY_MAP[key] ?? key;
+}
+
 export function normalizeCursorMessage(
   msg: CursorMessageLine,
 ): UnifiedStreamMessage | null {
   if (msg.type === "assistant" && msg.message?.content) {
+    // 按 cursor 官方 stream-json 规范区分三类 assistant 事件，避免 text 重复累加：
+    //   ┌────────────────┬───────────────┬─────────────────┐
+    //   │ 种类            │ timestamp_ms  │ model_call_id   │
+    //   ├────────────────┼───────────────┼─────────────────┤
+    //   │ Streaming delta│ 有             │ 无               │ → 唯一带新文本（text）
+    //   │ Buffered flush │ 有             │ 有               │ → 工具调用前完整快照（text_final）
+    //   │ Final flush    │ 无             │ 无               │ → 回合末完整快照（text_final）
+    //   └────────────────┴───────────────┴─────────────────┘
+    // 文档：cursor.com/docs/cli/reference/output-format
+    const isStreamingDelta =
+      msg.timestamp_ms !== undefined && msg.model_call_id === undefined;
     const blocks: UnifiedBlock[] = [];
     for (const block of msg.message.content) {
       if (block.type === "thinking" && block.thinking) {
@@ -85,13 +135,76 @@ export function normalizeCursorMessage(
           query: block.query ?? "",
         });
       } else if (block.type === "text" && block.text) {
-        blocks.push({ type: "text", text: block.text });
+        blocks.push(
+          isStreamingDelta
+            ? { type: "text", text: block.text }
+            : { type: "text_final", text: block.text },
+        );
       }
     }
     return { type: "assistant", blocks };
   }
 
+  // Cursor agent 发出的独立 thinking delta 消息
+  if (msg.type === "thinking" && msg.subtype === "delta" && msg.text) {
+    return {
+      type: "assistant",
+      blocks: [{ type: "thinking", thinking: msg.text }],
+    };
+  }
+
+  // Cursor agent 发出的独立 tool_call 消息（tool_call.started / tool_call.completed）
+  if (msg.type === "tool_call" && msg.call_id && msg.tool_call) {
+    const toolKey = Object.keys(msg.tool_call)[0];
+    if (!toolKey) return null;
+    const toolData = msg.tool_call[toolKey] as {
+      args?: Record<string, unknown>;
+      result?: Record<string, unknown>;
+      description?: string;
+    } | undefined;
+    if (!toolData) return null;
+
+    if (msg.subtype === "started") {
+      return {
+        type: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            name: mapToolCallKey(toolKey),
+            input: toolData.args ?? {},
+          },
+        ],
+      };
+    }
+
+    if (msg.subtype === "completed") {
+      const resultRaw = toolData.result as Record<string, unknown> | undefined;
+      const hasSuccess = resultRaw && "success" in resultRaw;
+      const hasError = resultRaw && "error" in resultRaw;
+      return {
+        type: "assistant",
+        blocks: [
+          {
+            type: "tool_result",
+            tool_use_id: msg.call_id,
+            content: hasSuccess
+              ? (resultRaw!.success as Record<string, unknown>)?.stdout ??
+                resultRaw!.success
+              : hasError
+                ? resultRaw!.error
+                : resultRaw ?? {},
+            is_error: hasError || undefined,
+          },
+        ],
+      };
+    }
+
+    return null;
+  }
+
   if (msg.type === "user" && msg.message?.content) {
+    // Cursor resume 模式会先 echo 一条用户输入消息（text 块就是用户原始输入），
+    // 不应混入 assistant 输出累加。这里只保留 tool_result（工具调用反馈）。
     const blocks: UnifiedBlock[] = [];
     for (const block of msg.message.content) {
       if (block.type === "tool_result") {
@@ -101,11 +214,18 @@ export function normalizeCursorMessage(
           content: block.content,
           is_error: block.is_error,
         });
-      } else if (block.type === "text" && block.text) {
-        blocks.push({ type: "text", text: block.text });
       }
     }
     return { type: "user", blocks };
+  }
+
+  // result 消息：cursor 官方推荐的"权威最终文本"来源（流末发出，含完整一段文字）。
+  // 提取为 assistant 的 text_final 块，由 session.ts 累积到 finalCompleteText。
+  if (msg.type === "result" && typeof msg.result === "string" && msg.result.length > 0) {
+    return {
+      type: "assistant",
+      blocks: [{ type: "text_final", text: msg.result }],
+    };
   }
 
   if (msg.type === "system" && msg.subtype === "compact_boundary") {
@@ -136,14 +256,30 @@ export function normalizeCursorMessage(
 function spawnAgent(
   extraArgs: string[],
   cwd?: string,
+  stdinText?: string,
 ): ChildProcess {
   const allArgs = [...CURSOR_AGENT_ARGS, ...extraArgs];
-  return spawn(CURSOR_AGENT_COMMAND, allArgs, {
+  const proc = spawn(CURSOR_AGENT_COMMAND, allArgs, {
     cwd,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     windowsHide: true,
     shell: true,
   });
+
+  // 收集 stderr，子进程异常退出时输出到日志，方便排查静默失败
+  let stderr = "";
+  proc.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  proc.on("close", (code) => {
+    if (code !== 0 && stderr.trim()) {
+      console.error(`[Cursor stderr] exit=${code}: ${stderr.trim().slice(0, 2000)}`);
+    }
+  });
+
+  if (stdinText !== undefined) {
+    proc.stdin!.write(stdinText);
+    proc.stdin!.end();
+  }
+  return proc;
 }
 
 async function* readJsonLines(
@@ -169,6 +305,11 @@ class CursorAdapter implements ToolAdapter {
   readonly displayName = "Cursor";
   readonly sessionDescPrefix = "Cursor Session:";
   private activeProcs = new Set<ChildProcess>();
+  private metaStore: CursorSessionMetaStore;
+
+  constructor(metaStore: CursorSessionMetaStore) {
+    this.metaStore = metaStore;
+  }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
     const proc = spawnAgent(["ok"], cwd);
@@ -177,6 +318,13 @@ class CursorAdapter implements ToolAdapter {
     for await (const msg of readJsonLines(proc)) {
       if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
         const sessionId = msg.session_id;
+        // 持久化 sessionId → { cwd, model }：getSessionInfo 后续依赖此映射，
+        // 否则 Cursor 会话上的 /git、/status、/sessions 等命令将无法显示
+        // 真实工作目录与真实模型。优先用 init 事件自报字段（cursor-agent
+        // 内部权威），cwd 没有时退回调用方传入的 cwd 兜底。
+        await this.metaStore
+          .set(sessionId, { cwd: msg.cwd ?? cwd, model: msg.model })
+          .catch(() => {});
         this.activeProcs.delete(proc);
         proc.kill();
         return { sessionId };
@@ -194,12 +342,26 @@ class CursorAdapter implements ToolAdapter {
     cwd: string,
     signal?: AbortSignal,
   ): AsyncIterable<UnifiedStreamMessage> {
-    const proc = spawnAgent(["--resume", sessionId, userText], cwd);
+    const proc = spawnAgent(["--resume", sessionId], cwd, userText);
     this.activeProcs.add(proc);
 
     try {
       for await (const raw of readJsonLines(proc, signal)) {
         if (signal?.aborted) break;
+        // 自动学习：resume 流首条 init 事件若带 cwd / model，更新映射。
+        // 这是为升级前创建的旧会话或映射文件意外丢失的情况兜底——
+        // 用户向旧会话发一次消息后，/git、/status 等即可正常显示。
+        // fire-and-forget：写失败不影响流式输出。
+        if (
+          raw.type === "system" &&
+          raw.subtype === "init" &&
+          raw.session_id &&
+          (raw.cwd || raw.model)
+        ) {
+          this.metaStore
+            .set(raw.session_id, { cwd: raw.cwd, model: raw.model })
+            .catch(() => {});
+        }
         const normalized = normalizeCursorMessage(raw);
         if (normalized) yield normalized;
       }
@@ -210,9 +372,13 @@ class CursorAdapter implements ToolAdapter {
   }
 
   async getSessionInfo(
-    _sessionId: string,
+    sessionId: string,
   ): Promise<SessionInfo | undefined> {
-    return { sessionId: _sessionId };
+    const meta = await this.metaStore.get(sessionId);
+    if (!meta) return { sessionId };
+    return meta.model
+      ? { sessionId, cwd: meta.cwd, model: meta.model }
+      : { sessionId, cwd: meta.cwd };
   }
 
   async closeSession(_sessionId: string): Promise<void> {
@@ -224,6 +390,13 @@ class CursorAdapter implements ToolAdapter {
 // 工厂函数
 // ---------------------------------------------------------------------------
 
-export function createCursorAdapter(): ToolAdapter {
-  return new CursorAdapter();
+export interface CreateCursorAdapterOptions {
+  /** 注入自定义 meta 持久化 store（测试用）；未提供时使用全局默认实例。 */
+  metaStore?: CursorSessionMetaStore;
+}
+
+export function createCursorAdapter(
+  options: CreateCursorAdapterOptions = {},
+): ToolAdapter {
+  return new CursorAdapter(options.metaStore ?? defaultCursorSessionMetaStore);
 }
