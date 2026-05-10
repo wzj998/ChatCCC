@@ -46,13 +46,24 @@ export const chatSessionMap = new Map<string, {
   cardBusy: boolean;
 }>();
 
+/**
+ * sessionInfoMap 记录每个 chatId 当前会话的"轻量元数据"：
+ *
+ * 注意此处**不**保存 model / effort：
+ *   - Claude 会话：model/effort 由 ChatCCC 启动时的环境变量决定（CLAUDE_MODEL/EFFORT），
+ *     getSessionStatus 直接读全局配置即可。
+ *   - Cursor 会话：model 是 cursor-agent 自报的运行时值（如 Composer 2 Fast），
+ *     由 cursor-adapter 持久化到 cursor-session-meta.json，
+ *     getSessionStatus 通过 adapter.getSessionInfo 实时获取；effort 概念不适用。
+ *
+ * 把 model/effort 从 sessionInfoMap 移除是为了消除"硬塞 CLAUDE_* 给 Cursor"
+ * 的不一致 bug——/status、/sessions 必须显示真实工具的真实信息。
+ */
 export const sessionInfoMap = new Map<string, {
   sessionId: string;
   turnCount: number;
   lastContextTokens: number;
   startTime: number;
-  model: string;
-  effort: string;
   tool: string;
 }>();
 
@@ -137,8 +148,30 @@ export async function getSessionTool(sessionId: string): Promise<string | null> 
 
 export interface AccumulatorState {
   accumulatedContent: string;
+  /** partial text 块按追加语义累积；适用于 Cursor 的流式增量与 Claude SDK 的 delta */
   finalText: string;
+  /**
+   * 适配器明确给出的"完整最终文本"（覆盖语义）。
+   * 仅 Cursor `--stream-partial-output` 模式末尾的 final assistant 消息会写入；
+   * 用于配合 pickFinalReply 在 partial 累加 vs final 完整文本之间挑选最终回复，
+   * 避免最终消息出现两段重复内容。
+   */
+  finalCompleteText: string;
   chunkCount: number;
+}
+
+/**
+ * 在 partial 累加（finalText）与适配器给出的"完整最终文本"（finalCompleteText）
+ * 之间挑选最终回复：
+ *   - finalCompleteText 非空时永远优先（来自 cursor result.result 等权威源）
+ *   - 否则回退到 finalText（partial 累加）
+ *
+ * 不做长度比较：cursor 在工具调用前会发 buffered flush（重复快照），
+ * 若按当前 adapter 误把 buffered flush 当 delta 累加，partial 累加可能"虚高"，
+ * 此时取更长会选错；权威源（result.result）才是正解。
+ */
+export function pickFinalReply(state: AccumulatorState): string {
+  return state.finalCompleteText || state.finalText;
 }
 
 export function accumulateBlockContent(
@@ -191,6 +224,14 @@ export function accumulateBlockContent(
       break;
     case "text":
       state.finalText += block.text;
+      // 新的增量文本到达时清空 finalCompleteText，确保 pickFinalReply 回退到
+      // finalText（累积文本）。否则 Cursor buffered flush 设置的旧
+      // finalCompleteText 会"吞掉"工具调用后新到达的增量文本。
+      state.finalCompleteText = "";
+      break;
+    case "text_final":
+      // 覆盖而非追加：适配器已保证这是一段完整最终文本（如 Cursor 流末快照）
+      state.finalCompleteText = block.text;
       break;
     case "compact_boundary": {
       const triggerLabel = block.trigger === "manual" ? "手动" : "自动"; // 手动 / 自动
@@ -205,11 +246,23 @@ export function accumulateBlockContent(
 // Claude session management
 // ---------------------------------------------------------------------------
 
+/**
+ * 日志用：把 tool 对应的"配置摘要"格式化为单行字符串。
+ * Claude 显示 model/effort（来自环境变量）；Cursor 显示 model（运行时由
+ * cursor-agent 决定，初次创建时尚未学习到，故显示占位）。
+ */
+function formatToolConfigForLog(tool: string, sessionModel?: string): string {
+  if (tool === "cursor") {
+    return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
+  }
+  return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
+}
+
 export async function initClaudeSession(tool: string): Promise<string> {
   const cwd = await getDefaultCwd();
   const adapter = getAdapterForTool(tool);
   console.log(
-    `[${ts()}] [STEP 1/5] Creating ${adapter.displayName} session (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+    `[${ts()}] [STEP 1/5] Creating ${adapter.displayName} session (${formatToolConfigForLog(tool)}, cwd=${cwd})`
   );
 
   const result = await adapter.createSession(cwd);
@@ -235,7 +288,7 @@ export async function resumeAndPrompt(
   const info = await adapter.getSessionInfo(sessionId);
   const cwd = info?.cwd ?? (await getDefaultCwd());
   console.log(
-    `[${ts()}] Resuming ${adapter.displayName} session: ${sessionId} (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+    `[${ts()}] Resuming ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
   );
 
   const controller = new AbortController();
@@ -261,8 +314,6 @@ export async function resumeAndPrompt(
     turnCount: (existingInfo?.turnCount ?? 0) + 1,
     lastContextTokens: existingInfo?.lastContextTokens ?? 0,
     startTime: now,
-    model: anthropicConfigDisplay(CLAUDE_MODEL),
-    effort: anthropicConfigDisplay(CLAUDE_EFFORT),
     tool,
   });
 
@@ -291,6 +342,7 @@ export async function resumeAndPrompt(
   const state: AccumulatorState = {
     accumulatedContent: "",
     finalText: "",
+    finalCompleteText: "",
     chunkCount: 0,
   };
 
@@ -310,7 +362,7 @@ export async function resumeAndPrompt(
       cEntry.cardBusy = true;
       try {
         const oldSeqBase = cEntry.sequence;
-        const oldDisplay = truncateContent(state.accumulatedContent + state.finalText) || "处理中...";
+        const oldDisplay = truncateContent(state.accumulatedContent + pickFinalReply(state)) || "处理中...";
         const oldCard = buildProgressCard(oldDisplay, { showStop: false, headerTitle: "生成中...（上轮）" });
         await updateCardKitCard(token, cardId!, oldCard, oldSeqBase + 1).catch(() => {});
         const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
@@ -332,7 +384,7 @@ export async function resumeAndPrompt(
     }
 
     dotCount = (dotCount % 9) + 1;
-    const content = truncateContent(state.accumulatedContent + state.finalText + "\n" + "。".repeat(dotCount));
+    const content = truncateContent(state.accumulatedContent + pickFinalReply(state) + "\n" + "。".repeat(dotCount));
     if (content === lastSentContent) return;
 
     lastSentContent = content;
@@ -386,19 +438,20 @@ export async function resumeAndPrompt(
   const wasStopped = cEntry.stopped;
   chatSessionMap.delete(chatId);
 
-  if (cardId && state.accumulatedContent) {
+  const finalCardContent = state.accumulatedContent || " ";
+  if (cardId) {
     while (cEntry.cardBusy) {
       await new Promise(r => setTimeout(r, 20));
     }
     const nextSeq = cEntry.sequence + 1;
     if (wasStopped) {
-      const stopCard = buildProgressCard(state.accumulatedContent || "已停止", { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
+      const stopCard = buildProgressCard(finalCardContent, { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
       await updateCardKitCard(token, cardId, stopCard, nextSeq).catch((err) => {
         console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
         fileLog.flush();
       });
     } else {
-      const doneCard = buildProgressCard(state.accumulatedContent, { showStop: false, headerTitle: "完成" });
+      const doneCard = buildProgressCard(finalCardContent, { showStop: false, headerTitle: "完成" });
       await updateCardKitCard(token, cardId, doneCard, nextSeq).catch((err) => {
         console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
         fileLog.flush();
@@ -407,9 +460,13 @@ export async function resumeAndPrompt(
     }
   }
 
+  // 在 partial 累加 vs 适配器给出的 final 完整文本之间挑选；
+  // Cursor 流末会发 final 完整快照，若与 partial 累加都直接发会出现两段重复。
+  const finalReply = pickFinalReply(state).trim();
+
   if (wasStopped) {
-    if (state.finalText.trim()) {
-      await sendTextReply(token, chatId, state.finalText.trim()).catch((err) =>
+    if (finalReply) {
+      await sendTextReply(token, chatId, finalReply).catch((err) =>
         console.error(`[${ts()}] Failed to send partial text: ${(err as Error).message}`)
       );
     }
@@ -424,14 +481,14 @@ export async function resumeAndPrompt(
         console.error(`[${ts()}] Failed to send content fallback: ${(err as Error).message}`)
       );
     }
-    if (state.finalText.trim()) {
-      await sendTextReply(token, chatId, state.finalText.trim()).catch((err) =>
+    if (finalReply) {
+      await sendTextReply(token, chatId, finalReply).catch((err) =>
         console.error(`[${ts()}] Failed to send text fallback: ${(err as Error).message}`)
       );
     }
   } else {
-    if (state.finalText.trim()) {
-      await sendTextReply(token, chatId, state.finalText.trim()).catch((err) =>
+    if (finalReply) {
+      await sendTextReply(token, chatId, finalReply).catch((err) =>
         console.error(`[${ts()}] Failed to send final text: ${(err as Error).message}`)
       );
     } else if (!cardId && state.accumulatedContent.trim()) {
@@ -446,8 +503,22 @@ export async function resumeAndPrompt(
 }
 
 // ---------------------------------------------------------------------------
-// Session status query (供 /status 命令使用)
+// Session status query (供 /status、/sessions 命令使用)
 // ---------------------------------------------------------------------------
+//
+// model / effort 的来源策略（按 tool 区分，避免硬塞 ChatCCC 全局配置导致显示
+// 与实际不符）：
+//   - tool === "cursor"
+//       model：调用 cursor-adapter.getSessionInfo 取持久化的真实模型，
+//              未学习到时显示占位符 "—"
+//       effort：cursor-agent 没有 effort 概念，恒为 null（卡片渲染时隐藏该行）
+//   - tool === "claude"（默认）
+//       model：anthropicConfigDisplay(CLAUDE_MODEL)
+//       effort：anthropicConfigDisplay(CLAUDE_EFFORT)
+// ---------------------------------------------------------------------------
+
+/** 未知/未学习到时的 model 占位符（卡片可视提示，区别于"显示成 default"的旧 bug） */
+export const UNKNOWN_MODEL_PLACEHOLDER = "—";
 
 export interface SessionStatus {
   sessionId: string;
@@ -456,59 +527,95 @@ export interface SessionStatus {
   lastContextTokens: number;
   startTime: number;
   model: string;
-  effort: string;
+  /** null 表示该工具没有 effort 概念（如 Cursor），调用方应隐藏该行 */
+  effort: string | null;
   accumulatedLength: number;
 }
 
-export function getSessionStatus(chatId: string): SessionStatus | null {
+async function resolveModelEffort(
+  tool: string,
+  sessionId: string,
+): Promise<{ model: string; effort: string | null }> {
+  if (tool === "cursor") {
+    let model = UNKNOWN_MODEL_PLACEHOLDER;
+    try {
+      const adapter = getAdapterForTool(tool);
+      const info = await adapter.getSessionInfo(sessionId);
+      if (info?.model) model = info.model;
+    } catch {
+      // adapter 异常时降级为占位符（不阻塞 /status 卡片）
+    }
+    return { model, effort: null };
+  }
+  return {
+    model: anthropicConfigDisplay(CLAUDE_MODEL),
+    effort: anthropicConfigDisplay(CLAUDE_EFFORT),
+  };
+}
+
+export async function getSessionStatus(chatId: string): Promise<SessionStatus | null> {
   const info = sessionInfoMap.get(chatId);
   if (!info) return null;
 
   const active = chatSessionMap.get(chatId);
+  const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
+
   return {
     sessionId: info.sessionId,
     running: active !== undefined && !active.stopped,
     turnCount: info.turnCount,
     lastContextTokens: info.lastContextTokens,
     startTime: info.startTime,
-    model: anthropicConfigDisplay(info.model),
-    effort: anthropicConfigDisplay(info.effort),
+    model,
+    effort,
     accumulatedLength: active ? active.accumulatedContent.length + active.finalText.length : 0,
   };
 }
 
-export function getAllSessionsStatus(): Array<{
+export interface SessionsListEntry {
   chatId: string;
   sessionId: string;
   active: boolean;
   turnCount: number;
   startTime: number;
   model: string;
-  effort: string;
+  /** null 表示该工具没有 effort 概念（如 Cursor） */
+  effort: string | null;
   tool: string;
-}> {
-  const result: Array<{
-    chatId: string;
-    sessionId: string;
-    active: boolean;
-    turnCount: number;
-    startTime: number;
-    model: string;
-    effort: string;
-    tool: string;
-  }> = [];
-  for (const [chatId, info] of sessionInfoMap) {
-    const active = chatSessionMap.get(chatId);
-    result.push({
-      chatId,
-      sessionId: info.sessionId,
-      active: active !== undefined && !active.stopped,
-      turnCount: info.turnCount,
-      startTime: info.startTime,
-      model: info.model,
-      effort: info.effort,
-      tool: info.tool,
-    });
-  }
-  return result;
+}
+
+export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
+  const entries = Array.from(sessionInfoMap.entries());
+  // 并行解析每个 session 的 model/effort（cursor 涉及异步 store IO）
+  return Promise.all(
+    entries.map(async ([chatId, info]) => {
+      const active = chatSessionMap.get(chatId);
+      const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
+      return {
+        chatId,
+        sessionId: info.sessionId,
+        active: active !== undefined && !active.stopped,
+        turnCount: info.turnCount,
+        startTime: info.startTime,
+        model,
+        effort,
+        tool: info.tool,
+      };
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 测试辅助：注入自定义 adapter 到 adapterCache
+// ---------------------------------------------------------------------------
+// 仅供单测使用——下划线前缀表明非生产 API。让 session-status 的测试可以
+// 注入一个内存 store + adapter，以验证 cursor 分支按 tool 取真实 model。
+// ---------------------------------------------------------------------------
+
+export function _setAdapterForToolForTest(tool: string, adapter: ToolAdapter): void {
+  adapterCache.set(tool, adapter);
+}
+
+export function _clearAdapterCacheForTest(): void {
+  adapterCache.clear();
 }

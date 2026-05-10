@@ -210,10 +210,20 @@ describe("buildCdCard", () => {
     { name: "README.md", isDir: false },
   ];
 
-  it("returns valid JSON with correct schema", () => {
+  // 提取 v1 卡片中 `tag:"div"` 的 markdown content（飞书 v1 富文本写在 text.content）
+  const mdContents = (parsed: any): string[] =>
+    parsed.elements
+      .filter((e: any) => e.tag === "div" && e.text?.tag === "lark_md")
+      .map((e: any) => e.text.content);
+
+  it("uses v1 interactive card format (no schema field, elements at top level)", () => {
+    // 必须用 v1 格式发送，否则通过 /im/v1/messages?msg_type=interactive 端点
+    // 直接发会被飞书静默拒绝（schema 2.0 卡片必须先经 CardKit 创建）
     const card = buildCdCard("/home/project", entries, []);
     const parsed = JSON.parse(card);
-    expect(parsed.schema).toBe("2.0");
+    expect(parsed.schema).toBeUndefined();
+    expect(parsed.body).toBeUndefined();
+    expect(Array.isArray(parsed.elements)).toBe(true);
     expect(parsed.header.title.content).toBe("工作路径");
     expect(parsed.header.template).toBe("blue");
     expect(parsed.config.wide_screen_mode).toBe(true);
@@ -222,38 +232,34 @@ describe("buildCdCard", () => {
   it("shows current working directory in markdown", () => {
     const card = buildCdCard("/home/project", entries, []);
     const parsed = JSON.parse(card);
-    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
-    const cwdMd = mdElements.find((e: any) => e.content.includes("新会话默认工作路径"));
-    expect(cwdMd).toBeDefined();
-    expect(cwdMd.content).toContain("/home/project");
+    const cwdContent = mdContents(parsed).find((c) => c.includes("新会话默认工作路径"));
+    expect(cwdContent).toBeDefined();
+    expect(cwdContent).toContain("/home/project");
   });
 
   it("shows sessionCwd when provided", () => {
     const card = buildCdCard("/default", entries, [], "/session/path");
     const parsed = JSON.parse(card);
-    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
-    const sessionMd = mdElements.find((e: any) => e.content.includes("当前会话工作路径"));
-    expect(sessionMd).toBeDefined();
-    expect(sessionMd.content).toContain("/session/path");
+    const sessionContent = mdContents(parsed).find((c) => c.includes("当前会话工作路径"));
+    expect(sessionContent).toBeDefined();
+    expect(sessionContent).toContain("/session/path");
   });
 
   it("does not show sessionCwd when not provided", () => {
     const card = buildCdCard("/default", entries, []);
     const parsed = JSON.parse(card);
-    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
-    const sessionMd = mdElements.find((e: any) => e.content.includes("当前会话工作路径"));
-    expect(sessionMd).toBeUndefined();
+    const sessionContent = mdContents(parsed).find((c) => c.includes("当前会话工作路径"));
+    expect(sessionContent).toBeUndefined();
   });
 
   it("shows recent dirs section with buttons", () => {
     const recentDirs = ["/home/user/project1", "/home/user/project2"];
     const card = buildCdCard("/current", entries, recentDirs);
     const parsed = JSON.parse(card);
-    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
-    const recentMd = mdElements.find((e: any) => e.content.includes("最近使用过的路径"));
+    const recentMd = mdContents(parsed).find((c) => c.includes("最近使用过的路径"));
     expect(recentMd).toBeDefined();
 
-    const actionElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "action");
+    const actionElements: any[] = parsed.elements.filter((e: any) => e.tag === "action");
     expect(actionElements.length).toBeGreaterThanOrEqual(1);
     const recentAction = actionElements.find((e: any) =>
       e.actions.some((a: any) => a.value?.action === "cd")
@@ -268,8 +274,7 @@ describe("buildCdCard", () => {
   it("does not show recent dirs section when empty", () => {
     const card = buildCdCard("/current", entries, []);
     const parsed = JSON.parse(card);
-    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
-    const recentMd = mdElements.find((e: any) => e.content.includes("最近使用过的路径"));
+    const recentMd = mdContents(parsed).find((c) => c.includes("最近使用过的路径"));
     expect(recentMd).toBeUndefined();
   });
 
@@ -277,7 +282,7 @@ describe("buildCdCard", () => {
     const longPath = "/home/user/very/long/path/that/exceeds/thirty/six/chars";
     const card = buildCdCard("/current", entries, [longPath]);
     const parsed = JSON.parse(card);
-    const action: any = parsed.body.elements.find((e: any) => e.tag === "action");
+    const action: any = parsed.elements.find((e: any) => e.tag === "action");
     const btnText = action.actions[0].text.content;
     expect(btnText.startsWith("...")).toBe(true);
     expect(btnText.length).toBeLessThanOrEqual(36);
@@ -286,10 +291,9 @@ describe("buildCdCard", () => {
   it("shows directory listing", () => {
     const card = buildCdCard("/current", entries, []);
     const parsed = JSON.parse(card);
-    const mdElements: any[] = parsed.body.elements.filter((e: any) => e.tag === "markdown");
-    const listingMd = mdElements.find((e: any) => e.content.includes("📁 src/"));
-    expect(listingMd).toBeDefined();
-    expect(listingMd.content).toContain("📄 README.md");
+    const listingContent = mdContents(parsed).find((c) => c.includes("📁 src/"));
+    expect(listingContent).toBeDefined();
+    expect(listingContent).toContain("📄 README.md");
   });
 });
 

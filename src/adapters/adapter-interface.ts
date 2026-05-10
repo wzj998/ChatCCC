@@ -20,6 +20,23 @@ export interface UnifiedTextBlock {
   text: string;
 }
 
+/**
+ * 适配器明确告知"这是一段完整的最终文本"（覆盖语义，而非追加）。
+ *
+ * 背景：Cursor CLI 在 `--stream-partial-output` 模式下，先发若干条 partial assistant
+ * 消息（每条只是 delta 增量），流结束时再发一条 final assistant 消息（完整文本）。
+ * 若把 final 也按 `text` 追加到 finalText，最终会出现"partial 累加 + final 完整"
+ * 共两段重复内容。因此 cursor-adapter 把 final 这条标记为 text_final，
+ * 由 session.ts 累积到独立字段 finalCompleteText（覆盖语义），最终发送时
+ * 由 pickFinalReply 在两者之间挑选。
+ *
+ * 对没有 partial/final 双轨的适配器（如 Claude SDK），永远不会 emit 此类型。
+ */
+export interface UnifiedTextFinalBlock {
+  type: "text_final";
+  text: string;
+}
+
 export interface UnifiedToolUseBlock {
   type: "tool_use";
   name: string;
@@ -52,6 +69,7 @@ export interface UnifiedCompactBoundaryBlock {
 export type UnifiedBlock =
   | UnifiedThinkingBlock
   | UnifiedTextBlock
+  | UnifiedTextFinalBlock
   | UnifiedToolUseBlock
   | UnifiedToolResultBlock
   | UnifiedRedactedThinkingBlock
@@ -84,6 +102,13 @@ export interface SessionInfo {
   cwd?: string;
   summary?: string;
   lastModified?: number;
+  /**
+   * 会话实际使用的模型展示名（如 Cursor 的 `Composer 2 Fast`）。
+   * - Cursor adapter：从 cursor-agent system/init 事件学习并持久化到 store
+   * - Claude adapter：留空（model 由 ChatCCC 配置 `CLAUDE_MODEL` 决定，不从 SDK 取）
+   * 上层 /status、/sessions 渲染时按 tool 决定显示哪一来源。
+   */
+  model?: string;
 }
 
 // ---------------------------------------------------------------------------

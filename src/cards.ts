@@ -119,7 +119,7 @@ export function buildHelpCard(userText: string): string {
         { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
-        { text: "查看/切换工作路径及最近使用（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
+        { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
       ]),
     ],
   });
@@ -162,6 +162,15 @@ export function buildCdContent(
 }
 
 // 工作路径卡片（/cd 无参数时使用，含最近使用路径按钮）
+//
+// 必须使用 v1 卡片格式（无 schema 字段、elements 放顶层）。原因：
+// 此卡片通过 `/im/v1/messages?msg_type=interactive` 端点直接发出，content
+// 字段就是卡片 JSON。该端点不接受 schema 2.0 的原始 JSON 作为 content
+// （schema 2.0 卡片必须先通过 CardKit /cardkit/v1/cards 创建得到 card_id，
+// 再以 `{type:"card", data:{card_id}}` 包装发出，参见 sendCardKitMessage）。
+// 之前用过 schema 2.0 + body.elements 的结构，飞书会静默拒绝该消息，
+// 导致 /cd 无任何回复——故此处与 buildSessionsCard/buildStatusCard 保持
+// 同一 v1 结构。
 export function buildCdCard(
   dirPath: string,
   entries: { name: string; isDir: boolean }[],
@@ -173,24 +182,28 @@ export function buildCdCard(
   const overflow = entries.length > maxFiles ? `\n...（共 ${entries.length} 个条目，仅显示前 ${maxFiles} 个）` : "";
   const listing = display.map(e => e.isDir ? `📁 ${e.name}/` : `📄 ${e.name}`).join("\n");
 
-  const currentLine = sessionCwd
-    ? `**当前会话工作路径:** \`${sessionCwd}\``
-    : "";
-
   const elements: object[] = [];
 
-  if (currentLine) {
-    elements.push({ tag: "markdown", content: currentLine });
+  if (sessionCwd) {
+    elements.push({
+      tag: "div",
+      text: { tag: "lark_md", content: `**当前会话工作路径:** \`${sessionCwd}\`` },
+    });
   }
-  elements.push({ tag: "markdown", content: `**新会话默认工作路径:** \`${dirPath}\`` });
+  elements.push({
+    tag: "div",
+    text: { tag: "lark_md", content: `**新会话默认工作路径:** \`${dirPath}\`` },
+  });
 
   if (recentDirs.length > 0) {
     elements.push({ tag: "hr" });
-    elements.push({ tag: "markdown", content: "**最近使用过的路径（点击切换）:**" });
+    elements.push({
+      tag: "div",
+      text: { tag: "lark_md", content: "**最近使用过的路径（点击切换）:**" },
+    });
     elements.push({
       tag: "action",
       actions: recentDirs.map(d => {
-        const name = d.split(/[\\/]/).filter(Boolean).pop() ?? d;
         const label = d.length > 36 ? `...${d.slice(-33)}` : d;
         return {
           tag: "button",
@@ -204,25 +217,24 @@ export function buildCdCard(
 
   elements.push({ tag: "hr" });
   elements.push({
-    tag: "markdown",
-    content: [
-      `**目录内容** (最多 ${maxFiles} 个):`,
-      listing,
-      overflow,
-    ].join("\n"),
+    tag: "div",
+    text: {
+      tag: "lark_md",
+      content: [
+        `**目录内容** (最多 ${maxFiles} 个):`,
+        listing,
+        overflow,
+      ].join("\n"),
+    },
   });
 
   return JSON.stringify({
-    schema: "2.0",
     config: { wide_screen_mode: true },
     header: {
       template: "blue",
       title: { tag: "plain_text", content: "工作路径" },
     },
-    body: {
-      direction: "vertical",
-      elements,
-    },
+    elements,
   });
 }
 

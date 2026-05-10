@@ -62,6 +62,59 @@ export const CLAUDE_MODEL = process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "defa
 
 export const CLAUDE_EFFORT = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "default";
 
+// ---------------------------------------------------------------------------
+// /git 超时配置（CHATCCC_GIT_TIMEOUT_SECONDS）
+// ---------------------------------------------------------------------------
+
+/** /git 命令默认超时秒数（用户未配置时使用） */
+export const DEFAULT_GIT_TIMEOUT_SECONDS = 180;
+/** /git 超时允许的下限/上限（防止 0、负数、过大值导致行为异常） */
+export const MIN_GIT_TIMEOUT_SECONDS = 1;
+export const MAX_GIT_TIMEOUT_SECONDS = 3600; // 1 小时
+
+export interface ParsedGitTimeout {
+  /** 实际使用的超时秒数（无效时回退为 default） */
+  seconds: number;
+  /** 用户提供的原始字符串是否为合法整数秒（true 表示采纳了用户值或未提供） */
+  valid: boolean;
+  /** 用户原始输入；未设置时为 undefined */
+  raw?: string;
+  /** 是否使用了内置默认值（即用户未提供有效值） */
+  usingDefault: boolean;
+}
+
+/**
+ * 解析 CHATCCC_GIT_TIMEOUT_SECONDS 字符串为有效秒数。
+ * - 未设置 / 空 → 使用默认值，valid=true、usingDefault=true
+ * - 有效整数且在 [MIN, MAX] 区间 → 使用用户值，valid=true、usingDefault=false
+ * - 非整数 / 越界 / NaN → 使用默认值，valid=false、usingDefault=true（同时保留原始字符串供报错）
+ */
+export function parseGitTimeoutSeconds(
+  raw: string | undefined,
+  defaultSeconds = DEFAULT_GIT_TIMEOUT_SECONDS,
+): ParsedGitTimeout {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return { seconds: defaultSeconds, valid: true, usingDefault: true };
+  }
+  const n = Number(trimmed);
+  if (
+    !Number.isFinite(n) ||
+    !Number.isInteger(n) ||
+    n < MIN_GIT_TIMEOUT_SECONDS ||
+    n > MAX_GIT_TIMEOUT_SECONDS
+  ) {
+    return { seconds: defaultSeconds, valid: false, raw: trimmed, usingDefault: true };
+  }
+  return { seconds: n, valid: true, raw: trimmed, usingDefault: false };
+}
+
+const gitTimeoutParsed = parseGitTimeoutSeconds(process.env.CHATCCC_GIT_TIMEOUT_SECONDS);
+/** /git 命令实际使用的超时秒数 */
+export const GIT_TIMEOUT_SECONDS = gitTimeoutParsed.seconds;
+/** /git 命令实际使用的超时毫秒数（runGitCommand 直接使用） */
+export const GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
+
 /** 探测 cursor-agent 安装路径（优先环境变量，其次 LocalAppData，最后默认 agent） */
 function detectCursorAgent(): string {
   if (process.env.CHATCCC_CURSOR_COMMAND?.trim()) return process.env.CHATCCC_CURSOR_COMMAND.trim();
@@ -73,8 +126,21 @@ function detectCursorAgent(): string {
   return "agent";
 }
 export const CURSOR_AGENT_COMMAND = detectCursorAgent();
-/** Cursor agent 参数：-p 非交互模式，stream-json 流式 JSONL 输出 */
-export const CURSOR_AGENT_ARGS = (process.env.CHATCCC_CURSOR_ARGS?.trim() || "-p --output-format stream-json --stream-partial-output").split(/\s+/).filter(Boolean);
+
+function resolveCursorAgentArgs(): string[] {
+  const custom = process.env.CHATCCC_CURSOR_ARGS?.trim();
+  if (custom) return custom.split(/\s+/).filter(Boolean);
+
+  let args = "-p --force --output-format stream-json --stream-partial-output";
+  const model = process.env.CHATCCC_CURSOR_MODEL?.trim();
+  if (model && model !== "default") {
+    args += ` --model ${model}`;
+  }
+  return args.split(/\s+/).filter(Boolean);
+}
+
+/** Cursor agent 参数：-p 非交互模式，--force 强制允许命令（yolo），stream-json 流式 JSONL 输出 */
+export const CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
 
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
 // 该路径仅影响通过 /new 新建的会话，不影响已有会话的 resume。
@@ -224,6 +290,30 @@ export function reportEnvironmentVariableReadout(): void {
     console.log(`  [默认] [可选] CHATCCC_ANTHROPIC_EFFORT`);
     console.log(
       `         思考深度: 未设置 → ${anthropicConfigDisplay(CLAUDE_EFFORT)}（不区分大小写的 default 时不传入 SDK）`
+    );
+  }
+
+  const rawGitTimeout = process.env.CHATCCC_GIT_TIMEOUT_SECONDS?.trim();
+  if (!rawGitTimeout) {
+    console.log(`  [默认] [可选] CHATCCC_GIT_TIMEOUT_SECONDS`);
+    console.log(
+      `         /git 命令超时: 未设置 → 使用内置默认 ${DEFAULT_GIT_TIMEOUT_SECONDS}s`
+    );
+  } else if (!gitTimeoutParsed.valid) {
+    row(
+      "/git 命令超时",
+      "CHATCCC_GIT_TIMEOUT_SECONDS",
+      "可选",
+      false,
+      `值无效 "${rawGitTimeout}"，需为 ${MIN_GIT_TIMEOUT_SECONDS}–${MAX_GIT_TIMEOUT_SECONDS} 的整数秒；已回退为默认 ${DEFAULT_GIT_TIMEOUT_SECONDS}s`,
+    );
+  } else {
+    row(
+      "/git 命令超时",
+      "CHATCCC_GIT_TIMEOUT_SECONDS",
+      "可选",
+      true,
+      `已读入 → ${GIT_TIMEOUT_SECONDS}s`,
     );
   }
 

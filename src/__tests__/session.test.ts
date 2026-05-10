@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   chatSessionMap,
   sessionInfoMap,
@@ -8,9 +8,13 @@ import {
   getSessionStatus,
   getAllSessionsStatus,
   accumulateBlockContent,
+  pickFinalReply,
+  UNKNOWN_MODEL_PLACEHOLDER,
+  _setAdapterForToolForTest,
+  _clearAdapterCacheForTest,
 } from "../session.ts";
 import type { AccumulatorState } from "../session.ts";
-import type { UnifiedBlock } from "../adapters/adapter-interface.ts";
+import type { ToolAdapter, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
 
 // Helper to create a mock active session entry
 function mockActiveSession(chatId: string, overrides: Partial<{
@@ -37,16 +41,30 @@ function mockSessionInfo(chatId: string, overrides: Partial<{
   turnCount: number;
   lastContextTokens: number;
   startTime: number;
+  tool: string;
 }> = {}) {
   sessionInfoMap.set(chatId, {
     sessionId: overrides.sessionId ?? "test-session-id",
     turnCount: overrides.turnCount ?? 3,
     lastContextTokens: overrides.lastContextTokens ?? 50000,
     startTime: overrides.startTime ?? Date.now(),
-    model: "Claude Opus 4.7",
-    effort: "high",
-    tool: "claude",
+    tool: overrides.tool ?? "claude",
   });
+}
+
+/**
+ * 简易 mock adapter：getSessionInfo 返回固定 SessionInfo，其他方法不实现
+ * （仅 /status、/sessions 路径会触发 getSessionInfo，无需完整接口）。
+ */
+function mockAdapter(getInfo: (sid: string) => SessionInfo | undefined): ToolAdapter {
+  return {
+    displayName: "MockTool",
+    sessionDescPrefix: "Mock Session:",
+    createSession: async () => ({ sessionId: "" }),
+    prompt: async function* () {},
+    getSessionInfo: async (sid) => getInfo(sid),
+    closeSession: async () => {},
+  };
 }
 
 describe("resetState", () => {
@@ -58,7 +76,7 @@ describe("resetState", () => {
     });
     sessionInfoMap.set("chat1", {
       sessionId: "s1", turnCount: 1, lastContextTokens: 0,
-      startTime: 0, model: "", effort: "", tool: "claude",
+      startTime: 0, tool: "claude",
     });
     processedMessages.add("msg1");
 
@@ -76,13 +94,17 @@ describe("getSessionStatus", () => {
     sessionInfoMap.clear();
   });
 
-  it("returns null for unknown chatId", () => {
-    expect(getSessionStatus("nonexistent")).toBeNull();
+  afterEach(() => {
+    _clearAdapterCacheForTest();
   });
 
-  it("returns status for idle session (info exists, no active session)", () => {
+  it("returns null for unknown chatId", async () => {
+    await expect(getSessionStatus("nonexistent")).resolves.toBeNull();
+  });
+
+  it("returns status for idle session (info exists, no active session)", async () => {
     mockSessionInfo("chat1");
-    const status = getSessionStatus("chat1");
+    const status = await getSessionStatus("chat1");
     expect(status).not.toBeNull();
     expect(status!.sessionId).toBe("test-session-id");
     expect(status!.running).toBe(false);
@@ -90,26 +112,86 @@ describe("getSessionStatus", () => {
     expect(status!.accumulatedLength).toBe(0);
   });
 
-  it("returns running=true for active session", () => {
+  it("returns running=true for active session", async () => {
     mockSessionInfo("chat1");
     mockActiveSession("chat1", { accumulatedContent: "thinking...", finalText: "reply" });
-    const status = getSessionStatus("chat1");
+    const status = await getSessionStatus("chat1");
     expect(status!.running).toBe(true);
     expect(status!.accumulatedLength).toBe(16); // "thinking..."(11) + "reply"(5)
   });
 
-  it("returns running=false for stopped session", () => {
+  it("returns running=false for stopped session", async () => {
     mockSessionInfo("chat1");
     mockActiveSession("chat1", { stopped: true });
-    const status = getSessionStatus("chat1");
+    const status = await getSessionStatus("chat1");
     expect(status!.running).toBe(false);
   });
 
-  it("returns correct turnCount and other info fields", () => {
+  it("returns correct turnCount and other info fields", async () => {
     mockSessionInfo("chat1", { turnCount: 7, lastContextTokens: 100000 });
-    const status = getSessionStatus("chat1");
+    const status = await getSessionStatus("chat1");
     expect(status!.turnCount).toBe(7);
     expect(status!.lastContextTokens).toBe(100000);
+  });
+
+  // -------------------------------------------------------------------------
+  // model/effort 来源：按 tool 分支（核心契约——决定 /status 显示是否真实）
+  // -------------------------------------------------------------------------
+
+  it("Claude 会话：effort 非 null（始终显示该行）；model 来自全局配置", async () => {
+    mockSessionInfo("chat-claude", { tool: "claude" });
+    const status = await getSessionStatus("chat-claude");
+    expect(status!.effort).not.toBeNull();
+    // model 必为非空字符串（默认 'default' 或环境变量值）；不应是占位符
+    expect(typeof status!.model).toBe("string");
+    expect(status!.model.length).toBeGreaterThan(0);
+  });
+
+  it("Cursor 会话：effort 恒为 null（卡片渲染时隐藏该行，避免显示无意义的 effort）", async () => {
+    mockSessionInfo("chat-cursor", { sessionId: "sid-cur", tool: "cursor" });
+    _setAdapterForToolForTest(
+      "cursor",
+      mockAdapter(() => ({ sessionId: "sid-cur", model: "Composer 2 Fast" })),
+    );
+    const status = await getSessionStatus("chat-cursor");
+    expect(status!.effort).toBeNull();
+  });
+
+  it("Cursor 会话：model 来自 adapter.getSessionInfo（真实模型，不是 ChatCCC 配置）", async () => {
+    mockSessionInfo("chat-cursor", { sessionId: "sid-cur", tool: "cursor" });
+    _setAdapterForToolForTest(
+      "cursor",
+      mockAdapter((sid) =>
+        sid === "sid-cur"
+          ? { sessionId: sid, cwd: "/tmp", model: "Composer 2 Fast" }
+          : undefined,
+      ),
+    );
+    const status = await getSessionStatus("chat-cursor");
+    expect(status!.model).toBe("Composer 2 Fast");
+  });
+
+  it("Cursor 会话：adapter 没返回 model 时使用占位符（区别于硬塞 'default'）", async () => {
+    mockSessionInfo("chat-cursor", { sessionId: "sid-cur", tool: "cursor" });
+    _setAdapterForToolForTest(
+      "cursor",
+      mockAdapter(() => ({ sessionId: "sid-cur" /* 无 model */ })),
+    );
+    const status = await getSessionStatus("chat-cursor");
+    expect(status!.model).toBe(UNKNOWN_MODEL_PLACEHOLDER);
+  });
+
+  it("Cursor 会话：adapter.getSessionInfo 抛错时降级为占位符（不阻塞 /status）", async () => {
+    mockSessionInfo("chat-cursor", { sessionId: "sid-cur", tool: "cursor" });
+    _setAdapterForToolForTest(
+      "cursor",
+      mockAdapter(() => {
+        throw new Error("simulated adapter failure");
+      }),
+    );
+    const status = await getSessionStatus("chat-cursor");
+    expect(status!.model).toBe(UNKNOWN_MODEL_PLACEHOLDER);
+    expect(status!.effort).toBeNull();
   });
 });
 
@@ -119,25 +201,52 @@ describe("getAllSessionsStatus", () => {
     sessionInfoMap.clear();
   });
 
-  it("returns empty array when no sessions", () => {
-    expect(getAllSessionsStatus()).toEqual([]);
+  afterEach(() => {
+    _clearAdapterCacheForTest();
   });
 
-  it("returns statuses for all recorded sessions", () => {
+  it("returns empty array when no sessions", async () => {
+    await expect(getAllSessionsStatus()).resolves.toEqual([]);
+  });
+
+  it("returns statuses for all recorded sessions", async () => {
     mockSessionInfo("chat1", { sessionId: "s1" });
     mockSessionInfo("chat2", { sessionId: "s2" });
     mockActiveSession("chat1");
-    const result = getAllSessionsStatus();
+    const result = await getAllSessionsStatus();
     expect(result).toHaveLength(2);
     expect(result.find(r => r.chatId === "chat1")!.active).toBe(true);
     expect(result.find(r => r.chatId === "chat2")!.active).toBe(false);
   });
 
-  it("marks stopped sessions as not active", () => {
+  it("marks stopped sessions as not active", async () => {
     mockSessionInfo("chat1");
     mockActiveSession("chat1", { stopped: true });
-    const result = getAllSessionsStatus();
+    const result = await getAllSessionsStatus();
     expect(result[0].active).toBe(false);
+  });
+
+  it("混合 claude + cursor 会话：各自取自己来源的 model/effort", async () => {
+    mockSessionInfo("chat-c", { sessionId: "sid-c", tool: "claude" });
+    mockSessionInfo("chat-x", { sessionId: "sid-x", tool: "cursor" });
+    _setAdapterForToolForTest(
+      "cursor",
+      mockAdapter((sid) =>
+        sid === "sid-x"
+          ? { sessionId: sid, cwd: "/tmp", model: "Composer 2 Fast" }
+          : undefined,
+      ),
+    );
+
+    const result = await getAllSessionsStatus();
+    const claude = result.find((r) => r.tool === "claude")!;
+    const cursor = result.find((r) => r.tool === "cursor")!;
+
+    expect(claude.effort).not.toBeNull();
+    expect(claude.model.length).toBeGreaterThan(0);
+
+    expect(cursor.effort).toBeNull();
+    expect(cursor.model).toBe("Composer 2 Fast");
   });
 });
 
@@ -159,7 +268,7 @@ describe("processedMessages dedup", () => {
 // ---------------------------------------------------------------------------
 
 function freshState(): AccumulatorState {
-  return { accumulatedContent: "", finalText: "", chunkCount: 0 };
+  return { accumulatedContent: "", finalText: "", finalCompleteText: "", chunkCount: 0 };
 }
 
 describe("accumulateBlockContent", () => {
@@ -293,5 +402,75 @@ describe("accumulateBlockContent", () => {
     expect(s.accumulatedContent).toContain("found 3 matches");
     expect(s.finalText).toBe("I found the results.");
     expect(s.chunkCount).toBe(1); // Only thinking increments chunkCount
+  });
+
+  // -------------------------------------------------------------------------
+  // text_final：来自 Cursor CLI 的"完整最终文本"消息
+  // 行为：覆盖（不是追加）finalCompleteText，避免与 partial 累加重复
+  // -------------------------------------------------------------------------
+
+  it("accumulates text_final into finalCompleteText (覆盖语义)", () => {
+    const s = freshState();
+    accumulateBlockContent({ type: "text_final", text: "完整最终文本" } as UnifiedBlock, s);
+    expect(s.finalCompleteText).toBe("完整最终文本");
+    expect(s.finalText).toBe("");
+  });
+
+  it("text_final 多次到达时以最新一次为准（覆盖而非追加）", () => {
+    const s = freshState();
+    accumulateBlockContent({ type: "text_final", text: "first" } as UnifiedBlock, s);
+    accumulateBlockContent({ type: "text_final", text: "second" } as UnifiedBlock, s);
+    expect(s.finalCompleteText).toBe("second");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickFinalReply — 在 partial 累加 vs final 完整文本之间挑选最终回复
+// ---------------------------------------------------------------------------
+
+describe("pickFinalReply", () => {
+  // 新规则：有 finalCompleteText 永远优先（来自 cursor result.result，官方权威）；
+  // 无则回退到 partial 累加 finalText。
+  // 不再做长度比较——因为带 buffered flush 重复时 partial 可能"虚高"，长度比较会选错。
+
+  it("finalCompleteText 非空时永远优先（即便等长）", () => {
+    const reply = pickFinalReply({
+      accumulatedContent: "",
+      finalText: "你好世界",
+      finalCompleteText: "你好世界",
+      chunkCount: 0,
+    });
+    expect(reply).toBe("你好世界");
+  });
+
+  it("finalCompleteText 非空时优先（即便 partial 累加更长——可能被 buffered flush 污染）", () => {
+    const reply = pickFinalReply({
+      accumulatedContent: "",
+      finalText: "你好世界你好世界", // 工具调用前 buffered flush 让 partial 累加翻倍
+      finalCompleteText: "你好世界",
+      chunkCount: 0,
+    });
+    expect(reply).toBe("你好世界");
+  });
+
+  it("无 finalCompleteText 时回退到 partial 累加 (finalText)", () => {
+    const reply = pickFinalReply({
+      accumulatedContent: "",
+      finalText: "仅有 partial 累加",
+      finalCompleteText: "",
+      chunkCount: 0,
+    });
+    expect(reply).toBe("仅有 partial 累加");
+  });
+
+  it("两者都为空时返回空串", () => {
+    expect(
+      pickFinalReply({
+        accumulatedContent: "",
+        finalText: "",
+        finalCompleteText: "",
+        chunkCount: 0,
+      }),
+    ).toBe("");
   });
 });
