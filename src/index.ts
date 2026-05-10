@@ -63,6 +63,8 @@ import {
   updateCardMessage,
   updateChatInfo,
   sendRestartCard,
+  verifyAllPermissions,
+  reportPermissionResults,
 } from "./feishu-api.ts";
 import { buildHelpCard, buildStatusCard, buildThinkingCardV2, buildCdContent, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
@@ -281,9 +283,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       return;
     }
 
+    const cwd = await getDefaultCwd();
     await sendCardReply(
       freshToken, newChatId, "Claude Session Ready",
-      `群聊已创建，这是你的 Claude 会话群。\n\n**Session ID:** ${sessionId}\n\n直接在这里发消息即可与 Claude 对话。`,
+      `群聊已创建，这是你的 Claude 会话群。\n\n**Session ID:** ${sessionId}\n**工作目录:** \`${cwd}\`\n\n直接在这里发消息即可与 Claude 对话。\n\n发送 **/sessions** 查看所有会话状态。`,
       "green"
     );
 
@@ -464,14 +467,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`\n[启动 1/6] 单实例：按 PID 文件清理旧 ChatCCC 进程`);
+  console.log(`\n[启动 1/7] 单实例：按 PID 文件清理旧 ChatCCC 进程`);
   console.log(`  PID 文件: ${PID_FILE}`);
   appendStartupTrace("main: before ensureSingleInstance", { PID_FILE, CHATCCC_PORT });
   ensureSingleInstance(PID_FILE);
   appendStartupTrace("main: after ensureSingleInstance");
   console.log("  完成。\n");
 
-  console.log(`[启动 2/6] 环境与凭证检查`);
+  console.log(`[启动 2/7] 环境与凭证检查`);
   reportEnvironmentVariableReadout();
   console.log(`  工作目录: ${process.cwd()}`);
   console.log(`  包根目录: ${PROJECT_ROOT}`);
@@ -485,7 +488,7 @@ async function main(): Promise<void> {
   console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
   appendStartupTrace("main: feishu credentials ok", { appIdMask: maskAppId(APP_ID) });
 
-  console.log(`[启动 3/6] 启动本地 WebSocket 中继（ws://127.0.0.1:${CHATCCC_PORT}）…`);
+  console.log(`[启动 3/7] 启动本地 WebSocket 中继（ws://127.0.0.1:${CHATCCC_PORT}）…`);
   appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
   freeRelayListenPort(CHATCCC_PORT);
   appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT });
@@ -501,7 +504,7 @@ async function main(): Promise<void> {
   console.log(`  In a Claude session group, send any message to resume & prompt.`);
   console.log(`${"=".repeat(60)}`);
 
-  console.log(`\n[启动 4/6] 向飞书开放平台申请 tenant_access_token …`);
+  console.log(`\n[启动 4/7] 向飞书开放平台申请 tenant_access_token …`);
   let token: string;
   try {
     token = await getTenantAccessToken();
@@ -518,6 +521,23 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`  完成。当前 App ID 摘要: ${maskAppId(APP_ID)}\n`);
+
+  console.log(`\n[启动 5/7] 验证飞书应用权限（非破坏性探针）…`);
+  const permResults = await verifyAllPermissions(token);
+  const hasFailed = reportPermissionResults(permResults, (msg) => {
+    console.log(msg);
+  });
+  if (hasFailed) {
+    appendStartupTrace("main: permissions check failed", {
+      failed: permResults.filter((r) => !r.ok).map((r) => r.scope).join(", "),
+    });
+    printServiceDidNotStart(
+      `飞书权限不足: ${permResults.filter((r) => !r.ok).map((r) => r.scope).join(", ")}`
+    );
+    process.exit(1);
+  }
+  appendStartupTrace("main: permissions check ok");
+  console.log(`  完成。所有必需权限已验证通过。\n`);
 
   console.log(`[${ts()}] [AUTH] Token obtained`);
 
@@ -613,14 +633,14 @@ async function main(): Promise<void> {
   });
 
   if (USE_LOCAL) {
-    console.log(`\n[启动 5/6] 本地区 relay 模式：正在连接 ${LOCAL_RELAY_URL} …`);
+    console.log(`\n[启动 6/7] 本地区 relay 模式：正在连接 ${LOCAL_RELAY_URL} …`);
     console.log("  若失败：请先在 SDK 模式下启动主进程，或确认本机中继已在该地址监听。");
     let localRelayOpened = false;
     const ws = new WebSocket(LOCAL_RELAY_URL);
     ws.on("open", () => {
       localRelayOpened = true;
       console.log("[WS] Connected to local relay");
-      console.log("[启动 6/6] 已连接本地中继，可接收转发事件。\n");
+      console.log("[启动 7/7] 已连接本地中继，可接收转发事件。\n");
       printServiceRunningHint("local");
     });
     ws.on("message", (raw: Buffer) => {
@@ -648,7 +668,7 @@ async function main(): Promise<void> {
     ws.on("close", () => { console.log("[WS] Local relay disconnected"); process.exit(0); });
     ws.on("error", (err: Error) => {
       if (!localRelayOpened) {
-        console.error(`[启动 5/6] 失败：无法连接本地中继。`);
+        console.error(`[启动 6/7] 失败：无法连接本地中继。`);
         console.error(`  ${err.message}`);
         console.error(`  目标: ${LOCAL_RELAY_URL}`);
         printServiceDidNotStart(`无法连接本地中继 ${LOCAL_RELAY_URL}`);
@@ -666,7 +686,7 @@ async function main(): Promise<void> {
       onReconnected: () => resetState(),
     });
 
-    console.log(`\n[启动 5/6] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
+    console.log(`\n[启动 6/7] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
     try {
       await wsClient.start({ eventDispatcher });
     } catch (err) {
@@ -678,7 +698,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log("[WS] Feishu WebSocket connected (SDK)");
-    console.log("[启动 6/6] 服务已就绪，等待飞书消息（群聊 / 卡片回调）。\n");
+    console.log("[启动 7/7] 服务已就绪，等待飞书消息（群聊 / 卡片回调）。\n");
     printServiceRunningHint("sdk");
 
     sendRestartCard(token).catch((err) =>
