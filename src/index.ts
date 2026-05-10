@@ -22,6 +22,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { readdir, stat } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
 
@@ -182,6 +183,18 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
   if (text === "/cd" || text.startsWith("/cd ")) {
     const cdToken = await getTenantAccessToken();
     const currentDir = await getDefaultCwd();
+
+    // 获取当前会话的实际工作路径（若在会话群内）
+    let sessionCwd: string | undefined;
+    try {
+      const chatInfo = await getChatInfo(cdToken, chatId);
+      const sid = extractSessionId(chatInfo.description);
+      if (sid) {
+        const info = await getSessionInfo(sid);
+        sessionCwd = info?.cwd;
+      }
+    } catch { /* 非会话群或获取失败，不显示 */ }
+
     const arg = text.slice(3).trim(); // everything after "/cd" (may be empty)
 
     // Resolve target directory
@@ -234,7 +247,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       return a.name.localeCompare(b.name);
     });
 
-    const content = buildCdContent(targetDir, withStats, isUpdate);
+    const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
     await sendCardReply(cdToken, chatId, "新会话工作路径", content, "blue");
     return;
   }

@@ -126,17 +126,24 @@ export function buildCdContent(
   dirPath: string,
   entries: { name: string; isDir: boolean }[],
   isUpdate: boolean,
+  currentCwd?: string,
   maxFiles = 100
 ): string {
   const display = entries.slice(0, maxFiles);
   const overflow = entries.length > maxFiles ? `\n...（共 ${entries.length} 个条目，仅显示前 ${maxFiles} 个）` : "";
   const listing = display.map(e => e.isDir ? `📁 ${e.name}/` : `📄 ${e.name}`).join("\n");
 
+  const currentLine = currentCwd
+    ? `**当前会话工作路径:** \`${currentCwd}\``
+    : "";
+
   const statusLine = isUpdate
-    ? `**新会话工作路径已切换至:** \`${dirPath}\``
+    ? `**新会话默认工作路径（已切换）:** \`${dirPath}\``
     : `**新会话默认工作路径:** \`${dirPath}\``;
 
-  return [
+  const lines: string[] = [];
+  if (currentLine) lines.push(currentLine, "");
+  lines.push(
     statusLine,
     ``,
     `此路径持久化在配置文件中，仅影响**新建会话**的工作路径。`,
@@ -145,7 +152,9 @@ export function buildCdContent(
     `**目录内容** (最多 ${maxFiles} 个):`,
     listing,
     overflow,
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 // 所有会话列表卡片

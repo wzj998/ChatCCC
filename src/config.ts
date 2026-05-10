@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -65,7 +66,7 @@ export const CLAUDE_EFFORT = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "de
 // 该路径仅影响通过 /new 新建的 Claude 会话，不影响已有会话的 resume。
 export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, ".claude", "working_dir.txt");
 
-/** 读取 /cd 设置的默认工作路径。若文件不存在或路径已失效，回退到 PROJECT_ROOT。 */
+/** 读取 /cd 设置的默认工作路径。若文件不存在或路径已失效，回退到用户主目录。 */
 export async function getDefaultCwd(): Promise<string> {
   try {
     const content = await readFile(DEFAULT_CWD_FILE, "utf-8");
@@ -77,7 +78,9 @@ export async function getDefaultCwd(): Promise<string> {
       } catch { /* path gone, fall through */ }
     }
   } catch { /* file doesn't exist yet */ }
-  return PROJECT_ROOT;
+  // 用户未通过 /cd 设置过工作路径时，回退到操作系统用户主目录
+  // Windows: C:\Users\<用户名>   Linux: /home/<用户名>
+  return homedir();
 }
 
 /** 设置新建会话的默认工作路径（由 /cd 命令调用） */
