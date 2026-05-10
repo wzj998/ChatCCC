@@ -1,0 +1,13 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"F:\\Users\\weizhangjian\\feishuclauderprivate","session_id":"45f15c89-d987-40da-9657-863467eb50d5","model":"Composer 2 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"'刚才你算的是什么题?'"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"你上"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927636}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"一条"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927639}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"问的是 **"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927640}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"3+"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927641}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4=?"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927641}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"**（把 "}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927641}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"3 和"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927641}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" 4 相加"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927642}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"）。"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5","timestamp_ms":1778411927642}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"你上一条问的是 **3+4=?**（把 3 和 4 相加）。"}]},"session_id":"45f15c89-d987-40da-9657-863467eb50d5"}
+{"type":"result","subtype":"success","duration_ms":5697,"duration_api_ms":5697,"is_error":false,"result":"你上一条问的是 **3+4=?**（把 3 和 4 相加）。","session_id":"45f15c89-d987-40da-9657-863467eb50d5","request_id":"35f26356-14e4-42bb-a081-beadb371db5c","usage":{"inputTokens":49,"outputTokens":82,"cacheReadTokens":10208,"cacheWriteTokens":0}}

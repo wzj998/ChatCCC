@@ -13,7 +13,7 @@
  * session ID, resumes the session via SDK, sends the user's text, and
  * streams the response to the session's jsonl file.
  *
- * Buttons: thinking cards have a 停止 button; help messages have /new and /restart buttons.
+ * Buttons: progress cards have a 停止 button; help messages have /new and /restart buttons.
  *
  * Usage:
  *   npm run dev
@@ -67,7 +67,7 @@ import {
   verifyAllPermissions,
   reportPermissionResults,
 } from "./feishu-api.ts";
-import { buildHelpCard, buildStatusCard, buildThinkingCardV2, buildCdContent, buildSessionsCard } from "./cards.ts";
+import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
 import {
   MAX_PROCESSED,
@@ -420,9 +420,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
             await new Promise(r => setTimeout(r, 20));
           }
           const cardId = existing.cardId;
-          const thinking = existing.accumulatedThinking;
-          const interruptedCard = buildThinkingCardV2(
-            thinking || "新问题已提交，当前回复已中断。",
+          const currentContent = existing.accumulatedContent;
+          const interruptedCard = buildProgressCard(
+            currentContent || "新问题已提交，当前回复已中断。",
             { showStop: false, headerTitle: "已中断", headerTemplate: "yellow" }
           );
           let nextSeq = existing.sequence + 1;

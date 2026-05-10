@@ -31,6 +31,7 @@ import {
   setupFileLogging,
   ensureSingleInstance,
   createRelayServer,
+  freeRelayListenPort,
 } from "../src/shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -44,8 +45,8 @@ const PID_FILE = join(PROJECT_ROOT, ".claude", "runtime.pid");
 const logDir = join(__dirname, "logs");
 setupFileLogging(logDir, "permission-check");
 
-const APP_ID: string = process.env.FEISHU_CLAUDER_APP_ID ?? "";
-const APP_SECRET: string = process.env.FEISHU_CLAUDER_APP_SECRET ?? "";
+const APP_ID: string = process.env.CHATCCC_APP_ID ?? "";
+const APP_SECRET: string = process.env.CHATCCC_APP_SECRET ?? "";
 const BASE_URL = "https://open.feishu.cn/open-apis";
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,8 @@ function checkGroupMessageConfig(): CheckResult {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  ensureSingleInstance(PID_FILE, 18080);
+  ensureSingleInstance(PID_FILE);
+  freeRelayListenPort(18080);
   const { server: relayServer } = createRelayServer(18080);
 
   console.log(`\n${"=".repeat(60)}`);
@@ -200,7 +202,7 @@ async function main(): Promise<void> {
   console.log(`${"=".repeat(60)}\n`);
 
   if (!APP_ID || !APP_SECRET) {
-    console.log("ERROR: FEISHU_CLAUDER_APP_ID / FEISHU_CLAUDER_APP_SECRET not set");
+    console.log("ERROR: CHATCCC_APP_ID / CHATCCC_APP_SECRET not set");
     process.exit(1);
   }
 
@@ -211,7 +213,7 @@ async function main(): Promise<void> {
     console.log("[AUTH] Token obtained\n");
   } catch (err) {
     console.error(`FATAL: ${(err as Error).message}`);
-    console.log("\n请检查 .env 中的 FEISHU_CLAUDER_APP_ID / FEISHU_CLAUDER_APP_SECRET 是否正确");
+    console.log("\n请检查 .env 中的 CHATCCC_APP_ID / CHATCCC_APP_SECRET 是否正确");
     process.exit(1);
   }
 

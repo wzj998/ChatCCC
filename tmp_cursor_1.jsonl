@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"F:\\Users\\weizhangjian\\feishuclauderprivate","session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","model":"Composer 2 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"'只回复数字: 1+2=?'"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"3"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","timestamp_ms":1778411832572}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"3"}]},"session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8"}
+{"type":"result","subtype":"success","duration_ms":7059,"duration_api_ms":7059,"is_error":false,"result":"3","session_id":"b60ebd57-33cb-4364-b6fa-bb69657be6e8","request_id":"840e7f4e-2c2c-4c34-aaf0-9dd3d1a173c1","usage":{"inputTokens":9568,"outputTokens":78,"cacheReadTokens":576,"cacheWriteTokens":0}}

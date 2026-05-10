@@ -24,6 +24,7 @@ import {
   setupFileLogging,
   ensureSingleInstance,
   createRelayServer,
+  freeRelayListenPort,
 } from "../src/shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -81,8 +82,8 @@ setupFileLogging(logDir, "bot-test");
 // ---------------------------------------------------------------------------
 
 const USE_LOCAL = process.argv.includes("--local");
-const APP_ID: string = process.env.FEISHU_CLAUDER_APP_ID ?? "";
-const APP_SECRET: string = process.env.FEISHU_CLAUDER_APP_SECRET ?? "";
+const APP_ID: string = process.env.CHATCCC_APP_ID ?? "";
+const APP_SECRET: string = process.env.CHATCCC_APP_SECRET ?? "";
 
 const BASE_URL = "https://open.feishu.cn/open-apis";
 const LOCAL_RELAY_URL = "ws://127.0.0.1:18080";
@@ -955,8 +956,9 @@ async function testDeleteMessage(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  // 单实例保证：杀旧进程，写自身 PID
-  ensureSingleInstance(PID_FILE, 18080);
+  // 单实例保证：杀旧 PID 文件进程，写自身 PID
+  ensureSingleInstance(PID_FILE);
+  freeRelayListenPort(18080);
 
   // 启动本地中继服务
   const { server: relayServer, broadcast } = createRelayServer(18080);
@@ -972,7 +974,7 @@ async function main(): Promise<void> {
   console.log(`${"=".repeat(60)}`);
 
   if (!APP_ID || !APP_SECRET) {
-    console.log("\nERROR: FEISHU_CLAUDER_APP_ID / FEISHU_CLAUDER_APP_SECRET not set");
+    console.log("\nERROR: CHATCCC_APP_ID / CHATCCC_APP_SECRET not set");
     console.log("  Please configure the .env file in the project root.");
     process.exit(1);
   }

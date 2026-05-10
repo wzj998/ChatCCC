@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,9 @@
     "demo:create-group": "tsx --env-file=.env src/index.ts",
     "demo:create-group:local": "tsx --env-file=.env src/index.ts --local",
     "demo:permission-check": "tsx --env-file=.env demo/permission_check.ts",
-    "demo:claude-hi": "tsx --env-file=.env demo/claude_say_hi.ts"
+    "demo:claude-hi": "tsx --env-file=.env demo/claude_say_hi.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.133",
@@ -34,7 +36,8 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.5"
   },
   "engines": {
     "node": ">=20"
