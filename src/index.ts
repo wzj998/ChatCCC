@@ -22,7 +22,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { readdir, stat } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
 
@@ -79,6 +78,8 @@ import {
   resetState,
   resumeAndPrompt,
   sessionInfoMap,
+  initAdapter,
+  getAdapter,
 } from "./session.ts";
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       const chatInfo = await getChatInfo(cdToken, chatId);
       const sid = extractSessionId(chatInfo.description);
       if (sid) {
-        const info = await getSessionInfo(sid);
+        const info = await getAdapter().getSessionInfo(sid);
         sessionCwd = info?.cwd;
       }
     } catch { /* 非会话群或获取失败，不显示 */ }
@@ -648,6 +649,7 @@ async function main(): Promise<void> {
   });
 
   if (USE_LOCAL) {
+    initAdapter();
     console.log(`\n[启动 6/7] 本地区 relay 模式：正在连接 ${LOCAL_RELAY_URL} …`);
     console.log("  若失败：请先在 SDK 模式下启动主进程，或确认本机中继已在该地址监听。");
     let localRelayOpened = false;
@@ -693,12 +695,13 @@ async function main(): Promise<void> {
     });
   } else {
     resetState();
+    initAdapter();
 
     const wsClient = new WSClient({
       appId: APP_ID,
       appSecret: APP_SECRET,
-      onReady: () => resetState(),
-      onReconnected: () => resetState(),
+      onReady: () => { resetState(); initAdapter(); },
+      onReconnected: () => { resetState(); initAdapter(); },
     });
 
     console.log(`\n[启动 6/7] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
