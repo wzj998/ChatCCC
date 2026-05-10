@@ -1,6 +1,14 @@
 import { getSessionInfo, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 
-import { CLAUDE_EFFORT, CLAUDE_MODEL, fileLog, getDefaultCwd, ts } from "./config.ts";
+import {
+  CLAUDE_EFFORT,
+  CLAUDE_MODEL,
+  anthropicConfigDisplay,
+  fileLog,
+  getDefaultCwd,
+  isSdkAnthropicDefault,
+  ts,
+} from "./config.ts";
 import { buildThinkingCardV2, getToolEmoji, truncateContent } from "./cards.ts";
 import {
   createCardKitCard,
@@ -55,18 +63,25 @@ export function resetState(): void {
 // Claude session management
 // ---------------------------------------------------------------------------
 
-export async function initClaudeSession(): Promise<string> {
-  const cwd = await getDefaultCwd();
-  console.log(`[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT}, cwd=${cwd})`);
-
-  const session = unstable_v2_createSession({
-    model: CLAUDE_MODEL,
-    effort: CLAUDE_EFFORT,
+function claudeSdkSessionOptions(cwd: string): Record<string, unknown> {
+  const o: Record<string, unknown> = {
     cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
-  } as any);
+  };
+  if (!isSdkAnthropicDefault(CLAUDE_MODEL)) o.model = CLAUDE_MODEL;
+  if (!isSdkAnthropicDefault(CLAUDE_EFFORT)) o.effort = CLAUDE_EFFORT;
+  return o;
+}
+
+export async function initClaudeSession(): Promise<string> {
+  const cwd = await getDefaultCwd();
+  console.log(
+    `[${ts()}] [STEP 1/5] Creating Claude session via SDK (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+  );
+
+  const session = unstable_v2_createSession(claudeSdkSessionOptions(cwd) as any);
 
   await session.send("ok");
 
@@ -105,16 +120,11 @@ export async function resumeAndPrompt(
   msgTimestamp: number
 ): Promise<void> {
   const cwd = (await getSessionInfo(sessionId))?.cwd ?? (await getDefaultCwd());
-  console.log(`[${ts()}] Resuming Claude session: ${sessionId} (model=${CLAUDE_MODEL}, effort=${CLAUDE_EFFORT}, cwd=${cwd})`);
+  console.log(
+    `[${ts()}] Resuming Claude session: ${sessionId} (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+  );
 
-  const session = unstable_v2_resumeSession(sessionId, {
-    model: CLAUDE_MODEL,
-    effort: CLAUDE_EFFORT,
-    cwd,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    autoCompactEnabled: true,
-  } as any);
+  const session = unstable_v2_resumeSession(sessionId, claudeSdkSessionOptions(cwd) as any);
 
   let cardId: string | null = null;
   chatSessionMap.set(chatId, {
@@ -139,8 +149,8 @@ export async function resumeAndPrompt(
     turnCount: (existingInfo?.turnCount ?? 0) + 1,
     lastContextTokens: existingInfo?.lastContextTokens ?? 0,
     startTime: now,
-    model: CLAUDE_MODEL,
-    effort: CLAUDE_EFFORT,
+    model: anthropicConfigDisplay(CLAUDE_MODEL),
+    effort: anthropicConfigDisplay(CLAUDE_EFFORT),
   });
 
   await session.send(userText);
@@ -403,8 +413,44 @@ export function getSessionStatus(chatId: string): SessionStatus | null {
     turnCount: info.turnCount,
     lastContextTokens: info.lastContextTokens,
     startTime: info.startTime,
-    model: info.model,
-    effort: info.effort,
+    model: anthropicConfigDisplay(info.model),
+    effort: anthropicConfigDisplay(info.effort),
     accumulatedLength: active ? active.accumulatedThinking.length + active.finalText.length : 0,
   };
+}
+
+/**
+ * 获取所有已记录的会话状态列表（供 /sessions 命令使用）
+ */
+export function getAllSessionsStatus(): Array<{
+  chatId: string;
+  sessionId: string;
+  active: boolean;
+  turnCount: number;
+  startTime: number;
+  model: string;
+  effort: string;
+}> {
+  const result: Array<{
+    chatId: string;
+    sessionId: string;
+    active: boolean;
+    turnCount: number;
+    startTime: number;
+    model: string;
+    effort: string;
+  }> = [];
+  for (const [chatId, info] of sessionInfoMap) {
+    const active = chatSessionMap.get(chatId);
+    result.push({
+      chatId,
+      sessionId: info.sessionId,
+      active: active !== undefined && !active.stopped,
+      turnCount: info.turnCount,
+      startTime: info.startTime,
+      model: info.model,
+      effort: info.effort,
+    });
+  }
+  return result;
 }
