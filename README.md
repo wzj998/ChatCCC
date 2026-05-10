@@ -1,6 +1,6 @@
 # ChatCCC
 
-**飞书聊天控制 Claude Code，未来支持 Cursor、Codex**
+**飞书聊天控制 Claude Code / Cursor，未来支持 Codex**
 
 ---
 
@@ -8,13 +8,13 @@
 
 传统的 Claude Code（尤其是使用第三方 API 的，如 DeepSeek），需要坐在电脑桌前才能用。**离开电脑就没法用了。**
 
-ChatCCC 把 Claude Code 接入了飞书群聊：
+ChatCCC 把 Claude Code 和 Cursor Agent 接入了飞书群聊：
 
-- **手机上也能用 Claude Code** —— 在飞书群里发消息就等于在终端输入指令，Claude 的思考和回复会流式展示在群卡片里
-- **多会话并行** —— 一个群就是一个 Claude 会话，完全隔离、互不干扰，并行工作效率更高
-- **体验丝滑** —— 思考过程完整，响应迅速
+- **手机上也能用 Claude Code / Cursor** —— 在飞书群里发消息就等于在终端输入指令，AI 的思考和回复会流式展示在群卡片里
+- **多会话并行** —— 一个群就是一个 AI 会话，完全隔离、互不干扰，并行工作效率更高
+- **多工具切换** —— `/new claude` 创建 Claude Code 会话，`/new cursor` 创建 Cursor 会话，各取所长
 
-一句话：**在任何设备上打开飞书，就能让 Claude 帮你写代码、排查问题、分析项目。**
+一句话：**在任何设备上打开飞书，就能让 Claude Code 或 Cursor 帮你写代码、排查问题、分析项目。**
 
 <p align="center">
   <img src="images/img_readme_0.jpg" alt="飞书群聊中使用 ChatCCC" width="280" />
@@ -60,6 +60,28 @@ npm run dev
 ```
 
 启动后机器人通过 WebSocket 连接飞书服务器，日志会写入 `logs/` 目录。
+
+#### Cursor Agent CLI（使用 Cursor 会话时需要）
+
+ChatCCC **不捆绑** Cursor Agent CLI，需要用户自行安装。Cursor Agent CLI 目前主要有两种来源：
+
+1. **Cursor IDE 自带**：安装 [Cursor IDE](https://cursor.com) 后，部分版本会自带 `agent` 或 `cursor-agent` 命令
+2. **独立安装**：Cursor 正在逐步提供独立的 CLI 安装方式，安装后 `agent` 命令会出现在系统 PATH 中
+
+验证是否已安装：
+
+```bash
+agent --version
+```
+
+若 `agent` 不在 PATH 中，可通过环境变量指定自定义命令：
+
+```env
+CHATCCC_CURSOR_COMMAND=/path/to/agent
+CHATCCC_CURSOR_ARGS=-p --output-format stream-json --stream-partial-output
+```
+
+> **说明**：只使用 Claude Code（`/new claude` 或 `/new`）的用户无需安装 Cursor CLI。
 
 ### 2. 创建飞书应用
 
@@ -168,18 +190,21 @@ CHATCCC_PORT=18081
 
 ### 5. 开始使用
 
-在飞书中找到你的机器人，发送 `/new`，机器人会自动创建一个群聊并把你的 Claude 会话绑定到该群。之后直接在群里发消息就能和 Claude 对话。
+在飞书中找到你的机器人，发送 `/new`（默认 Claude Code）或 `/new claude` / `/new cursor`，机器人会自动创建一个群聊并把 AI 会话绑定到该群。之后直接在群里发消息就能对话。
 
 ### 可用指令
 
 
-| 指令         | 作用                           |
-| ---------- | ---------------------------- |
-| `/new`     | 创建新的 Claude 会话（绑定一个新群聊）      |
-| `/stop`    | 停止当前正在生成的回复                  |
-| `/status`  | 查看当前会话的状态（轮数、模型、上下文 token 等） |
-| `/cd`      | 查看/切换工作目录                    |
-| `/restart` | 重启机器人进程                      |
+| 指令            | 作用                           |
+| --------------- | ---------------------------- |
+| `/new`          | 创建新的 Claude Code 会话（默认）    |
+| `/new claude`   | 创建新的 Claude Code 会话          |
+| `/new cursor`   | 创建新的 Cursor 会话               |
+| `/stop`         | 停止当前正在生成的回复                  |
+| `/status`       | 查看当前会话的状态（轮数、模型、上下文 token 等） |
+| `/cd`           | 查看/切换工作目录                    |
+| `/sessions`     | 查看所有会话状态                    |
+| `/restart`      | 重启机器人进程                      |
 
 
 ---

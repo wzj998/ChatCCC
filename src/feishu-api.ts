@@ -7,7 +7,8 @@ import {
   BASE_URL,
   CHAT_LOGS_DIR,
   PROJECT_ROOT,
-  SESSION_DESC_PREFIX,
+  CLAUDE_SESSION_PREFIX,
+  CURSOR_SESSION_PREFIX,
   ts,
 } from "./config.ts";
 import { buildButtons } from "./cards.ts";
@@ -219,12 +220,24 @@ export async function getChatInfo(
   };
 }
 
+export function extractSessionInfo(description: string): { sessionId: string; tool: string } | null {
+  const PREFIXES: Array<{ prefix: string; tool: string }> = [
+    { prefix: CLAUDE_SESSION_PREFIX, tool: "claude" },
+    { prefix: CURSOR_SESSION_PREFIX, tool: "cursor" },
+  ];
+  for (const { prefix, tool } of PREFIXES) {
+    const idx = description.indexOf(prefix);
+    if (idx === -1) continue;
+    const after = description.slice(idx + prefix.length).trim();
+    const match = after.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+    if (match) return { sessionId: match[1], tool };
+  }
+  return null;
+}
+
+/** @deprecated 使用 extractSessionInfo 代替 */
 export function extractSessionId(description: string): string | null {
-  const idx = description.indexOf(SESSION_DESC_PREFIX);
-  if (idx === -1) return null;
-  const after = description.slice(idx + SESSION_DESC_PREFIX.length).trim();
-  const match = after.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-  return match ? match[1] : null;
+  return extractSessionInfo(description)?.sessionId ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +338,10 @@ export async function sendRestartCard(token: string): Promise<void> {
       config: { wide_screen_mode: true },
       header: { template: "green", title: { content: "ChatCCC Started", tag: "plain_text" } },
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: "Bot 已启动完成，可以继续使用。\n\n发送 **/new** 创建新会话，或直接在已有会话群中发消息。" } },
+        { tag: "div", text: { tag: "lark_md", content: "Bot 已启动完成，可以继续使用。\n\n使用 **/new**（默认 Claude Code）或 **/new claude** / **/new cursor** 创建新会话" } },
         buildButtons([
-          { text: "新建会话（/new）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
+          { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
+          { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
           { text: "重启Chat CCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
           { text: "查看/切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
         ]),

@@ -1,10 +1,16 @@
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+
 import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  SESSIONS_FILE,
+  addRecentDir,
   anthropicConfigDisplay,
   fileLog,
   getDefaultCwd,
   isSdkAnthropicDefault,
+  toolDisplayName,
   ts,
 } from "./config.ts";
 import { buildProgressCard, getToolEmoji, truncateContent } from "./cards.ts";
@@ -17,6 +23,7 @@ import { sendTextReply } from "./feishu-api.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
+import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -46,6 +53,7 @@ export const sessionInfoMap = new Map<string, {
   startTime: number;
   model: string;
   effort: string;
+  tool: string;
 }>();
 
 export function resetState(): void {
@@ -60,23 +68,67 @@ export function resetState(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Adapter singleton
+// Adapter: 按 tool 创建并缓存
 // ---------------------------------------------------------------------------
 
-let adapter: ToolAdapter | null = null;
+const adapterCache = new Map<string, ToolAdapter>();
 
-export function initAdapter(): ToolAdapter {
-  adapter = createClaudeAdapter({
-    model: CLAUDE_MODEL,
-    effort: CLAUDE_EFFORT,
-    isDefault: isSdkAnthropicDefault,
-  });
+export function getAdapterForTool(tool: string): ToolAdapter {
+  const cached = adapterCache.get(tool);
+  if (cached) return cached;
+
+  let adapter: ToolAdapter;
+  if (tool === "cursor") {
+    adapter = createCursorAdapter();
+  } else {
+    adapter = createClaudeAdapter({
+      model: CLAUDE_MODEL,
+      effort: CLAUDE_EFFORT,
+      isDefault: isSdkAnthropicDefault,
+    });
+  }
+  adapterCache.set(tool, adapter);
   return adapter;
 }
 
-export function getAdapter(): ToolAdapter {
-  if (!adapter) throw new Error("Adapter not initialized. Call initAdapter() first.");
-  return adapter;
+// ---------------------------------------------------------------------------
+// Session tool persistence (.claude/sessions.json)
+// ---------------------------------------------------------------------------
+
+interface SessionToolRecord {
+  tool: string;
+  createdAt: number;
+}
+
+async function loadSessionTools(): Promise<Record<string, SessionToolRecord>> {
+  try {
+    const raw = await readFile(SESSIONS_FILE, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function saveSessionTools(data: Record<string, SessionToolRecord>): Promise<void> {
+  try {
+    await mkdir(dirname(SESSIONS_FILE), { recursive: true });
+    await writeFile(SESSIONS_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error(`[${ts()}] Failed to save sessions.json: ${(err as Error).message}`);
+    fileLog.flush();
+  }
+}
+
+export async function saveSessionTool(sessionId: string, tool: string): Promise<void> {
+  const data = await loadSessionTools();
+  data[sessionId] = { tool, createdAt: Date.now() };
+  await saveSessionTools(data);
+}
+
+export async function getSessionTool(sessionId: string): Promise<string | null> {
+  const data = await loadSessionTools();
+  const record = data[sessionId];
+  return record?.tool ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,15 +205,20 @@ export function accumulateBlockContent(
 // Claude session management
 // ---------------------------------------------------------------------------
 
-export async function initClaudeSession(): Promise<string> {
+export async function initClaudeSession(tool: string): Promise<string> {
   const cwd = await getDefaultCwd();
+  const adapter = getAdapterForTool(tool);
   console.log(
-    `[${ts()}] [STEP 1/5] Creating ${getAdapter().displayName} session (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+    `[${ts()}] [STEP 1/5] Creating ${adapter.displayName} session (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
   );
 
-  const result = await getAdapter().createSession(cwd);
+  const result = await adapter.createSession(cwd);
   const sessionId = result.sessionId;
   console.log(`[${ts()}]   → sessionId: ${sessionId}`);
+
+  await saveSessionTool(sessionId, tool);
+
+  await addRecentDir(cwd);
 
   return sessionId;
 }
@@ -171,12 +228,14 @@ export async function resumeAndPrompt(
   userText: string,
   token: string,
   chatId: string,
-  msgTimestamp: number
+  msgTimestamp: number,
+  tool: string,
 ): Promise<void> {
-  const info = await getAdapter().getSessionInfo(sessionId);
+  const adapter = getAdapterForTool(tool);
+  const info = await adapter.getSessionInfo(sessionId);
   const cwd = info?.cwd ?? (await getDefaultCwd());
   console.log(
-    `[${ts()}] Resuming ${getAdapter().displayName} session: ${sessionId} (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
+    `[${ts()}] Resuming ${adapter.displayName} session: ${sessionId} (model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}, cwd=${cwd})`
   );
 
   const controller = new AbortController();
@@ -204,6 +263,7 @@ export async function resumeAndPrompt(
     startTime: now,
     model: anthropicConfigDisplay(CLAUDE_MODEL),
     effort: anthropicConfigDisplay(CLAUDE_EFFORT),
+    tool,
   });
 
   let cardId: string | null = null;
@@ -304,7 +364,7 @@ export async function resumeAndPrompt(
   }
 
   try {
-    for await (const unifiedMsg of getAdapter().prompt(sessionId, userText, cwd, controller.signal)) {
+    for await (const unifiedMsg of adapter.prompt(sessionId, userText, cwd, controller.signal)) {
       for (const block of unifiedMsg.blocks) {
         accumulateBlockContent(block, state);
 
@@ -425,6 +485,7 @@ export function getAllSessionsStatus(): Array<{
   startTime: number;
   model: string;
   effort: string;
+  tool: string;
 }> {
   const result: Array<{
     chatId: string;
@@ -434,6 +495,7 @@ export function getAllSessionsStatus(): Array<{
     startTime: number;
     model: string;
     effort: string;
+    tool: string;
   }> = [];
   for (const [chatId, info] of sessionInfoMap) {
     const active = chatSessionMap.get(chatId);
@@ -445,6 +507,7 @@ export function getAllSessionsStatus(): Array<{
       startTime: info.startTime,
       model: info.model,
       effort: info.effort,
+      tool: info.tool,
     });
   }
   return result;

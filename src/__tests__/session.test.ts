@@ -45,6 +45,7 @@ function mockSessionInfo(chatId: string, overrides: Partial<{
     startTime: overrides.startTime ?? Date.now(),
     model: "Claude Opus 4.7",
     effort: "high",
+    tool: "claude",
   });
 }
 
@@ -57,7 +58,7 @@ describe("resetState", () => {
     });
     sessionInfoMap.set("chat1", {
       sessionId: "s1", turnCount: 1, lastContextTokens: 0,
-      startTime: 0, model: "", effort: "",
+      startTime: 0, model: "", effort: "", tool: "claude",
     });
     processedMessages.add("msg1");
 

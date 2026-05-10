@@ -48,13 +48,17 @@ import {
   getDefaultCwd,
   maskAppId,
   setDefaultCwd,
+  getRecentDirs,
+  addRecentDir,
+  sessionPrefixForTool,
+  toolDisplayName,
   ts,
 } from "./config.ts";
 import { printServiceDidNotStart, printServiceRunningHint } from "./exit-banner.ts";
 import {
   addReaction,
   createGroupChat,
-  extractSessionId,
+  extractSessionInfo,
   getChatInfo,
   getTenantAccessToken,
   recallMessage,
@@ -66,7 +70,7 @@ import {
   verifyAllPermissions,
   reportPermissionResults,
 } from "./feishu-api.ts";
-import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildSessionsCard } from "./cards.ts";
+import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
 import {
   MAX_PROCESSED,
@@ -78,8 +82,7 @@ import {
   resetState,
   resumeAndPrompt,
   sessionInfoMap,
-  initAdapter,
-  getAdapter,
+  getAdapterForTool,
 } from "./session.ts";
 
 // ---------------------------------------------------------------------------
@@ -97,7 +100,11 @@ function getInnerEvent(data: Evt): InnerEvent {
   return (data.event ?? data) as InnerEvent;
 }
 
-function extractText(message: { message_type?: string; content?: string }): string {
+/**
+ * 将飞书消息的原始 content JSON 结构转成可读文本，保留代码块等结构信息。
+ * 未知类型直接返回 JSON 原文，让 AI 自行理解。
+ */
+function formatMessageContent(message: { message_type?: string; content?: string }): string {
   const contentStr = message.content ?? "{}";
   let content: Record<string, unknown>;
   try { content = JSON.parse(contentStr); } catch { return ""; }
@@ -109,7 +116,36 @@ function extractText(message: { message_type?: string; content?: string }): stri
     text = text.replace(/&nbsp;/gi, " ");
     return text.trim();
   }
-  return "";
+
+  if (message.message_type === "post") {
+    return formatPostContent(content);
+  }
+
+  // 其他类型（image, file, audio, media, sticker）直接给原始 JSON
+  return contentStr;
+}
+
+function formatPostContent(content: Record<string, unknown>): string {
+  const paragraphs = content.content as unknown[][];
+  if (!Array.isArray(paragraphs)) return "";
+
+  const parts: string[] = [];
+  for (const line of paragraphs) {
+    if (!Array.isArray(line)) continue;
+    for (const elem of line) {
+      const el = elem as Record<string, unknown>;
+      if (!el || typeof el !== "object") continue;
+      const t = typeof el.text === "string" ? el.text : "";
+
+      if (el.tag === "code_block") {
+        const lang = typeof el.language === "string" ? el.language : "";
+        parts.push("```" + lang + "\n" + t + "\n```");
+      } else if (el.tag === "p" || el.tag === "text") {
+        if (t) parts.push(t);
+      }
+    }
+  }
+  return parts.join("\n").trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +175,12 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions" };
-  const text = CMD_MAP[cmd] ?? "";
+  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new cursor": "/new cursor", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions" };
+  let text = CMD_MAP[cmd] ?? "";
+  if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
+    const path = (action.value as Record<string, string>).path;
+    if (path) text = `/cd ${path}`;
+  }
   if (!text) return null;
 
   const chatId =
@@ -189,9 +229,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     let sessionCwd: string | undefined;
     try {
       const chatInfo = await getChatInfo(cdToken, chatId);
-      const sid = extractSessionId(chatInfo.description);
-      if (sid) {
-        const info = await getAdapter().getSessionInfo(sid);
+      const sessionInfoResult = extractSessionInfo(chatInfo.description);
+      if (sessionInfoResult) {
+        const adapter = getAdapterForTool(sessionInfoResult.tool);
+        const info = await adapter.getSessionInfo(sessionInfoResult.sessionId);
         sessionCwd = info?.cwd;
       }
     } catch { /* 非会话群或获取失败，不显示 */ }
@@ -224,6 +265,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const isUpdate = !!arg && targetDir !== currentDir;
     if (isUpdate) {
       await setDefaultCwd(targetDir);
+      await addRecentDir(targetDir);
     }
 
     // Read directory entries
@@ -248,12 +290,39 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       return a.name.localeCompare(b.name);
     });
 
-    const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
-    await sendCardReply(cdToken, chatId, "新会话工作路径", content, "blue");
+    if (!arg) {
+      // /cd 无参数：展示卡片（含最近使用路径按钮）
+      const recentDirs = await getRecentDirs();
+      const card = buildCdCard(targetDir, withStats, recentDirs, sessionCwd);
+      const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cdToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
+      });
+      const respData: Record<string, any> = await resp.json().catch(() => ({}));
+      console.log(`[${ts()}] [CD] card sent, code=${respData.code}, msgId=${respData.data?.message_id ?? "N/A"}, recentDirs=${recentDirs.length}`);
+    } else {
+      // /cd <path>：切换目录，发送文本卡片
+      const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
+      await sendCardReply(cdToken, chatId, "新会话工作路径", content, "blue");
+    }
     return;
   }
 
-  if (text === "/new") {
+  if (text === "/new" || text.startsWith("/new ")) {
+    const toolArg = text.slice(5).trim();
+    const tool = toolArg || "claude";
+    const validTools = ["claude", "cursor"];
+    if (!validTools.includes(tool)) {
+      const warnToken = await getTenantAccessToken();
+      await sendCardReply(warnToken, chatId, "Error", `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor)。`, "red");
+      return;
+    }
+    const toolLabel = toolDisplayName(tool);
+
     if (!openId) {
       console.log(`[${ts()}] [WARN] Cannot get sender open_id`);
       const warnToken = await getTenantAccessToken();
@@ -265,13 +334,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
     let sessionId: string;
     try {
-      sessionId = await initClaudeSession();
-      console.log(`[${ts()}] [STEP 1/4] Claude SDK session created: ${sessionId} → OK`);
+      sessionId = await initClaudeSession(tool);
+      console.log(`[${ts()}] [STEP 1/4] ${toolLabel} session created: ${sessionId} → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 1/4] FAIL: ${(err as Error).message}`);
       await sendCardReply(
         freshToken, chatId, "Error",
-        `Failed to initialize Claude session:\n${(err as Error).message}`,
+        `Failed to initialize ${toolLabel} session:\n${(err as Error).message}`,
         "red"
       );
       return;
@@ -289,8 +358,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
     try {
       const initialName = `新会话-${sessionId}`;
-      await updateChatInfo(freshToken, newChatId, initialName, `Claude Session: ${sessionId}`);
-      console.log(`[${ts()}] [STEP 3/4] Renamed group → name="${initialName}"  → OK`);
+      const descPrefix = sessionPrefixForTool(tool);
+      await updateChatInfo(freshToken, newChatId, initialName, `${descPrefix} ${sessionId}`);
+      console.log(`[${ts()}] [STEP 3/4] Renamed group → name="${initialName}" (${toolLabel}) → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 3/4] FAIL: ${(err as Error).message}`);
       await sendCardReply(freshToken, chatId, "Error", `Group created but rename failed:\n${(err as Error).message}`, "yellow");
@@ -298,9 +368,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     }
 
     const cwd = await getDefaultCwd();
+    const adapter = getAdapterForTool(tool);
     await sendCardReply(
-      freshToken, newChatId, "Claude Session Ready",
-      `群聊已创建，这是你的 Claude 会话群。\n\n**Session ID:** ${sessionId}\n**工作目录:** \`${cwd}\`\n\n直接在这里发消息即可与 Claude 对话。\n\n发送 **/sessions** 查看所有会话状态。`,
+      freshToken, newChatId, `${toolLabel} Session Ready`,
+      `群聊已创建，这是你的 **${toolLabel}** 会话群。\n\n**Session ID:** ${sessionId}\n**工作目录:** \`${cwd}\`\n\n直接在这里发消息即可与 ${toolLabel} 对话。\n\n发送 **/sessions** 查看所有会话状态。`,
       "green"
     );
 
@@ -313,10 +384,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const token = await getTenantAccessToken();
     const chatInfo = await getChatInfo(token, chatId);
     const description = chatInfo.description;
-    const sessionId = extractSessionId(description);
+    const sessionInfo = extractSessionInfo(description);
 
-    if (sessionId) {
-      console.log(`[${ts()}] [RESUME] 克劳德会话群 detected, session=${sessionId}`);
+    if (sessionInfo) {
+      const sessionId = sessionInfo.sessionId;
+      const descriptionTool = sessionInfo.tool;
+      const toolLabel = toolDisplayName(descriptionTool);
+      console.log(`[${ts()}] [RESUME] ${toolLabel} session group detected, session=${sessionId} tool=${descriptionTool}`);
 
       const freshToken = await getTenantAccessToken();
 
@@ -352,6 +426,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const isActive = running && !running.stopped;
         const statusText = [
           `**Session ID:** \`${status?.sessionId ?? sessionId}\``,
+          `**工具:** ${toolLabel}`,
           `**状态:** ${isActive ? "🟢 运行中" : "⚪ 空闲"}`,
           `**已对话轮数:** ${status?.turnCount ?? 0}`,
           `**模型:** ${status?.model ?? anthropicConfigDisplay(CLAUDE_MODEL)}`,
@@ -390,6 +465,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           turnCount: s.turnCount,
           elapsedSeconds: s.active ? Math.floor((now - s.startTime) / 1000) : null,
           model: s.model,
+          tool: s.tool,
         }));
         const card = buildSessionsCard(cardData);
         const sessionsResp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
@@ -434,13 +510,14 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
 
       try {
-        await resumeAndPrompt(sessionId, text, freshToken, chatId, msgTimestamp);
+        await resumeAndPrompt(sessionId, text, freshToken, chatId, msgTimestamp, descriptionTool);
         console.log(`[${ts()}] [RESUME] Session ${sessionId} done`);
       } catch (err) {
         console.error(`[${ts()}] [RESUME] FAIL: ${(err as Error).message}`);
+        fileLog.flush();
         await sendCardReply(
           freshToken, chatId, "Error",
-          `Failed to resume Claude session:\n${(err as Error).message}`,
+          `Failed to resume ${toolLabel} session:\n${(err as Error).message}`,
           "red"
         );
       }
@@ -580,7 +657,7 @@ async function main(): Promise<void> {
         }
       }
 
-      const text = extractText(message);
+      const text = formatMessageContent(message);
       const sender = event.sender;
       const openId = sender?.sender_id?.open_id ?? "";
       const chatId = message.chat_id ?? "";
@@ -649,7 +726,6 @@ async function main(): Promise<void> {
   });
 
   if (USE_LOCAL) {
-    initAdapter();
     console.log(`\n[启动 6/7] 本地区 relay 模式：正在连接 ${LOCAL_RELAY_URL} …`);
     console.log("  若失败：请先在 SDK 模式下启动主进程，或确认本机中继已在该地址监听。");
     let localRelayOpened = false;
@@ -673,7 +749,7 @@ async function main(): Promise<void> {
         const event = getInnerEvent(data);
         const message = event.message;
         if (!message) return;
-        const text = extractText(message);
+        const text = formatMessageContent(message);
         const openId = event.sender?.sender_id?.open_id ?? "";
         const chatId = message.chat_id ?? "";
         appendChatLog(chatId, openId, text);
@@ -695,13 +771,12 @@ async function main(): Promise<void> {
     });
   } else {
     resetState();
-    initAdapter();
 
     const wsClient = new WSClient({
       appId: APP_ID,
       appSecret: APP_SECRET,
-      onReady: () => { resetState(); initAdapter(); },
-      onReconnected: () => { resetState(); initAdapter(); },
+      onReady: () => { resetState(); },
+      onReconnected: () => { resetState(); },
     });
 
     console.log(`\n[启动 6/7] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
