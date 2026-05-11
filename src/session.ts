@@ -24,6 +24,7 @@ import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
+import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -91,6 +92,8 @@ export function getAdapterForTool(tool: string): ToolAdapter {
   let adapter: ToolAdapter;
   if (tool === "cursor") {
     adapter = createCursorAdapter();
+  } else if (tool === "codex") {
+    adapter = createCodexAdapter();
   } else {
     adapter = createClaudeAdapter({
       model: CLAUDE_MODEL,
@@ -254,6 +257,10 @@ export function accumulateBlockContent(
 function formatToolConfigForLog(tool: string, sessionModel?: string): string {
   if (tool === "cursor") {
     return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
+  }
+  if (tool === "codex") {
+    const m = process.env.CHATCCC_CODEX_MODEL?.trim();
+    return `model=${m && m !== "default" ? m : "(由 codex config.toml 决定)"}`;
   }
   return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
 }
@@ -546,6 +553,13 @@ async function resolveModelEffort(
       // adapter 异常时降级为占位符（不阻塞 /status 卡片）
     }
     return { model, effort: null };
+  }
+  if (tool === "codex") {
+    const m = process.env.CHATCCC_CODEX_MODEL?.trim();
+    return {
+      model: m && m !== "default" ? m : UNKNOWN_MODEL_PLACEHOLDER,
+      effort: null,
+    };
   }
   return {
     model: anthropicConfigDisplay(CLAUDE_MODEL),

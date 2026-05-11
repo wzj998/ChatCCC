@@ -9,6 +9,7 @@ import {
   PROJECT_ROOT,
   CLAUDE_SESSION_PREFIX,
   CURSOR_SESSION_PREFIX,
+  CODEX_SESSION_PREFIX,
   ts,
 } from "./config.ts";
 import { buildButtons } from "./cards.ts";
@@ -224,6 +225,7 @@ export function extractSessionInfo(description: string): { sessionId: string; to
   const PREFIXES: Array<{ prefix: string; tool: string }> = [
     { prefix: CLAUDE_SESSION_PREFIX, tool: "claude" },
     { prefix: CURSOR_SESSION_PREFIX, tool: "cursor" },
+    { prefix: CODEX_SESSION_PREFIX, tool: "codex" },
   ];
   for (const { prefix, tool } of PREFIXES) {
     const idx = description.indexOf(prefix);

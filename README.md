@@ -1,6 +1,6 @@
 # ChatCCC
 
-**飞书聊天控制 Claude Code / Cursor，未来支持 Codex**
+**飞书（Lark）聊天控制 Claude Code / Cursor，未来支持 Codex**
 
 ---
 

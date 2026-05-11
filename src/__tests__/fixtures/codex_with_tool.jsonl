@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019e15c8-t002-7441-9bfb-eec7b1ef4c4c"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"powershell.exe -Command echo tool_test","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"powershell.exe -Command echo tool_test","aggregated_output":"tool_test\r\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"tool_test"}}
+{"type":"turn.completed","usage":{"input_tokens":26021,"cached_input_tokens":22272,"output_tokens":52,"reasoning_output_tokens":0}}
