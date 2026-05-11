@@ -24,12 +24,14 @@
 
 import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { resolve, dirname } from "node:path";
 
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
-import { appendStartupTrace, ensureSingleInstance, createRelayServer, freeRelayListenPort } from "./shared.ts";
+import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging } from "./shared.ts";
+import { createUiRouter, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
 import {
   CHATCCC_PORT,
   APP_ID,
@@ -38,6 +40,7 @@ import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   GIT_TIMEOUT_MS,
+  reloadConfigFromDisk,
   anthropicConfigDisplay,
   LOCAL_RELAY_URL,
   PID_FILE,
@@ -227,7 +230,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const restartToken = await getTenantAccessToken();
     await sendTextReply(restartToken, chatId, "正在重启...").catch(() => {});
     console.log(`[${ts()}] [RESTART] Spawning new process...`);
-    const child = spawn("npx", ["tsx", "--env-file=.env", "src/index.ts"], {
+    const child = spawn("npx", ["tsx", "src/index.ts"], {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: "ignore",
@@ -672,53 +675,48 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// startBotService — 飞书 service 的启动逻辑（独立于 main()）
 // ---------------------------------------------------------------------------
+//
+// 抽出原因：setup → service「在线切换」需要原地（同进程）启动飞书 service，
+// 不希望走 spawn 子进程那条 path（chatccc 主进程已经占着 PID 文件）。
+//
+// 设计契约：
+//   - 入参 httpServer 必须**已经在监听 port**；本函数只负责把 WS 中继和
+//     UI router 挂上去，再起 EventDispatcher / WSClient。
+//   - 内部任何失败一律 throw，调用方决定是 process.exit(1)（main 模式）
+//     还是把错误回报前端 toast（setup-activate 模式，不退出 chatccc 进程）。
+//   - 成功返回后 service 就绪；调用方负责注册 SIGINT/SIGTERM 清理。
 
-async function main(): Promise<void> {
-  appendStartupTrace("main: entered", {
-    argv: process.argv.join(" ").slice(0, 400),
-    CHATCCC_PORT,
-    PROJECT_ROOT,
-  });
+interface StartBotServiceOptions {
+  httpServer: Server;
+  port: number;
+}
 
-  if (Number.isNaN(CHATCCC_PORT) || CHATCCC_PORT < 1 || CHATCCC_PORT > 65535) {
-    console.error("\n[启动] 预检失败: CHATCCC_PORT 不是有效端口号（1–65535）。");
-    console.error(`  当前解析结果: ${String(process.env.CHATCCC_PORT)} → ${CHATCCC_PORT}`);
-    reportEnvironmentVariableReadout();
-    printServiceDidNotStart("CHATCCC_PORT 配置无效（须为 1–65535 的整数）");
-    process.exit(1);
-  }
+async function startBotService(opts: StartBotServiceOptions): Promise<void> {
+  const { httpServer, port } = opts;
 
-  console.log(`\n[启动 1/7] 单实例：按 PID 文件清理旧 ChatCCC 进程`);
-  console.log(`  PID 文件: ${PID_FILE}`);
-  appendStartupTrace("main: before ensureSingleInstance", { PID_FILE, CHATCCC_PORT });
-  ensureSingleInstance(PID_FILE);
-  appendStartupTrace("main: after ensureSingleInstance");
+  console.log(`\n[启动 3/7] 在 http://127.0.0.1:${port} 上挂载本地 WebSocket 中继 …`);
+  appendStartupTrace("startBotService: before attachRelayWebSocket", { port });
+  const wsAttachment = attachRelayWebSocket(httpServer);
+  broadcastToRelay = wsAttachment.broadcast;
+  // UI router 在 setup 模式下已经挂在 httpServer 上；main 直入模式由 main() 负责挂
+  // —— 这里不再额外 attach，避免重复触发 createUiRouter。
   console.log("  完成。\n");
 
-  console.log(`[启动 2/7] 环境与凭证检查`);
-  reportEnvironmentVariableReadout();
-  console.log(`  工作目录: ${process.cwd()}`);
-  console.log(`  包根目录: ${PROJECT_ROOT}`);
-  appendStartupTrace("main: before feishu credential check", {
-    hasAppId: Boolean(APP_ID.trim()),
-    hasAppSecret: Boolean(APP_SECRET.trim()),
-  });
-  if (!APP_ID.trim() || !APP_SECRET.trim()) {
-    explainMissingFeishuCredentialsAndExit();
+  // setup-activate 模式下，token / permissions / wsClient 任一阶段失败都需要
+  // 回滚已挂的 WSServer，否则用户重试 onActivate 时会重复挂载导致句柄泄漏。
+  // 用 try / catch 统一 wrap 后续启动逻辑。
+  try {
+    await startBotServiceCore();
+  } catch (err) {
+    wsAttachment.close();
+    broadcastToRelay = () => { /* noop after rollback */ };
+    throw err;
   }
-  console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
-  appendStartupTrace("main: feishu credentials ok", { appIdMask: maskAppId(APP_ID) });
+}
 
-  console.log(`[启动 3/7] 启动本地 WebSocket 中继（ws://127.0.0.1:${CHATCCC_PORT}）…`);
-  appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
-  freeRelayListenPort(CHATCCC_PORT);
-  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT });
-  const { server: relayServer, broadcast } = createRelayServer(CHATCCC_PORT);
-  broadcastToRelay = broadcast;
-  console.log("  完成。\n");
-
+async function startBotServiceCore(): Promise<void> {
   const modeTag = USE_LOCAL ? " (local relay mode)" : "";
   console.log(`${"=".repeat(60)}`);
   console.log(`  ChatCCC — Feishu Bot Bridge for Claude Code${modeTag}`);
@@ -742,8 +740,7 @@ async function main(): Promise<void> {
     console.error("    - App ID / App Secret 与开放平台「凭证与基础信息」不一致");
     console.error("    - 自建应用尚未创建/发布可用版本");
     console.error(`  详情: ${msg}`);
-    printServiceDidNotStart("无法从飞书开放平台获取 tenant_access_token（凭证或网络问题）");
-    process.exit(1);
+    throw new Error(`无法从飞书开放平台获取 tenant_access_token: ${msg}`);
   }
   console.log(`  完成。当前 App ID 摘要: ${maskAppId(APP_ID)}\n`);
 
@@ -753,15 +750,11 @@ async function main(): Promise<void> {
     console.log(msg);
   });
   if (hasFailed) {
-    appendStartupTrace("main: permissions check failed", {
-      failed: permResults.filter((r) => !r.ok).map((r) => r.scope).join(", "),
-    });
-    printServiceDidNotStart(
-      `飞书权限不足: ${permResults.filter((r) => !r.ok).map((r) => r.scope).join(", ")}`
-    );
-    process.exit(1);
+    const failedScopes = permResults.filter((r) => !r.ok).map((r) => r.scope).join(", ");
+    appendStartupTrace("startBotService: permissions check failed", { failed: failedScopes });
+    throw new Error(`飞书权限不足: ${failedScopes}`);
   }
-  appendStartupTrace("main: permissions check ok");
+  appendStartupTrace("startBotService: permissions check ok");
   console.log(`  完成。所有必需权限已验证通过。\n`);
 
   console.log(`[${ts()}] [AUTH] Token obtained`);
@@ -866,7 +859,7 @@ async function main(): Promise<void> {
       localRelayOpened = true;
       console.log("[WS] Connected to local relay");
       console.log("[启动 7/7] 已连接本地中继，可接收转发事件。\n");
-      printServiceRunningHint("local");
+      printServiceRunningHint("local", `http://127.0.0.1:${CHATCCC_PORT}`);
     });
     ws.on("message", (raw: Buffer) => {
       try {
@@ -896,6 +889,9 @@ async function main(): Promise<void> {
         console.error(`[启动 6/7] 失败：无法连接本地中继。`);
         console.error(`  ${err.message}`);
         console.error(`  目标: ${LOCAL_RELAY_URL}`);
+        // 注意：local relay 模式下连接是异步的；此处 throw 出 startBotService
+        // 已经返回的事件循环外，调用方拿不到。约定：local 模式连接失败一律
+        // 直接退出进程（与 setup-activate 模式无关 —— setup 模式不会用 local relay）。
         printServiceDidNotStart(`无法连接本地中继 ${LOCAL_RELAY_URL}`);
         process.exit(1);
       }
@@ -919,29 +915,147 @@ async function main(): Promise<void> {
       console.error("  失败：飞书 WebSocket 未能启动。");
       console.error("  常见原因: 应用权限未开通、事件订阅未配置、网络问题、或 SDK 内部错误。");
       console.error(`  详情: ${msg}`);
-      printServiceDidNotStart("飞书 SDK WebSocket 未能建立（权限、事件订阅或网络）");
-      process.exit(1);
+      throw new Error(`飞书 SDK WebSocket 未能建立: ${msg}`);
     }
     console.log("[WS] Feishu WebSocket connected (SDK)");
     console.log("[启动 7/7] 服务已就绪，等待飞书消息（群聊 / 卡片回调）。\n");
-    printServiceRunningHint("sdk");
+    printServiceRunningHint("sdk", `http://127.0.0.1:${CHATCCC_PORT}`);
 
     sendRestartCard(token).catch((err) =>
       console.error(`[${ts()}] [RESTART] sendRestartCard failed: ${(err as Error).message}`)
     );
   }
+}
 
-  process.on("SIGINT", () => { console.log("\nShutting down..."); relayServer.close(); process.exit(0); });
-  process.on("SIGTERM", () => { relayServer.close(); process.exit(0); });
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
-  process.on("uncaughtException", (err) => {
-    console.error(`[FATAL] uncaughtException: ${err.message}\n${err.stack}`);
-    fileLog.flush();
+async function main(): Promise<void> {
+  appendStartupTrace("main: entered", {
+    argv: process.argv.join(" ").slice(0, 400),
+    CHATCCC_PORT,
+    PROJECT_ROOT,
   });
-  process.on("unhandledRejection", (reason) => {
-    console.error(`[FATAL] unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
-    fileLog.flush();
+
+  // 黑匣子：所有未捕获异常 / 信号 / beforeExit 都同步写入 startup-trace.log（appendFileSync）。
+  // 越早装越好——后续任何一行抛错都有兜底；它独立于 SIGINT 清理（见末尾的
+  // server.close）——只负责诊断与默认致命退出，不替代清理逻辑。
+  installCrashLogging({ flush: () => fileLog.flush() });
+
+  if (Number.isNaN(CHATCCC_PORT) || CHATCCC_PORT < 1 || CHATCCC_PORT > 65535) {
+    console.error("\n[启动] 预检失败: config.json 的 port 字段不是有效端口号（1–65535）。");
+    console.error(`  当前配置: ${CHATCCC_PORT}`);
+    reportEnvironmentVariableReadout();
+    printServiceDidNotStart("config.json 的 port 字段配置无效（须为 1–65535 的整数）");
+    process.exit(1);
+  }
+
+  console.log(`\n[启动 1/7] 单实例：按 PID 文件清理旧 ChatCCC 进程`);
+  console.log(`  PID 文件: ${PID_FILE}`);
+  appendStartupTrace("main: before ensureSingleInstance", { PID_FILE, CHATCCC_PORT });
+  ensureSingleInstance(PID_FILE);
+  appendStartupTrace("main: after ensureSingleInstance");
+  console.log("  完成。\n");
+
+  // 注册 reload hook：dashboard 模式（或 setup 激活后再点向导）下用户点
+  // "保存并启动" 时，web-ui 会调用本回调，把磁盘上刚保存的 config.json
+  // 刷进进程内的 export let 常量（live binding 让 CLAUDE_MODEL 等下次创建
+  // 会话时自动看到新值）。setup 首次激活走 onActivate 路径，不依赖此 hook。
+  setReloadConfigHook(() => {
+    reloadConfigFromDisk();
+    appendStartupTrace("reload-from-ui: config reloaded", {
+      appIdMask: maskAppId(APP_ID),
+    });
   });
+
+  console.log(`[启动 2/7] 环境与凭证检查`);
+  reportEnvironmentVariableReadout();
+  console.log(`  工作目录: ${process.cwd()}`);
+  console.log(`  包根目录: ${PROJECT_ROOT}`);
+  appendStartupTrace("main: before feishu credential check", {
+    hasAppId: Boolean(APP_ID.trim()),
+    hasAppSecret: Boolean(APP_SECRET.trim()),
+  });
+  if (!APP_ID.trim() || !APP_SECRET.trim()) {
+    // 凭证不全：进 setup 向导。注入 onActivate 回调让用户点"保存并启动"
+    // 时，原地（同进程）调用 startBotService，复用 setup HTTP server。
+    startSetupMode(CHATCCC_PORT, {
+      onActivate: async (httpServer: Server) => {
+        // 关键：用户刚把新凭证写入 config.json，需要先把进程内的 APP_ID 等
+        // 常量同步到磁盘最新值，否则 startBotService 拿到的是 chatccc 启动时
+        // 加载的（空）凭证。reloadConfigFromDisk 利用 ES module live binding
+        // 让所有"export let"消费方自动看到新值。
+        reloadConfigFromDisk();
+        appendStartupTrace("setup-activate: reloaded config from disk", {
+          appIdMaskAfterReload: maskAppId(APP_ID),
+        });
+        try {
+          await startBotService({ httpServer, port: CHATCCC_PORT });
+          // 切换成功：注册 SIGINT/SIGTERM 让 Ctrl-C 也能优雅退出
+          installShutdownHandlers(httpServer);
+          return { ok: true };
+        } catch (err) {
+          appendStartupTrace("setup-activate: startBotService failed", {
+            message: (err as Error).message,
+          });
+          // 不退出 chatccc 进程——setup HTTP server 还在监听，让用户改完
+          // config 再点一次。
+          return { ok: false, error: (err as Error).message };
+        }
+      },
+    });
+    return;
+  }
+  console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
+  appendStartupTrace("main: feishu credentials ok", { appIdMask: maskAppId(APP_ID) });
+
+  // 凭证齐全：自己起 HTTP server（同时挂 UI router），再调 startBotService
+  // 把 WS 中继和飞书 SDK 挂上去。
+  appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
+  freeRelayListenPort(CHATCCC_PORT);
+  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT });
+  const httpServer = createServer(createUiRouter());
+  await new Promise<void>((resolveListen, rejectListen) => {
+    const onError = (err: NodeJS.ErrnoException): void => {
+      httpServer.removeListener("listening", onListening);
+      rejectListen(err);
+    };
+    const onListening = (): void => {
+      httpServer.removeListener("error", onError);
+      resolveListen();
+    };
+    httpServer.once("error", onError);
+    httpServer.once("listening", onListening);
+    httpServer.listen(CHATCCC_PORT, "127.0.0.1");
+  }).catch((err: NodeJS.ErrnoException) => {
+    console.error(`\n[启动] 本地中继 WebSocket 监听失败：端口 ${CHATCCC_PORT}（${err.code ?? "?"} — ${err.message}）`);
+    console.error(
+      "  处理建议: 关闭占用该端口的其它程序，或在 config.json 的 port 字段里改成其它未占用端口（如 18081）。"
+    );
+    printServiceDidNotStart(`本地中继端口 ${CHATCCC_PORT} 无法监听（${err.code ?? "?"} — ${err.message}）`);
+    process.exit(1);
+  });
+
+  try {
+    await startBotService({ httpServer, port: CHATCCC_PORT });
+  } catch (err) {
+    printServiceDidNotStart((err as Error).message);
+    process.exit(1);
+  }
+
+  installShutdownHandlers(httpServer);
+}
+
+/**
+ * 注册 SIGINT / SIGTERM 清理：把 relay/setup 共用的 httpServer 关掉再退出。
+ *
+ * Node EventEmitter 按注册顺序触发，installCrashLogging 装得更早 → 同步 trace
+ * 先写盘，再走这里。
+ */
+function installShutdownHandlers(httpServer: Server): void {
+  process.on("SIGINT", () => { console.log("\nShutting down..."); httpServer.close(); process.exit(0); });
+  process.on("SIGTERM", () => { httpServer.close(); process.exit(0); });
 }
 
 main().catch((err: Error) => {

@@ -1,0 +1,26 @@
+{
+  "feishu": {
+    "appId": "",
+    "appSecret": ""
+  },
+  "port": 18080,
+  "gitTimeoutSeconds": 180,
+  "claude": {
+    "enabled": false,
+    "model": "",
+    "effort": "",
+    "apiKey": "",
+    "baseUrl": ""
+  },
+  "cursor": {
+    "enabled": false,
+    "path": "",
+    "model": ""
+  },
+  "codex": {
+    "enabled": false,
+    "path": "",
+    "model": "",
+    "effort": ""
+  }
+}

@@ -338,8 +338,8 @@ describe("buildSessionsCard", () => {
 
   it("separates Claude Code and Cursor sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "c1", active: false, turnCount: 1, elapsedSeconds: null, model: "default", tool: "claude" },
-      { sessionId: "c2", active: false, turnCount: 2, elapsedSeconds: null, model: "default", tool: "cursor" },
+      { sessionId: "c1", active: false, turnCount: 1, elapsedSeconds: null, model: "(留空)", tool: "claude" },
+      { sessionId: "c2", active: false, turnCount: 2, elapsedSeconds: null, model: "claude-opus-4-7-max", tool: "cursor" },
     ]);
     const parsed = JSON.parse(card);
     const content: string = parsed.elements[0].text.content;
@@ -349,7 +349,7 @@ describe("buildSessionsCard", () => {
 
   it("omits Cursor section when no Cursor sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "c1", active: false, turnCount: 1, elapsedSeconds: null, model: "default", tool: "claude" },
+      { sessionId: "c1", active: false, turnCount: 1, elapsedSeconds: null, model: "(留空)", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     const content: string = parsed.elements[0].text.content;

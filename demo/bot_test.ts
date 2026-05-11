@@ -5,8 +5,8 @@
  * Guides the user through each test step interactively.
  *
  * Usage:
- *   npx tsx --env-file=.env demo/bot_test.ts
- *   npx tsx --env-file=.env demo/bot_test.ts --local   (local relay mode)
+ *   npx tsx demo/bot_test.ts
+ *   npx tsx demo/bot_test.ts --local   (local relay mode)
  */
 
 import {
@@ -26,6 +26,7 @@ import {
   createRelayServer,
   freeRelayListenPort,
 } from "../src/shared.ts";
+import { APP_ID, APP_SECRET } from "../src/config.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -82,8 +83,6 @@ setupFileLogging(logDir, "bot-test");
 // ---------------------------------------------------------------------------
 
 const USE_LOCAL = process.argv.includes("--local");
-const APP_ID: string = process.env.CHATCCC_APP_ID ?? "";
-const APP_SECRET: string = process.env.CHATCCC_APP_SECRET ?? "";
 
 const BASE_URL = "https://open.feishu.cn/open-apis";
 const LOCAL_RELAY_URL = "ws://127.0.0.1:18080";
@@ -974,8 +973,8 @@ async function main(): Promise<void> {
   console.log(`${"=".repeat(60)}`);
 
   if (!APP_ID || !APP_SECRET) {
-    console.log("\nERROR: CHATCCC_APP_ID / CHATCCC_APP_SECRET not set");
-    console.log("  Please configure the .env file in the project root.");
+    console.log("\nERROR: feishu.appId / feishu.appSecret not set in config.json");
+    console.log("  Please configure config.json (see config.sample.json for reference).");
     process.exit(1);
   }
 

@@ -2,14 +2,17 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import {
+  CLAUDE_API_KEY,
+  CLAUDE_BASE_URL,
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   SESSIONS_FILE,
   addRecentDir,
   anthropicConfigDisplay,
+  config,
   fileLog,
   getDefaultCwd,
-  isSdkAnthropicDefault,
+  isAnthropicConfigEmpty,
   toolDisplayName,
   ts,
 } from "./config.ts";
@@ -98,7 +101,9 @@ export function getAdapterForTool(tool: string): ToolAdapter {
     adapter = createClaudeAdapter({
       model: CLAUDE_MODEL,
       effort: CLAUDE_EFFORT,
-      isDefault: isSdkAnthropicDefault,
+      isEmpty: isAnthropicConfigEmpty,
+      apiKey: CLAUDE_API_KEY,
+      baseUrl: CLAUDE_BASE_URL,
     });
   }
   adapterCache.set(tool, adapter);
@@ -259,10 +264,10 @@ function formatToolConfigForLog(tool: string, sessionModel?: string): string {
     return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
   }
   if (tool === "codex") {
-    const m = process.env.CHATCCC_CODEX_MODEL?.trim();
-    const e = process.env.CHATCCC_CODEX_EFFORT?.trim();
-    const modelStr = m && m !== "default" ? m : "(由 codex config.toml 决定)";
-    const effortStr = e && e !== "default"
+    const m = config.codex.model;
+    const e = config.codex.effort;
+    const modelStr = m.trim() !== "" ? m : "(由 codex config.toml 决定)";
+    const effortStr = e.trim() !== ""
       ? `effort=${e}`
       : "effort=(由 codex config.toml 决定)";
     return `model=${modelStr}, ${effortStr}`;
@@ -367,7 +372,11 @@ export async function resumeAndPrompt(
   let lastSentContent = "";
   let streamErrorNotified = false;
   let healthLogTicks = 0;
-  const sendInterval = cardId ? setInterval(async () => {
+  // 兜底：setInterval 不 await 异步回调，回调内任何漏接的异常都会变成
+  // unhandledRejection 进而（在 Node 默认策略下）让进程崩。这里用 IIFE + .catch
+  // 整体兜一层，配合内部两个细粒度 try/catch 一起守住。
+  const sendInterval = cardId ? setInterval(() => {
+    void (async () => {
     const cEntry = chatSessionMap.get(chatId);
     if (!cEntry || cEntry.stopped || cEntry.cardBusy) return;
     if (cEntry.cardId !== cardId) return;
@@ -423,6 +432,12 @@ export async function resumeAndPrompt(
     } finally {
       cEntry.cardBusy = false;
     }
+    })().catch((err: unknown) => {
+      const e = err instanceof Error ? err : new Error(String(err));
+      console.error(`[${ts()}] [CARDIKT] spinner tick uncaught: ${e.message}\n${e.stack ?? ""}`);
+      const entry = chatSessionMap.get(chatId);
+      if (entry) entry.cardBusy = false;
+    });
   }, 3000) : null;
   if (sendInterval) {
     const entry = chatSessionMap.get(chatId);
@@ -532,7 +547,7 @@ export async function resumeAndPrompt(
 //       effort：anthropicConfigDisplay(CLAUDE_EFFORT)
 // ---------------------------------------------------------------------------
 
-/** 未知/未学习到时的 model 占位符（卡片可视提示，区别于"显示成 default"的旧 bug） */
+/** 未知/未学习到时的 model 占位符（卡片可视提示，避免在 UI 上显示空字符串） */
 export const UNKNOWN_MODEL_PLACEHOLDER = "—";
 
 export interface SessionStatus {
@@ -563,11 +578,11 @@ async function resolveModelEffort(
     return { model, effort: null };
   }
   if (tool === "codex") {
-    const m = process.env.CHATCCC_CODEX_MODEL?.trim();
-    const e = process.env.CHATCCC_CODEX_EFFORT?.trim();
+    const m = config.codex.model;
+    const e = config.codex.effort;
     return {
-      model: m && m !== "default" ? m : UNKNOWN_MODEL_PLACEHOLDER,
-      effort: e && e !== "default" ? e : UNKNOWN_MODEL_PLACEHOLDER,
+      model: m.trim() !== "" ? m : UNKNOWN_MODEL_PLACEHOLDER,
+      effort: e.trim() !== "" ? e : UNKNOWN_MODEL_PLACEHOLDER,
     };
   }
   return {

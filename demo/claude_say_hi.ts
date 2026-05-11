@@ -1,7 +1,7 @@
 /**
  * 命令行对 Claude Agent SDK 说「你好」，并把流式正文打印到 stdout。
  *
- *   .\node_modules\.bin\tsx.cmd --env-file=.env demo/claude_say_hi.ts
+ *   .\node_modules\.bin\tsx.cmd demo/claude_say_hi.ts
  *   npm run demo:claude-hi
  */
 
@@ -11,7 +11,7 @@ import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   getDefaultCwd,
-  isSdkAnthropicDefault,
+  isAnthropicConfigEmpty,
 } from "../src/config.ts";
 
 function claudeSdkSessionOptions(cwd: string): Record<string, unknown> {
@@ -21,8 +21,8 @@ function claudeSdkSessionOptions(cwd: string): Record<string, unknown> {
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
   };
-  if (!isSdkAnthropicDefault(CLAUDE_MODEL)) o.model = CLAUDE_MODEL;
-  if (!isSdkAnthropicDefault(CLAUDE_EFFORT)) o.effort = CLAUDE_EFFORT;
+  if (!isAnthropicConfigEmpty(CLAUDE_MODEL)) o.model = CLAUDE_MODEL;
+  if (!isAnthropicConfigEmpty(CLAUDE_EFFORT)) o.effort = CLAUDE_EFFORT;
   return o;
 }
 

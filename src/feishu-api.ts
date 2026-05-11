@@ -262,26 +262,15 @@ export function extractSessionId(description: string): string | null {
 
 const AVATAR_DIR = resolvePath(PROJECT_ROOT, "images", "avatars");
 const AVATAR_SOURCES: Record<string, string> = {
-  new: process.env.CHATCCC_AVATAR_NEW_URL?.trim() || resolvePath(AVATAR_DIR, "status_new.png"),
-  busy: process.env.CHATCCC_AVATAR_BUSY_URL?.trim() || resolvePath(AVATAR_DIR, "status_busy.png"),
-  idle: process.env.CHATCCC_AVATAR_IDLE_URL?.trim() || resolvePath(AVATAR_DIR, "status_idle.png"),
+  new: resolvePath(AVATAR_DIR, "status_new.png"),
+  busy: resolvePath(AVATAR_DIR, "status_busy.png"),
+  idle: resolvePath(AVATAR_DIR, "status_idle.png"),
 };
 
 const avatarKeyCache = new Map<string, string>();
 
-function isHttpUrl(source: string): boolean {
-  return /^https?:\/\//i.test(source);
-}
-
 async function loadAvatarSource(source: string): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
-  let input: Buffer;
-  if (isHttpUrl(source)) {
-    const resp = await fetch(source);
-    if (!resp.ok) throw new Error(`download avatar url failed: status=${resp.status}`);
-    input = Buffer.from(await resp.arrayBuffer());
-  } else {
-    input = await readFile(source);
-  }
+  const input = await readFile(source);
 
   const jpeg = await sharp(input)
     .resize(256, 256, { fit: "cover", position: "center" })

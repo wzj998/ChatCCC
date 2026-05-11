@@ -54,7 +54,44 @@ interface SdkMessageLike {
 export interface ClaudeAdapterOptions {
   model: string;
   effort: string;
-  isDefault: (value: string) => boolean;
+  /** 判断字段是否为"不传给 SDK"的占位（项目约定：空字符串/全空白） */
+  isEmpty: (value: string) => boolean;
+  /**
+   * Anthropic 兼容网关的 API key。
+   * 非空（trim 后）时会被注入到 SDK 子进程的 ANTHROPIC_API_KEY 环境变量；
+   * 留空 / 全空白 → 不覆盖，沿用主进程 process.env / 系统环境变量。
+   * 永远不会写入主进程的 process.env，避免污染其他依赖 env 的代码。
+   */
+  apiKey?: string;
+  /**
+   * Anthropic 兼容网关的 base URL。
+   * 非空（trim 后）时会被注入到 SDK 子进程的 ANTHROPIC_BASE_URL 环境变量；
+   * 留空 / 全空白 → 不覆盖，沿用主进程 process.env / 系统环境变量。
+   */
+  baseUrl?: string;
+}
+
+// ---------------------------------------------------------------------------
+// buildSdkEnv — 为 SDK 子进程构造 env
+// ---------------------------------------------------------------------------
+// 行为契约（详见单测 "createClaudeAdapter — env 注入"）：
+//   - apiKey 与 baseUrl 都为空（trim 后）→ 返回 undefined，让 SDK 走默认行为
+//     （即 process.env），避免无意义的拷贝。
+//   - 任一非空 → 返回 process.env 的浅拷贝，并按需覆盖 ANTHROPIC_API_KEY /
+//     ANTHROPIC_BASE_URL；其余 env 字段保持不变（PATH、HOME 等子进程必需）。
+//   - 主进程 process.env 永不被写入，主进程其他模块对 env 的读取不受影响。
+function buildSdkEnv(
+  apiKey: string | undefined,
+  baseUrl: string | undefined,
+): Record<string, string | undefined> | undefined {
+  const apiKeyTrim = (apiKey ?? "").trim();
+  const baseUrlTrim = (baseUrl ?? "").trim();
+  if (!apiKeyTrim && !baseUrlTrim) return undefined;
+
+  const env: Record<string, string | undefined> = { ...process.env };
+  if (apiKeyTrim) env.ANTHROPIC_API_KEY = apiKeyTrim;
+  if (baseUrlTrim) env.ANTHROPIC_BASE_URL = baseUrlTrim;
+  return env;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +102,9 @@ function buildSessionOptions(
   cwd: string,
   model: string,
   effort: string,
-  isDefault: (value: string) => boolean,
+  isEmpty: (value: string) => boolean,
+  apiKey: string | undefined,
+  baseUrl: string | undefined,
 ): Record<string, unknown> {
   const o: Record<string, unknown> = {
     cwd,
@@ -74,8 +113,10 @@ function buildSessionOptions(
     autoCompactEnabled: true,
     settingSources: ["project", "local"],
   };
-  if (!isDefault(model)) o.model = model;
-  if (!isDefault(effort)) o.effort = effort;
+  if (!isEmpty(model)) o.model = model;
+  if (!isEmpty(effort)) o.effort = effort;
+  const env = buildSdkEnv(apiKey, baseUrl);
+  if (env) o.env = env;
   return o;
 }
 
@@ -150,12 +191,16 @@ class ClaudeAdapter implements ToolAdapter {
   readonly sessionDescPrefix = "Claude Code Session:";
   private model: string;
   private effort: string;
-  private isDefault: (value: string) => boolean;
+  private isEmpty: (value: string) => boolean;
+  private apiKey: string | undefined;
+  private baseUrl: string | undefined;
 
   constructor(options: ClaudeAdapterOptions) {
     this.model = options.model;
     this.effort = options.effort;
-    this.isDefault = options.isDefault;
+    this.isEmpty = options.isEmpty;
+    this.apiKey = options.apiKey;
+    this.baseUrl = options.baseUrl;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
@@ -163,7 +208,9 @@ class ClaudeAdapter implements ToolAdapter {
       cwd,
       this.model,
       this.effort,
-      this.isDefault,
+      this.isEmpty,
+      this.apiKey,
+      this.baseUrl,
     );
     const session = unstable_v2_createSession(sessionOpts as any);
 
@@ -205,7 +252,9 @@ class ClaudeAdapter implements ToolAdapter {
       cwd,
       this.model,
       this.effort,
-      this.isDefault,
+      this.isEmpty,
+      this.apiKey,
+      this.baseUrl,
     );
     const session = unstable_v2_resumeSession(
       sessionId,

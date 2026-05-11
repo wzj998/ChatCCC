@@ -8,6 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -211,6 +212,146 @@ export function ensureSingleInstance(pidFile: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// 崩溃黑匣子：进程级别异常 / 信号 / beforeExit 同步落盘
+// ---------------------------------------------------------------------------
+//
+// 设计要点：
+// 1) 全部经由 appendStartupTrace（appendFileSync 同步写盘），保证进程立即退出
+//    时也能落盘。console.error 走的是 createWriteStream 异步缓冲，会丢日志。
+// 2) 默认 onFatal 会主动 process.exit(1)。在 Node 20+ 注册了 unhandledRejection
+//    handler 后，默认不再致命退出，会让进程卡在 broken state——主动 exit 让
+//    现象更直观，方便重启与诊断。
+// 3) handler 实现拆成 buildCrashLoggingHandlers（纯函数，无副作用，便于单测）
+//    和 installCrashLogging（把 handler 挂到 process 上，返回 cleanup）。
+
+const FATAL_STACK_MAX = 4000;
+
+export interface CrashHandlersOptions {
+  /** 用于写入诊断的同步函数，默认 appendStartupTrace */
+  tracer?: (message: string, extra?: Record<string, unknown>) => void;
+  /** 用于刷新文件日志缓冲，默认 noop */
+  flush?: () => void;
+  /** 致命异常发生后的处理，默认 console.error + process.exit(1) */
+  onFatal?: (kind: "uncaughtException" | "unhandledRejection", err: Error) => void;
+  /** 信号到来时的处理，默认 noop（清理动作由调用方自己注册其它 listener 完成） */
+  onSignal?: (sig: NodeJS.Signals) => void;
+  /** beforeExit 时的处理，默认 noop */
+  onBeforeExit?: (code: number) => void;
+}
+
+export interface CrashLoggingHandlers {
+  uncaughtException: (err: unknown) => void;
+  unhandledRejection: (reason: unknown) => void;
+  signalLogger: (sig: NodeJS.Signals) => void;
+  beforeExit: (code: number) => void;
+}
+
+function coerceError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  if (typeof reason === "string") return new Error(reason);
+  if (reason === undefined) return new Error("unhandled rejection with reason=undefined");
+  if (reason === null) return new Error("unhandled rejection with reason=null");
+  try {
+    return new Error(JSON.stringify(reason));
+  } catch {
+    return new Error(String(reason));
+  }
+}
+
+function truncateStack(stack: string | undefined): string {
+  if (!stack) return "";
+  return stack.length > FATAL_STACK_MAX
+    ? `${stack.slice(0, FATAL_STACK_MAX)}...(truncated)`
+    : stack;
+}
+
+function safeCall<T extends unknown[]>(fn: ((...args: T) => unknown) | undefined, ...args: T): void {
+  if (!fn) return;
+  try { fn(...args); } catch { /* swallow: 诊断路径不允许二次抛错 */ }
+}
+
+export function buildCrashLoggingHandlers(opts: CrashHandlersOptions = {}): CrashLoggingHandlers {
+  const tracer = opts.tracer ?? appendStartupTrace;
+  const flush = opts.flush;
+  const onFatal = opts.onFatal ?? ((kind, err) => {
+    try {
+      // 这里仍然走 console.error，是为了让终端 / 文件日志都看得见；但同步 trace 是主线
+      console.error(`[FATAL] ${kind}: ${err.message}\n${err.stack ?? ""}`);
+    } catch { /* ignore */ }
+    process.exit(1);
+  });
+  const onSignal = opts.onSignal;
+  const onBeforeExit = opts.onBeforeExit;
+
+  const handleFatal = (kind: "uncaughtException" | "unhandledRejection", reason: unknown): void => {
+    const err = coerceError(reason);
+    safeCall(tracer, `FATAL ${kind}`, {
+      message: err.message,
+      stack: truncateStack(err.stack),
+    });
+    safeCall(flush);
+    onFatal(kind, err);
+  };
+
+  return {
+    uncaughtException: (err) => handleFatal("uncaughtException", err),
+    unhandledRejection: (reason) => handleFatal("unhandledRejection", reason),
+    signalLogger: (sig) => {
+      safeCall(tracer, "signal received", { signal: sig });
+      safeCall(flush);
+      safeCall(onSignal, sig);
+    },
+    beforeExit: (code) => {
+      safeCall(tracer, "beforeExit", { code });
+      safeCall(onBeforeExit, code);
+    },
+  };
+}
+
+export interface InstallCrashLoggingResult {
+  handlers: CrashLoggingHandlers;
+  cleanup: () => void;
+}
+
+/**
+ * 把崩溃黑匣子 handler 装到 process 上，返回 cleanup。
+ *
+ * 注意：本函数只负责 trace + 默认 fatal 退出，**不**接管原有 SIGINT/SIGTERM 清理逻辑
+ * （如 relayServer.close）。让调用方在 installCrashLogging 之后再 process.on('SIGINT', ...)
+ * 注册自己的清理动作即可——Node EventEmitter 会按注册顺序调用所有 listener，trace 同步
+ * 写盘后再走清理，结果稳定。
+ */
+export function installCrashLogging(opts: CrashHandlersOptions = {}): InstallCrashLoggingResult {
+  const handlers = buildCrashLoggingHandlers(opts);
+
+  const registrations: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
+  const add = (event: string, fn: (...args: unknown[]) => void): void => {
+    process.on(event as Parameters<typeof process.on>[0], fn);
+    registrations.push({ event, fn });
+  };
+
+  add("uncaughtException", (err) => handlers.uncaughtException(err));
+  add("unhandledRejection", (reason) => handlers.unhandledRejection(reason));
+  add("beforeExit", (code) => handlers.beforeExit(code as number));
+
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  if (process.platform === "win32") signals.push("SIGBREAK");
+  for (const sig of signals) {
+    add(sig, () => handlers.signalLogger(sig));
+  }
+
+  return {
+    handlers,
+    cleanup: () => {
+      for (const { event, fn } of registrations) {
+        process.off(event as Parameters<typeof process.off>[0], fn);
+      }
+      registrations.length = 0;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 文件日志：同时输出到控制台和日志文件
 // ---------------------------------------------------------------------------
 
@@ -246,23 +387,22 @@ export function setupFileLogging(logDir: string, prefix: string): { logPath: str
 // 本地 WebSocket 中继服务器（同一端口、多客户端广播）
 // ---------------------------------------------------------------------------
 
-export function createRelayServer(port: number): {
-  server: WebSocketServer;
+/**
+ * 把 WS 中继挂到一个**已存在**的 httpServer 上（不负责 listen / close）。
+ *
+ * 之所以拆出来：setup → service「在线切换」复用同一个 httpServer，
+ * 避免 close + recreate 在 Windows 下的端口释放竞态（EADDRINUSE 抖动）。
+ *
+ * 调用方负责 httpServer 的生命周期管理（listen / 错误处理 / close）。
+ */
+export function attachRelayWebSocket(httpServer: ReturnType<typeof createServer>): {
   broadcast: (data: unknown) => void;
+  close: () => void;
 } {
   const clients = new Set<WebSocket>();
-  const server = new WebSocketServer({ host: "127.0.0.1", port });
+  const wsServer = new WebSocketServer({ server: httpServer });
 
-  server.on("error", (err: NodeJS.ErrnoException) => {
-    console.error(`[启动] 本地中继 WebSocket 监听失败：端口 ${port}（${err.code ?? "?"} — ${err.message}）`);
-    console.error(
-      "  处理建议: 关闭占用该端口的其它程序，或在 .env 中设置 CHATCCC_PORT=其它未占用端口（如 18081）。"
-    );
-    printServiceDidNotStart(`本地中继端口 ${port} 无法监听（${err.code ?? "?"} — ${err.message}）`);
-    process.exit(1);
-  });
-
-  server.on("connection", (ws) => {
+  wsServer.on("connection", (ws) => {
     console.log(`[RELAY] Client connected (total: ${clients.size + 1})`);
     clients.add(ws);
     ws.on("close", () => {
@@ -272,8 +412,6 @@ export function createRelayServer(port: number): {
     ws.on("error", () => { clients.delete(ws); });
   });
 
-  console.log(`[RELAY] Local relay listening on ws://127.0.0.1:${port}`);
-
   const broadcast = (data: unknown): void => {
     const json = typeof data === "string" ? data : JSON.stringify(data);
     for (const ws of clients) {
@@ -281,5 +419,40 @@ export function createRelayServer(port: number): {
     }
   };
 
-  return { server, broadcast };
+  // close 用于 setup-activate 失败回滚：解绑 WSServer 在 httpServer 上注册的
+  // upgrade 监听并断开所有客户端，避免下次重试 attach 时重复挂载导致泄漏。
+  // httpServer 本身不在这里关——它在 setup 模式下还要继续给前端服务。
+  const close = (): void => {
+    for (const ws of clients) {
+      try { ws.terminate(); } catch { /* ok */ }
+    }
+    clients.clear();
+    try { wsServer.close(); } catch { /* ok */ }
+  };
+
+  return { broadcast, close };
+}
+
+export function createRelayServer(port: number): {
+  server: ReturnType<typeof createServer>;
+  broadcast: (data: unknown) => void;
+} {
+  const httpServer = createServer();
+
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    console.error(`[启动] 本地中继 WebSocket 监听失败：端口 ${port}（${err.code ?? "?"} — ${err.message}）`);
+    console.error(
+      "  处理建议: 关闭占用该端口的其它程序，或在 config.json 的 port 字段里改成其它未占用端口（如 18081）。"
+    );
+    printServiceDidNotStart(`本地中继端口 ${port} 无法监听（${err.code ?? "?"} — ${err.message}）`);
+    process.exit(1);
+  });
+
+  const { broadcast } = attachRelayWebSocket(httpServer);
+
+  httpServer.listen(port, "127.0.0.1", () => {
+    console.log(`[RELAY] Local relay listening on ws://127.0.0.1:${port}`);
+  });
+
+  return { server: httpServer, broadcast };
 }
