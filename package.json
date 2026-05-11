@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -12,7 +12,8 @@
     "src/",
     "bin/",
     "package.json",
-    "README.md"
+    "README.md",
+    ".env.example"
   ],
   "scripts": {
     "dev": "tsx --env-file=.env src/index.ts",
