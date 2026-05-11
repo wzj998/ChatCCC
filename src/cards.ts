@@ -108,16 +108,25 @@ export function buildProgressCard(
   });
 }
 
-export function buildHelpCard(userText: string): string {
+export function buildHelpCard(userText: string, opts: { greeting?: string } = {}): string {
+  const greeting = opts.greeting ?? `你发送了: ${userText}`;
+  const lines = [
+    "发送 **/new** 创建新会话（默认 Claude Code）",
+    "发送 **/new claude** 创建新 Claude 对话",
+    "发送 **/new cursor** 创建新 Cursor 会话",
+    "发送 **/new codex** 创建新 Codex 会话",
+    "发送 **/forget** 重置当前会话（保留工作目录，同一群内继续）",
+  ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },
     header: { template: "blue", title: { content: "ChatCCC", tag: "plain_text" } },
     elements: [
-      { tag: "div", text: { tag: "lark_md", content: `你发送了: ${userText}` } },
-      { tag: "div", text: { tag: "lark_md", content: "发送 **/new** 创建新会话（默认 Claude Code）\n发送 **/new claude** 创建新 Claude 对话\n发送 **/new cursor** 创建新 Cursor 会话（启动需要多等几秒）" } },
+      { tag: "div", text: { tag: "lark_md", content: greeting } },
+      { tag: "div", text: { tag: "lark_md", content: lines } },
       buildButtons([
         { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
+        { text: "新建 Codex 会话（/new codex）", value: JSON.stringify({ cmd: "new codex" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
         { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
       ]),
@@ -247,18 +256,20 @@ export function buildSessionsCard(sessions: Array<{
   model: string;
   tool: string;
 }>): string {
-  // 按 tool 分组排序：Claude Code 在前，Cursor 在后
-  const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor");
+  // 按 tool 分组排序：Claude Code 在前，Cursor 其次，Codex 最后
+  const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor" && s.tool !== "codex");
   const cursorSessions = sessions.filter(s => s.tool === "cursor");
+  const codexSessions = sessions.filter(s => s.tool === "codex");
   const hasClaudeCode = claudeCodeSessions.length > 0;
   const hasCursor = cursorSessions.length > 0;
+  const hasCodex = codexSessions.length > 0;
 
   if (sessions.length === 0) {
     return JSON.stringify({
       config: { wide_screen_mode: true },
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: "当前没有会话记录。\n\n使用 **/new**（默认 Claude Code）、**/new claude** 或 **/new cursor** 创建新会话。" } },
+        { tag: "div", text: { tag: "lark_md", content: "当前没有会话记录。\n\n使用 **/new**（默认 Claude Code）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。" } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
       ],
@@ -274,7 +285,7 @@ export function buildSessionsCard(sessions: Array<{
       const secs = s.elapsedSeconds % 60;
       extra = ` | 本轮: ${mins}分${secs}秒`;
     }
-    const toolLabel = s.tool === "cursor" ? "Cursor" : "Claude Code";
+    const toolLabel = s.tool === "cursor" ? "Cursor" : s.tool === "codex" ? "Codex" : "Claude Code";
     return `**${i + 1}.** \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
@@ -296,11 +307,21 @@ export function buildSessionsCard(sessions: Array<{
     }
   }
 
+  if (hasCodex) {
+    if (hasClaudeCode || hasCursor) lines.push("", "**Codex 会话:**", "");
+    else lines.push("**Codex 会话:**", "");
+    for (const s of codexSessions) {
+      lines.push(formatSession(s, idx++));
+    }
+  }
+
   return JSON.stringify({
     config: { wide_screen_mode: true },
     header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
     elements: [
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
+      { tag: "hr" },
+      { tag: "div", text: { tag: "lark_md", content: "在会话群内发送 **/forget** 可重置当前会话（创建新 Session，保留工作目录和群聊）。" } },
       { tag: "hr" },
       {
         tag: "action",

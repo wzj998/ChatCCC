@@ -1,16 +1,17 @@
 /**
- * ChatCCC — Feishu Bot Bridge for Claude Code (TypeScript)
+ * ChatCCC — Feishu Bot Bridge for AI Coding Tools (TypeScript)
  * =================================================================
- * When a user sends "/new" to the bot:
- *   1. Create a Claude session via Agent SDK, get session ID from init event
+ * Supported tools: Claude Code, Cursor, Codex (OpenAI).
+ *
+ * When a user sends "/new [tool]" to the bot:
+ *   1. Create an AI tool session via the corresponding adapter, get session ID
  *   2. Create a new Feishu group chat and add the user
  *   3. Rename the group (name + description) to the session ID
- *   4. Stream SDK output to logs/session-<session-id>.jsonl
- *   5. Reply to the new group with session info and welcome message
+ *   4. Reply to the new group with session info and welcome message
  *
- * Auto-resume: when any message is received in a Claude session group
- * (group description contains "Claude Session:"), the bot extracts the
- * session ID, resumes the session via SDK, sends the user's text, and
+ * Auto-resume: when any message is received in a session group
+ * (group description contains a tool-specific prefix), the bot extracts the
+ * session ID, resumes the session, sends the user's text, and
  * streams the response to the session's jsonl file.
  *
  * Buttons: progress cards have a 停止 button; help messages have /new and /restart buttons.
@@ -23,7 +24,7 @@
 
 import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { resolve, dirname, basename } from "node:path";
+import { resolve, dirname } from "node:path";
 
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
@@ -65,6 +66,7 @@ import {
   recallMessage,
   sendCardReply,
   sendTextReply,
+  setChatAvatar,
   updateCardMessage,
   updateChatInfo,
   sendRestartCard,
@@ -86,6 +88,19 @@ import {
   sessionInfoMap,
   getAdapterForTool,
 } from "./session.ts";
+
+export function cwdDisplayName(cwd: string): string {
+  const trimmed = cwd.trim().replace(/[\\/]+$/, "");
+  return trimmed.split(/[\\/]/).filter(Boolean).pop() || trimmed || "cwd";
+}
+
+export function sessionChatName(left: string, cwd: string): string {
+  return `${left}-${cwdDisplayName(cwd)}`;
+}
+
+function isUntitledSessionChatName(name: string): boolean {
+  return name === "新会话" || name.startsWith("新会话-");
+}
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -177,7 +192,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new cursor": "/new cursor", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", forget: "/forget" };
   let text = CMD_MAP[cmd] ?? "";
   if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
     const path = (action.value as Record<string, string>).path;
@@ -335,8 +350,11 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const freshToken = await getTenantAccessToken();
 
     let sessionId: string;
+    let sessionCwd: string;
     try {
-      sessionId = await initClaudeSession(tool);
+      const init = await initClaudeSession(tool);
+      sessionId = init.sessionId;
+      sessionCwd = init.cwd;
       console.log(`[${ts()}] [STEP 1/4] ${toolLabel} session created: ${sessionId} → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 1/4] FAIL: ${(err as Error).message}`);
@@ -348,9 +366,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       return;
     }
 
+    const cwd = sessionCwd;
+    const initialName = sessionChatName("新会话", cwd);
+
     let newChatId: string;
     try {
-      newChatId = await createGroupChat(freshToken, `新会话-${sessionId}`, [openId]);
+      newChatId = await createGroupChat(freshToken, initialName, [openId]);
       console.log(`[${ts()}] [STEP 2/4] Created Feishu group: ${newChatId}  → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 2/4] FAIL: ${(err as Error).message}`);
@@ -359,7 +380,6 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     }
 
     try {
-      const initialName = `新会话-${sessionId}`;
       const descPrefix = sessionPrefixForTool(tool);
       await updateChatInfo(freshToken, newChatId, initialName, `${descPrefix} ${sessionId}`);
       console.log(`[${ts()}] [STEP 3/4] Renamed group → name="${initialName}" (${toolLabel}) → OK`);
@@ -369,7 +389,6 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       return;
     }
 
-    const cwd = await getDefaultCwd();
     const adapter = getAdapterForTool(tool);
     await sendCardReply(
       freshToken, newChatId, `${toolLabel} Session Ready`,
@@ -383,6 +402,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     );
 
     console.log(`[${ts()}] [STEP 4/4] Replied to new group → OK`);
+    setChatAvatar(freshToken, newChatId, "new").catch(() => {});
     console.log(`${"=".repeat(60)}`);
     return;
   }
@@ -401,10 +421,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
       const freshToken = await getTenantAccessToken();
 
-      if (chatInfo.name === `新会话-${sessionId}`) {
-        const MAX_PREFIX = 20;
+      if (isUntitledSessionChatName(chatInfo.name)) {
+        const MAX_PREFIX = 10;
         const prefix = text.slice(0, MAX_PREFIX);
-        const newName = `${prefix} ${sessionId}`;
+        const adapter = getAdapterForTool(descriptionTool);
+        const info = await adapter.getSessionInfo(sessionId).catch(() => undefined);
+        const sessionCwd = info?.cwd ?? (await getDefaultCwd());
+        const newName = sessionChatName(prefix, sessionCwd);
         try {
           await updateChatInfo(freshToken, chatId, newName, description);
           console.log(`[${ts()}] [RENAME] First message → group renamed to "${newName}"`);
@@ -489,6 +512,61 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         });
         const sessionsRespData: Record<string, any> = await sessionsResp.json().catch(() => ({}));
         console.log(`[${ts()}] [SESSIONS] card sent, code=${sessionsRespData.code}, count=${allSessions.length}`);
+        return;
+      }
+
+      if (text === "/forget") {
+        const adapter = getAdapterForTool(descriptionTool);
+        let cwd: string;
+        try {
+          const info = await adapter.getSessionInfo(sessionId);
+          cwd = info?.cwd ?? (await getDefaultCwd());
+        } catch {
+          cwd = await getDefaultCwd();
+        }
+
+        const existing = chatSessionMap.get(chatId);
+        if (existing) {
+          existing.stopped = true;
+          if (existing.spinnerTimer) { clearInterval(existing.spinnerTimer); existing.spinnerTimer = null; }
+          existing.close();
+          chatSessionMap.delete(chatId);
+        }
+
+        let newSessionId: string;
+        try {
+          const init = await initClaudeSession(descriptionTool, cwd);
+          newSessionId = init.sessionId;
+        } catch (err) {
+          await sendCardReply(freshToken, chatId, "Error", `Failed to create new session:\n${(err as Error).message}`, "red");
+          return;
+        }
+
+        const descPrefix = sessionPrefixForTool(descriptionTool);
+        const initialName = sessionChatName("新会话", cwd);
+        await updateChatInfo(freshToken, chatId, initialName, `${descPrefix} ${newSessionId}`);
+        console.log(`[${ts()}] [FORGET] Group updated: name="${initialName}" desc="${descPrefix} ${newSessionId}"`);
+
+        sessionInfoMap.set(chatId, {
+          sessionId: newSessionId,
+          turnCount: 0,
+          lastContextTokens: 0,
+          startTime: Date.now(),
+          tool: descriptionTool,
+        });
+
+        setChatAvatar(freshToken, chatId, "new").catch(() => {});
+
+        await sendCardReply(
+          freshToken, chatId, `${toolLabel} Session Reset`,
+          `会话已重置为新的 **${toolLabel}** 会话。\n\n` +
+            `**Session ID:** ${newSessionId}\n` +
+            `**工作目录:** \`${cwd}\`\n\n` +
+            `直接在这里发消息即可继续对话。`,
+          "green"
+        );
+
+        console.log(`[${ts()}] [FORGET] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`);
         return;
       }
 

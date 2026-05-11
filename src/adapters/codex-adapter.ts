@@ -41,10 +41,16 @@ const CODEX_BASE_ARGS = [
   "--skip-git-repo-check",
 ];
 
-/** codex 支持的工具列表（用户可额外配置） */
+/** codex 模型 */
 function resolveCodexModel(): string | null {
   const m = process.env.CHATCCC_CODEX_MODEL?.trim();
   return m && m !== "default" ? m : null;
+}
+
+/** codex 努力程度（映射为 -c model_reasoning_effort=<value>） */
+function resolveCodexEffort(): string | null {
+  const e = process.env.CHATCCC_CODEX_EFFORT?.trim();
+  return e && e !== "default" ? e : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +154,10 @@ function spawnCodex(
     // 把 -m 插在 exec 后面、其他参数前面
     const execIdx = allArgs.indexOf("exec");
     allArgs.splice(execIdx + 1, 0, "-m", model);
+  }
+  const effort = resolveCodexEffort();
+  if (effort) {
+    allArgs.push("-c", `model_reasoning_effort="${effort}"`);
   }
 
   const proc = spawn(CODEX_COMMAND, allArgs, {

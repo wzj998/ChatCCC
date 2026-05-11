@@ -1,6 +1,6 @@
 # ChatCCC
 
-**飞书（Lark）聊天控制 Claude Code / Cursor，未来支持 Codex**
+**飞书（Lark）聊天控制 Claude Code / Cursor / Codex**
 
 ---
 
@@ -8,13 +8,13 @@
 
 传统的 Claude Code（尤其是使用第三方 API 的，如 DeepSeek），需要坐在电脑桌前才能用。**离开电脑就没法用了。**
 
-ChatCCC 把 Claude Code 和 Cursor Agent 接入了飞书群聊：
+ChatCCC 把 Claude Code、Cursor Agent、Codex (OpenAI) 接入了飞书群聊：
 
-- **手机上也能用 Claude Code / Cursor** —— 在飞书群里发消息就等于在终端输入指令，AI 的思考和回复会流式展示在群卡片里
+- **手机上也能用 Claude Code / Cursor / Codex** —— 在飞书群里发消息就等于在终端输入指令，AI 的思考和回复会流式展示在群卡片里
 - **多会话并行** —— 一个群就是一个 AI 会话，完全隔离、互不干扰，并行工作效率更高
-- **多工具切换** —— `/new claude` 创建 Claude Code 会话，`/new cursor` 创建 Cursor 会话，各取所长
+- **多工具切换** —— `/new claude` 创建 Claude Code 会话，`/new cursor` 创建 Cursor 会话，`/new codex` 创建 Codex 会话，各取所长
 
-一句话：**在任何设备上打开飞书，就能让 Claude Code 或 Cursor 帮你写代码、排查问题、分析项目。**
+一句话：**在任何设备上打开飞书，就能让 Claude Code / Cursor / Codex 帮你写代码、排查问题、分析项目。**
 
 <p align="center">
   <img src="images/img_readme_0.jpg" alt="飞书群聊中使用 ChatCCC" width="280" />
@@ -29,7 +29,7 @@ ChatCCC 把 Claude Code 和 Cursor Agent 接入了飞书群聊：
 - **一群一会话，心智最简单** —— `/new` 直接建一个新飞书群，群本身就是 AI 会话上下文。换会话就是换群，没有 thread / 子话题概念，手机端切换最直观
 - **零配置成本** —— 只用 `.env`，没有 TOML、没有 Web 后台。`npm i -g chatccc` 后 `cd` 到项目目录直接 `chatccc` 就跑
 - **群里能跑 git** —— `/git status`、`/git pull`、`/git log` 在飞书群里直接执行 stdout/stderr 回发，不用回电脑
-- **代码极简易改** —— 纯 TypeScript 实现，核心只有 20 多个文件，统一 `ToolAdapter` 接口屏蔽 Claude / Cursor 差异，看得懂、改得动
+- **代码极简易改** —— 纯 TypeScript 实现，核心只有 20 多个文件，统一 `ToolAdapter` 接口屏蔽 Claude / Cursor / Codex 差异，看得懂、改得动
 
 ---
 
@@ -112,18 +112,55 @@ CHATCCC_CURSOR_COMMAND=/path/to/agent
 
 > **说明**：只使用 Claude Code（`/new claude` 或 `/new`）的用户无需安装 Cursor CLI。
 
+#### Codex CLI（使用 Codex 会话时需要）
+
+ChatCCC **不捆绑** Codex CLI，需要用户自行安装：
+
+```bash
+npm install -g @openai/codex
+```
+
+安装后需登录 OpenAI 账号：
+
+```bash
+codex login
+```
+
+验证是否已安装：
+
+```bash
+codex --version
+```
+
+Codex 会话的模型和努力程度由 `config.toml`（`~/.codex/config.toml`）决定，也可通过环境变量指定：
+
+```env
+# 不设置或设为 default 时由 codex config.toml 决定
+CHATCCC_CODEX_MODEL=default
+
+# 不设置或设为 default 时由 codex config.toml 决定（通过 -c model_reasoning_effort 传递）
+CHATCCC_CODEX_EFFORT=default
+```
+
+也可通过环境变量指定自定义 Codex 可执行文件路径：
+
+```env
+CHATCCC_CODEX_COMMAND=/path/to/codex
+```
+
+> **说明**：只使用 Claude Code 或 Cursor 的用户无需安装 Codex CLI。
+
 ### 2. 创建飞书应用
 
 打开 [飞书开放平台](https://open.feishu.cn)，创建一个**企业自建应用**。
 
 **添加应用能力**：开启「机器人」功能。
 
-**权限配置（重要）**（在「权限管理」中按前缀搜索，**将以下三类前缀开头的权限全部开通**）：
+**权限配置（重要）**（在「权限管理」中按前缀搜索，**将以下两类前缀开头的权限全部开通**）：
 
 | 前缀 | 用途（简要） |
 | ---- | ------------ |
-| `im:message` | 收发与读取消息、以机器人身份发言、与会话相关的消息能力等 |
-| `im:chat` | 创建与管理群聊、与会话绑定、群成员与聊天场景相关能力等 |
+| `im:` | 收发消息、创建与管理群聊、以机器人身份发言等（请将此前缀下所有权限全部开通） |
 | `cardkit:` | 群卡片展示、流式更新、卡片按钮与交互回调相关能力等 |
 
 控制台中同一前缀下往往有多条子权限，请逐项勾选开通，避免遗漏导致收不到消息或卡片异常。
@@ -182,6 +219,19 @@ CHATCCC_CURSOR_MODEL=claude-opus-4-7-max
 # CHATCCC_CURSOR_ARGS=-p --force --output-format stream-json --stream-partial-output
 ```
 
+Codex CLI 模型与努力程度（仅 Codex 会话相关，省略或 `default` 时不传对应参数）：
+
+```env
+# Codex 会话使用的模型；不设置或设为 default 时由 codex config.toml 决定
+CHATCCC_CODEX_MODEL=default
+
+# Codex 会话的努力程度（low/medium/high）；不设置或设为 default 时由 codex config.toml 决定
+CHATCCC_CODEX_EFFORT=default
+
+# 也可指定自定义 Codex 可执行文件路径
+# CHATCCC_CODEX_COMMAND=/path/to/codex
+```
+
 #### 注意！第三方 API（如 DeepSeek）与鉴权 403
 
 若你通过 **Anthropic 兼容网关**（例如 DeepSeek 的 `/anthropic` 端点）调用模型，除了官方 Claude 以外，需要配置 **`ANTHROPIC_API_KEY`**（API 密钥）与 **`ANTHROPIC_BASE_URL`**（写入系统环境变量，见下表）。
@@ -237,7 +287,7 @@ CHATCCC_GIT_TIMEOUT_SECONDS=600
 
 ### 5. 开始使用
 
-在飞书中找到你的机器人，发送 `/new`（默认 Claude Code）或 `/new claude` / `/new cursor`，机器人会自动创建一个群聊并把 AI 会话绑定到该群。之后直接在群里发消息就能对话。
+在飞书中找到你的机器人，发送 `/new`（默认 Claude Code）或 `/new claude` / `/new cursor` / `/new codex`，机器人会自动创建一个群聊并把 AI 会话绑定到该群。之后直接在群里发消息就能对话。
 
 ### 可用指令
 
@@ -247,10 +297,12 @@ CHATCCC_GIT_TIMEOUT_SECONDS=600
 | `/new`          | 创建新的 Claude Code 会话（默认）    |
 | `/new claude`   | 创建新的 Claude Code 会话          |
 | `/new cursor`   | 创建新的 Cursor 会话               |
+| `/new codex`    | 创建新的 Codex 会话（OpenAI）         |
 | `/stop`         | 停止当前正在生成的回复                  |
 | `/status`       | 查看当前会话的状态（轮数、模型、上下文 token 等） |
 | `/cd`           | 查看/切换工作目录                    |
 | `/sessions`     | 查看所有会话状态                    |
+| `/forget`       | 重置当前会话（创建新 Session，保留工作目录，同一群内继续） |
 | `/git <子命令>` | 在**当前会话工作目录**执行 `git ...` 并把 stdout/stderr 回发到群里（仅会话群内可用，超时见 `CHATCCC_GIT_TIMEOUT_SECONDS`） |
 | `/restart`      | 重启机器人进程                      |
 
@@ -259,4 +311,4 @@ CHATCCC_GIT_TIMEOUT_SECONDS=600
 
 ## 技术栈
 
-TypeScript / Node.js >= 20 / tsx / Anthropic Claude Agent SDK / Cursor Agent CLI / 飞书 WebSocket API / CardKit
+TypeScript / Node.js >= 20 / tsx / Anthropic Claude Agent SDK / Cursor Agent CLI / Codex CLI (OpenAI) / 飞书 WebSocket API / CardKit

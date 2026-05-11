@@ -19,7 +19,7 @@ import {
   sendCardKitMessage,
   updateCardKitCard,
 } from "./cardkit.ts";
-import { sendTextReply } from "./feishu-api.ts";
+import { sendTextReply, setChatAvatar } from "./feishu-api.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
@@ -260,13 +260,18 @@ function formatToolConfigForLog(tool: string, sessionModel?: string): string {
   }
   if (tool === "codex") {
     const m = process.env.CHATCCC_CODEX_MODEL?.trim();
-    return `model=${m && m !== "default" ? m : "(由 codex config.toml 决定)"}`;
+    const e = process.env.CHATCCC_CODEX_EFFORT?.trim();
+    const modelStr = m && m !== "default" ? m : "(由 codex config.toml 决定)";
+    const effortStr = e && e !== "default"
+      ? `effort=${e}`
+      : "effort=(由 codex config.toml 决定)";
+    return `model=${modelStr}, ${effortStr}`;
   }
   return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
 }
 
-export async function initClaudeSession(tool: string): Promise<string> {
-  const cwd = await getDefaultCwd();
+export async function initClaudeSession(tool: string, overrideCwd?: string): Promise<{ sessionId: string; cwd: string }> {
+  const cwd = overrideCwd ?? (await getDefaultCwd());
   const adapter = getAdapterForTool(tool);
   console.log(
     `[${ts()}] [STEP 1/5] Creating ${adapter.displayName} session (${formatToolConfigForLog(tool)}, cwd=${cwd})`
@@ -280,7 +285,7 @@ export async function initClaudeSession(tool: string): Promise<string> {
 
   await addRecentDir(cwd);
 
-  return sessionId;
+  return { sessionId, cwd };
 }
 
 export async function resumeAndPrompt(
@@ -313,6 +318,8 @@ export async function resumeAndPrompt(
     cardBusy: false,
   });
   const myGen = sessionGen;
+
+  setChatAvatar(token, chatId, "busy").catch(() => {});
 
   const now = Date.now();
   const existingInfo = sessionInfoMap.get(chatId);
@@ -444,6 +451,7 @@ export async function resumeAndPrompt(
   if (!cEntry || cEntry.gen !== myGen) return;
   const wasStopped = cEntry.stopped;
   chatSessionMap.delete(chatId);
+  setChatAvatar(token, chatId, "idle").catch(() => {});
 
   const finalCardContent = state.accumulatedContent || " ";
   if (cardId) {
@@ -556,9 +564,10 @@ async function resolveModelEffort(
   }
   if (tool === "codex") {
     const m = process.env.CHATCCC_CODEX_MODEL?.trim();
+    const e = process.env.CHATCCC_CODEX_EFFORT?.trim();
     return {
       model: m && m !== "default" ? m : UNKNOWN_MODEL_PLACEHOLDER,
-      effort: null,
+      effort: e && e !== "default" ? e : UNKNOWN_MODEL_PLACEHOLDER,
     };
   }
   return {

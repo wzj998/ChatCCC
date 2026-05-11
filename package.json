@@ -31,6 +31,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.133",
     "@larksuiteoapi/node-sdk": "^1.59.0",
+    "nodemailer": "^8.0.7",
+    "sharp": "^0.34.5",
     "tsx": "^4.0.0",
     "ws": "^8.18.0"
   },

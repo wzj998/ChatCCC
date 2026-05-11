@@ -1,5 +1,7 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, readFile } from "node:fs/promises";
+import { resolve as resolvePath } from "node:path";
 import { join } from "node:path";
+import sharp from "sharp";
 
 import {
   APP_ID,
@@ -12,7 +14,7 @@ import {
   CODEX_SESSION_PREFIX,
   ts,
 } from "./config.ts";
-import { buildButtons } from "./cards.ts";
+import { buildHelpCard } from "./cards.ts";
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -78,6 +80,18 @@ const REQUIRED_PERMISSIONS: PermissionDef[] = [
     method: "PATCH",
     path: "/im/v1/messages/om_000000000000000000000000",
     body: JSON.stringify({ content: JSON.stringify({ elements: [{ tag: "markdown", content: " " }] }) }),
+  },
+  {
+    scope: "cardkit:card",
+    description: "创建/更新群卡片（流式进度卡片、状态卡片等）",
+    method: "POST",
+    path: "/cardkit/v1/cards",
+    body: JSON.stringify({
+      schema: "2.0",
+      config: { update_multi: true },
+      header: { template: "blue", title: { tag: "plain_text", content: "permcheck" } },
+      body: { direction: "vertical", elements: [{ tag: "markdown", content: " " }] },
+    }),
   },
 ];
 
@@ -243,6 +257,101 @@ export function extractSessionId(description: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Avatar
+// ---------------------------------------------------------------------------
+
+const AVATAR_DIR = resolvePath(PROJECT_ROOT, "images", "avatars");
+const AVATAR_SOURCES: Record<string, string> = {
+  new: process.env.CHATCCC_AVATAR_NEW_URL?.trim() || resolvePath(AVATAR_DIR, "status_new.png"),
+  busy: process.env.CHATCCC_AVATAR_BUSY_URL?.trim() || resolvePath(AVATAR_DIR, "status_busy.png"),
+  idle: process.env.CHATCCC_AVATAR_IDLE_URL?.trim() || resolvePath(AVATAR_DIR, "status_idle.png"),
+};
+
+const avatarKeyCache = new Map<string, string>();
+
+function isHttpUrl(source: string): boolean {
+  return /^https?:\/\//i.test(source);
+}
+
+async function loadAvatarSource(source: string): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+  let input: Buffer;
+  if (isHttpUrl(source)) {
+    const resp = await fetch(source);
+    if (!resp.ok) throw new Error(`download avatar url failed: status=${resp.status}`);
+    input = Buffer.from(await resp.arrayBuffer());
+  } else {
+    input = await readFile(source);
+  }
+
+  const jpeg = await sharp(input)
+    .resize(256, 256, { fit: "cover", position: "center" })
+    .flatten({ background: "#ffffff" })
+    .removeAlpha()
+    .jpeg({ quality: 95, progressive: false })
+    .toBuffer();
+
+  return {
+    buffer: jpeg,
+    contentType: "image/jpeg",
+    filename: "avatar.jpg",
+  };
+}
+
+async function uploadImage(token: string, source: string): Promise<string> {
+  const image = await loadAvatarSource(source);
+  const blob = new Blob([new Uint8Array(image.buffer)], { type: image.contentType });
+  const form = new FormData();
+  form.append("image_type", "avatar");
+  form.append("image", blob, image.filename);
+
+  // Group avatars need an im/v1 image_key uploaded with image_type=avatar.
+  const resp = await fetch(`${BASE_URL}/im/v1/images`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const text = await resp.text();
+  let data: { code: number; msg?: string; data?: { image_key?: string } };
+  try { data = JSON.parse(text); } catch {
+    throw new Error(`uploadImage non-JSON response: ${text.slice(0, 200)}`);
+  }
+  if (data.code !== 0) throw new Error(`[${data.code}] ${data.msg}`);
+  return data.data!.image_key!;
+}
+
+async function getOrUploadAvatarKey(token: string, status: string): Promise<string> {
+  const cached = avatarKeyCache.get(status);
+  if (cached) return cached;
+  const key = await uploadImage(token, AVATAR_SOURCES[status]);
+  avatarKeyCache.set(status, key);
+  console.log(`[${ts()}] [AVATAR] Uploaded "${status}" → image_key=${key}`);
+  return key;
+}
+
+export async function setChatAvatar(token: string, chatId: string, status: string): Promise<void> {
+  try {
+    const avatarKey = await getOrUploadAvatarKey(token, status);
+    const resp = await fetch(`${BASE_URL}/im/v1/chats/${chatId}`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ avatar: avatarKey }),
+    });
+    const text = await resp.text();
+    let data: { code: number; msg?: string };
+    try { data = JSON.parse(text); } catch {
+      if (resp.ok) return;
+      throw new Error(`setChatAvatar non-JSON response (status=${resp.status}): ${text.slice(0, 200)}`);
+    }
+    if (data.code !== 0) throw new Error(`[${data.code}] ${data.msg}`);
+  } catch (err) {
+    console.error(`[${ts()}] [AVATAR] setChatAvatar FAIL: chatId=${chatId} status=${status} ${(err as Error).message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Messaging
 // ---------------------------------------------------------------------------
 
@@ -336,19 +445,7 @@ export async function sendRestartCard(token: string): Promise<void> {
 
     console.log(`[${ts()}] [RESTART] Latest active chat: ${latestChatId} (mtime=${new Date(latestTime).toISOString()})`);
 
-    const restartCard = JSON.stringify({
-      config: { wide_screen_mode: true },
-      header: { template: "green", title: { content: "ChatCCC Started", tag: "plain_text" } },
-      elements: [
-        { tag: "div", text: { tag: "lark_md", content: "Bot 已启动完成，可以继续使用。\n\n发送 **/new** 创建新会话（默认 Claude Code）\n发送 **/new claude** 创建新 Claude 对话\n发送 **/new cursor** 创建新 Cursor 会话（启动需要多等几秒）" } },
-        buildButtons([
-          { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
-          { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
-          { text: "重启Chat CCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
-          { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
-        ]),
-      ],
-    });
+    const restartCard = buildHelpCard("", { greeting: "Bot 已启动完成，可以继续使用。" });
     await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
       method: "POST",
       headers: {
