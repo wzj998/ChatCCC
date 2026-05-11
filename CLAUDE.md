@@ -8,3 +8,4 @@
 - **`cmt` / `cmt all` 约定**：`cmt` → 1) 修改注释和文档 2) 运行全部单测 3) `git commit` 只提交当前会话改动。`cmt all` → 上述流程但提交全部改动（含与当前对话无关的）。若无法可靠区分当前会话改动，先问用户
 - **`cmp` / `cmp all` 约定**：`cmp` → 执行 `cmt` 后 `git push`。`cmp all` → 执行 `cmt all` 后 `git push`
 - **避免 `undefined` 被当成 `false` 使用**：当函数成功时返回 `undefined`（如 `.catch(() => {})` 没有返回值、void 函数等），直接用 `if (result)` 会把成功当成失败。必须用显式比较，例如 `result !== false` 而非 `!result`
+- **公有仓库 PR 规则**：ChatCCC 仓库 dev → main 的 PR 必须使用 **merge commit**（Create a merge commit），**禁止 squash**。PR 合并通过 `gh pr merge` 时指定 `--merge`
