@@ -324,7 +324,7 @@ export async function resumeAndPrompt(
   });
   const myGen = sessionGen;
 
-  setChatAvatar(token, chatId, "busy").catch(() => {});
+  setChatAvatar(token, chatId, tool, "busy").catch(() => {});
 
   const now = Date.now();
   const existingInfo = sessionInfoMap.get(chatId);
@@ -466,7 +466,7 @@ export async function resumeAndPrompt(
   if (!cEntry || cEntry.gen !== myGen) return;
   const wasStopped = cEntry.stopped;
   chatSessionMap.delete(chatId);
-  setChatAvatar(token, chatId, "idle").catch(() => {});
+  setChatAvatar(token, chatId, tool, "idle").catch(() => {});
 
   const finalCardContent = state.accumulatedContent || " ";
   if (cardId) {

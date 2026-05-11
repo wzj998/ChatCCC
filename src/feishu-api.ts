@@ -1,6 +1,6 @@
-import { readdir, stat, readFile } from "node:fs/promises";
+import { readdir, stat, readFile, mkdir, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import sharp from "sharp";
 
 import {
@@ -261,19 +261,79 @@ export function extractSessionId(description: string): string | null {
 // ---------------------------------------------------------------------------
 
 const AVATAR_DIR = resolvePath(PROJECT_ROOT, "images", "avatars");
+const AVATAR_BADGE_DIR = resolvePath(AVATAR_DIR, "badges");
+const AVATAR_KEY_CACHE_FILE = resolvePath(PROJECT_ROOT, "state", "avatar-image-keys.json");
 const AVATAR_SOURCES: Record<string, string> = {
   new: resolvePath(AVATAR_DIR, "status_new.png"),
   busy: resolvePath(AVATAR_DIR, "status_busy.png"),
   idle: resolvePath(AVATAR_DIR, "status_idle.png"),
 };
+const AVATAR_BADGES: Record<string, string> = {
+  claude: resolvePath(AVATAR_BADGE_DIR, "badge_claude.png"),
+  cursor: resolvePath(AVATAR_BADGE_DIR, "badge_cursor.png"),
+  codex: resolvePath(AVATAR_BADGE_DIR, "badge_codex.png"),
+};
+const AVATAR_SIZE = 256;
+const BADGE_SIZE = 92;
+const BADGE_MARGIN = 10;
 
 const avatarKeyCache = new Map<string, string>();
+let avatarKeyCacheLoaded = false;
 
-async function loadAvatarSource(source: string): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
-  const input = await readFile(source);
+function normalizeAvatarTool(tool: string): string {
+  return AVATAR_BADGES[tool] ? tool : "claude";
+}
 
-  const jpeg = await sharp(input)
-    .resize(256, 256, { fit: "cover", position: "center" })
+function normalizeAvatarStatus(status: string): string {
+  return AVATAR_SOURCES[status] ? status : "idle";
+}
+
+function avatarCacheKey(tool: string, status: string): string {
+  return `${normalizeAvatarTool(tool)}:${normalizeAvatarStatus(status)}`;
+}
+
+async function loadAvatarKeyCache(): Promise<void> {
+  if (avatarKeyCacheLoaded) return;
+  avatarKeyCacheLoaded = true;
+  try {
+    const raw = await readFile(AVATAR_KEY_CACHE_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim()) avatarKeyCache.set(key, value);
+    }
+  } catch {
+    // Missing or malformed cache should not block avatar updates.
+  }
+}
+
+async function persistAvatarKeyCache(): Promise<void> {
+  await mkdir(dirname(AVATAR_KEY_CACHE_FILE), { recursive: true });
+  await writeFile(
+    AVATAR_KEY_CACHE_FILE,
+    JSON.stringify(Object.fromEntries(avatarKeyCache.entries()), null, 2),
+    "utf-8",
+  );
+}
+
+async function renderAvatar(tool: string, status: string): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+  const normalizedTool = normalizeAvatarTool(tool);
+  const normalizedStatus = normalizeAvatarStatus(status);
+  const badge = await sharp(await readFile(AVATAR_BADGES[normalizedTool]))
+    .resize(BADGE_SIZE, BADGE_SIZE, {
+      fit: "contain",
+      kernel: sharp.kernel.lanczos3,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
+
+  const jpeg = await sharp(await readFile(AVATAR_SOURCES[normalizedStatus]))
+    .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "center" })
+    .composite([{
+      input: badge,
+      left: AVATAR_SIZE - BADGE_SIZE - BADGE_MARGIN,
+      top: AVATAR_SIZE - BADGE_SIZE - BADGE_MARGIN,
+    }])
     .flatten({ background: "#ffffff" })
     .removeAlpha()
     .jpeg({ quality: 95, progressive: false })
@@ -282,12 +342,12 @@ async function loadAvatarSource(source: string): Promise<{ buffer: Buffer; conte
   return {
     buffer: jpeg,
     contentType: "image/jpeg",
-    filename: "avatar.jpg",
+    filename: `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
   };
 }
 
-async function uploadImage(token: string, source: string): Promise<string> {
-  const image = await loadAvatarSource(source);
+async function uploadImage(token: string, tool: string, status: string): Promise<string> {
+  const image = await renderAvatar(tool, status);
   const blob = new Blob([new Uint8Array(image.buffer)], { type: image.contentType });
   const form = new FormData();
   form.append("image_type", "avatar");
@@ -308,18 +368,23 @@ async function uploadImage(token: string, source: string): Promise<string> {
   return data.data!.image_key!;
 }
 
-async function getOrUploadAvatarKey(token: string, status: string): Promise<string> {
-  const cached = avatarKeyCache.get(status);
+async function getOrUploadAvatarKey(token: string, tool: string, status: string): Promise<string> {
+  await loadAvatarKeyCache();
+  const keyName = avatarCacheKey(tool, status);
+  const cached = avatarKeyCache.get(keyName);
   if (cached) return cached;
-  const key = await uploadImage(token, AVATAR_SOURCES[status]);
-  avatarKeyCache.set(status, key);
+  const key = await uploadImage(token, tool, status);
+  avatarKeyCache.set(keyName, key);
+  await persistAvatarKeyCache().catch((err) => {
+    console.error(`[${ts()}] [AVATAR] persist cache FAIL: ${(err as Error).message}`);
+  });
   console.log(`[${ts()}] [AVATAR] Uploaded "${status}" → image_key=${key}`);
   return key;
 }
 
-export async function setChatAvatar(token: string, chatId: string, status: string): Promise<void> {
+export async function setChatAvatar(token: string, chatId: string, tool: string, status: string): Promise<void> {
   try {
-    const avatarKey = await getOrUploadAvatarKey(token, status);
+    const avatarKey = await getOrUploadAvatarKey(token, tool, status);
     const resp = await fetch(`${BASE_URL}/im/v1/chats/${chatId}`, {
       method: "PUT",
       headers: {
@@ -336,7 +401,7 @@ export async function setChatAvatar(token: string, chatId: string, status: strin
     }
     if (data.code !== 0) throw new Error(`[${data.code}] ${data.msg}`);
   } catch (err) {
-    console.error(`[${ts()}] [AVATAR] setChatAvatar FAIL: chatId=${chatId} status=${status} ${(err as Error).message}`);
+    console.error(`[${ts()}] [AVATAR] setChatAvatar FAIL: chatId=${chatId} tool=${tool} status=${status} ${(err as Error).message}`);
   }
 }
 

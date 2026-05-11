@@ -405,7 +405,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     );
 
     console.log(`[${ts()}] [STEP 4/4] Replied to new group → OK`);
-    setChatAvatar(freshToken, newChatId, "new").catch(() => {});
+    setChatAvatar(freshToken, newChatId, tool, "new").catch(() => {});
     console.log(`${"=".repeat(60)}`);
     return;
   }
@@ -558,7 +558,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           tool: descriptionTool,
         });
 
-        setChatAvatar(freshToken, chatId, "new").catch(() => {});
+        setChatAvatar(freshToken, chatId, descriptionTool, "new").catch(() => {});
 
         await sendCardReply(
           freshToken, chatId, `${toolLabel} Session Reset`,
