@@ -71,7 +71,7 @@ interface ApiResponse {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
-const PID_FILE = join(PROJECT_ROOT, ".claude", "runtime.pid");
+const PID_FILE = join(PROJECT_ROOT, "state", "runtime.pid");
 
 // 日志文件
 const logDir = join(__dirname, "logs");

@@ -106,7 +106,7 @@ export function getAdapterForTool(tool: string): ToolAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Session tool persistence (.claude/sessions.json)
+// Session tool persistence (state/sessions.json)
 // ---------------------------------------------------------------------------
 
 interface SessionToolRecord {

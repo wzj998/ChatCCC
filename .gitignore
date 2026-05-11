@@ -144,9 +144,8 @@ vite.config.ts.timestamp-*
 CLAUDE.local.md
 local/
 .claude/settings.local.json
-.claude/chat_logs/
-.claude/working_dir.txt
-.claude/cursor-session-meta.json
+.claude/skills/
+state/
 
 # Sync script (local only)
 sync.bat

@@ -593,7 +593,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           console.error(`[${ts()}] [GIT] getSessionInfo FAIL: ${(err as Error).message}`);
         }
         if (!cwd) {
-          // Cursor 会话的 cwd 依赖 .claude/cursor-session-cwd.json 持久化映射；
+          // Cursor 会话的 cwd 依赖 state/cursor-session-meta.json 持久化映射；
           // 升级前创建的旧会话或映射文件丢失时，向会话发送一次普通消息即可触发
           // adapter 自动学习并补全（resume 流首条 init 事件携带 cwd）。
           const isCursor = descriptionTool === "cursor";

@@ -40,7 +40,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
-const PID_FILE = join(PROJECT_ROOT, ".claude", "runtime.pid");
+const PID_FILE = join(PROJECT_ROOT, "state", "runtime.pid");
 
 const logDir = join(__dirname, "logs");
 setupFileLogging(logDir, "permission-check");

@@ -9,7 +9,7 @@
 //      与 Cursor 实际跑的 Composer 2 Fast 等真实模型无关
 //
 // 存储：
-//   文件 .claude/cursor-session-meta.json，结构：
+//   文件 state/cursor-session-meta.json，结构：
 //     { "<sessionId>": { "cwd": "...", "model": "..." } }
 //
 // API 设计：
@@ -28,7 +28,7 @@ import { PROJECT_ROOT } from "../config.ts";
 /** 持久化文件默认路径（生产）。测试可通过 createCursorSessionMetaStore(filePath) 注入。 */
 export const CURSOR_SESSION_META_FILE = join(
   PROJECT_ROOT,
-  ".claude",
+  "state",
   "cursor-session-meta.json",
 );
 
@@ -150,5 +150,5 @@ export function createCursorSessionMetaStore(
   };
 }
 
-/** 生产环境共享的全局默认实例（指向 .claude/cursor-session-meta.json）。 */
+/** 生产环境共享的全局默认实例（指向 state/cursor-session-meta.json）。 */
 export const defaultCursorSessionMetaStore = createCursorSessionMetaStore();
