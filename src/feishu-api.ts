@@ -338,7 +338,7 @@ export async function sendRestartCard(token: string): Promise<void> {
       config: { wide_screen_mode: true },
       header: { template: "green", title: { content: "ChatCCC Started", tag: "plain_text" } },
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: "Bot 已启动完成，可以继续使用。\n\n使用 **/new**（默认 Claude Code）或 **/new claude** / **/new cursor** 创建新会话" } },
+        { tag: "div", text: { tag: "lark_md", content: "Bot 已启动完成，可以继续使用。\n\n发送 **/new** 创建新会话（默认 Claude Code）\n发送 **/new claude** 创建新 Claude 对话\n发送 **/new cursor** 创建新 Cursor 会话（启动需要多等几秒）" } },
         buildButtons([
           { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
           { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },

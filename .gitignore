@@ -151,3 +151,6 @@ local/
 # Sync script (local only)
 sync.bat
 sync.ps1
+
+# Temp debug files
+tmp_*
