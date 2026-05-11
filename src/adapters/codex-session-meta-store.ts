@@ -12,7 +12,7 @@ import { PROJECT_ROOT } from "../config.ts";
 
 export const CODEX_SESSION_META_FILE = join(
   PROJECT_ROOT,
-  ".claude",
+  "state",
   "codex-session-meta.json",
 );
 

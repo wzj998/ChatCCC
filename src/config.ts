@@ -13,12 +13,12 @@ import { appendStartupTrace, setupFileLogging } from "./shared.ts";
 
 export const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = join(__dirname, "..");
-export const PID_FILE = join(PROJECT_ROOT, ".claude", "runtime.pid");
+export const PID_FILE = join(PROJECT_ROOT, "state", "runtime.pid");
 
 export const LOG_DIR = join(PROJECT_ROOT, "logs");
 export const fileLog = setupFileLogging(LOG_DIR, "index");
 
-export const CHAT_LOGS_DIR = join(PROJECT_ROOT, ".claude", "chat_logs");
+export const CHAT_LOGS_DIR = join(PROJECT_ROOT, "state", "chat_logs");
 
 export async function appendChatLog(chatId: string, sender: string, text: string): Promise<void> {
   try {
@@ -144,13 +144,13 @@ export const CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
 
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
 // 该路径仅影响通过 /new 新建的会话，不影响已有会话的 resume。
-export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, ".claude", "working_dir.txt");
+export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, "state", "working_dir.txt");
 
 /** 会话工具类型持久化文件 */
-export const SESSIONS_FILE = join(PROJECT_ROOT, ".claude", "sessions.json");
+export const SESSIONS_FILE = join(PROJECT_ROOT, "state", "sessions.json");
 
 /** 最近成功新建会话的工作路径记录（最多 10 条） */
-export const RECENT_DIRS_FILE = join(PROJECT_ROOT, ".claude", "recent_dirs.json");
+export const RECENT_DIRS_FILE = join(PROJECT_ROOT, "state", "recent_dirs.json");
 export const MAX_RECENT_DIRS = 10;
 
 /** 读取最近使用过的工作路径列表（最新的在前） */
