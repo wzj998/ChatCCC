@@ -143,8 +143,7 @@ vite.config.ts.timestamp-*
 .vite/
 CLAUDE.local.md
 local/
-.claude/settings.local.json
-.claude/skills/
+.claude/
 state/
 
 # Sync script (local only)
