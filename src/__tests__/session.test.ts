@@ -142,7 +142,7 @@ describe("getSessionStatus", () => {
     mockSessionInfo("chat-claude", { tool: "claude" });
     const status = await getSessionStatus("chat-claude");
     expect(status!.effort).not.toBeNull();
-    // model 必为非空字符串（默认 'default' 或环境变量值）；不应是占位符
+    // model 必为字符串（留空时显示 '(留空)'，否则为环境变量值）；不应是占位符
     expect(typeof status!.model).toBe("string");
     expect(status!.model.length).toBeGreaterThan(0);
   });
@@ -171,7 +171,7 @@ describe("getSessionStatus", () => {
     expect(status!.model).toBe("Composer 2 Fast");
   });
 
-  it("Cursor 会话：adapter 没返回 model 时使用占位符（区别于硬塞 'default'）", async () => {
+  it("Cursor 会话：adapter 没返回 model 时使用占位符（不应硬塞任何模型字面量）", async () => {
     mockSessionInfo("chat-cursor", { sessionId: "sid-cur", tool: "cursor" });
     _setAdapterForToolForTest(
       "cursor",

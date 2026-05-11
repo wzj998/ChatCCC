@@ -11,21 +11,22 @@
   "files": [
     "src/",
     "bin/",
+    "images/",
     "package.json",
     "README.md",
-    ".env.example"
+    "config.sample.json"
   ],
   "scripts": {
-    "dev": "tsx --env-file=.env src/index.ts",
-    "chatccc": "tsx --env-file=.env src/index.ts",
-    "start": "tsx --env-file=.env src/index.ts",
-    "demo:bot-test": "tsx --env-file=.env demo/bot_test.ts",
-    "demo:bot-test:local": "tsx --env-file=.env demo/bot_test.ts --local",
-    "demo:create-group": "tsx --env-file=.env src/index.ts",
-    "demo:create-group:local": "tsx --env-file=.env src/index.ts --local",
-    "demo:permission-check": "tsx --env-file=.env demo/permission_check.ts",
-    "demo:claude-hi": "tsx --env-file=.env demo/claude_say_hi.ts",
-    "demo:codex-hi": "tsx --env-file=.env demo/codex_say_hi.ts",
+    "dev": "tsx src/index.ts",
+    "chatccc": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "demo:bot-test": "tsx demo/bot_test.ts",
+    "demo:bot-test:local": "tsx demo/bot_test.ts --local",
+    "demo:create-group": "tsx src/index.ts",
+    "demo:create-group:local": "tsx src/index.ts --local",
+    "demo:permission-check": "tsx demo/permission_check.ts",
+    "demo:claude-hi": "tsx demo/claude_say_hi.ts",
+    "demo:codex-hi": "tsx demo/codex_say_hi.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

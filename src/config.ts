@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, copyFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,26 @@ import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
 import { appendStartupTrace, setupFileLogging } from "./shared.ts";
+import {
+  anthropicConfigDisplay,
+  autoDetectCodexPath,
+  autoDetectCursorPath,
+  normalizeOptionalConfigField,
+  readToolCliPath,
+} from "./config-utils.ts";
+
+// 重新导出 config-utils 中的纯函数/常量，保持对外 API 不变
+// （历史上这些符号都从 ./config.ts 导入；新代码可直接从 ./config-utils.ts 导入以避免触发本文件的副作用）
+export {
+  DEFAULT_GIT_TIMEOUT_SECONDS,
+  MIN_GIT_TIMEOUT_SECONDS,
+  MAX_GIT_TIMEOUT_SECONDS,
+  parseGitTimeoutSeconds,
+  normalizeOptionalConfigField,
+  isAnthropicConfigEmpty,
+  anthropicConfigDisplay,
+} from "./config-utils.ts";
+export type { ParsedGitTimeout } from "./config-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Paths & logging
@@ -31,93 +52,326 @@ export async function appendChatLog(chatId: string, sender: string, text: string
 }
 
 // ---------------------------------------------------------------------------
-// Environment & config
+// Config file loading
 // ---------------------------------------------------------------------------
 
+export interface ClaudeConfig {
+  /** 是否启用 Claude Code Agent；缺省时按"有任意字段非空"自动判定（向后兼容） */
+  enabled: boolean;
+  model: string;
+  effort: string;
+  apiKey: string;
+  baseUrl: string;
+}
+
+export interface CursorConfig {
+  /** 是否启用 Cursor Agent；缺省时按"有任意字段非空"自动判定（向后兼容） */
+  enabled: boolean;
+  /** Cursor Agent CLI 可执行文件绝对路径；留空时由运行时按 LocalAppData / PATH 兜底 */
+  path: string;
+  model: string;
+}
+
+export interface CodexConfig {
+  /** 是否启用 Codex Agent；缺省时按"有任意字段非空"自动判定（向后兼容） */
+  enabled: boolean;
+  /** Codex CLI 可执行文件绝对路径；留空时退回到 PATH 中的 `codex` */
+  path: string;
+  model: string;
+  effort: string;
+}
+
+export interface FeishuConfig {
+  appId: string;
+  appSecret: string;
+}
+
+export interface AppConfig {
+  feishu: FeishuConfig;
+  port: number;
+  gitTimeoutSeconds: number;
+  claude: ClaudeConfig;
+  cursor: CursorConfig;
+  codex: CodexConfig;
+}
+
+const CONFIG_FILE = join(PROJECT_ROOT, "config.json");
+const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
+
+/**
+ * 是否处于 vitest 测试环境。
+ *
+ * 由于 `src/config.ts` 在模块顶层立即执行 `loadConfig()`，而很多生产模块
+ * （session.ts、adapters/* 等）又会 import config.ts，因此**任何**一个
+ * import 了这些生产模块的单测都会间接触发 config.ts 顶层副作用——这是不
+ * 应该的：单测不应该改动工作区的文件系统。
+ *
+ * vitest 在运行测试时会自动设置 `VITEST=true`，据此跳过自动复制 sample 的
+ * 写文件副作用即可（顶层依然会正常加载默认值与可能已存在的 config.json）。
+ */
+const IS_TEST_ENV = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+
+/**
+ * Windows 上用 `where`、其它平台用 `which` 查找命令的绝对路径。
+ * 命令未安装、命令查找进程出错都视为"找不到"，返回 null。
+ */
+function whichSync(cmd: string): string | null {
+  try {
+    const tool = process.platform === "win32" ? "where" : "which";
+    const out = execFileSync(tool, [cmd], {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+      timeout: 5000,
+    });
+    const first = out.toString().split(/\r?\n/)[0]?.trim();
+    return first || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 在刚从 config.sample.json 复制出来的 config.json 上立即探测一次 cursor/codex
+ * 路径，命中就回写，便于用户无需手动编辑就拿到可运行的默认配置。
+ *
+ * 仅在"复制 sample 这一刻"调用，已存在的 config.json 不会触发——避免悄悄改写
+ * 用户主动留空的字段。
+ */
+function autofillToolPathsAfterSampleCopy(configFile: string): void {
+  let raw: string;
+  try {
+    raw = readFileSync(configFile, "utf-8");
+  } catch {
+    return;
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+
+  const cursor = (parsed.cursor as Record<string, unknown> | undefined) ?? {};
+  const codex = (parsed.codex as Record<string, unknown> | undefined) ?? {};
+  const cursorEmpty =
+    (typeof cursor.path !== "string" || cursor.path.trim() === "") &&
+    (typeof cursor.command !== "string" || (cursor.command as string).trim() === "");
+  const codexEmpty =
+    (typeof codex.path !== "string" || codex.path.trim() === "") &&
+    (typeof codex.command !== "string" || (codex.command as string).trim() === "");
+
+  let mutated = false;
+  if (cursorEmpty) {
+    const detected = autoDetectCursorPath({
+      platform: process.platform,
+      localAppData: process.env.LOCALAPPDATA,
+      existsSync,
+      whichSync,
+    });
+    if (detected) {
+      parsed.cursor = { ...cursor, path: detected };
+      mutated = true;
+      console.log(`[CONFIG] 已自动探测 Cursor CLI 路径: ${detected}`);
+    } else {
+      console.log("[CONFIG] 未探测到 Cursor CLI，cursor.path 留空（运行时按 PATH 兜底）。");
+    }
+  }
+  if (codexEmpty) {
+    const detected = autoDetectCodexPath({ whichSync });
+    if (detected) {
+      parsed.codex = { ...codex, path: detected };
+      mutated = true;
+      console.log(`[CONFIG] 已自动探测 Codex CLI 路径: ${detected}`);
+    } else {
+      console.log("[CONFIG] 未探测到 Codex CLI，codex.path 留空（运行时退回 PATH 中的 codex）。");
+    }
+  }
+
+  if (mutated) {
+    try {
+      writeFileSync(configFile, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+    } catch (err) {
+      console.error(
+        `[CONFIG] 自动探测路径回写 config.json 失败: ${(err as Error).message}`,
+      );
+    }
+  }
+}
+
+function loadConfig(): AppConfig {
+  const defaults: AppConfig = {
+    feishu: { appId: "", appSecret: "" },
+    port: 18080,
+    gitTimeoutSeconds: 180,
+    claude: { enabled: false, model: "", effort: "", apiKey: "", baseUrl: "" },
+    cursor: { enabled: false, path: "", model: "claude-opus-4-7-max" },
+    codex: { enabled: false, path: "", model: "", effort: "" },
+  };
+
+  if (!existsSync(CONFIG_FILE)) {
+    if (IS_TEST_ENV) {
+      // 测试环境下绝不写文件，直接走默认值
+      return defaults;
+    }
+    if (existsSync(CONFIG_SAMPLE_FILE)) {
+      console.log(`[CONFIG] config.json 不存在，基于 config.sample.json 创建...`);
+      try {
+        copyFileSync(CONFIG_SAMPLE_FILE, CONFIG_FILE);
+      } catch (err) {
+        console.error(`[CONFIG] 无法从 config.sample.json 创建 config.json: ${(err as Error).message}`);
+        return defaults;
+      }
+      // 复制完成立即探测 CLI 路径并回写，让用户开箱即用而无须手编 config.json。
+      autofillToolPathsAfterSampleCopy(CONFIG_FILE);
+    } else {
+      console.error(`[CONFIG] config.json 和 config.sample.json 都不存在，使用默认配置。`);
+      return defaults;
+    }
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(CONFIG_FILE, "utf-8");
+  } catch (err) {
+    console.error(`[CONFIG] 无法读取 config.json: ${(err as Error).message}`);
+    return defaults;
+  }
+
+  let parsed: Partial<AppConfig> & {
+    claude?: Partial<ClaudeConfig> & { enabled?: unknown };
+    cursor?: { enabled?: unknown; path?: unknown; command?: unknown; model?: unknown };
+    codex?: { enabled?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
+  };
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`[CONFIG] config.json 不是合法 JSON: ${(err as Error).message}`);
+    return defaults;
+  }
+
+  const feishu = parsed.feishu ?? { appId: "", appSecret: "" };
+  const claude = parsed.claude ?? {} as Partial<ClaudeConfig>;
+  const cursorRaw = parsed.cursor ?? {};
+  const codexRaw = parsed.codex ?? {};
+
+  // 兼容旧字段 `command`：命中时打印一次性 warning 提示用户改名
+  const onLegacyField = (label: string, value: string): void => {
+    console.warn(
+      `[CONFIG] ${label}.command 字段已废弃，请改为 ${label}.path（当前仍按旧字段读到 "${value}"）。`,
+    );
+  };
+
+  /**
+   * 解析 `<agent>.enabled` 字段：
+   * - 显式 boolean → 用原值
+   * - 缺省 / 其它类型 → 按 `nonEmptyFn()` 推断（"有任意字段非空" 即视为启用），向后兼容旧 config.json
+   */
+  const resolveEnabled = (raw: unknown, nonEmptyFn: () => boolean): boolean => {
+    if (typeof raw === "boolean") return raw;
+    return nonEmptyFn();
+  };
+
+  const claudeNonEmpty = (): boolean =>
+    Boolean(
+      (typeof claude.model === "string" && claude.model.trim()) ||
+      (typeof claude.effort === "string" && claude.effort.trim()) ||
+      (typeof claude.apiKey === "string" && claude.apiKey.trim()) ||
+      (typeof claude.baseUrl === "string" && claude.baseUrl.trim()),
+    );
+  const cursorNonEmpty = (): boolean =>
+    Boolean(
+      (typeof cursorRaw.path === "string" && cursorRaw.path.trim()) ||
+      (typeof cursorRaw.command === "string" && (cursorRaw.command as string).trim()) ||
+      (typeof cursorRaw.model === "string" && (cursorRaw.model as string).trim()),
+    );
+  const codexNonEmpty = (): boolean =>
+    Boolean(
+      (typeof codexRaw.path === "string" && codexRaw.path.trim()) ||
+      (typeof codexRaw.command === "string" && (codexRaw.command as string).trim()) ||
+      (typeof codexRaw.model === "string" && (codexRaw.model as string).trim()) ||
+      (typeof codexRaw.effort === "string" && (codexRaw.effort as string).trim()),
+    );
+
+  return {
+    feishu: {
+      appId: feishu.appId ?? "",
+      appSecret: feishu.appSecret ?? "",
+    },
+    port: typeof parsed.port === "number" ? parsed.port : 18080,
+    gitTimeoutSeconds: typeof parsed.gitTimeoutSeconds === "number" ? parsed.gitTimeoutSeconds : 180,
+    claude: {
+      enabled: resolveEnabled(claude.enabled, claudeNonEmpty),
+      model: normalizeOptionalConfigField(claude.model, { label: "claude.model" }),
+      effort: normalizeOptionalConfigField(claude.effort, { label: "claude.effort" }),
+      apiKey: claude.apiKey ?? "",
+      baseUrl: claude.baseUrl ?? "",
+    },
+    cursor: {
+      enabled: resolveEnabled(cursorRaw.enabled, cursorNonEmpty),
+      path: readToolCliPath(cursorRaw, { label: "cursor", onLegacyField }),
+      model: normalizeOptionalConfigField(cursorRaw.model, { label: "cursor.model", fallback: "claude-opus-4-7-max" }),
+    },
+    codex: {
+      enabled: resolveEnabled(codexRaw.enabled, codexNonEmpty),
+      path: readToolCliPath(codexRaw, { label: "codex", onLegacyField }),
+      model: normalizeOptionalConfigField(codexRaw.model, { label: "codex.model" }),
+      effort: normalizeOptionalConfigField(codexRaw.effort, { label: "codex.effort" }),
+    },
+  };
+}
+
+/**
+ * 全局可变 config 对象。
+ *
+ * 故意用 `const + Object.assign(config, ...)` 而非 `let config = ...`：
+ * 这样 `config` 这个 binding 永远指向同一个引用，下游模块只要在**函数体内**
+ * 读 `config.xxx` 就能自动看到最新值（如 codex-adapter.ts 的 config.codex.*）。
+ * 这是 setup → service「在线切换」复用 config 的核心机制。
+ */
+export const config: AppConfig = loadConfig();
+
+// 注：历史上这里曾把 config.claude.apiKey / baseUrl 写入 process.env 以便
+// @anthropic-ai/claude-agent-sdk 子进程读取，但这会污染主进程的环境变量。
+// 现在改为：在 ClaudeAdapter 构造时把这两个值传进去，由 adapter 在调用 SDK
+// 时通过 SDK 的 `Options.env` 字段（仅作用于子进程）传递，主进程 env 保持
+// 干净。详见 src/adapters/claude-adapter.ts buildSdkEnv()。
+
+// ---------------------------------------------------------------------------
+// Re-exported config values
+// ---------------------------------------------------------------------------
+//
+// 这些值用 `export let` 而非 `const`，是为了支持 `reloadConfigFromDisk()`：
+// setup → service「在线切换」时，向导刚把新值写入 config.json，需要让进程
+// 内的这些常量也跟着更新。ES module 的 live binding 保证：导入端通过命名导入
+// 拿到的是 module 内的 slot，slot 在导出方被重新赋值后，导入端**自动看到新值**
+// （前提是导入端在函数体内读，不是在模块顶层读）。
+
 export const USE_LOCAL = process.argv.includes("--local");
-export const APP_ID: string = process.env.CHATCCC_APP_ID ?? "";
-export const APP_SECRET: string = process.env.CHATCCC_APP_SECRET ?? "";
-
-/** 当前工作目录下的 .env（全局 chatccc 会尝试用 tsx --env-file 加载此文件） */
-export const ENV_FILE_CWD = join(process.cwd(), ".env");
-
+export let APP_ID = config.feishu.appId;
+export let APP_SECRET = config.feishu.appSecret;
 export const BASE_URL = "https://open.feishu.cn/open-apis";
-
-export const CHATCCC_PORT = parseInt(process.env.CHATCCC_PORT?.trim() ?? "18080", 10);
+export const CHATCCC_PORT = config.port;
 
 /** 与 CHATCCC_PORT 一致，供 --local 连接本机中继 */
 export const LOCAL_RELAY_URL = `ws://127.0.0.1:${CHATCCC_PORT}`;
 
-/** 未设置时为 `default`；不区分大小写的 `default` 表示交给 SDK/CLI，调用时不传对应字段 */
-export function isSdkAnthropicDefault(value: string): boolean {
-  return value.trim().toLowerCase() === "default";
-}
-
-/** 状态展示用：default 族一律显示为小写 `default` */
-export function anthropicConfigDisplay(value: string): string {
-  return isSdkAnthropicDefault(value) ? "default" : value;
-}
-
-export const CLAUDE_MODEL = process.env.CHATCCC_ANTHROPIC_MODEL?.trim() || "default";
-
-export const CLAUDE_EFFORT = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim() || "default";
+export let CLAUDE_MODEL = config.claude.model;
+export let CLAUDE_EFFORT = config.claude.effort;
+/** Anthropic 兼容网关的 API key（仅经 SDK 子进程 env 传递，从不写入主进程 process.env） */
+export let CLAUDE_API_KEY = config.claude.apiKey;
+/** Anthropic 兼容网关的 base URL（仅经 SDK 子进程 env 传递，从不写入主进程 process.env） */
+export let CLAUDE_BASE_URL = config.claude.baseUrl;
 
 // ---------------------------------------------------------------------------
-// /git 超时配置（CHATCCC_GIT_TIMEOUT_SECONDS）
+// /git 超时配置（实际值来自 config.json，纯函数与常量见 ./config-utils.ts）
 // ---------------------------------------------------------------------------
 
-/** /git 命令默认超时秒数（用户未配置时使用） */
-export const DEFAULT_GIT_TIMEOUT_SECONDS = 180;
-/** /git 超时允许的下限/上限（防止 0、负数、过大值导致行为异常） */
-export const MIN_GIT_TIMEOUT_SECONDS = 1;
-export const MAX_GIT_TIMEOUT_SECONDS = 3600; // 1 小时
+export let GIT_TIMEOUT_SECONDS = config.gitTimeoutSeconds;
+export let GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
 
-export interface ParsedGitTimeout {
-  /** 实际使用的超时秒数（无效时回退为 default） */
-  seconds: number;
-  /** 用户提供的原始字符串是否为合法整数秒（true 表示采纳了用户值或未提供） */
-  valid: boolean;
-  /** 用户原始输入；未设置时为 undefined */
-  raw?: string;
-  /** 是否使用了内置默认值（即用户未提供有效值） */
-  usingDefault: boolean;
-}
-
-/**
- * 解析 CHATCCC_GIT_TIMEOUT_SECONDS 字符串为有效秒数。
- * - 未设置 / 空 → 使用默认值，valid=true、usingDefault=true
- * - 有效整数且在 [MIN, MAX] 区间 → 使用用户值，valid=true、usingDefault=false
- * - 非整数 / 越界 / NaN → 使用默认值，valid=false、usingDefault=true（同时保留原始字符串供报错）
- */
-export function parseGitTimeoutSeconds(
-  raw: string | undefined,
-  defaultSeconds = DEFAULT_GIT_TIMEOUT_SECONDS,
-): ParsedGitTimeout {
-  const trimmed = raw?.trim();
-  if (!trimmed) {
-    return { seconds: defaultSeconds, valid: true, usingDefault: true };
-  }
-  const n = Number(trimmed);
-  if (
-    !Number.isFinite(n) ||
-    !Number.isInteger(n) ||
-    n < MIN_GIT_TIMEOUT_SECONDS ||
-    n > MAX_GIT_TIMEOUT_SECONDS
-  ) {
-    return { seconds: defaultSeconds, valid: false, raw: trimmed, usingDefault: true };
-  }
-  return { seconds: n, valid: true, raw: trimmed, usingDefault: false };
-}
-
-const gitTimeoutParsed = parseGitTimeoutSeconds(process.env.CHATCCC_GIT_TIMEOUT_SECONDS);
-/** /git 命令实际使用的超时秒数 */
-export const GIT_TIMEOUT_SECONDS = gitTimeoutParsed.seconds;
-/** /git 命令实际使用的超时毫秒数（runGitCommand 直接使用） */
-export const GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
-
-/** 探测 cursor-agent 安装路径（优先环境变量，其次 LocalAppData，最后默认 agent） */
+/** 探测 cursor-agent 安装路径（优先配置，其次 LocalAppData，最后默认 agent） */
 function detectCursorAgent(): string {
-  if (process.env.CHATCCC_CURSOR_COMMAND?.trim()) return process.env.CHATCCC_CURSOR_COMMAND.trim();
+  if (config.cursor.path) return config.cursor.path;
   const localAppData = process.env.LOCALAPPDATA;
   if (localAppData) {
     const defaultPath = join(localAppData, "cursor-agent", "agent.cmd");
@@ -125,22 +379,66 @@ function detectCursorAgent(): string {
   }
   return "agent";
 }
-export const CURSOR_AGENT_COMMAND = detectCursorAgent();
+/**
+ * spawn 第一参数：要启动的 Cursor Agent 可执行文件路径。
+ * 命名沿用 Node.js spawn(command, args) 的"command"语义，
+ * 与 config.json 的 `cursor.path` 字段不冲突。
+ */
+export let CURSOR_AGENT_COMMAND = detectCursorAgent();
 
 function resolveCursorAgentArgs(): string[] {
-  const custom = process.env.CHATCCC_CURSOR_ARGS?.trim();
-  if (custom) return custom.split(/\s+/).filter(Boolean);
-
   let args = "-p --force --output-format stream-json --stream-partial-output";
-  const model = process.env.CHATCCC_CURSOR_MODEL?.trim();
-  if (model && model !== "default") {
+  const model = config.cursor.model;
+  if (model.trim() !== "") {
     args += ` --model ${model}`;
   }
   return args.split(/\s+/).filter(Boolean);
 }
 
 /** Cursor agent 参数：-p 非交互模式，--force 强制允许命令（yolo），stream-json 流式 JSONL 输出 */
-export const CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
+export let CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
+
+// ---------------------------------------------------------------------------
+// reloadConfigFromDisk — setup → service「在线切换」时刷新进程内 config
+// ---------------------------------------------------------------------------
+//
+// 触发场景：setup 模式下用户在向导里填好凭证、刚把 config.json 写入磁盘，
+// 紧接着要在**同一个进程**里启动飞书 service。如果不调用本函数，进程内的
+// APP_ID / APP_SECRET 还是 chatccc 启动时（凭证空）的旧值，飞书 API 调用必失败。
+//
+// 故意不重新触发 sample 复制 / cursor 自动探测等副作用：
+// reload 是「读取最新磁盘配置同步到内存」，不应该再写文件。
+//
+// 注意：CHATCCC_PORT / LOCAL_RELAY_URL 不重新赋值——setup HTTP server 已经
+// 监听在原端口上，原地切换复用同一个 server，重新读端口只会引入混乱。
+
+/**
+ * 把已加载好的 AppConfig 赋值到 module-level export let 常量里。
+ *
+ * 拆出独立函数（不直接 inline 进 reloadConfigFromDisk）的目的：
+ *   1. 让测试可以用任意 AppConfig 验证"赋值映射"正确性，无需碰文件系统
+ *   2. 把"读盘"和"赋值"两个职责分开，便于将来支持其它 config 来源
+ */
+export function applyLoadedConfig(next: AppConfig): void {
+  // 就地更新 config 对象：保留原引用，让 codex-adapter 等"直接 import config"
+  // 的下游模块在下次访问 config.codex.* 时就能拿到新值。
+  Object.assign(config, next);
+
+  APP_ID = next.feishu.appId;
+  APP_SECRET = next.feishu.appSecret;
+  CLAUDE_MODEL = next.claude.model;
+  CLAUDE_EFFORT = next.claude.effort;
+  CLAUDE_API_KEY = next.claude.apiKey;
+  CLAUDE_BASE_URL = next.claude.baseUrl;
+  GIT_TIMEOUT_SECONDS = next.gitTimeoutSeconds;
+  GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
+  CURSOR_AGENT_COMMAND = detectCursorAgent();
+  CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
+}
+
+export function reloadConfigFromDisk(): void {
+  applyLoadedConfig(loadConfig());
+}
 
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
 // 该路径仅影响通过 /new 新建的会话，不影响已有会话的 resume。
@@ -190,8 +488,6 @@ export async function getDefaultCwd(): Promise<string> {
       } catch { /* path gone, fall through */ }
     }
   } catch { /* file doesn't exist yet */ }
-  // 用户未通过 /cd 设置过工作路径时，回退到操作系统用户主目录
-  // Windows: C:\Users\<用户名>   Linux: /home/<用户名>
   return homedir();
 }
 
@@ -216,106 +512,55 @@ export function maskAppId(id: string): string {
 }
 
 /**
- * 启动时逐项说明环境变量：成功=已从进程环境读入非空值；失败=必填缺失；默认=未设置则使用内置默认。
- * （.env 需由 tsx --env-file 或系统注入到 process.env 后才算「已读入」。）
+ * 启动时逐项说明配置读取结果。
  */
 export function reportEnvironmentVariableReadout(): void {
-  const get = (key: string): string => process.env[key]?.trim() ?? "";
-
-  const rawId = get("CHATCCC_APP_ID");
-  const rawSecret = get("CHATCCC_APP_SECRET");
-  const rawPort = process.env.CHATCCC_PORT?.trim();
-  const rawModel = process.env.CHATCCC_ANTHROPIC_MODEL?.trim();
-  const rawEffort = process.env.CHATCCC_ANTHROPIC_EFFORT?.trim();
-
-  const portBad =
-    rawPort !== undefined &&
-    rawPort !== "" &&
-    (Number.isNaN(CHATCCC_PORT) || CHATCCC_PORT < 1 || CHATCCC_PORT > 65535);
-
-  const row = (label: string, name: string, kind: "必填" | "可选", ok: boolean, detail: string): void => {
+  const ok = (label: string, name: string, kind: "必填" | "可选", ok: boolean, detail: string): void => {
     const state = ok ? "成功" : "失败";
     console.log(`  [${state}] [${kind}] ${name}`);
     console.log(`         ${label}: ${detail}`);
   };
 
-  console.log("  --- 环境变量读取结果（成功=已读入；失败=必填缺失或格式错误；默认=未设置则用内置值）---");
+  console.log("  --- 配置读取结果（成功=已读入；失败=必填缺失或格式错误；默认=未设置则用内置值）---");
 
-  const envExists = existsSync(ENV_FILE_CWD);
+  const configExists = existsSync(CONFIG_FILE);
   console.log(
-    `  [信息] 工作目录下 .env: ${envExists ? "存在" : "不存在"} → ${ENV_FILE_CWD}`
+    `  [信息] config.json: ${configExists ? "存在" : "不存在"} → ${CONFIG_FILE}`
   );
-  if (!envExists) {
-    console.log(
-      "         若使用全局 chatccc：当前目录无 .env 时不会自动加载；请 cd 到含 .env 的目录或设置系统环境变量。"
-    );
+  if (!configExists) {
+    console.log("          config.json 不存在时已从 config.sample.json 自动创建，请编辑后重新启动。");
   }
 
-  row(
+  ok(
     "飞书应用",
-    "CHATCCC_APP_ID",
+    "feishu.appId",
     "必填",
-    Boolean(rawId),
-    rawId ? `已读入，摘要 ${maskAppId(rawId)}` : "未读入或为空"
+    Boolean(APP_ID.trim()),
+    APP_ID.trim() ? `已读入，摘要 ${maskAppId(APP_ID)}` : "未读入或为空"
   );
-  row(
+  ok(
     "飞书应用",
-    "CHATCCC_APP_SECRET",
+    "feishu.appSecret",
     "必填",
-    Boolean(rawSecret),
-    rawSecret ? "已读入（内容不在日志中显示）" : "未读入或为空"
+    Boolean(APP_SECRET.trim()),
+    APP_SECRET.trim() ? "已读入（内容不在日志中显示）" : "未读入或为空"
   );
 
-  if (portBad) {
-    row("监听端口", "CHATCCC_PORT", "可选", false, `值无效 "${rawPort}"，解析得到 ${CHATCCC_PORT}，请填写 1–65535 的整数`);
-  } else if (rawPort) {
-    row("监听端口", "CHATCCC_PORT", "可选", true, `已读入，使用 ${CHATCCC_PORT}`);
-  } else {
-    console.log(`  [默认] [可选] CHATCCC_PORT`);
-    console.log(`         监听端口: 未在环境中设置，使用内置默认 ${CHATCCC_PORT}`);
-  }
+  console.log(`  [默认] [可选] port`);
+  console.log(`         监听端口: ${CHATCCC_PORT}`);
 
-  if (rawModel) {
-    row("Claude 模型", "CHATCCC_ANTHROPIC_MODEL", "可选", true, `已读入 → ${rawModel}`);
-  } else {
-    console.log(`  [默认] [可选] CHATCCC_ANTHROPIC_MODEL`);
-    console.log(
-      `         Claude 模型: 未设置 → ${anthropicConfigDisplay(CLAUDE_MODEL)}（不区分大小写的 default 时不传入 SDK）`
-    );
-  }
+  console.log(`  [默认] [可选] claude.model`);
+  console.log(
+    `         Claude 模型: ${anthropicConfigDisplay(CLAUDE_MODEL)}（留空时不向 SDK 传 model）`
+  );
 
-  if (rawEffort) {
-    row("思考深度", "CHATCCC_ANTHROPIC_EFFORT", "可选", true, `已读入 → ${rawEffort}`);
-  } else {
-    console.log(`  [默认] [可选] CHATCCC_ANTHROPIC_EFFORT`);
-    console.log(
-      `         思考深度: 未设置 → ${anthropicConfigDisplay(CLAUDE_EFFORT)}（不区分大小写的 default 时不传入 SDK）`
-    );
-  }
+  console.log(`  [默认] [可选] claude.effort`);
+  console.log(
+    `         思考深度: ${anthropicConfigDisplay(CLAUDE_EFFORT)}（留空时不向 SDK 传 effort）`
+  );
 
-  const rawGitTimeout = process.env.CHATCCC_GIT_TIMEOUT_SECONDS?.trim();
-  if (!rawGitTimeout) {
-    console.log(`  [默认] [可选] CHATCCC_GIT_TIMEOUT_SECONDS`);
-    console.log(
-      `         /git 命令超时: 未设置 → 使用内置默认 ${DEFAULT_GIT_TIMEOUT_SECONDS}s`
-    );
-  } else if (!gitTimeoutParsed.valid) {
-    row(
-      "/git 命令超时",
-      "CHATCCC_GIT_TIMEOUT_SECONDS",
-      "可选",
-      false,
-      `值无效 "${rawGitTimeout}"，需为 ${MIN_GIT_TIMEOUT_SECONDS}–${MAX_GIT_TIMEOUT_SECONDS} 的整数秒；已回退为默认 ${DEFAULT_GIT_TIMEOUT_SECONDS}s`,
-    );
-  } else {
-    row(
-      "/git 命令超时",
-      "CHATCCC_GIT_TIMEOUT_SECONDS",
-      "可选",
-      true,
-      `已读入 → ${GIT_TIMEOUT_SECONDS}s`,
-    );
-  }
+  console.log(`  [默认] [可选] gitTimeoutSeconds`);
+  console.log(`         /git 命令超时: ${GIT_TIMEOUT_SECONDS}s`);
 
   console.log("  ------------------------------------------------------------------");
 }
@@ -326,35 +571,21 @@ export function explainMissingFeishuCredentialsAndExit(): never {
     hasAppId: Boolean(APP_ID.trim()),
     hasAppSecret: Boolean(APP_SECRET.trim()),
   });
-  const hasEnvFile = existsSync(ENV_FILE_CWD);
   const missing: string[] = [];
-  if (!APP_ID.trim()) missing.push("CHATCCC_APP_ID");
-  if (!APP_SECRET.trim()) missing.push("CHATCCC_APP_SECRET");
+  if (!APP_ID.trim()) missing.push("feishu.appId");
+  if (!APP_SECRET.trim()) missing.push("feishu.appSecret");
 
   console.error("\n" + "=".repeat(64));
   console.error("  ChatCCC 启动失败：飞书应用凭证未就绪");
   console.error("=".repeat(64));
   console.error("\n【失败步骤】环境与变量检查（在连接飞书之前）");
-  console.error(`\n【未配置的环境变量】\n  - ${missing.join("\n  - ")}`);
-  console.error(`\n【当前工作目录】\n  ${process.cwd()}`);
-  console.error(`\n【.env 文件】\n  路径: ${ENV_FILE_CWD}`);
-  if (hasEnvFile) {
-    console.error(
-      "  状态: 文件存在，但上述变量仍为空。请打开 .env 检查：\n" +
-        "    - 变量名是否完全一致（区分大小写）\n" +
-        "    - 等号两侧不要加引号除非值里需要\n" +
-        "    - 保存为 UTF-8，避免错误编码\n" +
-        "    - 若用全局命令 chatccc：必须在放 .env 的目录下执行（先 cd 到项目根）"
-    );
-  } else {
-    console.error(
-      "  状态: 文件不存在。\n" +
-        "  处理: 复制 .env.example 为 .env 并填入飞书开放平台的 App ID / App Secret；\n" +
-        "        或在系统环境变量中设置上述两个变量后重开终端。\n" +
-        "  若使用全局 chatccc：请先 cd 到项目根目录再运行，以便加载该目录下的 .env。"
-    );
-  }
-  console.error(`\n【程序包根目录（与「工作目录」可能不同）】\n  ${PROJECT_ROOT}`);
+  console.error(`\n【未配置的配置项】\n  - ${missing.join("\n  - ")}`);
+  console.error(`\n【配置文件路径】\n  ${CONFIG_FILE}`);
+  console.error(
+    "  处理: 编辑 config.json 填入飞书开放平台的 App ID / App Secret；\n" +
+      "        如 config.json 不存在，可复制 config.sample.json 为 config.json 后编辑。"
+  );
+  console.error(`\n【程序包根目录】\n  ${PROJECT_ROOT}`);
   console.error("\n" + "=".repeat(64) + "\n");
   printServiceDidNotStart(`未配置: ${missing.join("、")}`);
   process.exit(1);
@@ -380,3 +611,6 @@ export function toolDisplayName(tool: string): string {
   if (tool === "codex") return "Codex";
   return "Claude Code";
 }
+
+// 导出 config 对象供其他模块直接访问原始配置
+export { CONFIG_FILE, CONFIG_SAMPLE_FILE };

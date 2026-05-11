@@ -22,14 +22,15 @@ import {
   defaultCodexSessionMetaStore,
   type CodexSessionMetaStore,
 } from "./codex-session-meta-store.ts";
+import { config } from "../config.ts";
 
 // ---------------------------------------------------------------------------
 // 命令与参数
 // ---------------------------------------------------------------------------
 
-/** 可通过 CHATCCC_CODEX_COMMAND 环境变量自定义 Codex 可执行文件路径 */
+/** 可通过 config.json codex.path 自定义 Codex 可执行文件路径 */
 function detectCodexCommand(): string {
-  return process.env.CHATCCC_CODEX_COMMAND?.trim() || "codex";
+  return config.codex.path || "codex";
 }
 const CODEX_COMMAND = detectCodexCommand();
 
@@ -41,16 +42,16 @@ const CODEX_BASE_ARGS = [
   "--skip-git-repo-check",
 ];
 
-/** codex 模型 */
+/** codex 模型；留空（""）表示不传 --model，由 codex config.toml 决定 */
 function resolveCodexModel(): string | null {
-  const m = process.env.CHATCCC_CODEX_MODEL?.trim();
-  return m && m !== "default" ? m : null;
+  const m = config.codex.model;
+  return m.trim() !== "" ? m : null;
 }
 
-/** codex 努力程度（映射为 -c model_reasoning_effort=<value>） */
+/** codex 努力程度（映射为 -c model_reasoning_effort=<value>）；留空表示不传 */
 function resolveCodexEffort(): string | null {
-  const e = process.env.CHATCCC_CODEX_EFFORT?.trim();
-  return e && e !== "default" ? e : null;
+  const e = config.codex.effort;
+  return e.trim() !== "" ? e : null;
 }
 
 // ---------------------------------------------------------------------------

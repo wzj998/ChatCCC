@@ -2,7 +2,7 @@
 // cursor-adapter.ts — Cursor Agent CLI 适配器
 // =============================================================================
 // 通过 agent -p --output-format stream-json 与 Cursor agent 交互。
-// 命令行可通过 CHATCCC_CURSOR_COMMAND / CHATCCC_CURSOR_ARGS 环境变量自定义。
+// 命令行可通过 config.json cursor.path / cursor.model 自定义。
 // =============================================================================
 
 import { spawn, type ChildProcess } from "node:child_process";
