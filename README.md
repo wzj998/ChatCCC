@@ -24,6 +24,15 @@ ChatCCC 把 Claude Code 和 Cursor Agent 接入了飞书群聊：
 
 ---
 
+## 为什么选 ChatCCC
+
+- **一群一会话，心智最简单** —— `/new` 直接建一个新飞书群，群本身就是 AI 会话上下文。换会话就是换群，没有 thread / 子话题概念，手机端切换最直观
+- **零配置成本** —— 只用 `.env`，没有 TOML、没有 Web 后台。`npm i -g chatccc` 后 `cd` 到项目目录直接 `chatccc` 就跑
+- **群里能跑 git** —— `/git status`、`/git pull`、`/git log` 在飞书群里直接执行 stdout/stderr 回发，不用回电脑
+- **代码极简易改** —— 纯 TypeScript 实现，核心只有 20 多个文件，统一 `ToolAdapter` 接口屏蔽 Claude / Cursor 差异，看得懂、改得动
+
+---
+
 ## 怎么部署
 
 ### 1. 安装
