@@ -89,6 +89,12 @@ irm 'https://cursor.com/install?win32=true' | iex
 1. **Cursor IDE 自带**：安装 [Cursor IDE](https://cursor.com) 后，部分版本会自带 `agent` 或 `cursor-agent` 命令
 2. **独立安装**：Cursor 正在逐步提供独立的 CLI 安装方式
 
+安装后需登录 Cursor 账号：
+
+```bash
+agent login
+```
+
 验证是否已安装（任一可用即可）：
 
 ```bash
