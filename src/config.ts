@@ -364,15 +364,19 @@ export function explainMissingFeishuCredentialsAndExit(): never {
 export const CLAUDE_SESSION_PREFIX = "Claude Code Session:";
 /** 群描述中用于识别 Cursor 会话的前缀 */
 export const CURSOR_SESSION_PREFIX = "Cursor Session:";
+/** 群描述中用于识别 Codex 会话的前缀 */
+export const CODEX_SESSION_PREFIX = "Codex Session:";
 
 /** 根据 tool 名称返回对应的群描述前缀 */
 export function sessionPrefixForTool(tool: string): string {
   if (tool === "cursor") return CURSOR_SESSION_PREFIX;
+  if (tool === "codex") return CODEX_SESSION_PREFIX;
   return CLAUDE_SESSION_PREFIX;
 }
 
 /** 根据 tool 名称返回用于状态展示的标签 */
 export function toolDisplayName(tool: string): string {
   if (tool === "cursor") return "Cursor";
+  if (tool === "codex") return "Codex";
   return "Claude Code";
 }

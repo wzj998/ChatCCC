@@ -317,10 +317,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
   if (text === "/new" || text.startsWith("/new ")) {
     const toolArg = text.slice(5).trim();
     const tool = toolArg || "claude";
-    const validTools = ["claude", "cursor"];
+    const validTools = ["claude", "cursor", "codex"];
     if (!validTools.includes(tool)) {
       const warnToken = await getTenantAccessToken();
-      await sendCardReply(warnToken, chatId, "Error", `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor)。`, "red");
+      await sendCardReply(warnToken, chatId, "Error", `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex)。`, "red");
       return;
     }
     const toolLabel = toolDisplayName(tool);
