@@ -155,15 +155,15 @@ export function buildCdContent(
     : "";
 
   const statusLine = isUpdate
-    ? `**新会话默认工作路径（已切换）:** \`${dirPath}\``
-    : `**新会话默认工作路径:** \`${dirPath}\``;
+    ? `**本会话默认工作路径（已切换）:** \`${dirPath}\``
+    : `**本会话默认工作路径:** \`${dirPath}\``;
 
   const lines: string[] = [];
   if (currentLine) lines.push(currentLine, "");
   lines.push(
     statusLine,
     ``,
-    `此路径持久化在配置文件中，仅影响**新建会话**的工作路径。`,
+    `此路径仅影响**本会话中新建**的会话工作路径。`,
     ``,
     `---`,
     `**目录内容** (最多 ${maxFiles} 个):`,
@@ -205,7 +205,7 @@ export function buildCdCard(
   }
   elements.push({
     tag: "div",
-    text: { tag: "lark_md", content: `**新会话默认工作路径:** \`${dirPath}\`` },
+    text: { tag: "lark_md", content: `**本会话默认工作路径:** \`${dirPath}\`` },
   });
 
   if (recentDirs.length > 0) {
