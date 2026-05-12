@@ -6,6 +6,7 @@ import { stat } from "node:fs/promises";
 import { getTenantAccessToken, sendImageReply, sendTextReply } from "./feishu-api.ts";
 import { ts } from "./config.ts";
 import { logTrace } from "./trace.ts";
+import { readUtf8JsonBody } from "./agent-rpc-body.ts";
 
 export const AGENT_SEND_IMAGE_PATH = "/api/agent/send-image";
 
@@ -89,13 +90,14 @@ export function buildAgentImageCapabilityPrompt(input: {
     "",
     `POST ${input.url}`,
     `Authorization: Bearer ${input.token}`,
-    "Content-Type: application/json",
+    "Content-Type: application/json; charset=utf-8",
     "",
     'Body: {"path":"absolute image file path","caption":"optional caption"}',
     "",
     "Rules:",
     "- Save or choose a local image file first, then call the endpoint.",
     "- Use an absolute local file path. Do not call Feishu Open Platform directly.",
+    "- Request body must be UTF-8 encoded JSON bytes; caption supports Unicode text, including Chinese.",
     "- Only call this endpoint when the user asked for an image or when an image is useful to the answer.",
     "[/ChatCCC local capability: send image]",
   ];
@@ -108,24 +110,6 @@ export function buildAgentImageCapabilityPrompt(input: {
 function jsonReply(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
-}
-
-function readLimitedBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_REQUEST_BYTES) {
-        reject(new Error("Request body too large"));
-        req.destroy();
-        return;
-      }
-      body += chunk.toString("utf8");
-    });
-    req.on("end", () => resolve(body));
-    req.on("error", reject);
-  });
 }
 
 async function resolveAndValidateImagePath(grant: AgentImageGrant, rawPath: unknown): Promise<string> {
@@ -171,7 +155,7 @@ export async function handleAgentImageRequest(
 
   let payload: { path?: unknown; caption?: unknown };
   try {
-    payload = JSON.parse(await readLimitedBody(req));
+    payload = await readUtf8JsonBody(req, MAX_REQUEST_BYTES);
   } catch (err) {
     if (tid) logTrace(tid, "IMAGE_REQ", { outcome: "invalid_json", error: (err as Error).message });
     jsonReply(res, 400, { ok: false, error: (err as Error).message || "Invalid JSON" });

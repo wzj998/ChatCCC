@@ -11,6 +11,7 @@
   "files": [
     "src/",
     "bin/",
+    "im-skills/",
     "images/img_readme_*.jpg",
     "images/img_readme_*.png",
     "images/avatars/status_*.png",
