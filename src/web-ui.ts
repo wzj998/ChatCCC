@@ -27,10 +27,10 @@ interface AppConfig {
   feishu?: { appId?: string; appSecret?: string };
   port?: number;
   gitTimeoutSeconds?: number;
-  claude?: { enabled?: boolean; model?: string; effort?: string; apiKey?: string; baseUrl?: string };
+  claude?: { enabled?: boolean; defaultAgent?: boolean; model?: string; effort?: string; apiKey?: string; baseUrl?: string };
   // `command` 是已废弃的旧字段名，保留只读以兼容升级前的 config.json
-  cursor?: { enabled?: boolean; path?: string; command?: string; model?: string };
-  codex?: { enabled?: boolean; path?: string; command?: string; model?: string; effort?: string };
+  cursor?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string };
+  codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; effort?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +343,9 @@ function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown>
     } else if (key === "CHATCCC_CLAUDE_ENABLED") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_CLAUDE_DEFAULT_AGENT") {
+      result.claude = result.claude || {};
+      (result.claude as Record<string, unknown>).defaultAgent = val === true || val === "true";
     } else if (key === "CHATCCC_CURSOR_PATH") {
       result.cursor = result.cursor || {};
       (result.cursor as Record<string, unknown>).path = val;
@@ -352,6 +355,9 @@ function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown>
     } else if (key === "CHATCCC_CURSOR_ENABLED") {
       result.cursor = result.cursor || {};
       (result.cursor as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_CURSOR_DEFAULT_AGENT") {
+      result.cursor = result.cursor || {};
+      (result.cursor as Record<string, unknown>).defaultAgent = val === true || val === "true";
     } else if (key === "CHATCCC_CODEX_PATH") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).path = val;
@@ -364,6 +370,9 @@ function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown>
     } else if (key === "CHATCCC_CODEX_ENABLED") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_CODEX_DEFAULT_AGENT") {
+      result.codex = result.codex || {};
+      (result.codex as Record<string, unknown>).defaultAgent = val === true || val === "true";
     }
   }
   return result;
@@ -519,6 +528,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 .agent-toggle:checked{background:#3b82f6}
 .agent-toggle::before{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
 .agent-toggle:checked::before{left:18px}
+.agent-default-row{display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;margin:-4px 0 12px}
+.agent-default-row input{margin:0}
 .agent-body{flex:1}
 .agent-body fieldset{border:none;padding:0;margin:0}
 .agent-body fieldset[disabled]{opacity:.45;pointer-events:none}
@@ -600,6 +611,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <div class="desc">Anthropic Claude Agent SDK<br>官方/第三方 API 均可</div>
             </div>
           </div>
+          <label class="agent-default-row">
+            <input type="checkbox" id="agent-default-claude" onchange="onDefaultAgentToggle('claude', this.checked)">
+            设为默认 Agent
+          </label>
           <fieldset class="agent-body" id="agent-body-claude" disabled>
             <div class="form-group" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px">
               <label style="margin-bottom:8px;font-weight:600;color:#334155">API 来源</label>
@@ -649,6 +664,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <div class="desc">Cursor Agent CLI<br>需安装 Cursor</div>
             </div>
           </div>
+          <label class="agent-default-row">
+            <input type="checkbox" id="agent-default-cursor" onchange="onDefaultAgentToggle('cursor', this.checked)">
+            设为默认 Agent
+          </label>
           <fieldset class="agent-body" id="agent-body-cursor" disabled>
             <div class="form-group">
               <label>CLI 路径</label>
@@ -673,6 +692,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <div class="desc">OpenAI Codex CLI<br>需安装并登录</div>
             </div>
           </div>
+          <label class="agent-default-row">
+            <input type="checkbox" id="agent-default-codex" onchange="onDefaultAgentToggle('codex', this.checked)">
+            设为默认 Agent
+          </label>
           <fieldset class="agent-body" id="agent-body-codex" disabled>
             <div class="form-group">
               <label>CLI 路径</label>
@@ -741,6 +764,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row" id="cfg-row-CLAUDE_BASE_URL"><span class="key">Base URL</span><span class="val" id="cfg-CLAUDE_BASE_URL">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-ANTHROPIC_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-ANTHROPIC_EFFORT">-</span></div>
+        <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-claude" onchange="setDashboardDefaultAgent('claude', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('claude')">编辑</button>
       </div>
     </details>
@@ -750,6 +774,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       <div class="section-detail">
         <div class="config-row"><span class="key">CLI 路径</span><span class="val" id="cfg-CURSOR_PATH">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CURSOR_MODEL">-</span></div>
+        <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-cursor" onchange="setDashboardDefaultAgent('cursor', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('cursor')">编辑</button>
       </div>
     </details>
@@ -760,6 +785,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">CLI 路径</span><span class="val" id="cfg-CODEX_PATH">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CODEX_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-CODEX_EFFORT">-</span></div>
+        <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-codex" onchange="setDashboardDefaultAgent('codex', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('codex')">编辑</button>
       </div>
     </details>
@@ -791,6 +817,7 @@ let state = {
   view: 'loading',
   // 三个 Agent 各自的启用开关；初始全 false，renderStep2() 会按已存在 config 自动打开
   agentsEnabled: { claude: false, cursor: false, codex: false },
+  defaultAgent: 'claude',
   wizardStep: 1,
   config: {},
   running: false,
@@ -855,6 +882,51 @@ function onAgentToggle(agent, enabled) {
   if (card) card.classList.toggle('enabled', enabled);
   var body = document.getElementById('agent-body-' + agent);
   if (body) body.disabled = !enabled;
+  if (!enabled && state.defaultAgent === agent) {
+    state.defaultAgent = firstEnabledAgent();
+  } else if (enabled && !state.defaultAgent) {
+    state.defaultAgent = agent;
+  }
+  updateDefaultAgentToggles();
+  updateStep2NextBtn();
+}
+
+function firstEnabledAgent() {
+  if (state.agentsEnabled.claude) return 'claude';
+  if (state.agentsEnabled.cursor) return 'cursor';
+  if (state.agentsEnabled.codex) return 'codex';
+  return null;
+}
+
+function resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn) {
+  if (claudeOn && c.claude && c.claude.defaultAgent === true) return 'claude';
+  if (cursorOn && c.cursor && c.cursor.defaultAgent === true) return 'cursor';
+  if (codexOn && c.codex && c.codex.defaultAgent === true) return 'codex';
+  if (claudeOn) return 'claude';
+  if (cursorOn) return 'cursor';
+  if (codexOn) return 'codex';
+  return 'claude';
+}
+
+function updateDefaultAgentToggles() {
+  ['claude','cursor','codex'].forEach(function(agent){
+    var el = document.getElementById('agent-default-' + agent);
+    if (el) {
+      el.checked = state.defaultAgent === agent;
+      el.disabled = !state.agentsEnabled[agent];
+    }
+    var dashEl = document.getElementById('dash-default-' + agent);
+    if (dashEl) dashEl.checked = state.defaultAgent === agent;
+  });
+}
+
+function onDefaultAgentToggle(agent, enabled) {
+  if (enabled) {
+    state.defaultAgent = agent;
+  } else if (state.defaultAgent === agent) {
+    state.defaultAgent = null;
+  }
+  updateDefaultAgentToggles();
   updateStep2NextBtn();
 }
 
@@ -878,6 +950,10 @@ function updateStep2NextBtn() {
   if (state.agentsEnabled.claude && isClaudeFieldsValid()) validCount++;
   if (state.agentsEnabled.cursor) validCount++;
   if (state.agentsEnabled.codex) validCount++;
+  if (validCount > 0 && !state.defaultAgent) {
+    state.defaultAgent = firstEnabledAgent();
+    updateDefaultAgentToggles();
+  }
   btn.disabled = validCount === 0;
 }
 
@@ -1018,12 +1094,14 @@ function renderStep2() {
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
+  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn);
   document.getElementById('agent-enable-claude').checked = claudeOn;
   document.getElementById('agent-enable-cursor').checked = cursorOn;
   document.getElementById('agent-enable-codex').checked = codexOn;
   onAgentToggle('claude', claudeOn);
   onAgentToggle('cursor', cursorOn);
   onAgentToggle('codex', codexOn);
+  updateDefaultAgentToggles();
 
   // Cursor path placeholder/hint：把已探测到的路径显示为占位
   var hint = document.getElementById('cursor-path-hint');
@@ -1060,6 +1138,12 @@ function collectAllFields() {
   vars.CHATCCC_CLAUDE_ENABLED = !!state.agentsEnabled.claude;
   vars.CHATCCC_CURSOR_ENABLED = !!state.agentsEnabled.cursor;
   vars.CHATCCC_CODEX_ENABLED = !!state.agentsEnabled.codex;
+  if (!state.defaultAgent || !state.agentsEnabled[state.defaultAgent]) {
+    state.defaultAgent = firstEnabledAgent();
+  }
+  vars.CHATCCC_CLAUDE_DEFAULT_AGENT = state.defaultAgent === 'claude';
+  vars.CHATCCC_CURSOR_DEFAULT_AGENT = state.defaultAgent === 'cursor';
+  vars.CHATCCC_CODEX_DEFAULT_AGENT = state.defaultAgent === 'codex';
   if (state.agentsEnabled.claude) {
     AGENT_FIELDS.claude.forEach(function(key){
       var el = document.getElementById('field-' + key);
@@ -1099,6 +1183,9 @@ function renderStep3() {
   if (state.agentsEnabled.codex) enabledList.push('codex');
   if (enabledList.length === 0) {
     lines.push('<div style="color:#ef4444">未启用任何 AI Agent</div>');
+  } else {
+    var defaultLabel = state.defaultAgent === 'cursor' ? 'Cursor' : state.defaultAgent === 'codex' ? 'Codex' : 'Claude Code';
+    lines.push('<div class="config-row"><span class="key">/new 默认 Agent</span><span class="val">' + defaultLabel + '</span></div>');
   }
   enabledList.forEach(function(t){
     if (t === 'claude') {
@@ -1144,6 +1231,33 @@ async function saveConfig(vars) {
     toast('保存失败: ' + (result.error || '未知错误'), 'error');
   }
   return result.ok;
+}
+
+async function setDashboardDefaultAgent(agent, enabled) {
+  if (!enabled) {
+    updateDefaultAgentToggles();
+    return;
+  }
+  state.defaultAgent = agent;
+  var vars = {
+    CHATCCC_CLAUDE_DEFAULT_AGENT: agent === 'claude',
+    CHATCCC_CURSOR_DEFAULT_AGENT: agent === 'cursor',
+    CHATCCC_CODEX_DEFAULT_AGENT: agent === 'codex'
+  };
+  var result = await api('/api/config', 'POST', { vars: vars, claudeApiMode: detectClaudeApiModeFromConfig(state.config && state.config.claude) });
+  if (result.ok) {
+    state.config.claude = state.config.claude || {};
+    state.config.cursor = state.config.cursor || {};
+    state.config.codex = state.config.codex || {};
+    state.config.claude.defaultAgent = agent === 'claude';
+    state.config.cursor.defaultAgent = agent === 'cursor';
+    state.config.codex.defaultAgent = agent === 'codex';
+    updateDefaultAgentToggles();
+    toast('默认 Agent 已更新');
+  } else {
+    toast('保存失败: ' + (result.error || '未知错误'), 'error');
+    updateDefaultAgentToggles();
+  }
 }
 
 async function saveAndStart() {
@@ -1233,9 +1347,12 @@ function updateDashboardUI() {
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
+  state.agentsEnabled = { claude: claudeOn, cursor: cursorOn, codex: codexOn };
+  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn);
   document.getElementById('dash-claude').style.display = claudeOn ? '' : 'none';
   document.getElementById('dash-cursor').style.display = cursorOn ? '' : 'none';
   document.getElementById('dash-codex').style.display = codexOn ? '' : 'none';
+  updateDefaultAgentToggles();
   // 三个都未启用时给一个空态提示，引导用户去配置向导启用
   var emptyHint = document.getElementById('dash-no-agent-hint');
   if (emptyHint) emptyHint.style.display = (!claudeOn && !cursorOn && !codexOn) ? '' : 'none';

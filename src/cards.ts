@@ -108,10 +108,14 @@ export function buildProgressCard(
   });
 }
 
-export function buildHelpCard(userText: string, opts: { greeting?: string } = {}): string {
+export function buildHelpCard(
+  userText: string,
+  opts: { greeting?: string; defaultToolLabel?: string } = {},
+): string {
   const greeting = opts.greeting ?? `你发送了: ${userText}`;
+  const defaultToolLabel = opts.defaultToolLabel ?? "Claude Code";
   const lines = [
-    "发送 **/new** 创建新会话（默认 Claude Code）",
+    `发送 **/new** 创建新会话（默认 ${defaultToolLabel}）`,
     "发送 **/new claude** 创建新 Claude 对话",
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
@@ -124,7 +128,7 @@ export function buildHelpCard(userText: string, opts: { greeting?: string } = {}
       { tag: "div", text: { tag: "lark_md", content: greeting } },
       { tag: "div", text: { tag: "lark_md", content: lines } },
       buildButtons([
-        { text: "新建 Claude Code 会话（/new claude）", value: JSON.stringify({ cmd: "new" }), type: "primary" },
+        { text: `新建默认会话（/new，${defaultToolLabel}）`, value: JSON.stringify({ cmd: "new" }), type: "primary" },
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
         { text: "新建 Codex 会话（/new codex）", value: JSON.stringify({ cmd: "new codex" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
@@ -255,7 +259,8 @@ export function buildSessionsCard(sessions: Array<{
   elapsedSeconds: number | null;
   model: string;
   tool: string;
-}>): string {
+}>, opts: { defaultToolLabel?: string } = {}): string {
+  const defaultToolLabel = opts.defaultToolLabel ?? "Claude Code";
   // 按 tool 分组排序：Claude Code 在前，Cursor 其次，Codex 最后
   const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor" && s.tool !== "codex");
   const cursorSessions = sessions.filter(s => s.tool === "cursor");
@@ -269,7 +274,7 @@ export function buildSessionsCard(sessions: Array<{
       config: { wide_screen_mode: true },
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: "当前没有会话记录。\n\n使用 **/new**（默认 Claude Code）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。" } },
+        { tag: "div", text: { tag: "lark_md", content: `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。` } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
       ],

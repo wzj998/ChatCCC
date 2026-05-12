@@ -58,6 +58,8 @@ export async function appendChatLog(chatId: string, sender: string, text: string
 export interface ClaudeConfig {
   /** 是否启用 Claude Code Agent；缺省时按"有任意字段非空"自动判定（向后兼容） */
   enabled: boolean;
+  /** 是否作为 /new 未指定工具时使用的默认 Agent */
+  defaultAgent: boolean;
   model: string;
   effort: string;
   apiKey: string;
@@ -67,6 +69,8 @@ export interface ClaudeConfig {
 export interface CursorConfig {
   /** 是否启用 Cursor Agent；缺省时按"有任意字段非空"自动判定（向后兼容） */
   enabled: boolean;
+  /** 是否作为 /new 未指定工具时使用的默认 Agent */
+  defaultAgent: boolean;
   /** Cursor Agent CLI 可执行文件绝对路径；留空时由运行时按 LocalAppData / PATH 兜底 */
   path: string;
   model: string;
@@ -75,6 +79,8 @@ export interface CursorConfig {
 export interface CodexConfig {
   /** 是否启用 Codex Agent；缺省时按"有任意字段非空"自动判定（向后兼容） */
   enabled: boolean;
+  /** 是否作为 /new 未指定工具时使用的默认 Agent */
+  defaultAgent: boolean;
   /** Codex CLI 可执行文件绝对路径；留空时退回到 PATH 中的 `codex` */
   path: string;
   model: string;
@@ -94,6 +100,9 @@ export interface AppConfig {
   cursor: CursorConfig;
   codex: CodexConfig;
 }
+
+export type AgentTool = "claude" | "cursor" | "codex";
+export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
 
 const CONFIG_FILE = join(PROJECT_ROOT, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
@@ -203,9 +212,9 @@ function loadConfig(): AppConfig {
     feishu: { appId: "", appSecret: "" },
     port: 18080,
     gitTimeoutSeconds: 180,
-    claude: { enabled: false, model: "", effort: "", apiKey: "", baseUrl: "" },
-    cursor: { enabled: false, path: "", model: "claude-opus-4-7-max" },
-    codex: { enabled: false, path: "", model: "", effort: "" },
+    claude: { enabled: false, defaultAgent: true, model: "", effort: "", apiKey: "", baseUrl: "" },
+    cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
+    codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
 
   if (!existsSync(CONFIG_FILE)) {
@@ -239,8 +248,8 @@ function loadConfig(): AppConfig {
 
   let parsed: Partial<AppConfig> & {
     claude?: Partial<ClaudeConfig> & { enabled?: unknown };
-    cursor?: { enabled?: unknown; path?: unknown; command?: unknown; model?: unknown };
-    codex?: { enabled?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
+    cursor?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown };
+    codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
   };
   try {
     parsed = JSON.parse(raw);
@@ -251,8 +260,8 @@ function loadConfig(): AppConfig {
 
   const feishu = parsed.feishu ?? { appId: "", appSecret: "" };
   const claude = parsed.claude ?? {} as Partial<ClaudeConfig>;
-  const cursorRaw = parsed.cursor ?? {};
-  const codexRaw = parsed.codex ?? {};
+  const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
+  const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
 
   // 兼容旧字段 `command`：命中时打印一次性 warning 提示用户改名
   const onLegacyField = (label: string, value: string): void => {
@@ -292,6 +301,21 @@ function loadConfig(): AppConfig {
       (typeof codexRaw.effort === "string" && (codexRaw.effort as string).trim()),
     );
 
+  const claudeEnabled = resolveEnabled(claude.enabled, claudeNonEmpty);
+  const cursorEnabled = resolveEnabled(cursorRaw.enabled, cursorNonEmpty);
+  const codexEnabled = resolveEnabled(codexRaw.enabled, codexNonEmpty);
+  const explicitDefaultTool: AgentTool | null =
+    typeof claude.defaultAgent === "boolean" && claude.defaultAgent && claudeEnabled ? "claude" :
+    typeof cursorRaw.defaultAgent === "boolean" && cursorRaw.defaultAgent && cursorEnabled ? "cursor" :
+    typeof codexRaw.defaultAgent === "boolean" && codexRaw.defaultAgent && codexEnabled ? "codex" :
+    null;
+  const fallbackDefaultTool: AgentTool =
+    claudeEnabled ? "claude" :
+    cursorEnabled ? "cursor" :
+    codexEnabled ? "codex" :
+    "claude";
+  const defaultTool = explicitDefaultTool ?? fallbackDefaultTool;
+
   return {
     feishu: {
       appId: feishu.appId ?? "",
@@ -300,19 +324,22 @@ function loadConfig(): AppConfig {
     port: typeof parsed.port === "number" ? parsed.port : 18080,
     gitTimeoutSeconds: typeof parsed.gitTimeoutSeconds === "number" ? parsed.gitTimeoutSeconds : 180,
     claude: {
-      enabled: resolveEnabled(claude.enabled, claudeNonEmpty),
+      enabled: claudeEnabled,
+      defaultAgent: defaultTool === "claude",
       model: normalizeOptionalConfigField(claude.model, { label: "claude.model" }),
       effort: normalizeOptionalConfigField(claude.effort, { label: "claude.effort" }),
       apiKey: claude.apiKey ?? "",
       baseUrl: claude.baseUrl ?? "",
     },
     cursor: {
-      enabled: resolveEnabled(cursorRaw.enabled, cursorNonEmpty),
+      enabled: cursorEnabled,
+      defaultAgent: defaultTool === "cursor",
       path: readToolCliPath(cursorRaw, { label: "cursor", onLegacyField }),
       model: normalizeOptionalConfigField(cursorRaw.model, { label: "cursor.model", fallback: "claude-opus-4-7-max" }),
     },
     codex: {
-      enabled: resolveEnabled(codexRaw.enabled, codexNonEmpty),
+      enabled: codexEnabled,
+      defaultAgent: defaultTool === "codex",
       path: readToolCliPath(codexRaw, { label: "codex", onLegacyField }),
       model: normalizeOptionalConfigField(codexRaw.model, { label: "codex.model" }),
       effort: normalizeOptionalConfigField(codexRaw.effort, { label: "codex.effort" }),
@@ -610,6 +637,14 @@ export function toolDisplayName(tool: string): string {
   if (tool === "cursor") return "Cursor";
   if (tool === "codex") return "Codex";
   return "Claude Code";
+}
+
+/** 解析 /new 未指定工具时使用的默认 Agent。旧配置缺省 defaultAgent 时保持 Claude 优先。 */
+export function resolveDefaultAgentTool(cfg: AppConfig = config): AgentTool {
+  const explicit = AGENT_TOOLS.find((tool) => cfg[tool].enabled && cfg[tool].defaultAgent);
+  if (explicit) return explicit;
+  const enabledFallback = AGENT_TOOLS.find((tool) => cfg[tool].enabled);
+  return enabledFallback ?? "claude";
 }
 
 // 导出 config 对象供其他模块直接访问原始配置

@@ -3,7 +3,7 @@
  * =================================================================
  * Supported tools: Claude Code, Cursor, Codex (OpenAI).
  *
- * When a user sends "/new [tool]" to the bot:
+ * When a user sends "/new [tool]" to the bot (omitting tool uses the configured default Agent):
  *   1. Create an AI tool session via the corresponding adapter, get session ID
  *   2. Create a new Feishu group chat and add the user
  *   3. Rename the group (name + description) to the session ID
@@ -56,6 +56,7 @@ import {
   getRecentDirs,
   addRecentDir,
   sessionPrefixForTool,
+  resolveDefaultAgentTool,
   toolDisplayName,
   ts,
 } from "./config.ts";
@@ -64,6 +65,7 @@ import {
   addReaction,
   createGroupChat,
   extractSessionInfo,
+  formatDelayNotice,
   getChatInfo,
   getTenantAccessToken,
   recallMessage,
@@ -195,7 +197,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", forget: "/forget" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", forget: "/forget" };
   let text = CMD_MAP[cmd] ?? "";
   if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
     const path = (action.value as Record<string, string>).path;
@@ -721,8 +723,8 @@ async function startBotServiceCore(): Promise<void> {
   console.log(`${"=".repeat(60)}`);
   console.log(`  ChatCCC — Feishu Bot Bridge for Claude Code${modeTag}`);
   console.log(`${"=".repeat(60)}`);
-  console.log(`  Send "/new" to the bot to create a new group + Claude session.`);
-  console.log(`  In a Claude session group, send any message to resume & prompt.`);
+  console.log(`  Send "/new" to the bot to create a new group + ${toolDisplayName(resolveDefaultAgentTool())} session.`);
+  console.log(`  In a session group, send any message to resume & prompt.`);
   console.log(`${"=".repeat(60)}`);
 
   console.log(`\n[启动 4/7] 向飞书开放平台申请 tenant_access_token …`);
@@ -802,6 +804,11 @@ async function startBotServiceCore(): Promise<void> {
 
       if (!text) return;
       const msgTimestamp = parseInt(message.create_time ?? "0", 10) || Date.now();
+      const delayNotice = formatDelayNotice(msgTimestamp);
+      if (delayNotice) {
+        const delayToken = await getTenantAccessToken();
+        await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
+      }
       await handleCommand(text, chatId, openId, msgTimestamp);
       } catch (err) {
         console.error(`[${ts()}] [FATAL] im.message.receive_v1 handler crashed: ${(err as Error).message}`);

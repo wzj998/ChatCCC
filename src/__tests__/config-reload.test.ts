@@ -18,6 +18,7 @@ import {
   GIT_TIMEOUT_SECONDS,
   applyLoadedConfig,
   config,
+  resolveDefaultAgentTool,
   type AppConfig,
 } from "../config.ts";
 
@@ -38,13 +39,14 @@ const baseAppConfig: AppConfig = {
   gitTimeoutSeconds: 180,
   claude: {
     enabled: true,
+    defaultAgent: true,
     model: "initial-model",
     effort: "initial-effort",
     apiKey: "sk-initial",
     baseUrl: "https://initial.gw/anthropic",
   },
-  cursor: { enabled: true, path: "/initial/cursor", model: "initial-cursor-model" },
-  codex: { enabled: true, path: "/initial/codex", model: "initial-codex-model", effort: "initial-codex-effort" },
+  cursor: { enabled: true, defaultAgent: false, path: "/initial/cursor", model: "initial-cursor-model" },
+  codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", effort: "initial-codex-effort" },
 };
 
 // 把 module 状态抢救快照：每个 it 跑前重置回这个状态，避免污染相邻测试。
@@ -77,6 +79,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
       ...structuredClone(baseAppConfig),
       claude: {
         enabled: true,
+        defaultAgent: true,
         model: "deepseek-v4-pro",
         effort: "high",
         apiKey: "sk-newkey",
@@ -104,7 +107,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("CURSOR_AGENT_ARGS 跟随 cursor.model 重新解析", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, path: "/x/cursor", model: "claude-3.7-sonnet" },
+      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "claude-3.7-sonnet" },
     });
 
     // CURSOR_AGENT_ARGS 是 ['-p', '--force', ..., '--model', 'claude-3.7-sonnet']
@@ -115,7 +118,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("cursor.model 留空时 CURSOR_AGENT_ARGS 不含 --model", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, path: "/x/cursor", model: "" },
+      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "" },
     });
 
     expect(CURSOR_AGENT_ARGS).not.toContain("--model");
@@ -124,7 +127,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("CURSOR_AGENT_COMMAND 优先取 config.cursor.path", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, path: "C:/custom/cursor.exe", model: "" },
+      cursor: { enabled: true, defaultAgent: false, path: "C:/custom/cursor.exe", model: "" },
     });
 
     expect(CURSOR_AGENT_COMMAND).toBe("C:/custom/cursor.exe");
@@ -149,7 +152,7 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
       feishu: { appId: "REF_TEST_APP", appSecret: "REF_TEST_SECRET" },
-      codex: { enabled: true, path: "/refresh/codex", model: "fresh-model", effort: "low" },
+      codex: { enabled: true, defaultAgent: false, path: "/refresh/codex", model: "fresh-model", effort: "low" },
     });
 
     // 必须是同一个引用：codex-adapter 等下游模块"直接 import config"，
@@ -167,5 +170,24 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
     expect(APP_ID).toBe("");
     expect(APP_SECRET).toBe("");
     expect(config.feishu.appId).toBe("");
+  });
+});
+
+describe("resolveDefaultAgentTool", () => {
+  it("优先使用显式 defaultAgent 且已启用的 Agent", () => {
+    const cfg = structuredClone(baseAppConfig);
+    cfg.claude.defaultAgent = false;
+    cfg.cursor.defaultAgent = true;
+
+    expect(resolveDefaultAgentTool(cfg)).toBe("cursor");
+  });
+
+  it("defaultAgent 指向未启用 Agent 时回退到第一个已启用 Agent", () => {
+    const cfg = structuredClone(baseAppConfig);
+    cfg.claude.enabled = false;
+    cfg.claude.defaultAgent = true;
+    cfg.cursor.defaultAgent = false;
+
+    expect(resolveDefaultAgentTool(cfg)).toBe("cursor");
   });
 });

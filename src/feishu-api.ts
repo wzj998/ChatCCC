@@ -409,6 +409,40 @@ export async function setChatAvatar(token: string, chatId: string, tool: string,
 // Messaging
 // ---------------------------------------------------------------------------
 
+const DELAY_NOTICE_THRESHOLD_MS = 15 * 60 * 1000; // 15 分钟
+
+/** 消息延迟超过阈值时生成提醒文本，否则返回 null */
+export function formatDelayNotice(createTimeMs: number, nowMs?: number): string | null {
+  const now = nowMs ?? Date.now();
+  const delayMs = now - createTimeMs;
+  if (delayMs < DELAY_NOTICE_THRESHOLD_MS) return null;
+
+  const sendDate = new Date(createTimeMs);
+  const month = sendDate.getMonth() + 1;
+  const day = sendDate.getDate();
+  const hour = String(sendDate.getHours()).padStart(2, "0");
+  const min = String(sendDate.getMinutes()).padStart(2, "0");
+  const sendTimeStr = `${month}月${day}日 ${hour}:${min}`;
+
+  const totalMinutes = Math.floor(delayMs / 60000);
+  let delayStr: string;
+  if (totalMinutes < 60) {
+    delayStr = `${totalMinutes} 分钟`;
+  } else {
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    if (hours < 24) {
+      delayStr = mins > 0 ? `${hours} 小时 ${mins} 分钟` : `${hours} 小时`;
+    } else {
+      const days = Math.floor(hours / 24);
+      const remainHours = hours % 24;
+      delayStr = remainHours > 0 ? `${days} 天 ${remainHours} 小时` : `${days} 天`;
+    }
+  }
+
+  return `> ⚠️ 延迟送达提醒：此消息于 ${sendTimeStr} 发送，因服务离线，延迟约 ${delayStr}后送达`;
+}
+
 export async function sendTextReply(
   token: string,
   chatId: string,
