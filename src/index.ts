@@ -74,6 +74,7 @@ import {
   setChatAvatar,
   updateCardMessage,
   updateChatInfo,
+  getOrDownloadImage,
   sendRestartCard,
   verifyAllPermissions,
   reportPermissionResults,
@@ -126,7 +127,7 @@ function getInnerEvent(data: Evt): InnerEvent {
  * 将飞书消息的原始 content JSON 结构转成可读文本，保留代码块等结构信息。
  * 未知类型直接返回 JSON 原文，让 AI 自行理解。
  */
-function formatMessageContent(message: { message_type?: string; content?: string }): string {
+async function formatMessageContent(message: { message_id?: string; message_type?: string; content?: string }): Promise<string> {
   const contentStr = message.content ?? "{}";
   let content: Record<string, unknown>;
   try { content = JSON.parse(contentStr); } catch { return ""; }
@@ -143,7 +144,21 @@ function formatMessageContent(message: { message_type?: string; content?: string
     return formatPostContent(content);
   }
 
-  // 其他类型（image, file, audio, media, sticker）直接给原始 JSON
+  if (message.message_type === "image") {
+    const imageKey = content.image_key as string | undefined;
+    const messageId = message.message_id;
+    if (!imageKey || !messageId) return contentStr;
+    try {
+      const token = await getTenantAccessToken();
+      const localPath = await getOrDownloadImage(token, messageId, imageKey);
+      return `[图片] ${localPath}`;
+    } catch (err) {
+      console.error(`[${ts()}] [IMAGE] download failed for ${imageKey}: ${(err as Error).message}`);
+      return `[图片: ${imageKey}]`;
+    }
+  }
+
+  // 其他类型（file, audio, media, sticker）直接给原始 JSON
   return contentStr;
 }
 
@@ -784,7 +799,7 @@ async function startBotServiceCore(): Promise<void> {
         }
       }
 
-      const text = formatMessageContent(message);
+      const text = await formatMessageContent(message);
       const sender = event.sender;
       const openId = sender?.sender_id?.open_id ?? "";
       const chatId = message.chat_id ?? "";
@@ -868,7 +883,7 @@ async function startBotServiceCore(): Promise<void> {
       console.log("[启动 7/7] 已连接本地中继，可接收转发事件。\n");
       printServiceRunningHint("local", `http://127.0.0.1:${CHATCCC_PORT}`);
     });
-    ws.on("message", (raw: Buffer) => {
+    ws.on("message", async (raw: Buffer) => {
       try {
         const data = JSON.parse(raw.toString()) as Evt;
         const action = parseCardAction(data);
@@ -881,7 +896,7 @@ async function startBotServiceCore(): Promise<void> {
         const event = getInnerEvent(data);
         const message = event.message;
         if (!message) return;
-        const text = formatMessageContent(message);
+        const text = await formatMessageContent(message);
         const openId = event.sender?.sender_id?.open_id ?? "";
         const chatId = message.chat_id ?? "";
         appendChatLog(chatId, openId, text);
