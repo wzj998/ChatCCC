@@ -17,11 +17,11 @@ ChatCCC 把 Claude Code、Cursor Agent、Codex (OpenAI) 接入了飞书群聊：
 一句话：**在任何设备上打开飞书，就能让 Claude Code / Cursor / Codex 帮你写代码、排查问题、分析项目。**
 
 <p align="center">
-  <img src="images/img_readme_messages.jpg" alt="飞书会话列表" width="220" />
+  <img src="images/img_readme_messages.jpg" alt="飞书会话列表" width="220" align="top" />
   &nbsp;
-  <img src="images/img_readme_0.jpg" alt="飞书群聊中使用 ChatCCC" width="220" />
+  <img src="images/img_readme_0.jpg" alt="飞书群聊中使用 ChatCCC" width="220" align="top" />
   &nbsp;
-  <img src="images/img_readme_1.jpg" alt="思考过程和工具调用" width="220" />
+  <img src="images/img_readme_1.jpg" alt="思考过程和工具调用" width="220" align="top" />
 </p>
 
 ---

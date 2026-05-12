@@ -11,7 +11,10 @@
   "files": [
     "src/",
     "bin/",
-    "images/",
+    "images/img_readme_*.jpg",
+    "images/img_readme_*.png",
+    "images/avatars/status_*.png",
+    "images/avatars/badges/",
     "package.json",
     "README.md",
     "config.sample.json"

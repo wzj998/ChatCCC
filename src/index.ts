@@ -31,7 +31,8 @@ import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging } from "./shared.ts";
-import { createUiRouter, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
+import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
+import { makeTraceId, logTrace } from "./trace.ts";
 import {
   CHATCCC_PORT,
   APP_ID,
@@ -81,6 +82,7 @@ import {
 } from "./feishu-api.ts";
 import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
+import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
@@ -113,7 +115,7 @@ function isUntitledSessionChatName(name: string): boolean {
 // ---------------------------------------------------------------------------
 
 interface InnerEvent {
-  message?: { message_id?: string; message_type?: string; content?: string; chat_id?: string; create_time?: string };
+  message?: { message_id?: string; message_type?: string; content?: string; chat_id?: string; chat_type?: string; create_time?: string };
   sender?: { sender_id?: { open_id?: string; union_id?: string } };
 }
 
@@ -242,10 +244,13 @@ let broadcastToRelay: (data: unknown) => void = () => {};
 // Command handler
 // ---------------------------------------------------------------------------
 
-async function handleCommand(text: string, chatId: string, openId: string, msgTimestamp: number): Promise<void> {
+async function handleCommand(text: string, chatId: string, openId: string, msgTimestamp: number, chatType = "group", traceId?: string): Promise<void> {
+  const tid = traceId ?? makeTraceId();
   if (text === "/restart") {
+    logTrace(tid, "BRANCH", { cmd: "/restart" });
     const restartToken = await getTenantAccessToken();
     await sendTextReply(restartToken, chatId, "正在重启...").catch(() => {});
+    logTrace(tid, "DONE", { outcome: "restart" });
     console.log(`[${ts()}] [RESTART] Spawning new process...`);
     const child = spawn("npx", ["tsx", "src/index.ts"], {
       cwd: PROJECT_ROOT,
@@ -259,6 +264,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
   }
 
   if (text === "/cd" || text.startsWith("/cd ")) {
+    logTrace(tid, "BRANCH", { cmd: "/cd", arg: text.slice(3).trim() || "(none)" });
     const cdToken = await getTenantAccessToken();
     const currentDir = await getDefaultCwd();
 
@@ -290,10 +296,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     try {
       const s = await stat(targetDir);
       if (!s.isDirectory()) {
+        logTrace(tid, "DONE", { outcome: "cd_not_dir", targetDir });
         await sendCardReply(cdToken, chatId, "新会话工作路径", `路径存在但不是目录:\n\`${targetDir}\``, "red");
         return;
       }
     } catch {
+      logTrace(tid, "DONE", { outcome: "cd_not_found", targetDir });
       await sendCardReply(cdToken, chatId, "新会话工作路径", `路径不存在:\n\`${targetDir}\``, "red");
       return;
     }
@@ -310,6 +318,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     try {
       entries = await readdir(targetDir);
     } catch (err) {
+      logTrace(tid, "DONE", { outcome: "cd_readdir_fail", error: (err as Error).message });
       await sendCardReply(cdToken, chatId, "新会话工作路径", `无法读取目录:\n\`${targetDir}\`\n\n${(err as Error).message}`, "red");
       return;
     }
@@ -341,10 +350,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       });
       const respData: Record<string, any> = await resp.json().catch(() => ({}));
       console.log(`[${ts()}] [CD] card sent, code=${respData.code}, msgId=${respData.data?.message_id ?? "N/A"}, recentDirs=${recentDirs.length}`);
+      logTrace(tid, "DONE", { outcome: "cd_card", code: respData.code, msgId: respData.data?.message_id });
     } else {
       // /cd <path>：切换目录，发送文本卡片
       const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
       await sendCardReply(cdToken, chatId, "新会话工作路径", content, "blue");
+      logTrace(tid, "DONE", { outcome: "cd_path", targetDir, isUpdate });
     }
     return;
   }
@@ -352,8 +363,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
   if (text === "/new" || text.startsWith("/new ")) {
     const toolArg = text.slice(5).trim();
     const tool = toolArg || "claude";
+    logTrace(tid, "BRANCH", { cmd: "/new", tool });
     const validTools = ["claude", "cursor", "codex"];
     if (!validTools.includes(tool)) {
+      logTrace(tid, "DONE", { outcome: "new_invalid_tool", tool });
       const warnToken = await getTenantAccessToken();
       await sendCardReply(warnToken, chatId, "Error", `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex)。`, "red");
       return;
@@ -361,6 +374,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const toolLabel = toolDisplayName(tool);
 
     if (!openId) {
+      logTrace(tid, "DONE", { outcome: "new_no_openid" });
       console.log(`[${ts()}] [WARN] Cannot get sender open_id`);
       const warnToken = await getTenantAccessToken();
       await sendCardReply(warnToken, chatId, "Error", "Cannot identify sender.", "red");
@@ -378,6 +392,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       console.log(`[${ts()}] [STEP 1/4] ${toolLabel} session created: ${sessionId} → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 1/4] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", { outcome: "new_session_fail", error: (err as Error).message });
       await sendCardReply(
         freshToken, chatId, "Error",
         `Failed to initialize ${toolLabel} session:\n${(err as Error).message}`,
@@ -395,6 +410,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       console.log(`[${ts()}] [STEP 2/4] Created Feishu group: ${newChatId}  → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 2/4] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", { outcome: "new_group_fail", error: (err as Error).message });
       await sendCardReply(freshToken, chatId, "Error", `Failed to create group:\n${(err as Error).message}`, "red");
       return;
     }
@@ -405,6 +421,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       console.log(`[${ts()}] [STEP 3/4] Renamed group → name="${initialName}" (${toolLabel}) → OK`);
     } catch (err) {
       console.error(`[${ts()}] [STEP 3/4] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", { outcome: "new_rename_fail", error: (err as Error).message });
       await sendCardReply(freshToken, chatId, "Error", `Group created but rename failed:\n${(err as Error).message}`, "yellow");
       return;
     }
@@ -422,11 +439,14 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     );
 
     console.log(`[${ts()}] [STEP 4/4] Replied to new group → OK`);
+    logTrace(tid, "DONE", { outcome: "session_ready", newChatId, sessionId, tool });
     setChatAvatar(freshToken, newChatId, tool, "new").catch(() => {});
     console.log(`${"=".repeat(60)}`);
     return;
   }
 
+  // 私聊没有群 description，无法存储/获取 session ID，跳过群聊检测直接发 help card
+  if (chatType !== "p2p") {
   try {
     const token = await getTenantAccessToken();
     const chatInfo = await getChatInfo(token, chatId);
@@ -437,6 +457,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       const sessionId = sessionInfo.sessionId;
       const descriptionTool = sessionInfo.tool;
       const toolLabel = toolDisplayName(descriptionTool);
+      logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
       console.log(`[${ts()}] [RESUME] ${toolLabel} session group detected, session=${sessionId} tool=${descriptionTool}`);
 
       const freshToken = await getTenantAccessToken();
@@ -457,6 +478,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
 
       if (text === "/stop") {
+        logTrace(tid, "BRANCH", { cmd: "/stop" });
         const cEntry = chatSessionMap.get(chatId);
         if (cEntry) {
           cEntry.stopped = true;
@@ -464,13 +486,16 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           cEntry.close();
           console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
           await sendTextReply(freshToken, chatId, "会话已停止。").catch(() => {});
+          logTrace(tid, "DONE", { outcome: "stopped" });
         } else {
           await sendTextReply(freshToken, chatId, "当前没有正在进行的会话。").catch(() => {});
+          logTrace(tid, "DONE", { outcome: "stop_no_session" });
         }
         return;
       }
 
       if (text === "/status") {
+        logTrace(tid, "BRANCH", { cmd: "/status" });
         const status = await getSessionStatus(chatId);
         const running = chatSessionMap.get(chatId);
         const isActive = running && !running.stopped;
@@ -507,10 +532,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         });
         const statusRespData: Record<string, any> = await statusResp.json().catch(() => ({}));
         console.log(`[${ts()}] [STATUS] card sent, code=${statusRespData.code}, msgId=${statusRespData.data?.message_id ?? "N/A"}`);
+        logTrace(tid, "DONE", { outcome: "status", code: statusRespData.code });
         return;
       }
 
       if (text === "/sessions") {
+        logTrace(tid, "BRANCH", { cmd: "/sessions" });
         const allSessions = await getAllSessionsStatus();
         const now = Date.now();
         const cardData = allSessions.map(s => ({
@@ -532,10 +559,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         });
         const sessionsRespData: Record<string, any> = await sessionsResp.json().catch(() => ({}));
         console.log(`[${ts()}] [SESSIONS] card sent, code=${sessionsRespData.code}, count=${allSessions.length}`);
+        logTrace(tid, "DONE", { outcome: "sessions", code: sessionsRespData.code, count: allSessions.length });
         return;
       }
 
       if (text === "/forget") {
+        logTrace(tid, "BRANCH", { cmd: "/forget" });
         const adapter = getAdapterForTool(descriptionTool);
         let cwd: string;
         try {
@@ -558,6 +587,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           const init = await initClaudeSession(descriptionTool, cwd);
           newSessionId = init.sessionId;
         } catch (err) {
+          logTrace(tid, "DONE", { outcome: "forget_session_fail", error: (err as Error).message });
           await sendCardReply(freshToken, chatId, "Error", `Failed to create new session:\n${(err as Error).message}`, "red");
           return;
         }
@@ -587,6 +617,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         );
 
         console.log(`[${ts()}] [FORGET] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`);
+        logTrace(tid, "DONE", { outcome: "forget", newSessionId, cwd });
         return;
       }
 
@@ -595,7 +626,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       // getDefaultCwd（下一次 /new 才会使用的默认路径）。
       if (text.startsWith("/git ") || text === "/git") {
         const args = text === "/git" ? "" : text.slice(5).trim();
+        logTrace(tid, "BRANCH", { cmd: "/git", args: args || "(none)" });
         if (!args) {
+          logTrace(tid, "DONE", { outcome: "git_no_args" });
           await sendCardReply(
             freshToken, chatId, "/git",
             "用法：`/git <子命令> [参数]`，例如 `/git status`、`/git log --oneline -n 5`。",
@@ -613,6 +646,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           console.error(`[${ts()}] [GIT] getSessionInfo FAIL: ${(err as Error).message}`);
         }
         if (!cwd) {
+          logTrace(tid, "DONE", { outcome: "git_no_cwd", tool: descriptionTool });
           // Cursor 会话的 cwd 依赖 state/cursor-session-meta.json 持久化映射；
           // 升级前创建的旧会话或映射文件丢失时，向会话发送一次普通消息即可触发
           // adapter 自动学习并补全（resume 流首条 init 事件携带 cwd）。
@@ -630,12 +664,14 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const content = formatGitResult(args, cwd, result);
         const template = gitResultHeaderTemplate(result);
         await sendCardReply(freshToken, chatId, "/git 输出", content, template);
+        logTrace(tid, "DONE", { outcome: "git_result", exitCode: result.exitCode, durationMs: result.durationMs });
         return;
       }
 
       const existing = chatSessionMap.get(chatId);
       if (existing && !existing.stopped) {
         if (msgTimestamp <= existing.msgTimestamp) {
+          logTrace(tid, "DONE", { outcome: "skip_old_message", msgTimestamp, existingTimestamp: existing.msgTimestamp });
           console.log(`[${ts()}] [SKIP] Older message (${msgTimestamp} <= ${existing.msgTimestamp}), ignoring`);
           return;
         }
@@ -644,6 +680,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         existing.close();
         chatSessionMap.delete(chatId);
         console.log(`[${ts()}] [INTERRUPT] New message arrived, cancelled previous session ${sessionId}`);
+        logTrace(tid, "INTERRUPT", { oldSessionId: sessionId });
         if (existing.cardId) {
           while (existing.cardBusy) {
             await new Promise(r => setTimeout(r, 20));
@@ -662,9 +699,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
 
       try {
-        await resumeAndPrompt(sessionId, text, freshToken, chatId, msgTimestamp, descriptionTool);
+        logTrace(tid, "RESUME", { sessionId, tool: descriptionTool });
+        await resumeAndPrompt(sessionId, text, freshToken, chatId, msgTimestamp, descriptionTool, tid);
+        logTrace(tid, "DONE", { outcome: "resume_done", sessionId });
         console.log(`[${ts()}] [RESUME] Session ${sessionId} done`);
       } catch (err) {
+        logTrace(tid, "DONE", { outcome: "resume_fail", error: (err as Error).message });
         console.error(`[${ts()}] [RESUME] FAIL: ${(err as Error).message}`);
         fileLog.flush();
         await sendCardReply(
@@ -675,13 +715,19 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
       return;
     }
+    // 群聊但 description 中没有 session info → 也走 help card
+    logTrace(tid, "BRANCH", { reason: "no_session_info_in_group" });
   } catch (err) {
+    logTrace(tid, "BRANCH", { reason: "get_chat_info_failed", error: (err as Error).message });
     console.log(`[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`);
   }
+  } // end if (chatType !== "p2p")
 
+  // 私聊或群聊无 session info → 发送 help card
+  logTrace(tid, "SEND", { method: "help_card", chatId });
   const replyToken = await getTenantAccessToken();
   const card = buildHelpCard(text);
-  await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+  const helpResp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${replyToken}`,
@@ -689,6 +735,14 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     },
     body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
   });
+  const helpData = (await helpResp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
+  if (helpData.code !== 0) {
+    console.error(`[${ts()}] [SEND] help_card FAIL: chatId=${chatId} code=${helpData.code} msg="${helpData.msg ?? ""}"`);
+    logTrace(tid, "DONE", { outcome: "help_card_fail", code: helpData.code, msg: helpData.msg });
+  } else {
+    console.log(`[${ts()}] [SEND] help_card OK: chatId=${chatId} msgId=${helpData.data?.message_id ?? "N/A"}`);
+    logTrace(tid, "DONE", { outcome: "help_card_sent", msgId: helpData.data?.message_id });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +833,7 @@ async function startBotServiceCore(): Promise<void> {
   const eventDispatcher = new EventDispatcher({});
   eventDispatcher.register({
     "im.message.receive_v1": async (data: Evt) => {
+      const traceId = makeTraceId();
       try {
       broadcastToRelay(data);
 
@@ -803,8 +858,9 @@ async function startBotServiceCore(): Promise<void> {
       const sender = event.sender;
       const openId = sender?.sender_id?.open_id ?? "";
       const chatId = message.chat_id ?? "";
+      const chatType = message.chat_type ?? "group";
 
-      console.log(`[MSG] sender=${openId} chat=${chatId} text="${text}"`);
+      console.log(`[MSG] sender=${openId} chat=${chatId} type=${chatType} text="${text}"`);
       appendChatLog(chatId, openId, text);
 
       if (messageId) {
@@ -819,13 +875,15 @@ async function startBotServiceCore(): Promise<void> {
 
       if (!text) return;
       const msgTimestamp = parseInt(message.create_time ?? "0", 10) || Date.now();
+      logTrace(traceId, "RECV", { chatId, chatType, text: text.slice(0, 100) });
       const delayNotice = formatDelayNotice(msgTimestamp);
       if (delayNotice) {
         const delayToken = await getTenantAccessToken();
         await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
       }
-      await handleCommand(text, chatId, openId, msgTimestamp);
+      await handleCommand(text, chatId, openId, msgTimestamp, chatType, traceId);
       } catch (err) {
+        logTrace(traceId, "ERROR", { message: (err as Error).message });
         console.error(`[${ts()}] [FATAL] im.message.receive_v1 handler crashed: ${(err as Error).message}`);
       }
     },
@@ -990,6 +1048,7 @@ async function main(): Promise<void> {
       appIdMask: maskAppId(APP_ID),
     });
   });
+  setExtraApiHandler(handleAgentImageRequest);
 
   console.log(`[启动 2/7] 环境与凭证检查`);
   reportEnvironmentVariableReadout();
