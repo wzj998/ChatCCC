@@ -50,6 +50,9 @@ import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
 export const processedMessages = new Set<string>();
 export const MAX_PROCESSED = 5000;
 
+/** 每个 chatId 上一次已处理消息的时间戳，用于拦截延迟送达的旧消息 */
+export const lastMsgTimestamps = new Map<string, number>();
+
 export let sessionGen = 0;
 export const chatSessionMap = new Map<string, {
   gen: number;
@@ -93,6 +96,7 @@ export function resetState(): void {
   chatSessionMap.clear();
   sessionInfoMap.clear();
   processedMessages.clear();
+  lastMsgTimestamps.clear();
   console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions)`);
 }
 
@@ -523,6 +527,10 @@ export async function resumeAndPrompt(
   const cEntry = chatSessionMap.get(chatId);
   if (!cEntry || cEntry.gen !== myGen) return;
   const wasStopped = cEntry.stopped;
+  const prevTs = lastMsgTimestamps.get(chatId);
+  if (prevTs === undefined || cEntry.msgTimestamp > prevTs) {
+    lastMsgTimestamps.set(chatId, cEntry.msgTimestamp);
+  }
   chatSessionMap.delete(chatId);
   setChatAvatar(token, chatId, tool, "idle").catch(() => {});
 

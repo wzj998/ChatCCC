@@ -92,6 +92,7 @@ import {
   getSessionStatus,
   getAllSessionsStatus,
   initClaudeSession,
+  lastMsgTimestamps,
   processedMessages,
   resetState,
   resumeAndPrompt,
@@ -494,6 +495,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           cEntry.stopped = true;
           if (cEntry.spinnerTimer) { clearInterval(cEntry.spinnerTimer); cEntry.spinnerTimer = null; }
           cEntry.close();
+          const prevTs = lastMsgTimestamps.get(chatId);
+          if (prevTs === undefined || cEntry.msgTimestamp > prevTs) {
+            lastMsgTimestamps.set(chatId, cEntry.msgTimestamp);
+          }
           console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
           await sendTextReply(freshToken, chatId, "会话已停止。").catch(() => {});
           logTrace(tid, "DONE", { outcome: "stopped" });
@@ -589,6 +594,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           existing.stopped = true;
           if (existing.spinnerTimer) { clearInterval(existing.spinnerTimer); existing.spinnerTimer = null; }
           existing.close();
+          const prevTs = lastMsgTimestamps.get(chatId);
+          if (prevTs === undefined || existing.msgTimestamp > prevTs) {
+            lastMsgTimestamps.set(chatId, existing.msgTimestamp);
+          }
           chatSessionMap.delete(chatId);
         }
 
@@ -678,6 +687,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
+      const lastTs = lastMsgTimestamps.get(chatId);
+      if (lastTs !== undefined && msgTimestamp <= lastTs) {
+        logTrace(tid, "DONE", { outcome: "skip_old_message_no_session", msgTimestamp, lastTimestamp: lastTs });
+        console.log(`[${ts()}] [SKIP] Older message (${msgTimestamp} <= ${lastTs}), no active session, ignoring`);
+        return;
+      }
+
       const existing = chatSessionMap.get(chatId);
       if (existing && !existing.stopped) {
         if (msgTimestamp <= existing.msgTimestamp) {
@@ -688,6 +704,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         existing.stopped = true;
         if (existing.spinnerTimer) { clearInterval(existing.spinnerTimer); existing.spinnerTimer = null; }
         existing.close();
+        const prevTs = lastMsgTimestamps.get(chatId);
+        if (prevTs === undefined || existing.msgTimestamp > prevTs) {
+          lastMsgTimestamps.set(chatId, existing.msgTimestamp);
+        }
         chatSessionMap.delete(chatId);
         console.log(`[${ts()}] [INTERRUPT] New message arrived, cancelled previous session ${sessionId}`);
         logTrace(tid, "INTERRUPT", { oldSessionId: sessionId });
@@ -886,7 +906,7 @@ async function startBotServiceCore(): Promise<void> {
       if (!text) return;
       const msgTimestamp = parseInt(message.create_time ?? "0", 10) || Date.now();
       logTrace(traceId, "RECV", { chatId, chatType, text: text.slice(0, 100) });
-      const delayNotice = formatDelayNotice(msgTimestamp);
+      const delayNotice = formatDelayNotice(msgTimestamp, text);
       if (delayNotice) {
         const delayToken = await getTenantAccessToken();
         await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
