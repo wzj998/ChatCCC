@@ -9,6 +9,7 @@ import {
   BASE_URL,
   CHAT_LOGS_DIR,
   PROJECT_ROOT,
+  USER_DATA_DIR,
   CLAUDE_SESSION_PREFIX,
   CURSOR_SESSION_PREFIX,
   CODEX_SESSION_PREFIX,
@@ -262,7 +263,7 @@ export function extractSessionId(description: string): string | null {
 
 const AVATAR_DIR = resolvePath(PROJECT_ROOT, "images", "avatars");
 const AVATAR_BADGE_DIR = resolvePath(AVATAR_DIR, "badges");
-const AVATAR_KEY_CACHE_FILE = resolvePath(PROJECT_ROOT, "state", "avatar-image-keys.json");
+const AVATAR_KEY_CACHE_FILE = resolvePath(USER_DATA_DIR, "state", "avatar-image-keys.json");
 const AVATAR_SOURCES: Record<string, string> = {
   new: resolvePath(AVATAR_DIR, "status_new.png"),
   busy: resolvePath(AVATAR_DIR, "status_busy.png"),
@@ -409,8 +410,8 @@ export async function setChatAvatar(token: string, chatId: string, tool: string,
 // Image download & cache
 // ---------------------------------------------------------------------------
 
-const IMAGE_DOWNLOAD_DIR = resolvePath(PROJECT_ROOT, "images", "downloads");
-const IMAGE_CACHE_FILE = resolvePath(PROJECT_ROOT, "state", "image-cache.json");
+const IMAGE_DOWNLOAD_DIR = resolvePath(USER_DATA_DIR, "images", "downloads");
+const IMAGE_CACHE_FILE = resolvePath(USER_DATA_DIR, "state", "image-cache.json");
 
 const imageCache = new Map<string, string>();
 let imageCacheLoaded = false;

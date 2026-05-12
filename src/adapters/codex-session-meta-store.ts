@@ -8,10 +8,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { PROJECT_ROOT } from "../config.ts";
+import { USER_DATA_DIR } from "../config.ts";
 
 export const CODEX_SESSION_META_FILE = join(
-  PROJECT_ROOT,
+  USER_DATA_DIR,
   "state",
   "codex-session-meta.json",
 );
