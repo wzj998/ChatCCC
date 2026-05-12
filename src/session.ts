@@ -40,6 +40,7 @@ import {
   createAgentFileGrant,
   revokeAgentFileGrant,
 } from "./agent-file-rpc.ts";
+import { setSessionGrants, clearSessionGrants, AGENT_SESSION_GRANTS_PATH } from "./agent-grants-rpc.ts";
 import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
 
 // ---------------------------------------------------------------------------
@@ -341,15 +342,15 @@ export async function resumeAndPrompt(
   const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
   const skillVariables = {
     cwd,
+    session_id: sessionId,
     im_skills_cache_dir: imSkillsCacheDir,
+    session_grants_url: `http://127.0.0.1:${CHATCCC_PORT}${AGENT_SESSION_GRANTS_PATH}`,
     send_image_url: imageGrant.url,
-    send_image_token: imageGrant.token,
-    send_file_url: fileGrant.url,
-    send_file_token: fileGrant.token,
     send_image_script: join(feishuSkillDir, "send-image.mjs"),
     send_file_script: join(feishuSkillDir, "send-file.mjs"),
     download_video_script: join(feishuSkillDir, "download-video.mjs"),
   };
+  setSessionGrants(sessionId, imageGrant, fileGrant);
   const imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
   // 渲染子文档到缓存目录，供 Agent 按需读取
   await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
@@ -516,6 +517,7 @@ export async function resumeAndPrompt(
     if (sendInterval) clearInterval(sendInterval);
     revokeAgentImageGrant(imageGrant.token);
     revokeAgentFileGrant(fileGrant.token);
+    clearSessionGrants(sessionId);
   }
 
   const cEntry = chatSessionMap.get(chatId);
