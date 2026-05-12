@@ -29,5 +29,4 @@ Agent 源码级访问 ChatCCC，能更深度地发现架构问题，同时保持
 
 - Agent 代码放在 `self-iter-agent/` 目录下，含 prompt、工作流配置、定时任务等
 - Agent 通过飞书群与 ChatCCC 交互（和普通用户一样），但源码级读写仓库
-- 发布流程遵循六步发布法（详见 CLAUDE.local.md 双仓库同步发布流程）
 - 初期可手动触发，稳定后接入 cron/CI
