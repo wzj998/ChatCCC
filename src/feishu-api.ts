@@ -487,7 +487,7 @@ export async function getOrDownloadImage(token: string, messageId: string, fileK
 const DELAY_NOTICE_THRESHOLD_MS = 15 * 60 * 1000; // 15 分钟
 
 /** 消息延迟超过阈值时生成提醒文本，否则返回 null */
-export function formatDelayNotice(createTimeMs: number, nowMs?: number): string | null {
+export function formatDelayNotice(createTimeMs: number, messageText?: string, nowMs?: number): string | null {
   const now = nowMs ?? Date.now();
   const delayMs = now - createTimeMs;
   if (delayMs < DELAY_NOTICE_THRESHOLD_MS) return null;
@@ -515,7 +515,8 @@ export function formatDelayNotice(createTimeMs: number, nowMs?: number): string 
     }
   }
 
-  return `> ⚠️ 延迟送达提醒：此消息于 ${sendTimeStr} 发送，因服务离线，延迟约 ${delayStr}后送达`;
+  const contentLine = messageText ? `\n> 原始内容：${messageText.slice(0, 200)}` : "";
+  return `> ⚠️ 延迟送达提醒：此消息于 ${sendTimeStr} 发送，因服务离线，延迟约 ${delayStr}后送达${contentLine}`;
 }
 
 export async function sendTextReply(
