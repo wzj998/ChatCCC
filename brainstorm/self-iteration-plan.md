@@ -7,50 +7,47 @@
 2. 自主改进 ChatCCC 项目代码（修 bug、加功能、重构）
 3. 在使用过程中遇到问题时，分析根因并优化 ChatCCC 自身
 
-## 仓库拆分建议：**分开两个仓库**
+## 仓库拆分建议：**同一仓库**
 
-| 仓库 | 职责 |
-|------|------|
-| `ChatCCC`（现有） | 飞书 ↔ Claude Code 桥接平台 |
-| `ChatCCC-Dogfood`（新建） | 使用 ChatCCC 的自我迭代 Agent |
+Agent 代码放在 ChatCCC 仓库的 `self-iter-agent/` 目录下。
 
 ### 核心理由
 
-**1. Dogfooding 才是真测试**
-Agent 应该通过 npm 安装 `chatccc`，以真实用户的身份使用——而不是源码级调用。这样才能发现 npm 包路径、配置、文档等真实问题。
+**1. 简单直接**
+Agent 直连 ChatCCC 源码，不需要跨仓库协调、npm 发布、版本升级等中间环节。开发迭代更快。
 
-**2. 避免循环耦合**
-Agent 改 ChatCCC → ChatCCC 发布新版本 → Agent 拉新版本 → 继续改。如果放在同一仓库，这个闭环就变成了内部调用，失去了验证"外部使用者能否正常工作"的意义。
+**2. 代码即文档**
+Agent 的 prompt 和工作流与 ChatCCC 放在一起，使用者可以直接参考 Agent 怎么用 ChatCCC，是最直观的示例。
 
-**3. 独立迭代节奏**
-ChatCCC 的迭代不应该被 Agent 的行为阻塞（比如 Agent 改了 ChatCCC 导致自身运行异常）。分开后各自独立 CI，Agent 明确依赖 ChatCCC 的特定版本。
+**3. 避免过度工程**
+当前阶段 Agent 逻辑还在探索中，先在同一仓库快速验证，等真正成熟了再考虑拆分。
 
-**4. 可作为参考实现**
-分开后 `ChatCCC-Dogfood` 是开源用户的最佳实践示范——别人可以 fork 它来创建自己的自改进项目。
+**4. 内部狗粮**
+Agent 源码级访问 ChatCCC，能更深度地发现架构问题，同时保持了"Agent 通过飞书交互"的外部使用路径。
 
-### 放在同一仓库的唯一场景
-
-如果 Agent 逻辑非常简单（比如就是一个 cron + prompt），不需要独立版本管理，可以放在 ChatCCC 的 `examples/` 或 `dogfood/` 目录下作为示例。但真正的自主迭代 Agent 大概率会变复杂，还是分开更健康。
-
-## Agent 工作流设想
+## Agent 工作流（六步 PR 法）
 
 ```
 飞书群消息 → ChatCCC → Claude Code Agent
                 ↑              ↓
                 │      修改 ChatCCC 代码
                 │              ↓
-                └── 提 PR → review → merge → npm publish
-                                ↓
-                       Agent 拉新版本，继续迭代
+                └── ④ 自动提 PR 并合并（同一仓库，合并到 dev）
 ```
 
-关键循环：
-1. Agent 接到任务（用户通过飞书指派或定时触发）
-2. Agent 分析 ChatCCC 代码，定位问题
-3. Agent 编写修改，通过 ChatCCC 的 git 能力提交
-4. 用户 review PR，合并发布
-5. Agent 升级自身依赖的 chatccc 版本
-6. 如果遇到使用障碍（如接口不好用、文档不清），优先改进 ChatCCC 本身
+| 步骤 | 内容 |
+|------|------|
+| ① 接收任务 | 用户通过飞书指派，或定时触发 |
+| ② 分析定位 | 阅读代码，理解上下文，定位问题根因 |
+| ③ 编写修改 | 写代码 / 修 bug / 补测试 / 更新文档 |
+| ④ 提 PR 并自动合并 | `gh pr create` + `gh pr merge --merge`，同一步完成 |
+| ⑤ 同步公文仓库 | 通过 sync.mjs 同步到 ChatCCC 公有仓库，提 PR 合并到 main |
+| ⑥ npm 发布 | `npm version patch` + `npm publish`，新版本上线 |
+
+关键点：
+- 步骤 ④ 中**提 PR 和合并 PR 为同一步**，减少等待和人工介入，Agent 直接合到 dev
+- 步骤 ⑤ 中公有仓库仍走 PR review 流程（dev → main），保持发布审核
+- 步骤 ⑥ 发布使 npm 用户也能用上改进
 
 ## 初始切入点
 
@@ -63,7 +60,7 @@ Agent 可以从以下几个方向开始：
 
 ## 技术要点
 
-- Agent 通过 `chatccc` npm 包的 `bin/chatccc.mjs` 启动
-- 使用 ChatCCC 的 git 能力操作仓库
-- 配置独立于 ChatCCC 主项目，作为普通用户配置
+- Agent 代码放在 `agent/` 目录下，含 prompt、工作流配置、定时任务等
+- Agent 通过飞书群与 ChatCCC 交互（和普通用户一样），但源码级读写仓库
+- 步骤 ④ 合并到 dev，步骤 ⑤ 公有仓库提 PR 合并到 main
 - 初期可手动触发，稳定后接入 cron/CI
