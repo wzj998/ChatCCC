@@ -9,7 +9,7 @@
 
 ## 仓库拆分建议：**同一仓库**
 
-Agent 代码放在 ChatCCC 仓库的 `agent/` 或 `dogfood/` 目录下。
+Agent 代码放在 ChatCCC 仓库的 `self-iter-agent/` 目录下。
 
 ### 核心理由
 
