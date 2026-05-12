@@ -83,6 +83,7 @@ import {
 import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
 import { handleAgentImageRequest } from "./agent-image-rpc.ts";
+import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
@@ -160,7 +161,15 @@ async function formatMessageContent(message: { message_id?: string; message_type
     }
   }
 
-  // 其他类型（file, audio, media, sticker）直接给原始 JSON
+  if (message.message_type === "media") {
+    const fileKey = content.file_key as string | undefined;
+    const fileName = (content.file_name as string) || "video.mp4";
+    const messageId = message.message_id;
+    if (!fileKey || !messageId) return contentStr;
+    return `[视频] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
+  }
+
+  // 其他类型（file, audio, sticker）直接给原始 JSON
   return contentStr;
 }
 
@@ -1048,7 +1057,9 @@ async function main(): Promise<void> {
       appIdMask: maskAppId(APP_ID),
     });
   });
-  setExtraApiHandler(handleAgentImageRequest);
+  setExtraApiHandler(async (req, res) => {
+    return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+  });
 
   console.log(`[启动 2/7] 环境与凭证检查`);
   reportEnvironmentVariableReadout();

@@ -60,6 +60,8 @@ describe("agent image RPC grants", () => {
 
     expect(prompt).toContain("POST http://127.0.0.1:18080/api/agent/send-image");
     expect(prompt).toContain("Authorization: Bearer tok_test");
+    expect(prompt).toContain("Content-Type: application/json; charset=utf-8");
+    expect(prompt).toContain("UTF-8 encoded JSON bytes");
     expect(prompt).toContain("\"path\"");
     expect(prompt).not.toContain("CHATCCC_SEND_IMAGE_URL");
     expect(prompt).not.toContain("CHATCCC_SEND_IMAGE_TOKEN");

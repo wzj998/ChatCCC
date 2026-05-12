@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   CLAUDE_API_KEY,
@@ -7,7 +7,9 @@ import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   CHATCCC_PORT,
+  PROJECT_ROOT,
   SESSIONS_FILE,
+  USER_DATA_DIR,
   addRecentDir,
   anthropicConfigDisplay,
   config,
@@ -31,10 +33,14 @@ import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 import {
-  buildAgentImageCapabilityPrompt,
   createAgentImageGrant,
   revokeAgentImageGrant,
 } from "./agent-image-rpc.ts";
+import {
+  createAgentFileGrant,
+  revokeAgentFileGrant,
+} from "./agent-file-rpc.ts";
+import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -324,13 +330,31 @@ export async function resumeAndPrompt(
     port: CHATCCC_PORT,
     traceId: tid || undefined,
   });
+  const fileGrant = createAgentFileGrant({
+    chatId,
+    sessionId,
+    cwd,
+    port: CHATCCC_PORT,
+    traceId: tid || undefined,
+  });
+  const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
+  const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
+  const skillVariables = {
+    cwd,
+    im_skills_cache_dir: imSkillsCacheDir,
+    send_image_url: imageGrant.url,
+    send_image_token: imageGrant.token,
+    send_file_url: fileGrant.url,
+    send_file_token: fileGrant.token,
+    send_image_script: join(feishuSkillDir, "send-image.mjs"),
+    send_file_script: join(feishuSkillDir, "send-file.mjs"),
+    download_video_script: join(feishuSkillDir, "download-video.mjs"),
+  };
+  const imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
+  // 渲染子文档到缓存目录，供 Agent 按需读取
+  await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
   const userTextWithCapabilities = [
-    buildAgentImageCapabilityPrompt({
-      url: imageGrant.url,
-      token: imageGrant.token,
-      cwd,
-    }),
-    "",
+    ...(imSkillsPrompt ? [imSkillsPrompt, ""] : []),
     "[User message]",
     userText,
     "[/User message]",
@@ -491,6 +515,7 @@ export async function resumeAndPrompt(
   } finally {
     if (sendInterval) clearInterval(sendInterval);
     revokeAgentImageGrant(imageGrant.token);
+    revokeAgentFileGrant(fileGrant.token);
   }
 
   const cEntry = chatSessionMap.get(chatId);

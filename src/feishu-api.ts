@@ -621,6 +621,128 @@ export async function sendImageReply(
   }
 }
 
+function feishuFileType(ext: string): string {
+  const map: Record<string, string> = {
+    ".mp4": "mp4",
+    ".mp3": "opus", ".wav": "opus", ".ogg": "opus", ".aac": "opus", ".m4a": "opus",
+    ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
+    ".xls": "xls", ".xlsx": "xls", ".csv": "xls",
+    ".ppt": "ppt", ".pptx": "ppt",
+  };
+  return map[ext] ?? "stream";
+}
+
+const VIDEO_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv"];
+
+function parseMediaDurationMs(buffer: Buffer): number {
+  try {
+    let offset = 0;
+    while (offset + 8 <= buffer.length) {
+      const size = buffer.readUInt32BE(offset);
+      const type = buffer.toString("ascii", offset + 4, offset + 8);
+      if (size < 8 || offset + size > buffer.length) break;
+      if (type === "moov") {
+        let mo = offset + 8;
+        const moEnd = offset + size;
+        while (mo + 8 <= moEnd) {
+          const s = buffer.readUInt32BE(mo);
+          const t = buffer.toString("ascii", mo + 4, mo + 8);
+          if (s < 8 || mo + s > moEnd) break;
+          if (t === "mvhd") {
+            const ds = mo + 8;
+            const ver = buffer[ds];
+            let timescale: number, duration: number;
+            if (ver === 1) {
+              timescale = buffer.readUInt32BE(ds + 20);
+              duration = Number(buffer.readBigUInt64BE(ds + 24));
+            } else {
+              timescale = buffer.readUInt32BE(ds + 12);
+              duration = buffer.readUInt32BE(ds + 16);
+            }
+            if (timescale <= 0) return 0;
+            return Math.round((duration / timescale) * 1000);
+          }
+          mo += s;
+        }
+      }
+      offset += size;
+    }
+  } catch {}
+  return 0;
+}
+
+async function uploadMessageFile(token: string, filePath: string): Promise<string> {
+  const ext = extname(filePath).toLowerCase();
+  const isVideo = VIDEO_EXTENSIONS.includes(ext);
+  const buffer = await readFile(filePath);
+  const fileName = filePath.split(/[\\/]/).pop() || "file";
+  const fileType = isVideo ? "stream" : feishuFileType(ext);
+  const blob = new Blob([new Uint8Array(buffer)], { type: isVideo ? "video/mp4" : "application/octet-stream" });
+  const form = new FormData();
+  form.append("file_type", fileType);
+  form.append("file_name", fileName);
+  // 音频文件传 duration（opus 需要）
+  if (fileType === "opus") {
+    const durationMs = parseMediaDurationMs(buffer);
+    if (durationMs > 0) form.append("duration", String(durationMs));
+  }
+  form.append("file", blob, fileName);
+
+  const resp = await fetch(`${BASE_URL}/im/v1/files`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const text = await resp.text();
+  let data: { code: number; msg?: string; data?: { file_key?: string } };
+  try { data = JSON.parse(text); } catch {
+    throw new Error(`uploadMessageFile non-JSON response: ${text.slice(0, 200)}`);
+  }
+  if (data.code !== 0) throw new Error(`[${data.code}] ${data.msg}`);
+  const fileKey = data.data?.file_key;
+  if (!fileKey) throw new Error("uploadMessageFile response missing file_key");
+  return fileKey;
+}
+
+export async function sendFileReply(
+  token: string,
+  chatId: string,
+  filePath: string,
+): Promise<boolean> {
+  try {
+    const fileKey = await uploadMessageFile(token, filePath);
+    const fileName = filePath.split(/[\\/]/).pop() || "file";
+    const ext = extname(filePath).toLowerCase();
+    // 视频/音频用 msg_type: "media"，文档用 "file"
+    const isMedia = [".mp3", ".wav", ".ogg", ".aac", ".m4a"].includes(ext);
+    const msgType = isMedia ? "media" : "file";
+    const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: msgType,
+        content: JSON.stringify({ file_key: fileKey }),
+      }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { code?: number; msg?: string; data?: { message_id?: string } };
+    if (data.code !== 0) {
+      console.error(`[${ts()}] [SEND] ${msgType} FAIL: chatId=${chatId} path=${filePath} code=${data.code} msg="${data.msg ?? ""}"`);
+      throw new Error(`[${data.code}] ${data.msg ?? "send file failed"}`);
+    }
+    console.log(`[${ts()}] [SEND] ${msgType} OK: chatId=${chatId} name=${fileName} msgId=${data.data?.message_id ?? "N/A"}`);
+    return true;
+  } catch (err) {
+    if (!(err instanceof Error && err.message.startsWith("["))) {
+      console.error(`[${ts()}] [SEND] file FAIL: chatId=${chatId} path=${filePath} ${(err as Error).message}`);
+    }
+    throw err;
+  }
+}
+
 export async function addReaction(
   token: string,
   messageId: string,
