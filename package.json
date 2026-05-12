@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
