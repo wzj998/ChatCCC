@@ -6,6 +6,7 @@ import {
   CLAUDE_BASE_URL,
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  CHATCCC_PORT,
   SESSIONS_FILE,
   addRecentDir,
   anthropicConfigDisplay,
@@ -23,11 +24,17 @@ import {
   updateCardKitCard,
 } from "./cardkit.ts";
 import { sendTextReply, setChatAvatar } from "./feishu-api.ts";
+import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
+import {
+  buildAgentImageCapabilityPrompt,
+  createAgentImageGrant,
+  revokeAgentImageGrant,
+} from "./agent-image-rpc.ts";
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -300,13 +307,34 @@ export async function resumeAndPrompt(
   chatId: string,
   msgTimestamp: number,
   tool: string,
+  traceId?: string,
 ): Promise<void> {
+  const tid = traceId ?? "";
   const adapter = getAdapterForTool(tool);
   const info = await adapter.getSessionInfo(sessionId);
   const cwd = info?.cwd ?? (await getDefaultCwd());
+  if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(chatId)?.turnCount ?? 0) + 1 });
   console.log(
     `[${ts()}] Resuming ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
   );
+  const imageGrant = createAgentImageGrant({
+    chatId,
+    sessionId,
+    cwd,
+    port: CHATCCC_PORT,
+    traceId: tid || undefined,
+  });
+  const userTextWithCapabilities = [
+    buildAgentImageCapabilityPrompt({
+      url: imageGrant.url,
+      token: imageGrant.token,
+      cwd,
+    }),
+    "",
+    "[User message]",
+    userText,
+    "[/User message]",
+  ].join("\n");
 
   const controller = new AbortController();
 
@@ -338,6 +366,7 @@ export async function resumeAndPrompt(
 
   let cardId: string | null = null;
   cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch((err) => {
+    if (tid) logTrace(tid, "CARD_CREATE_FAIL", { error: (err as Error).message });
     console.error(`[${ts()}] [CARDIKT] createCard FAIL: chatId=${chatId} ${(err as Error).message}`);
     fileLog.flush();
     sendTextReply(token, chatId, "⚠️ 流式卡片创建失败（可能因限流），将使用文本回复。").catch(() => {});
@@ -347,6 +376,7 @@ export async function resumeAndPrompt(
     const cEntry = chatSessionMap.get(chatId);
     if (cEntry) { cEntry.cardId = cardId; cEntry.sequence = 1; }
     const sendOk = await sendCardKitMessage(token, chatId, cardId).catch((err) => {
+      if (tid) logTrace(tid, "CARD_SEND_FAIL", { cardId, error: (err as Error).message });
       console.error(`[${ts()}] [CARDIKT] sendMessage FAIL: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
       fileLog.flush();
       return false;
@@ -445,7 +475,7 @@ export async function resumeAndPrompt(
   }
 
   try {
-    for await (const unifiedMsg of adapter.prompt(sessionId, userText, cwd, controller.signal)) {
+    for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal)) {
       for (const block of unifiedMsg.blocks) {
         accumulateBlockContent(block, state);
 
@@ -460,6 +490,7 @@ export async function resumeAndPrompt(
     console.error(`[${ts()}] [STREAM] Error in stream loop: ${(streamErr as Error).message}`);
   } finally {
     if (sendInterval) clearInterval(sendInterval);
+    revokeAgentImageGrant(imageGrant.token);
   }
 
   const cEntry = chatSessionMap.get(chatId);
@@ -501,6 +532,7 @@ export async function resumeAndPrompt(
       );
     }
     console.log(`[${ts()}] Session ${sessionId} stopped by user (content chunks: ${state.chunkCount})`);
+    if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
     return;
   }
 
@@ -530,6 +562,7 @@ export async function resumeAndPrompt(
   }
 
   console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
+  if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
 }
 
 // ---------------------------------------------------------------------------

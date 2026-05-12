@@ -1570,6 +1570,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const url = req.url ?? "/";
   const method = req.method ?? "GET";
 
+  if (extraApiHandler && await extraApiHandler(req, res)) return;
+
   // API routes
   if (url === "/api/check" && method === "GET") return handleApiCheck(req, res);
   if (url === "/api/config" && method === "GET") return handleGetConfig(req, res);
@@ -1662,6 +1664,8 @@ let setupActivateHook: SetupActivateHook | null = null;
 // 由 index.ts 注入，因为 web-ui.ts 自身**不应**直接 import config.ts——后者顶层
 // 有 loadConfig 副作用，被 web-ui.ts 间接 import 会污染所有依赖 web-ui.ts 的单测。
 let reloadConfigHook: (() => void) | null = null;
+type ExtraApiHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean> | boolean;
+let extraApiHandler: ExtraApiHandler | null = null;
 
 /**
  * 注册"reload config"回调。约定：
@@ -1671,6 +1675,10 @@ let reloadConfigHook: (() => void) | null = null;
  */
 export function setReloadConfigHook(hook: () => void | Promise<void>): void {
   reloadConfigHook = hook;
+}
+
+export function setExtraApiHandler(handler: ExtraApiHandler): void {
+  extraApiHandler = handler;
 }
 
 export function startSetupMode(port: number, options: StartSetupModeOptions = {}): void {

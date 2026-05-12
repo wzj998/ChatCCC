@@ -1,5 +1,5 @@
 import { readdir, stat, readFile, mkdir, writeFile } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
+import { extname, resolve as resolvePath } from "node:path";
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 
@@ -521,23 +521,103 @@ export async function sendTextReply(
   token: string,
   chatId: string,
   text: string
-): Promise<void> {
+): Promise<boolean> {
   const card = JSON.stringify({
     config: { wide_screen_mode: true },
     elements: [{ tag: "markdown", content: text }],
   });
-  await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      receive_id: chatId,
-      msg_type: "interactive",
-      content: card,
-    }),
+  try {
+    const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: "interactive",
+        content: card,
+      }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
+    if (data.code !== 0) {
+      console.error(`[${ts()}] [SEND] text FAIL: chatId=${chatId} code=${data.code} msg="${data.msg ?? ""}"`);
+      return false;
+    }
+    console.log(`[${ts()}] [SEND] text OK: chatId=${chatId} msgId=${data.data?.message_id ?? "N/A"}`);
+    return true;
+  } catch (err) {
+    console.error(`[${ts()}] [SEND] text FAIL: chatId=${chatId} ${(err as Error).message}`);
+    return false;
+  }
+}
+
+function messageImageContentType(imagePath: string): string {
+  const ext = extname(imagePath).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".bmp") return "image/bmp";
+  return "image/png";
+}
+
+async function uploadMessageImage(token: string, imagePath: string): Promise<string> {
+  const buffer = await readFile(imagePath);
+  const blob = new Blob([new Uint8Array(buffer)], {
+    type: messageImageContentType(imagePath),
   });
+  const form = new FormData();
+  form.append("image_type", "message");
+  form.append("image", blob, imagePath.split(/[\\/]/).pop() || "image.png");
+
+  const resp = await fetch(`${BASE_URL}/im/v1/images`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const text = await resp.text();
+  let data: { code: number; msg?: string; data?: { image_key?: string } };
+  try { data = JSON.parse(text); } catch {
+    throw new Error(`uploadMessageImage non-JSON response: ${text.slice(0, 200)}`);
+  }
+  if (data.code !== 0) throw new Error(`[${data.code}] ${data.msg}`);
+  const imageKey = data.data?.image_key;
+  if (!imageKey) throw new Error("uploadMessageImage response missing image_key");
+  return imageKey;
+}
+
+export async function sendImageReply(
+  token: string,
+  chatId: string,
+  imagePath: string,
+): Promise<boolean> {
+  try {
+    const imageKey = await uploadMessageImage(token, imagePath);
+    const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: "image",
+        content: JSON.stringify({ image_key: imageKey }),
+      }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { code?: number; msg?: string; data?: { message_id?: string } };
+    if (data.code !== 0) {
+      console.error(`[${ts()}] [SEND] image FAIL: chatId=${chatId} path=${imagePath} code=${data.code} msg="${data.msg ?? ""}"`);
+      throw new Error(`[${data.code}] ${data.msg ?? "send image failed"}`);
+    }
+    console.log(`[${ts()}] [SEND] image OK: chatId=${chatId} msgId=${data.data?.message_id ?? "N/A"}`);
+    return true;
+  } catch (err) {
+    if (!(err instanceof Error && err.message.startsWith("["))) {
+      console.error(`[${ts()}] [SEND] image FAIL: chatId=${chatId} path=${imagePath} ${(err as Error).message}`);
+    }
+    throw err;
+  }
 }
 
 export async function addReaction(
@@ -561,21 +641,33 @@ export async function sendCardReply(
   title: string,
   content: string,
   template = "green"
-): Promise<void> {
+): Promise<boolean> {
   const card = JSON.stringify({
     config: { wide_screen_mode: true },
     header: { template, title: { content: title, tag: "plain_text" } },
     elements: [{ tag: "div", text: { tag: "lark_md", content } }],
   });
 
-  await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
-  });
+  try {
+    const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
+    if (data.code !== 0) {
+      console.error(`[${ts()}] [SEND] card FAIL: chatId=${chatId} title="${title}" code=${data.code} msg="${data.msg ?? ""}"`);
+      return false;
+    }
+    console.log(`[${ts()}] [SEND] card OK: chatId=${chatId} title="${title}" msgId=${data.data?.message_id ?? "N/A"}`);
+    return true;
+  } catch (err) {
+    console.error(`[${ts()}] [SEND] card FAIL: chatId=${chatId} title="${title}" ${(err as Error).message}`);
+    return false;
+  }
 }
 
 // 重启后，向最后有发言的会话发送 "已重启" 卡片（基于 chat_logs 的文件修改时间）
