@@ -84,6 +84,7 @@ import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buil
 import { updateCardKitCard } from "./cardkit.ts";
 import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
+import { handleAgentGrantsRequest } from "./agent-grants-rpc.ts";
 import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
@@ -1058,7 +1059,7 @@ async function main(): Promise<void> {
     });
   });
   setExtraApiHandler(async (req, res) => {
-    return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+    return (await handleAgentGrantsRequest(req, res)) || (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
   });
 
   console.log(`[启动 2/7] 环境与凭证检查`);

@@ -23,9 +23,7 @@ describe("IM skills prompt rendering", () => {
         "---",
         "name: feishu-skill",
         "---",
-        "POST {{send_image_url}}",
-        "Authorization: Bearer {{send_image_token}}",
-        "Content-Type: application/json; charset=utf-8",
+        "GET {{session_grants_url}}?sid={{session_id}}",
         "cwd={{cwd}}",
       ].join("\n"),
       "utf-8",
@@ -35,15 +33,13 @@ describe("IM skills prompt rendering", () => {
       skillsDir: tempRoot,
       variables: {
         cwd: "C:/work",
-        send_image_url: "http://127.0.0.1:18080/api/agent/send-image",
-        send_image_token: "tok_test",
+        session_grants_url: "http://127.0.0.1:18080/api/agent/session-grants",
+        session_id: "sid_test",
       },
     });
 
     expect(prompt).toContain("[ChatCCC IM skill: feishu-skill]");
-    expect(prompt).toContain("POST http://127.0.0.1:18080/api/agent/send-image");
-    expect(prompt).toContain("Authorization: Bearer tok_test");
-    expect(prompt).toContain("Content-Type: application/json; charset=utf-8");
+    expect(prompt).toContain("GET http://127.0.0.1:18080/api/agent/session-grants?sid=sid_test");
     expect(prompt).toContain("cwd=C:/work");
     expect(prompt).not.toContain("{{");
   });

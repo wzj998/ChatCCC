@@ -2,17 +2,22 @@
 
 ## Send Images
 
-### Script (recommended)
-
+First, query the current send token:
 ```bash
-node "{{send_image_script}}" --url "{{send_image_url}}" --token "{{send_image_token}}" --path "<absolute image path>" --caption "<optional caption>"
+curl "{{session_grants_url}}?sid={{session_id}}"
+```
+
+Then send with the returned url and token:
+
+### Script (recommended)
+```bash
+node "{{send_image_script}}" --url <url_from_query> --token <token_from_query> --path "<absolute image path>" --caption "<optional caption>"
 ```
 
 ### Direct HTTP
-
 ```http
-POST {{send_image_url}}
-Authorization: Bearer {{send_image_token}}
+POST <url_from_query>
+Authorization: Bearer <token_from_query>
 Content-Type: application/json; charset=utf-8
 
 {"path":"<absolute image path>","caption":"<optional caption>"}
