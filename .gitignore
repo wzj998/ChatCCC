@@ -148,6 +148,7 @@ local/
 .claude/settings.local.json
 .claude/skills/
 state/
+images/downloads/
 
 # Sync script (local only)
 sync.bat

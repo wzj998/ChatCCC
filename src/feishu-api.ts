@@ -406,6 +406,80 @@ export async function setChatAvatar(token: string, chatId: string, tool: string,
 }
 
 // ---------------------------------------------------------------------------
+// Image download & cache
+// ---------------------------------------------------------------------------
+
+const IMAGE_DOWNLOAD_DIR = resolvePath(PROJECT_ROOT, "images", "downloads");
+const IMAGE_CACHE_FILE = resolvePath(PROJECT_ROOT, "state", "image-cache.json");
+
+const imageCache = new Map<string, string>();
+let imageCacheLoaded = false;
+
+async function loadImageCache(): Promise<void> {
+  if (imageCacheLoaded) return;
+  imageCacheLoaded = true;
+  try {
+    const raw = await readFile(IMAGE_CACHE_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim()) imageCache.set(key, value);
+    }
+  } catch { /* missing or malformed cache is not fatal */ }
+}
+
+async function persistImageCache(): Promise<void> {
+  await mkdir(dirname(IMAGE_CACHE_FILE), { recursive: true });
+  await writeFile(
+    IMAGE_CACHE_FILE,
+    JSON.stringify(Object.fromEntries(imageCache.entries()), null, 2),
+    "utf-8",
+  );
+}
+
+function extFromContentType(contentType: string | null): string {
+  if (!contentType) return ".png";
+  const mime = contentType.split(";")[0].trim().toLowerCase();
+  const map: Record<string, string> = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/svg+xml": ".svg",
+  };
+  return map[mime] ?? ".png";
+}
+
+async function downloadImage(token: string, messageId: string, fileKey: string): Promise<string> {
+  const resp = await fetch(`${BASE_URL}/im/v1/messages/${messageId}/resources/${fileKey}?type=image`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`downloadImage HTTP ${resp.status}: ${text.slice(0, 200)}`);
+  }
+  const ext = extFromContentType(resp.headers.get("content-type"));
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  await mkdir(IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = resolvePath(IMAGE_DOWNLOAD_DIR, `${fileKey}${ext}`);
+  await writeFile(localPath, buffer);
+  return localPath;
+}
+
+export async function getOrDownloadImage(token: string, messageId: string, fileKey: string): Promise<string> {
+  await loadImageCache();
+  const cached = imageCache.get(fileKey);
+  if (cached) return cached;
+  const localPath = await downloadImage(token, messageId, fileKey);
+  imageCache.set(fileKey, localPath);
+  await persistImageCache().catch((err) => {
+    console.error(`[${ts()}] [IMAGE] persist cache FAIL: ${(err as Error).message}`);
+  });
+  console.log(`[${ts()}] [IMAGE] Downloaded ${fileKey} -> ${localPath}`);
+  return localPath;
+}
+
+// ---------------------------------------------------------------------------
 // Messaging
 // ---------------------------------------------------------------------------
 
