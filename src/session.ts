@@ -251,7 +251,7 @@ export function accumulateBlockContent(
 }
 
 // ---------------------------------------------------------------------------
-// Claude session management
+// AI tool session management
 // ---------------------------------------------------------------------------
 
 /**

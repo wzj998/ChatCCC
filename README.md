@@ -12,7 +12,7 @@ ChatCCC 把 Claude Code、Cursor Agent、Codex (OpenAI) 接入了飞书群聊：
 
 - **手机上也能用 Claude Code / Cursor / Codex** —— 在飞书群里发消息就等于在终端输入指令，AI 的思考和回复会流式展示在群卡片里
 - **多会话并行** —— 一个群就是一个 AI 会话，完全隔离、互不干扰，并行工作效率更高
-- **多工具切换** —— `/new claude` 创建 Claude Code 会话，`/new cursor` 创建 Cursor 会话，`/new codex` 创建 Codex 会话，各取所长
+- **多工具切换** —— `/new` 使用默认 Agent 创建会话，也可用 `/new claude`、`/new cursor`、`/new codex` 指定工具，各取所长
 
 一句话：**在任何设备上打开飞书，就能让 Claude Code / Cursor / Codex 帮你写代码、排查问题、分析项目。**
 
@@ -118,7 +118,7 @@ ChatCCC 启动时会按以下顺序确定 Cursor Agent CLI：
 
 > 旧版字段 `cursor.command` 仍可读取（启动时会打印一次 warning 提示改名），新配置请统一使用 `cursor.path`。
 
-> **说明**：只使用 Claude Code（`/new claude` 或 `/new`）的用户无需安装 Cursor CLI。
+> **说明**：只使用 Claude Code（`/new claude`，或把 Claude Code 设为默认 Agent 后使用 `/new`）的用户无需安装 Cursor CLI。
 
 #### Codex CLI（使用 Codex 会话时需要）
 
@@ -217,6 +217,7 @@ ChatCCC 的所有运行参数都集中在包根目录的 `config.json`。
   "gitTimeoutSeconds": 180,
   "claude": {
     "enabled": false,
+    "defaultAgent": true,
     "model": "",
     "effort": "",
     "apiKey": "",
@@ -224,11 +225,13 @@ ChatCCC 的所有运行参数都集中在包根目录的 `config.json`。
   },
   "cursor": {
     "enabled": false,
+    "defaultAgent": false,
     "path": "",
     "model": ""
   },
   "codex": {
     "enabled": false,
+    "defaultAgent": false,
     "path": "",
     "model": "",
     "effort": ""
@@ -244,6 +247,7 @@ ChatCCC 的所有运行参数都集中在包根目录的 `config.json`。
 | `port` | 否 | 本地 WebSocket 中继 + Web 向导监听端口，默认 `18080`；同机多实例时改成不同值即可 |
 | `gitTimeoutSeconds` | 否 | `/git` 命令在会话工作目录执行时的单次超时秒数，默认 `180`，允许范围 `1–3600`，超时会被 `SIGKILL` 强制终止 |
 | `claude.enabled` / `cursor.enabled` / `codex.enabled` | 否 | 是否启用对应 AI Agent；Web 向导/管理页只展示 `enabled: true` 的 agent 卡片。字段缺省时按「任一配置字段非空」自动判定（向后兼容） |
+| `claude.defaultAgent` / `cursor.defaultAgent` / `codex.defaultAgent` | 否 | `/new` 未指定具体 Agent 时使用哪个默认 Agent；同一时间应只有一个为 `true`。Web 配置页切换某个 Agent 为默认时会自动关闭其它 Agent 的默认开关 |
 | `claude.model` | 否 | Claude Code 会话使用的模型；留空（`""` / 全空白）→ 不向 SDK 传 `model`，由 SDK / 服务商默认决定 |
 | `claude.effort` | 否 | Claude 思考深度（如 `low` / `medium` / `high` / `max`）；留空 → 不向 SDK 传 `effort` |
 | `claude.apiKey` | 否 | 第三方 Anthropic 兼容网关的 API 密钥；**官方 Claude 用户保持 `""` 即可**，详见下文「第三方 API」一节 |
@@ -289,14 +293,14 @@ ChatCCC 的所有运行参数都集中在包根目录的 `config.json`。
 
 ### 5. 开始使用
 
-在飞书中找到你的机器人，发送 `/new`（默认 Claude Code）或 `/new claude` / `/new cursor` / `/new codex`，机器人会自动创建一个群聊并把 AI 会话绑定到该群。之后直接在群里发消息就能对话。
+在飞书中找到你的机器人，发送 `/new`（使用 `config.json` 中 `defaultAgent: true` 的默认 Agent）或 `/new claude` / `/new cursor` / `/new codex`，机器人会自动创建一个群聊并把 AI 会话绑定到该群。之后直接在群里发消息就能对话。
 
 ### 可用指令
 
 
 | 指令            | 作用                           |
 | --------------- | ---------------------------- |
-| `/new`          | 创建新的 Claude Code 会话（默认）    |
+| `/new`          | 使用默认 Agent 创建新会话            |
 | `/new claude`   | 创建新的 Claude Code 会话          |
 | `/new cursor`   | 创建新的 Cursor 会话               |
 | `/new codex`    | 创建新的 Codex 会话（OpenAI）         |

@@ -7,6 +7,7 @@
   "gitTimeoutSeconds": 180,
   "claude": {
     "enabled": false,
+    "defaultAgent": true,
     "model": "",
     "effort": "",
     "apiKey": "",
@@ -14,11 +15,13 @@
   },
   "cursor": {
     "enabled": false,
+    "defaultAgent": false,
     "path": "",
     "model": ""
   },
   "codex": {
     "enabled": false,
+    "defaultAgent": false,
     "path": "",
     "model": "",
     "effort": ""
