@@ -547,9 +547,11 @@ export function reloadConfigFromDisk(): void {
   applyLoadedConfig(loadConfig());
 }
 
-// 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
+// 新建会话的默认工作路径（/cd 命令设置，按 chatId 持久化到本地文件）
 // 该路径仅影响通过 /new 新建的会话，不影响已有会话的 resume。
-export const DEFAULT_CWD_FILE = join(USER_DATA_DIR, "state", "working_dir.txt");
+export function getDefaultCwdFile(chatId: string): string {
+  return join(USER_DATA_DIR, "state", `working_dir_${chatId}.txt`);
+}
 
 /** 会话工具类型持久化文件 */
 export const SESSIONS_FILE = join(USER_DATA_DIR, "state", "sessions.json");
@@ -583,24 +585,26 @@ export async function addRecentDir(dir: string): Promise<void> {
   }
 }
 
-/** 读取 /cd 设置的默认工作路径。若文件不存在或路径已失效，回退到用户主目录。 */
-export async function getDefaultCwd(): Promise<string> {
-  try {
-    const content = await readFile(DEFAULT_CWD_FILE, "utf-8");
-    const dir = content.trim();
-    if (dir) {
-      try {
-        const s = await stat(dir);
-        if (s.isDirectory()) return dir;
-      } catch { /* path gone, fall through */ }
-    }
-  } catch { /* file doesn't exist yet */ }
+/** 读取 /cd 设置的默认工作路径。若 chatId 对应的文件不存在或路径已失效，回退到用户主目录。 */
+export async function getDefaultCwd(chatId?: string): Promise<string> {
+  if (chatId) {
+    try {
+      const content = await readFile(getDefaultCwdFile(chatId), "utf-8");
+      const dir = content.trim();
+      if (dir) {
+        try {
+          const s = await stat(dir);
+          if (s.isDirectory()) return dir;
+        } catch { /* path gone, fall through */ }
+      }
+    } catch { /* file doesn't exist yet */ }
+  }
   return homedir();
 }
 
-/** 设置新建会话的默认工作路径（由 /cd 命令调用） */
-export async function setDefaultCwd(dir: string): Promise<void> {
-  await writeFile(DEFAULT_CWD_FILE, dir, "utf-8");
+/** 设置新建会话的默认工作路径（由 /cd 命令调用，按 chatId 持久化） */
+export async function setDefaultCwd(dir: string, chatId: string): Promise<void> {
+  await writeFile(getDefaultCwdFile(chatId), dir, "utf-8");
 }
 
 // ---------------------------------------------------------------------------

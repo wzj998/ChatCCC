@@ -232,7 +232,7 @@ describe("buildCdCard", () => {
   it("shows current working directory in markdown", () => {
     const card = buildCdCard("/home/project", entries, []);
     const parsed = JSON.parse(card);
-    const cwdContent = mdContents(parsed).find((c) => c.includes("新会话默认工作路径"));
+    const cwdContent = mdContents(parsed).find((c) => c.includes("本会话默认工作路径"));
     expect(cwdContent).toBeDefined();
     expect(cwdContent).toContain("/home/project");
   });

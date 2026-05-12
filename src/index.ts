@@ -276,7 +276,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
   if (text === "/cd" || text.startsWith("/cd ")) {
     logTrace(tid, "BRANCH", { cmd: "/cd", arg: text.slice(3).trim() || "(none)" });
     const cdToken = await getTenantAccessToken();
-    const currentDir = await getDefaultCwd();
+    const currentDir = await getDefaultCwd(chatId);
 
     // 获取当前会话的实际工作路径（若在会话群内）
     let sessionCwd: string | undefined;
@@ -319,7 +319,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     // Change working dir if user provided a path
     const isUpdate = !!arg && targetDir !== currentDir;
     if (isUpdate) {
-      await setDefaultCwd(targetDir);
+      await setDefaultCwd(targetDir, chatId);
       await addRecentDir(targetDir);
     }
 
@@ -396,7 +396,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     let sessionId: string;
     let sessionCwd: string;
     try {
-      const init = await initClaudeSession(tool);
+      const init = await initClaudeSession(tool, undefined, chatId);
       sessionId = init.sessionId;
       sessionCwd = init.cwd;
       console.log(`[${ts()}] [STEP 1/4] ${toolLabel} session created: ${sessionId} → OK`);
@@ -477,7 +477,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const prefix = text.slice(0, MAX_PREFIX);
         const adapter = getAdapterForTool(descriptionTool);
         const info = await adapter.getSessionInfo(sessionId).catch(() => undefined);
-        const sessionCwd = info?.cwd ?? (await getDefaultCwd());
+        const sessionCwd = info?.cwd ?? (await getDefaultCwd(chatId));
         const newName = sessionChatName(prefix, sessionCwd);
         try {
           await updateChatInfo(freshToken, chatId, newName, description);
@@ -579,9 +579,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         let cwd: string;
         try {
           const info = await adapter.getSessionInfo(sessionId);
-          cwd = info?.cwd ?? (await getDefaultCwd());
+          cwd = info?.cwd ?? (await getDefaultCwd(chatId));
         } catch {
-          cwd = await getDefaultCwd();
+          cwd = await getDefaultCwd(chatId);
         }
 
         const existing = chatSessionMap.get(chatId);

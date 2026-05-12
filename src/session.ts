@@ -289,8 +289,8 @@ function formatToolConfigForLog(tool: string, sessionModel?: string): string {
   return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
 }
 
-export async function initClaudeSession(tool: string, overrideCwd?: string): Promise<{ sessionId: string; cwd: string }> {
-  const cwd = overrideCwd ?? (await getDefaultCwd());
+export async function initClaudeSession(tool: string, overrideCwd?: string, chatId?: string): Promise<{ sessionId: string; cwd: string }> {
+  const cwd = overrideCwd ?? (await getDefaultCwd(chatId));
   const adapter = getAdapterForTool(tool);
   console.log(
     `[${ts()}] [STEP 1/5] Creating ${adapter.displayName} session (${formatToolConfigForLog(tool)}, cwd=${cwd})`
@@ -319,7 +319,7 @@ export async function resumeAndPrompt(
   const tid = traceId ?? "";
   const adapter = getAdapterForTool(tool);
   const info = await adapter.getSessionInfo(sessionId);
-  const cwd = info?.cwd ?? (await getDefaultCwd());
+  const cwd = info?.cwd ?? (await getDefaultCwd(chatId));
   if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(chatId)?.turnCount ?? 0) + 1 });
   console.log(
     `[${ts()}] Resuming ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
