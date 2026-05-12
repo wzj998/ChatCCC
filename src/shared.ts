@@ -9,14 +9,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
 
 /** 与 config.LOG_DIR 一致（避免 shared 依赖 config 造成循环引用） */
-const BANNER_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "logs");
+const BANNER_LOG_DIR = join(homedir(), ".chatccc", "logs");
 
 const STARTUP_TRACE_FILE = join(BANNER_LOG_DIR, "startup-trace.log");
 

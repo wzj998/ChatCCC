@@ -9,15 +9,17 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, writeFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
-const CONFIG_FILE = join(PROJECT_ROOT, "config.json");
+const USER_DATA_DIR = join(homedir(), ".chatccc");
+const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
-const PID_FILE = join(PROJECT_ROOT, "state", "runtime.pid");
+const PID_FILE = join(USER_DATA_DIR, "state", "runtime.pid");
 
 // ---------------------------------------------------------------------------
 // Helpers — config.json parsing & generation

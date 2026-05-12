@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, copyFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, copyFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
 import { appendStartupTrace, setupFileLogging } from "./shared.ts";
@@ -34,12 +34,14 @@ export type { ParsedGitTimeout } from "./config-utils.ts";
 
 export const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = join(__dirname, "..");
-export const PID_FILE = join(PROJECT_ROOT, "state", "runtime.pid");
+/** 用户持久化数据根目录（不随 npm 升级清空） */
+export const USER_DATA_DIR = join(homedir(), ".chatccc");
+export const PID_FILE = join(USER_DATA_DIR, "state", "runtime.pid");
 
-export const LOG_DIR = join(PROJECT_ROOT, "logs");
+export const LOG_DIR = join(USER_DATA_DIR, "logs");
 export const fileLog = setupFileLogging(LOG_DIR, "index");
 
-export const CHAT_LOGS_DIR = join(PROJECT_ROOT, "state", "chat_logs");
+export const CHAT_LOGS_DIR = join(USER_DATA_DIR, "state", "chat_logs");
 
 export async function appendChatLog(chatId: string, sender: string, text: string): Promise<void> {
   try {
@@ -104,8 +106,81 @@ export interface AppConfig {
 export type AgentTool = "claude" | "cursor" | "codex";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
 
-const CONFIG_FILE = join(PROJECT_ROOT, "config.json");
+const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
+
+/**
+ * 将旧位置（PROJECT_ROOT）的持久化数据一次性迁移到 USER_DATA_DIR。
+ * 仅当 USER_DATA_DIR 下没有 config.json 且 PROJECT_ROOT 下有旧数据时才执行。
+ */
+function migrateLegacyData(): void {
+  const oldConfig = join(PROJECT_ROOT, "config.json");
+  const oldState = join(PROJECT_ROOT, "state");
+  const oldLogs = join(PROJECT_ROOT, "logs");
+  const oldImagesDownloads = join(PROJECT_ROOT, "images", "downloads");
+
+  if (existsSync(CONFIG_FILE)) return; // 已迁移过或全新安装
+
+  let migrated = false;
+  try {
+    mkdirSync(USER_DATA_DIR, { recursive: true });
+
+    if (existsSync(oldConfig)) {
+      copyFileSync(oldConfig, CONFIG_FILE);
+      console.log(`[MIGRATE] config.json → ${CONFIG_FILE}`);
+      migrated = true;
+    }
+
+    if (existsSync(oldState)) {
+      const destState = join(USER_DATA_DIR, "state");
+      if (!existsSync(destState)) {
+        // 同步递归复制（cpSync 不可用，改用 copyFileSync 遍历）
+        copyDirSync(oldState, destState);
+        console.log(`[MIGRATE] state/ → ${destState}`);
+        migrated = true;
+      }
+    }
+
+    if (existsSync(oldLogs)) {
+      const destLogs = join(USER_DATA_DIR, "logs");
+      if (!existsSync(destLogs)) {
+        copyDirSync(oldLogs, destLogs);
+        console.log(`[MIGRATE] logs/ → ${destLogs}`);
+        migrated = true;
+      }
+    }
+
+    if (existsSync(oldImagesDownloads)) {
+      const destDownloads = join(USER_DATA_DIR, "images", "downloads");
+      if (!existsSync(destDownloads)) {
+        copyDirSync(oldImagesDownloads, destDownloads);
+        console.log(`[MIGRATE] images/downloads/ → ${destDownloads}`);
+        migrated = true;
+      }
+    }
+  } catch (err) {
+    console.error(`[MIGRATE] 迁移失败: ${(err as Error).message}`);
+  }
+
+  if (migrated) {
+    console.log("[MIGRATE] 旧数据已迁移到 ~/.chatccc/，原位置文件保留未删除。");
+  }
+}
+
+/** 递归同步复制目录（仅文件和子目录，不处理符号链接） */
+function copyDirSync(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(src)) {
+    const srcPath = join(src, entry);
+    const destPath = join(dest, entry);
+    const s = statSync(srcPath);
+    if (s.isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else if (s.isFile()) {
+      copyFileSync(srcPath, destPath);
+    }
+  }
+}
 
 /**
  * 是否处于 vitest 测试环境。
@@ -217,6 +292,10 @@ function loadConfig(): AppConfig {
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
 
+  if (!IS_TEST_ENV) {
+    migrateLegacyData();
+  }
+
   if (!existsSync(CONFIG_FILE)) {
     if (IS_TEST_ENV) {
       // 测试环境下绝不写文件，直接走默认值
@@ -225,6 +304,7 @@ function loadConfig(): AppConfig {
     if (existsSync(CONFIG_SAMPLE_FILE)) {
       console.log(`[CONFIG] config.json 不存在，基于 config.sample.json 创建...`);
       try {
+        mkdirSync(dirname(CONFIG_FILE), { recursive: true });
         copyFileSync(CONFIG_SAMPLE_FILE, CONFIG_FILE);
       } catch (err) {
         console.error(`[CONFIG] 无法从 config.sample.json 创建 config.json: ${(err as Error).message}`);
@@ -469,13 +549,13 @@ export function reloadConfigFromDisk(): void {
 
 // 新建会话的默认工作路径（/cd 命令设置，持久化到本地文件）
 // 该路径仅影响通过 /new 新建的会话，不影响已有会话的 resume。
-export const DEFAULT_CWD_FILE = join(PROJECT_ROOT, "state", "working_dir.txt");
+export const DEFAULT_CWD_FILE = join(USER_DATA_DIR, "state", "working_dir.txt");
 
 /** 会话工具类型持久化文件 */
-export const SESSIONS_FILE = join(PROJECT_ROOT, "state", "sessions.json");
+export const SESSIONS_FILE = join(USER_DATA_DIR, "state", "sessions.json");
 
 /** 最近成功新建会话的工作路径记录（最多 10 条） */
-export const RECENT_DIRS_FILE = join(PROJECT_ROOT, "state", "recent_dirs.json");
+export const RECENT_DIRS_FILE = join(USER_DATA_DIR, "state", "recent_dirs.json");
 export const MAX_RECENT_DIRS = 10;
 
 /** 读取最近使用过的工作路径列表（最新的在前） */

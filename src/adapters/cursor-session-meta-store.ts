@@ -23,11 +23,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { PROJECT_ROOT } from "../config.ts";
+import { USER_DATA_DIR } from "../config.ts";
 
 /** 持久化文件默认路径（生产）。测试可通过 createCursorSessionMetaStore(filePath) 注入。 */
 export const CURSOR_SESSION_META_FILE = join(
-  PROJECT_ROOT,
+  USER_DATA_DIR,
   "state",
   "cursor-session-meta.json",
 );
