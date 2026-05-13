@@ -317,6 +317,22 @@ ChatCCC 的所有运行参数都集中在包根目录的 `config.json`。
 
 ---
 
+## 飞书操作流程
+
+### 同时使用公司飞书和个人飞书
+
+如果你既要在公司飞书中使用 ChatCCC，又想用个人飞书账号，同一台手机无法同时登录两个飞书账号。推荐以下方案：
+
+**方案一：安卓手机**
+
+使用系统的「应用双开」功能，把飞书复制一份。原版飞书登录公司账号，飞书复制版登录个人飞书账号，两个飞书可以同时在线、互不干扰。
+
+**方案二：苹果手机**
+
+在 App Store 下载「飞书国际版（Lark）」。原版飞书登录公司账号，Lark 登录个人飞书账号，两个 App 互相独立、可同时在线。
+
+---
+
 ## 技术栈
 
 TypeScript / Node.js >= 20 / tsx / Anthropic Claude Agent SDK / Cursor Agent CLI / Codex CLI (OpenAI) / 飞书 WebSocket API / CardKit
