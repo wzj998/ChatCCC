@@ -24,7 +24,7 @@
 
 import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve, dirname } from "node:path";
 
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
@@ -47,6 +47,7 @@ import {
   PID_FILE,
   PROJECT_ROOT,
   USE_LOCAL,
+  USE_SIMULATE,
   appendChatLog,
   explainMissingFeishuCredentialsAndExit,
   fileLog,
@@ -71,6 +72,7 @@ import {
   getTenantAccessToken,
   recallMessage,
   sendCardReply,
+  sendRawCard,
   sendTextReply,
   setChatAvatar,
   updateCardMessage,
@@ -79,12 +81,14 @@ import {
   sendRestartCard,
   verifyAllPermissions,
   reportPermissionResults,
-} from "./feishu-api.ts";
+  setPlatform,
+} from "./feishu-platform.ts";
 import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
 import { updateCardKitCard } from "./cardkit.ts";
 import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { handleAgentGrantsRequest } from "./agent-grants-rpc.ts";
+import { SimulatedPlatform, SIM_DEFAULT_CHAT_ID } from "./sim-platform.ts";
 import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
@@ -252,6 +256,53 @@ function parseCardAction(data: unknown): CardActionResult | null {
 let broadcastToRelay: (data: unknown) => void = () => {};
 
 // ---------------------------------------------------------------------------
+// Simulate mode: inject message via HTTP
+// ---------------------------------------------------------------------------
+
+async function handleSimInjectMessage(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  if (url.pathname !== "/api/sim/inject-message") return false;
+  if (req.method !== "POST") {
+    res.writeHead(405, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: "Method not allowed, use POST" }));
+    return true;
+  }
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) { chunks.push(Buffer.from(chunk)); }
+  const body = Buffer.concat(chunks).toString("utf-8");
+  let parsed: { text?: string; chat_id?: string; open_id?: string; chat_type?: string };
+  try { parsed = JSON.parse(body); } catch {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: "Invalid JSON body" }));
+    return true;
+  }
+
+  const text = parsed.text;
+  if (!text) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: "Missing 'text' field" }));
+    return true;
+  }
+
+  const chatId = parsed.chat_id || SIM_DEFAULT_CHAT_ID;
+  const openId = parsed.open_id || "sim_user_001";
+  const chatType = parsed.chat_type || "group";
+
+  console.log(`[${ts()}] [SIM:INJECT] chat=${chatId} text="${text.slice(0, 80)}"`);
+  appendChatLog(chatId, openId, text);
+
+  // Fire and forget: process command, respond 202 immediately
+  handleCommand(text, chatId, openId, Date.now(), chatType).catch((err) =>
+    console.error(`[${ts()}] [SIM:INJECT] handleCommand error: ${(err as Error).message}`)
+  );
+
+  res.writeHead(202, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ ok: true, chat_id: chatId }));
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Command handler
 // ---------------------------------------------------------------------------
 
@@ -351,17 +402,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       // /cd 无参数：展示卡片（含最近使用路径按钮）
       const recentDirs = await getRecentDirs();
       const card = buildCdCard(targetDir, withStats, recentDirs, sessionCwd);
-      const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${cdToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
-      });
-      const respData: Record<string, any> = await resp.json().catch(() => ({}));
-      console.log(`[${ts()}] [CD] card sent, code=${respData.code}, msgId=${respData.data?.message_id ?? "N/A"}, recentDirs=${recentDirs.length}`);
-      logTrace(tid, "DONE", { outcome: "cd_card", code: respData.code, msgId: respData.data?.message_id });
+      const ok = await sendRawCard(cdToken, chatId, card);
+      console.log(`[${ts()}] [CD] card sent, ok=${ok}, recentDirs=${recentDirs.length}`);
+      logTrace(tid, "DONE", { outcome: "cd_card", ok });
     } else {
       // /cd <path>：切换目录，发送文本卡片
       const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
@@ -537,17 +580,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           statusText.push(`**上下文 Token 数:** ~${status.lastContextTokens.toLocaleString()}`);
         }
         const card = buildStatusCard(statusText.join("\n"), isActive ? "blue" : "green");
-        const statusResp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${freshToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
-        });
-        const statusRespData: Record<string, any> = await statusResp.json().catch(() => ({}));
-        console.log(`[${ts()}] [STATUS] card sent, code=${statusRespData.code}, msgId=${statusRespData.data?.message_id ?? "N/A"}`);
-        logTrace(tid, "DONE", { outcome: "status", code: statusRespData.code });
+        const ok = await sendRawCard(freshToken, chatId, card);
+        console.log(`[${ts()}] [STATUS] card sent, ok=${ok}`);
+        logTrace(tid, "DONE", { outcome: "status", ok });
         return;
       }
 
@@ -564,17 +599,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           tool: s.tool,
         }));
         const card = buildSessionsCard(cardData);
-        const sessionsResp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${freshToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
-        });
-        const sessionsRespData: Record<string, any> = await sessionsResp.json().catch(() => ({}));
-        console.log(`[${ts()}] [SESSIONS] card sent, code=${sessionsRespData.code}, count=${allSessions.length}`);
-        logTrace(tid, "DONE", { outcome: "sessions", code: sessionsRespData.code, count: allSessions.length });
+        const ok = await sendRawCard(freshToken, chatId, card);
+        console.log(`[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${allSessions.length}`);
+        logTrace(tid, "DONE", { outcome: "sessions", ok, count: allSessions.length });
         return;
       }
 
@@ -757,21 +784,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
   logTrace(tid, "SEND", { method: "help_card", chatId });
   const replyToken = await getTenantAccessToken();
   const card = buildHelpCard(text);
-  const helpResp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${replyToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: card }),
-  });
-  const helpData = (await helpResp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
-  if (helpData.code !== 0) {
-    console.error(`[${ts()}] [SEND] help_card FAIL: chatId=${chatId} code=${helpData.code} msg="${helpData.msg ?? ""}"`);
-    logTrace(tid, "DONE", { outcome: "help_card_fail", code: helpData.code, msg: helpData.msg });
+  const ok = await sendRawCard(replyToken, chatId, card);
+  if (!ok) {
+    console.error(`[${ts()}] [SEND] help_card FAIL: chatId=${chatId}`);
+    logTrace(tid, "DONE", { outcome: "help_card_fail" });
   } else {
-    console.log(`[${ts()}] [SEND] help_card OK: chatId=${chatId} msgId=${helpData.data?.message_id ?? "N/A"}`);
-    logTrace(tid, "DONE", { outcome: "help_card_sent", msgId: helpData.data?.message_id });
+    console.log(`[${ts()}] [SEND] help_card OK: chatId=${chatId}`);
+    logTrace(tid, "DONE", { outcome: "help_card_sent" });
   }
 }
 
@@ -1052,6 +1071,49 @@ async function main(): Promise<void> {
   // 越早装越好——后续任何一行抛错都有兜底；它独立于 SIGINT 清理（见末尾的
   // server.close）——只负责诊断与默认致命退出，不替代清理逻辑。
   installCrashLogging({ flush: () => fileLog.flush() });
+
+  // 模拟模式：独立端口 18079，不与 SDK 实例冲突，不走飞书凭证/权限/WSClient
+  if (USE_SIMULATE) {
+    const SIM_PORT = 18079;
+    console.log("\n[Simulate] 模拟飞书环境模式");
+    setPlatform(SimulatedPlatform);
+    console.log("  已切换到 SimulatedPlatform（零飞书依赖）");
+    appendStartupTrace("main: simulate mode", { port: SIM_PORT });
+
+    setExtraApiHandler(async (req, res) => {
+      const injected = await handleSimInjectMessage(req, res);
+      if (injected) return true;
+      return (await handleAgentGrantsRequest(req, res)) || (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+    });
+
+    const simServer = createServer(createUiRouter());
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const onError = (err: NodeJS.ErrnoException): void => {
+        simServer.removeListener("listening", onListening);
+        rejectListen(err);
+      };
+      const onListening = (): void => {
+        simServer.removeListener("error", onError);
+        resolveListen();
+      };
+      simServer.once("error", onError);
+      simServer.once("listening", onListening);
+      simServer.listen(SIM_PORT, "127.0.0.1");
+    }).catch((err: NodeJS.ErrnoException) => {
+      console.error(`\n[启动] 监听失败：端口 ${SIM_PORT}（${err.code ?? "?"} — ${err.message}）`);
+      process.exit(1);
+    });
+
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`  ChatCCC — 模拟飞书环境模式`);
+    console.log(`${"=".repeat(60)}`);
+    console.log(`  发送消息: POST http://127.0.0.1:${SIM_PORT}/api/sim/inject-message`);
+    console.log(`  消息日志: ~/.chatccc/sim/messages.jsonl`);
+    console.log(`${"=".repeat(60)}\n`);
+
+    installShutdownHandlers(simServer);
+    return;
+  }
 
   if (Number.isNaN(CHATCCC_PORT) || CHATCCC_PORT < 1 || CHATCCC_PORT > 65535) {
     console.error("\n[启动] 预检失败: config.json 的 port 字段不是有效端口号（1–65535）。");

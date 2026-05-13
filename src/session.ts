@@ -25,7 +25,7 @@ import {
   sendCardKitMessage,
   updateCardKitCard,
 } from "./cardkit.ts";
-import { sendTextReply, setChatAvatar } from "./feishu-api.ts";
+import { sendTextReply, setChatAvatar } from "./feishu-platform.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
