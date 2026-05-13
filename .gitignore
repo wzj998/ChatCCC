@@ -156,3 +156,4 @@ sync.ps1
 
 # Temp debug files
 tmp_*
+*.mbtree

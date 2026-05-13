@@ -41,6 +41,7 @@ import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   GIT_TIMEOUT_MS,
+  ALLOW_INTERRUPT,
   reloadConfigFromDisk,
   anthropicConfigDisplay,
   LOCAL_RELAY_URL,
@@ -574,6 +575,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const running = chatSessionMap.get(chatId);
         const isActive = running && !running.stopped;
         const statusText = [
+          `**群名:** ${status?.chatName || "—"}`,
           `**Session ID:** \`${status?.sessionId ?? sessionId}\``,
           `**工具:** ${toolLabel}`,
           `**状态:** ${isActive ? "🟢 运行中" : "⚪ 空闲"}`,
@@ -656,9 +658,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }
 
         const descPrefix = sessionPrefixForTool(descriptionTool);
-        const newName = isUntitledSessionChatName(chatInfo.name)
-          ? sessionChatName("新会话", cwd)
-          : chatInfo.name;
+        const newName = sessionChatName("新会话", cwd);
         await updateChatInfo(freshToken, chatId, newName, `${descPrefix} ${newSessionId}`);
         console.log(`[${ts()}] [FORGET] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
 
@@ -736,9 +736,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }
 
         const descPrefix2 = sessionPrefixForTool(target.tool);
-        const newName2 = isUntitledSessionChatName(chatInfo.name)
-          ? sessionChatName("新会话", cwd2)
-          : chatInfo.name;
+        const newName2 = sessionChatName("新会话", cwd2);
         await updateChatInfo(freshToken, chatId, newName2, `${descPrefix2} ${target.sessionId}`);
 
         sessionInfoMap.set(chatId, {
@@ -835,6 +833,18 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           console.log(`[${ts()}] [SKIP] Older message (${msgTimestamp} <= ${existing.msgTimestamp}), ignoring`);
           return;
         }
+
+        if (!ALLOW_INTERRUPT) {
+          logTrace(tid, "BLOCKED", { outcome: "interrupt_disabled", sessionId });
+          console.log(`[${ts()}] [BLOCKED] allowInterrupt=false, ignoring message during generation. Hint sent to user.`);
+          await sendCardReply(
+            freshToken, chatId, "生成中",
+            "AI 正在生成回复中，请先点击卡片上的「停止」按钮停止当前生成后，再发送新消息。",
+            "yellow"
+          );
+          return;
+        }
+
         existing.stopped = true;
         if (existing.spinnerTimer) { clearInterval(existing.spinnerTimer); existing.spinnerTimer = null; }
         existing.close();

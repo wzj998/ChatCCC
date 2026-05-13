@@ -5,6 +5,7 @@
   },
   "port": 18080,
   "gitTimeoutSeconds": 180,
+  "allowInterrupt": false,
   "claude": {
     "enabled": false,
     "defaultAgent": true,

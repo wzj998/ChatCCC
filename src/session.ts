@@ -739,6 +739,7 @@ export const UNKNOWN_MODEL_PLACEHOLDER = "—";
 
 export interface SessionStatus {
   sessionId: string;
+  chatName: string;
   running: boolean;
   turnCount: number;
   lastContextTokens: number;
@@ -785,8 +786,12 @@ export async function getSessionStatus(chatId: string): Promise<SessionStatus | 
   const active = chatSessionMap.get(chatId);
   const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
 
+  const registry = await loadSessionRegistry();
+  const chatName = registry[chatId]?.chatName ?? "";
+
   return {
     sessionId: info.sessionId,
+    chatName,
     running: active !== undefined && !active.stopped,
     turnCount: info.turnCount,
     lastContextTokens: info.lastContextTokens,

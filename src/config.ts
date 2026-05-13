@@ -98,6 +98,8 @@ export interface AppConfig {
   feishu: FeishuConfig;
   port: number;
   gitTimeoutSeconds: number;
+  /** 若为 false，AI 生成过程中用户发送消息不会打断，须先点「停止」再发送新消息 */
+  allowInterrupt: boolean;
   claude: ClaudeConfig;
   cursor: CursorConfig;
   codex: CodexConfig;
@@ -287,6 +289,7 @@ function loadConfig(): AppConfig {
     feishu: { appId: "", appSecret: "" },
     port: 18080,
     gitTimeoutSeconds: 180,
+    allowInterrupt: false,
     claude: { enabled: false, defaultAgent: true, model: "", effort: "", apiKey: "", baseUrl: "" },
     cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
@@ -403,6 +406,7 @@ function loadConfig(): AppConfig {
     },
     port: typeof parsed.port === "number" ? parsed.port : 18080,
     gitTimeoutSeconds: typeof parsed.gitTimeoutSeconds === "number" ? parsed.gitTimeoutSeconds : 180,
+    allowInterrupt: typeof parsed.allowInterrupt === "boolean" ? parsed.allowInterrupt : false,
     claude: {
       enabled: claudeEnabled,
       defaultAgent: defaultTool === "claude",
@@ -476,6 +480,7 @@ export let CLAUDE_BASE_URL = config.claude.baseUrl;
 
 export let GIT_TIMEOUT_SECONDS = config.gitTimeoutSeconds;
 export let GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
+export let ALLOW_INTERRUPT = config.allowInterrupt;
 
 /** 探测 cursor-agent 安装路径（优先配置，其次 LocalAppData，最后默认 agent） */
 function detectCursorAgent(): string {
@@ -540,6 +545,7 @@ export function applyLoadedConfig(next: AppConfig): void {
   CLAUDE_BASE_URL = next.claude.baseUrl;
   GIT_TIMEOUT_SECONDS = next.gitTimeoutSeconds;
   GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
+  ALLOW_INTERRUPT = next.allowInterrupt;
   CURSOR_AGENT_COMMAND = detectCursorAgent();
   CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
 }
