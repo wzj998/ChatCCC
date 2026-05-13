@@ -232,7 +232,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", forget: "/forget" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", newh: "/newh" };
   let text = CMD_MAP[cmd] ?? "";
   if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
     const path = (action.value as Record<string, string>).path;
@@ -625,8 +625,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
-      if (textLower === "/forget") {
-        logTrace(tid, "BRANCH", { cmd: "/forget" });
+      if (textLower === "/newh") {
+        logTrace(tid, "BRANCH", { cmd: "/newh" });
         const adapter = getAdapterForTool(descriptionTool);
         let cwd: string;
         try {
@@ -653,7 +653,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           const init = await initClaudeSession(descriptionTool, cwd);
           newSessionId = init.sessionId;
         } catch (err) {
-          logTrace(tid, "DONE", { outcome: "forget_session_fail", error: (err as Error).message });
+          logTrace(tid, "DONE", { outcome: "newh_session_fail", error: (err as Error).message });
           await sendCardReply(freshToken, chatId, "Error", `Failed to create new session:\n${(err as Error).message}`, "red");
           return;
         }
@@ -661,7 +661,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const descPrefix = sessionPrefixForTool(descriptionTool);
         const newName = sessionChatName("新会话", cwd);
         await updateChatInfo(freshToken, chatId, newName, `${descPrefix} ${newSessionId}`);
-        console.log(`[${ts()}] [FORGET] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
+        console.log(`[${ts()}] [NEWH] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
 
         sessionInfoMap.set(chatId, {
           sessionId: newSessionId,
@@ -692,8 +692,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           "green"
         );
 
-        console.log(`[${ts()}] [FORGET] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`);
-        logTrace(tid, "DONE", { outcome: "forget", newSessionId, cwd });
+        console.log(`[${ts()}] [NEWH] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`);
+        logTrace(tid, "DONE", { outcome: "newh", newSessionId, cwd });
         return;
       }
 

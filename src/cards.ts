@@ -119,7 +119,7 @@ export function buildHelpCard(
     "发送 **/new claude** 创建新 Claude 对话",
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
-    "发送 **/forget** 重置当前会话（保留工作目录，同一群内继续）",
+    "发送 **/newh** 重置当前会话（保留工作目录，同一群内继续）",
   ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },
@@ -328,7 +328,7 @@ export function buildSessionsCard(sessions: Array<{
     elements: [
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
-      { tag: "div", text: { tag: "lark_md", content: "在会话群内发送 **/forget** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
+      { tag: "div", text: { tag: "lark_md", content: "在会话群内发送 **/newh** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
       { tag: "hr" },
       {
         tag: "action",
