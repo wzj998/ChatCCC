@@ -89,6 +89,7 @@ import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { handleAgentGrantsRequest } from "./agent-grants-rpc.ts";
 import { SimulatedPlatform, SIM_DEFAULT_CHAT_ID } from "./sim-platform.ts";
+import { setMessageHandler } from "./sim-store.ts";
 import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
@@ -479,6 +480,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       await sendCardReply(freshToken, chatId, "Error", `Group created but rename failed:\n${(err as Error).message}`, "yellow");
       return;
     }
+
+    // 让新群的默认工作目录继承当前会话的 cwd
+    await setDefaultCwd(cwd, newChatId);
 
     const adapter = getAdapterForTool(tool);
     await sendCardReply(
@@ -1079,6 +1083,12 @@ async function main(): Promise<void> {
     setPlatform(SimulatedPlatform);
     console.log("  已切换到 SimulatedPlatform（零飞书依赖）");
     appendStartupTrace("main: simulate mode", { port: SIM_PORT });
+
+    // 注册消息处理器，让 SimAgent.sendMessage() 能进程内触发 handleCommand
+    setMessageHandler(
+      (text, chatId, openId, _ts, chatType, traceId) =>
+        handleCommand(text, chatId, openId, Date.now(), chatType, traceId),
+    );
 
     setExtraApiHandler(async (req, res) => {
       const injected = await handleSimInjectMessage(req, res);

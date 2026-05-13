@@ -1,18 +1,15 @@
 /**
  * sim-platform.ts — SimulatedPlatform: 零飞书依赖的本地模拟实现
  *
- * 所有飞书 API 调用都由本地逻辑替代：
- * - 消息写入本地 JSONL（~/.chatccc/sim/messages.jsonl）
- * - 群聊信息存在内存 Map 中
+ * 所有飞书 API 调用都由本地 SimStore 替代：
+ * - 消息通过 SimStore 写入内存 + JSONL + 事件推送
+ * - 群聊/账户信息由 SimStore 统一管理
  * - createGroupChat 生成 "sim_<uuid>" 格式的 chat_id
  *
  * 纯函数（extractSessionInfo / formatDelayNotice / reportPermissionResults）
  * 直接从 feishu-api.ts re-export，不重新实现。
  */
 
-import { randomUUID } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -22,33 +19,14 @@ import {
   reportPermissionResults as realReportPermissionResults,
 } from "./feishu-api.ts";
 import type { FeishuPlatform } from "./feishu-platform.ts";
+import { simStore } from "./sim-store.ts";
 
 // ---------------------------------------------------------------------------
 // 持久化路径
 // ---------------------------------------------------------------------------
 
+import { homedir } from "node:os";
 const SIM_DIR = join(homedir(), ".chatccc", "sim");
-const MESSAGES_FILE = join(SIM_DIR, "messages.jsonl");
-
-// ---------------------------------------------------------------------------
-// 内存状态
-// ---------------------------------------------------------------------------
-
-interface SimChat {
-  name: string;
-  description: string;
-  members: string[];
-}
-
-const chats = new Map<string, SimChat>();
-
-// 默认模拟群：用户注入消息时如果不指定 chat_id，就用这个
-const DEFAULT_CHAT_ID = "sim_default";
-chats.set(DEFAULT_CHAT_ID, {
-  name: "默认模拟会话",
-  description: "",
-  members: ["sim_user_001"],
-});
 
 // ---------------------------------------------------------------------------
 // 工具函数
@@ -56,16 +34,6 @@ chats.set(DEFAULT_CHAT_ID, {
 
 function ts(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
-}
-
-async function appendJsonl(line: Record<string, unknown>): Promise<void> {
-  await mkdir(SIM_DIR, { recursive: true });
-  await appendFile(MESSAGES_FILE, JSON.stringify(line) + "\n", "utf-8");
-}
-
-/** 模拟 user_id 转 open_id 的映射 */
-function resolveOpenId(userIds: string[]): string {
-  return userIds[0] ?? "sim_user_001";
 }
 
 // ---------------------------------------------------------------------------
@@ -78,66 +46,35 @@ export const SimulatedPlatform: FeishuPlatform = {
     return "sim_token";
   },
 
-  // ---- 消息发送：全部写本地 JSONL ----
+  // ---- 消息发送：委托给 simStore ----
   async sendTextReply(_token, chatId, text) {
     console.log(`[${ts()}] [SIM:SEND] text → ${chatId}: ${text.slice(0, 80)}`);
-    await appendJsonl({
-      direction: "send",
-      chat_id: chatId,
-      msg_type: "text",
-      content: text,
-      timestamp: Date.now(),
-    });
+    simStore.sendReply(chatId, "text", text);
     return true;
   },
 
   async sendCardReply(_token, chatId, title, content, _template) {
     console.log(`[${ts()}] [SIM:SEND] card → ${chatId}: [${title}]`);
     const text = `**[${title}]**\n${content}`;
-    await appendJsonl({
-      direction: "send",
-      chat_id: chatId,
-      msg_type: "card",
-      header: title,
-      content: content,
-      timestamp: Date.now(),
-    });
+    simStore.sendReply(chatId, "card", text);
     return true;
   },
 
   async sendImageReply(_token, chatId, imagePath) {
     console.log(`[${ts()}] [SIM:SEND] image → ${chatId}: ${imagePath}`);
-    await appendJsonl({
-      direction: "send",
-      chat_id: chatId,
-      msg_type: "image",
-      image_path: imagePath,
-      timestamp: Date.now(),
-    });
+    simStore.sendReply(chatId, "image", imagePath);
     return true;
   },
 
   async sendFileReply(_token, chatId, filePath) {
     console.log(`[${ts()}] [SIM:SEND] file → ${chatId}: ${filePath}`);
-    await appendJsonl({
-      direction: "send",
-      chat_id: chatId,
-      msg_type: "file",
-      file_path: filePath,
-      timestamp: Date.now(),
-    });
+    simStore.sendReply(chatId, "file", filePath);
     return true;
   },
 
   async sendRawCard(_token, chatId, cardJson) {
     console.log(`[${ts()}] [SIM:SEND] raw_card → ${chatId}: ${cardJson.slice(0, 80)}...`);
-    await appendJsonl({
-      direction: "send",
-      chat_id: chatId,
-      msg_type: "raw_card",
-      card_json_preview: cardJson.slice(0, 500),
-      timestamp: Date.now(),
-    });
+    simStore.sendReply(chatId, "raw_card", cardJson.slice(0, 500));
     return true;
   },
 
@@ -147,41 +84,29 @@ export const SimulatedPlatform: FeishuPlatform = {
   },
 
   async recallMessage(_token, _messageId) {
-    return true; // 假装撤回成功
+    return true;
   },
 
   async updateCardMessage(_token, _messageId, content) {
-    // 模拟模式：写更新记录到 JSONL
-    await appendJsonl({
-      type: "card_update",
-      message_id: _messageId,
-      content_preview: content.slice(0, 200),
-      timestamp: Date.now(),
-    });
+    // 模拟模式：记录卡片更新到控制台（无 chatId，不写入消息历史）
+    console.log(`[${ts()}] [SIM:CARD] update: msgId=${_messageId} preview=${content.slice(0, 80)}`);
     return true;
   },
 
   // ---- 群聊管理 ----
   async createGroupChat(_token, name, userIds) {
-    const chatId = `sim_${randomUUID().slice(0, 8)}`;
-    chats.set(chatId, { name, description: "Creating...", members: userIds });
-    console.log(`[${ts()}] [SIM:CHAT] created: ${chatId} name="${name}" members=${userIds.length}`);
-    return chatId;
+    const chat = simStore.createGroupChat(name, userIds);
+    console.log(`[${ts()}] [SIM:CHAT] created: ${chat.id} name="${name}" members=${userIds.length}`);
+    return chat.id;
   },
 
   async updateChatInfo(_token, chatId, name, description) {
-    const existing = chats.get(chatId);
-    if (existing) {
-      existing.name = name;
-      existing.description = description;
-    } else {
-      chats.set(chatId, { name, description, members: ["sim_user_001"] });
-    }
+    simStore.updateChatInfo(chatId, name, description);
     console.log(`[${ts()}] [SIM:CHAT] updated: ${chatId} name="${name}"`);
   },
 
   async getChatInfo(_token, chatId) {
-    const chat = chats.get(chatId);
+    const chat = simStore.getChat(chatId);
     if (!chat) throw new Error(`[99999] chat not found: ${chatId}`);
     return { name: chat.name, description: chat.description };
   },
@@ -193,7 +118,6 @@ export const SimulatedPlatform: FeishuPlatform = {
 
   // ---- 图片下载 ----
   async getOrDownloadImage(_token, _messageId, fileKey) {
-    // 模拟模式下图片不需要从飞书下载，返回占位路径
     return join(SIM_DIR, "images", fileKey);
   },
 
@@ -220,5 +144,5 @@ export const SimulatedPlatform: FeishuPlatform = {
   },
 };
 
-/** 模拟模式下的默认 chat_id */
-export const SIM_DEFAULT_CHAT_ID = DEFAULT_CHAT_ID;
+/** 模拟模式下的默认 chat_id（重新导出以保持向后兼容） */
+export { SIM_DEFAULT_CHAT_ID } from "./sim-store.ts";
