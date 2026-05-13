@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -11,6 +11,7 @@
   "files": [
     "src/",
     "bin/",
+    "demo/ilink_echo_probe.ts",
     "im-skills/",
     "images/img_readme_*.jpg",
     "images/img_readme_*.png",
@@ -31,19 +32,23 @@
     "demo:permission-check": "tsx demo/permission_check.ts",
     "demo:claude-hi": "tsx demo/claude_say_hi.ts",
     "demo:codex-hi": "tsx demo/codex_say_hi.ts",
+    "demo:ilink-echo": "tsx demo/ilink_echo_probe.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.133",
     "@larksuiteoapi/node-sdk": "^1.59.0",
+    "@openilink/openilink-sdk-node": "^0.6.0",
     "nodemailer": "^8.0.7",
+    "qrcode-terminal": "^0.12.0",
     "sharp": "^0.34.5",
     "tsx": "^4.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.18.1",
     "typescript": "^5.0.0",
     "vitest": "^4.1.5"
