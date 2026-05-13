@@ -1,6 +1,9 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 
-import { buildCrashLoggingHandlers, installCrashLogging } from "../shared.ts";
+import { buildCrashLoggingHandlers, installCrashLogging, setupFileLogging } from "../shared.ts";
 
 describe("buildCrashLoggingHandlers", () => {
   it("uncaughtException: 写诊断、刷新日志、调用 onFatal", () => {
@@ -205,6 +208,59 @@ describe("installCrashLogging", () => {
       expect(onSignal).toHaveBeenCalledWith("SIGINT");
     } finally {
       cleanup();
+    }
+  });
+});
+
+describe("setupFileLogging", () => {
+  it("flush 后继续写日志不会触发 write after end，且日志已落盘", async () => {
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = vi.fn() as never;
+    console.error = vi.fn() as never;
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-log-"));
+
+    try {
+      const fileLog = setupFileLogging(dir, "index");
+
+      console.log("before flush");
+      fileLog.flush();
+
+      expect(() => console.error("after flush")).not.toThrow();
+      fileLog.flush();
+
+      const content = await readFile(fileLog.logPath, "utf8");
+      expect(content).toContain("[LOG] before flush");
+      expect(content).toContain("[ERR] after flush");
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("日志参数无法 JSON 序列化时也不会让 console 调用抛错", async () => {
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = vi.fn() as never;
+    console.error = vi.fn() as never;
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-log-"));
+
+    try {
+      const fileLog = setupFileLogging(dir, "index");
+      const circular: Record<string, unknown> = { name: "root" };
+      circular.self = circular;
+
+      expect(() => console.log("circular", circular)).not.toThrow();
+      fileLog.flush();
+
+      const content = await readFile(fileLog.logPath, "utf8");
+      expect(content).toContain("[LOG] circular");
+      expect(content).toContain("self");
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
