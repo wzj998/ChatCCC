@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   chatSessionMap,
   sessionInfoMap,
@@ -7,9 +10,12 @@ import {
   resetState,
   getSessionStatus,
   getAllSessionsStatus,
+  recordSessionRegistry,
   accumulateBlockContent,
   pickFinalReply,
   UNKNOWN_MODEL_PLACEHOLDER,
+  _setSessionRegistryFileForTest,
+  _resetSessionRegistryFileForTest,
   _setAdapterForToolForTest,
   _clearAdapterCacheForTest,
 } from "../session.ts";
@@ -196,39 +202,146 @@ describe("getSessionStatus", () => {
 });
 
 describe("getAllSessionsStatus", () => {
-  beforeEach(() => {
+  let registryFile = "";
+
+  beforeEach(async () => {
     chatSessionMap.clear();
     sessionInfoMap.clear();
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-registry-"));
+    registryFile = join(dir, "session-registry.json");
+    _setSessionRegistryFileForTest(registryFile);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     _clearAdapterCacheForTest();
+    _resetSessionRegistryFileForTest();
+    if (registryFile) {
+      await rm(dirname(registryFile), { recursive: true, force: true });
+    }
   });
 
   it("returns empty array when no sessions", async () => {
     await expect(getAllSessionsStatus()).resolves.toEqual([]);
   });
 
-  it("returns statuses for all recorded sessions", async () => {
+  it("does not read memory-only sessions", async () => {
     mockSessionInfo("chat1", { sessionId: "s1" });
     mockSessionInfo("chat2", { sessionId: "s2" });
     mockActiveSession("chat1");
+
     const result = await getAllSessionsStatus();
-    expect(result).toHaveLength(2);
-    expect(result.find(r => r.chatId === "chat1")!.active).toBe(true);
-    expect(result.find(r => r.chatId === "chat2")!.active).toBe(false);
+    expect(result).toEqual([]);
   });
 
-  it("marks stopped sessions as not active", async () => {
-    mockSessionInfo("chat1");
-    mockActiveSession("chat1", { stopped: true });
+  it("returns statuses from disk registry", async () => {
+    await recordSessionRegistry({
+      chatId: "chat1",
+      sessionId: "s1",
+      tool: "claude",
+      chatName: "test-chat-1",
+      turnCount: 2,
+      startTime: 1000,
+      updatedAt: 2000,
+      running: true,
+    });
+    await recordSessionRegistry({
+      chatId: "chat2",
+      sessionId: "s2",
+      tool: "claude",
+      chatName: "test-chat-2",
+      turnCount: 0,
+      startTime: 900,
+      updatedAt: 1900,
+      running: false,
+    });
+
     const result = await getAllSessionsStatus();
-    expect(result[0].active).toBe(false);
+    expect(result).toHaveLength(2);
+    expect(result[0].chatId).toBe("chat1");
+    expect(result[0].active).toBe(true);
+    expect(result[0].turnCount).toBe(2);
+    expect(result[0].chatName).toBe("test-chat-1");
+    expect(result[1].chatId).toBe("chat2");
+    expect(result[1].active).toBe(false);
+    expect(result[1].chatName).toBe("test-chat-2");
+  });
+
+  it("returns recent disk sessions by updatedAt desc, limited to 20", async () => {
+    for (let i = 0; i < 25; i++) {
+      await recordSessionRegistry({
+        chatId: `chat-${i}`,
+        sessionId: `sid-${i}`,
+        tool: "claude",
+        startTime: i,
+        updatedAt: 1000 + i,
+      });
+    }
+
+    const result = await getAllSessionsStatus();
+    expect(result).toHaveLength(20);
+    expect(result[0].chatId).toBe("chat-24");
+    expect(result[19].chatId).toBe("chat-5");
+    expect(result.some((r) => r.chatId === "chat-4")).toBe(false);
+  });
+
+  it("marks disk-running sessions as active without checking chatSessionMap", async () => {
+    await recordSessionRegistry({
+      chatId: "chat1",
+      sessionId: "s1",
+      tool: "claude",
+      running: true,
+      updatedAt: 1000,
+    });
+
+    const result = await getAllSessionsStatus();
+    expect(result.find(r => r.chatId === "chat1")!.active).toBe(true);
+  });
+
+  it("persists chatName across updates and defaults to empty string when not set", async () => {
+    await recordSessionRegistry({
+      chatId: "chat-a",
+      sessionId: "sa",
+      tool: "claude",
+      chatName: "My Chat",
+      updatedAt: 100,
+    });
+    // Update without chatName — should keep existing
+    await recordSessionRegistry({
+      chatId: "chat-a",
+      sessionId: "sa",
+      tool: "claude",
+      updatedAt: 200,
+    });
+    const result = await getAllSessionsStatus();
+    expect(result.find(r => r.chatId === "chat-a")!.chatName).toBe("My Chat");
+  });
+
+  it("chatName defaults to empty string for sessions without it", async () => {
+    await recordSessionRegistry({
+      chatId: "chat-b",
+      sessionId: "sb",
+      tool: "claude",
+      updatedAt: 100,
+    });
+    const result = await getAllSessionsStatus();
+    expect(result.find(r => r.chatId === "chat-b")!.chatName).toBe("");
   });
 
   it("混合 claude + cursor 会话：各自取自己来源的 model/effort", async () => {
-    mockSessionInfo("chat-c", { sessionId: "sid-c", tool: "claude" });
-    mockSessionInfo("chat-x", { sessionId: "sid-x", tool: "cursor" });
+    await recordSessionRegistry({
+      chatId: "chat-c",
+      sessionId: "sid-c",
+      tool: "claude",
+      chatName: "claude-chat",
+      updatedAt: 100,
+    });
+    await recordSessionRegistry({
+      chatId: "chat-x",
+      sessionId: "sid-x",
+      tool: "cursor",
+      chatName: "cursor-chat",
+      updatedAt: 200,
+    });
     _setAdapterForToolForTest(
       "cursor",
       mockAdapter((sid) =>

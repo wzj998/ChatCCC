@@ -169,6 +169,87 @@ export async function getSessionTool(sessionId: string): Promise<string | null> 
 }
 
 // ---------------------------------------------------------------------------
+// Conversation session registry for /sessions
+// ---------------------------------------------------------------------------
+
+export const SESSION_REGISTRY_FILE = join(USER_DATA_DIR, "state", "session-registry.json");
+let sessionRegistryFile = SESSION_REGISTRY_FILE;
+
+export interface SessionRegistryUpdate {
+  chatId: string;
+  sessionId: string;
+  tool: string;
+  chatName?: string;
+  turnCount?: number;
+  lastContextTokens?: number;
+  startTime?: number;
+  updatedAt?: number;
+  running?: boolean;
+}
+
+interface SessionRegistryRecord {
+  chatId: string;
+  sessionId: string;
+  tool: string;
+  chatName: string;
+  turnCount: number;
+  lastContextTokens: number;
+  startTime: number;
+  updatedAt: number;
+  running: boolean;
+}
+
+type SessionRegistryData = Record<string, SessionRegistryRecord>;
+
+async function loadSessionRegistry(): Promise<SessionRegistryData> {
+  try {
+    const raw = await readFile(sessionRegistryFile, "utf-8");
+    const parsed = JSON.parse(raw) as SessionRegistryData;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveSessionRegistry(data: SessionRegistryData): Promise<void> {
+  try {
+    await mkdir(dirname(sessionRegistryFile), { recursive: true });
+    await writeFile(sessionRegistryFile, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error(`[${ts()}] Failed to save session-registry.json: ${(err as Error).message}`);
+    fileLog.flush();
+  }
+}
+
+export async function recordSessionRegistry(update: SessionRegistryUpdate): Promise<void> {
+  const data = await loadSessionRegistry();
+  const existing = data[update.chatId];
+  const now = update.updatedAt ?? Date.now();
+
+  data[update.chatId] = {
+    chatId: update.chatId,
+    sessionId: update.sessionId,
+    tool: update.tool,
+    chatName: update.chatName ?? existing?.chatName ?? "",
+    turnCount: update.turnCount ?? existing?.turnCount ?? 0,
+    lastContextTokens: update.lastContextTokens ?? existing?.lastContextTokens ?? 0,
+    startTime: update.startTime ?? existing?.startTime ?? now,
+    updatedAt: now,
+    running: update.running ?? existing?.running ?? false,
+  };
+
+  await saveSessionRegistry(data);
+}
+
+export function _setSessionRegistryFileForTest(filePath: string): void {
+  sessionRegistryFile = filePath;
+}
+
+export function _resetSessionRegistryFileForTest(): void {
+  sessionRegistryFile = SESSION_REGISTRY_FILE;
+}
+
+// ---------------------------------------------------------------------------
 // accumulateBlockContent — 将 UnifiedBlock 累积到渲染状态（纯函数，可测试）
 // ---------------------------------------------------------------------------
 
@@ -385,12 +466,23 @@ export async function resumeAndPrompt(
 
   const now = Date.now();
   const existingInfo = sessionInfoMap.get(chatId);
+  const nextTurnCount = (existingInfo?.turnCount ?? 0) + 1;
+  const nextContextTokens = existingInfo?.lastContextTokens ?? 0;
   sessionInfoMap.set(chatId, {
     sessionId,
-    turnCount: (existingInfo?.turnCount ?? 0) + 1,
-    lastContextTokens: existingInfo?.lastContextTokens ?? 0,
+    turnCount: nextTurnCount,
+    lastContextTokens: nextContextTokens,
     startTime: now,
     tool,
+  });
+  await recordSessionRegistry({
+    chatId,
+    sessionId,
+    tool,
+    turnCount: nextTurnCount,
+    lastContextTokens: nextContextTokens,
+    startTime: now,
+    running: true,
   });
 
   let cardId: string | null = null;
@@ -512,6 +604,13 @@ export async function resumeAndPrompt(
         if (block.type === "compact_boundary" && block.post_tokens) {
           const info = sessionInfoMap.get(chatId);
           if (info) { info.lastContextTokens = block.post_tokens; }
+          await recordSessionRegistry({
+            chatId,
+            sessionId,
+            tool,
+            lastContextTokens: block.post_tokens,
+            running: true,
+          });
         }
       }
     }
@@ -561,6 +660,16 @@ export async function resumeAndPrompt(
   const finalReply = pickFinalReply(state).trim();
 
   if (wasStopped) {
+    const finalInfo = sessionInfoMap.get(chatId);
+    await recordSessionRegistry({
+      chatId,
+      sessionId,
+      tool,
+      turnCount: finalInfo?.turnCount ?? nextTurnCount,
+      lastContextTokens: finalInfo?.lastContextTokens ?? nextContextTokens,
+      startTime: finalInfo?.startTime ?? now,
+      running: false,
+    });
     if (finalReply) {
       await sendTextReply(token, chatId, finalReply).catch((err) =>
         console.error(`[${ts()}] Failed to send partial text: ${(err as Error).message}`)
@@ -597,6 +706,16 @@ export async function resumeAndPrompt(
   }
 
   console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
+  const finalInfo = sessionInfoMap.get(chatId);
+  await recordSessionRegistry({
+    chatId,
+    sessionId,
+    tool,
+    turnCount: finalInfo?.turnCount ?? nextTurnCount,
+    lastContextTokens: finalInfo?.lastContextTokens ?? nextContextTokens,
+    startTime: finalInfo?.startTime ?? now,
+    running: false,
+  });
   if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
 }
 
@@ -681,6 +800,7 @@ export async function getSessionStatus(chatId: string): Promise<SessionStatus | 
 export interface SessionsListEntry {
   chatId: string;
   sessionId: string;
+  chatName: string;
   active: boolean;
   turnCount: number;
   startTime: number;
@@ -691,16 +811,20 @@ export interface SessionsListEntry {
 }
 
 export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
-  const entries = Array.from(sessionInfoMap.entries());
+  const registry = await loadSessionRegistry();
+  const entries = Object.values(registry)
+    .filter((record) => record.chatId && record.sessionId && record.tool)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 20);
   // 并行解析每个 session 的 model/effort（cursor 涉及异步 store IO）
   return Promise.all(
-    entries.map(async ([chatId, info]) => {
-      const active = chatSessionMap.get(chatId);
+    entries.map(async (info) => {
       const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
       return {
-        chatId,
+        chatId: info.chatId,
         sessionId: info.sessionId,
-        active: active !== undefined && !active.stopped,
+        chatName: info.chatName || "",
+        active: info.running === true,
         turnCount: info.turnCount,
         startTime: info.startTime,
         model,

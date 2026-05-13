@@ -254,6 +254,7 @@ export function buildCdCard(
 // 所有会话列表卡片（Claude Code 优先，然后 Cursor）
 export function buildSessionsCard(sessions: Array<{
   sessionId: string;
+  chatName: string;
   active: boolean;
   turnCount: number;
   elapsedSeconds: number | null;
@@ -274,7 +275,7 @@ export function buildSessionsCard(sessions: Array<{
       config: { wide_screen_mode: true },
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。` } },
+        { tag: "div", text: { tag: "lark_md", content: `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
       ],
@@ -291,7 +292,8 @@ export function buildSessionsCard(sessions: Array<{
       extra = ` | 本轮: ${mins}分${secs}秒`;
     }
     const toolLabel = s.tool === "cursor" ? "Cursor" : s.tool === "codex" ? "Codex" : "Claude Code";
-    return `**${i + 1}.** \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
+    const namePart = s.chatName ? `**${s.chatName}** ` : "";
+    return `**${i + 1}.** ${namePart}\`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
   const lines: string[] = [`共 **${sessions.length}** 个会话:`, ""];
@@ -326,7 +328,7 @@ export function buildSessionsCard(sessions: Array<{
     elements: [
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
-      { tag: "div", text: { tag: "lark_md", content: "在会话群内发送 **/forget** 可重置当前会话（创建新 Session，保留工作目录和群聊）。" } },
+      { tag: "div", text: { tag: "lark_md", content: "在会话群内发送 **/forget** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
       { tag: "hr" },
       {
         tag: "action",
