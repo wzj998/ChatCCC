@@ -324,7 +324,7 @@ ChatCCC 的所有运行参数都集中在包根目录的 `config.json`。
 | `/status`       | 查看当前会话的状态（轮数、模型、上下文 token 等） |
 | `/cd`           | 查看/设置当前会话的默认工作目录            |
 | `/sessions`     | 查看所有会话状态                    |
-| `/forget`       | 重置当前会话（创建新 Session，保留工作目录，同一群内继续） |
+| `/newh`       | 重置当前会话（创建新 Session，保留工作目录，同一群内继续） |
 | `/git <子命令>` | 在**当前会话工作目录**执行 `git ...` 并把 stdout/stderr 回发到群里（仅会话群内可用，超时见 `config.json` 的 `gitTimeoutSeconds` 字段） |
 | `/restart`      | 重启机器人进程                      |
 
