@@ -200,13 +200,66 @@ This keeps user behavior predictable without forcing Feishu-only concepts into W
     },
     "ilink": {
       "enabled": false,
-      "qrOnStart": true
+      "forceQrOnStart": true,
+      "reuseTokenOnStart": false
     }
   }
 }
 ```
 
 For backward compatibility, existing `feishu.appId` and `feishu.appSecret` can remain where they are. The `platforms.feishu.enabled` flag only controls whether the adapter is started.
+
+## Web UI Platform Selection
+
+The setup/front-end page should let the user choose which bot platforms are enabled.
+
+Recommended UI controls:
+
+```text
+[x] Enable Feishu bot
+[ ] Enable WeChat iLink bot
+```
+
+The UI should save the result into `~/.chatccc/config.json`:
+
+```json
+{
+  "platforms": {
+    "feishu": {
+      "enabled": true
+    },
+    "ilink": {
+      "enabled": true,
+      "forceQrOnStart": true,
+      "reuseTokenOnStart": false
+    }
+  }
+}
+```
+
+The start page or status page should show per-platform status:
+
+```text
+Feishu: running / disabled / missing credentials / failed
+WeChat iLink: waiting for QR scan / running / session expired / disabled / failed
+```
+
+This keeps platform selection explicit. Users should not have to edit JSON by hand for the common case.
+
+## WeChat QR Startup Policy
+
+When `platforms.ilink.enabled` is true, the first production version should always show a fresh QR code on ChatCCC startup.
+
+Policy:
+
+- always request a new iLink QR during startup
+- always print both the QR URL/content and a terminal QR code
+- do not skip QR login because a previous token exists
+- do not add a "reuse previous token" path in the default startup behavior
+- overwrite the saved iLink auth snapshot after each successful scan
+- continue to persist the sync cursor after login so message polling can resume correctly during the current authenticated run
+
+This matches the demo behavior and avoids confusing "service started but no QR shown" states.
 
 iLink runtime state should not live in `config.json`; it should live under `~/.chatccc/state/`, for example:
 
@@ -242,7 +295,8 @@ Promote the demo logic into an `IlinkChatPlatform`.
 First production scope:
 
 - QR login
-- always-visible QR on startup when configured
+- always-visible fresh QR on every startup when iLink is enabled
+- no token reuse path in the default startup behavior
 - text receive
 - text reply
 - sync cursor persistence
@@ -302,4 +356,3 @@ iLink can scan, connect, receive text, run the same AI command/session logic, an
 ```
 
 This is enough to validate the architecture without committing to a full WeChat media/card equivalent too early.
-
