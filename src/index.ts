@@ -102,6 +102,7 @@ import {
   resetState,
   resumeAndPrompt,
   sessionInfoMap,
+  recordSessionRegistry,
   getAdapterForTool,
 } from "./session.ts";
 
@@ -309,7 +310,8 @@ async function handleSimInjectMessage(req: IncomingMessage, res: ServerResponse)
 
 async function handleCommand(text: string, chatId: string, openId: string, msgTimestamp: number, chatType = "group", traceId?: string): Promise<void> {
   const tid = traceId ?? makeTraceId();
-  if (text === "/restart") {
+  const textLower = text.toLowerCase();
+  if (textLower === "/restart") {
     logTrace(tid, "BRANCH", { cmd: "/restart" });
     const restartToken = await getTenantAccessToken();
     await sendTextReply(restartToken, chatId, "正在重启...").catch(() => {});
@@ -326,7 +328,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     return;
   }
 
-  if (text === "/cd" || text.startsWith("/cd ")) {
+  if (textLower === "/cd" || textLower.startsWith("/cd ")) {
     logTrace(tid, "BRANCH", { cmd: "/cd", arg: text.slice(3).trim() || "(none)" });
     const cdToken = await getTenantAccessToken();
     const currentDir = await getDefaultCwd(chatId);
@@ -415,8 +417,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     return;
   }
 
-  if (text === "/new" || text.startsWith("/new ")) {
-    const toolArg = text.slice(5).trim();
+  if (textLower === "/new" || textLower.startsWith("/new ")) {
+    const toolArg = text.slice(5).trim().toLowerCase();
     const tool = toolArg || "claude";
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
     const validTools = ["claude", "cursor", "codex"];
@@ -483,6 +485,15 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
     // 让新群的默认工作目录继承当前会话的 cwd
     await setDefaultCwd(cwd, newChatId);
+    await recordSessionRegistry({
+      chatId: newChatId,
+      sessionId,
+      tool,
+      chatName: initialName,
+      turnCount: 0,
+      startTime: Date.now(),
+      running: false,
+    });
 
     const adapter = getAdapterForTool(tool);
     await sendCardReply(
@@ -530,12 +541,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         try {
           await updateChatInfo(freshToken, chatId, newName, description);
           console.log(`[${ts()}] [RENAME] First message → group renamed to "${newName}"`);
+          await recordSessionRegistry({ chatId, chatName: newName }).catch(() => {});
         } catch (err) {
           console.error(`[${ts()}] [RENAME] Failed: ${(err as Error).message}`);
         }
       }
 
-      if (text === "/stop") {
+      if (textLower === "/stop") {
         logTrace(tid, "BRANCH", { cmd: "/stop" });
         const cEntry = chatSessionMap.get(chatId);
         if (cEntry) {
@@ -556,7 +568,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
-      if (text === "/status") {
+      if (textLower === "/status") {
         logTrace(tid, "BRANCH", { cmd: "/status" });
         const status = await getSessionStatus(chatId);
         const running = chatSessionMap.get(chatId);
@@ -590,12 +602,13 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
-      if (text === "/sessions") {
+      if (textLower === "/sessions") {
         logTrace(tid, "BRANCH", { cmd: "/sessions" });
         const allSessions = await getAllSessionsStatus();
         const now = Date.now();
         const cardData = allSessions.map(s => ({
           sessionId: s.sessionId,
+          chatName: s.chatName,
           active: s.active,
           turnCount: s.turnCount,
           elapsedSeconds: s.active ? Math.floor((now - s.startTime) / 1000) : null,
@@ -609,7 +622,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
-      if (text === "/forget") {
+      if (textLower === "/forget") {
         logTrace(tid, "BRANCH", { cmd: "/forget" });
         const adapter = getAdapterForTool(descriptionTool);
         let cwd: string;
@@ -643,9 +656,11 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }
 
         const descPrefix = sessionPrefixForTool(descriptionTool);
-        const initialName = sessionChatName("新会话", cwd);
-        await updateChatInfo(freshToken, chatId, initialName, `${descPrefix} ${newSessionId}`);
-        console.log(`[${ts()}] [FORGET] Group updated: name="${initialName}" desc="${descPrefix} ${newSessionId}"`);
+        const newName = isUntitledSessionChatName(chatInfo.name)
+          ? sessionChatName("新会话", cwd)
+          : chatInfo.name;
+        await updateChatInfo(freshToken, chatId, newName, `${descPrefix} ${newSessionId}`);
+        console.log(`[${ts()}] [FORGET] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
 
         sessionInfoMap.set(chatId, {
           sessionId: newSessionId,
@@ -653,6 +668,16 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           lastContextTokens: 0,
           startTime: Date.now(),
           tool: descriptionTool,
+        });
+        await recordSessionRegistry({
+          chatId,
+          sessionId: newSessionId,
+          tool: descriptionTool,
+          chatName: newName,
+          turnCount: 0,
+          lastContextTokens: 0,
+          startTime: Date.now(),
+          running: false,
         });
 
         setChatAvatar(freshToken, chatId, descriptionTool, "new").catch(() => {});
@@ -671,10 +696,88 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
+      // /session <number>：切换到 /sessions 列表中的指定会话
+      const sessionMatch = textLower.match(/^\/session\s+(\d+)$/);
+      if (sessionMatch) {
+        const index = parseInt(sessionMatch[1], 10) - 1;
+        logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
+        const allSessions = await getAllSessionsStatus();
+        if (allSessions.length === 0) {
+          await sendCardReply(freshToken, chatId, "/session", "暂无历史会话。", "yellow");
+          logTrace(tid, "DONE", { outcome: "session_no_sessions" });
+          return;
+        }
+        if (index < 0 || index >= allSessions.length) {
+          await sendCardReply(freshToken, chatId, "/session", `序号超出范围，当前共 ${allSessions.length} 个会话。`, "yellow");
+          logTrace(tid, "DONE", { outcome: "session_out_of_range", index: index + 1, total: allSessions.length });
+          return;
+        }
+        const target = allSessions[index];
+
+        const existing2 = chatSessionMap.get(chatId);
+        if (existing2) {
+          existing2.stopped = true;
+          if (existing2.spinnerTimer) { clearInterval(existing2.spinnerTimer); existing2.spinnerTimer = null; }
+          existing2.close();
+          const prevTs2 = lastMsgTimestamps.get(chatId);
+          if (prevTs2 === undefined || existing2.msgTimestamp > prevTs2) {
+            lastMsgTimestamps.set(chatId, existing2.msgTimestamp);
+          }
+          chatSessionMap.delete(chatId);
+        }
+
+        const targetAdapter = getAdapterForTool(target.tool);
+        let cwd2: string;
+        try {
+          const targetInfo = await targetAdapter.getSessionInfo(target.sessionId);
+          cwd2 = targetInfo?.cwd ?? (await getDefaultCwd(chatId));
+        } catch {
+          cwd2 = await getDefaultCwd(chatId);
+        }
+
+        const descPrefix2 = sessionPrefixForTool(target.tool);
+        const newName2 = isUntitledSessionChatName(chatInfo.name)
+          ? sessionChatName("新会话", cwd2)
+          : chatInfo.name;
+        await updateChatInfo(freshToken, chatId, newName2, `${descPrefix2} ${target.sessionId}`);
+
+        sessionInfoMap.set(chatId, {
+          sessionId: target.sessionId,
+          turnCount: target.turnCount,
+          lastContextTokens: 0,
+          startTime: Date.now(),
+          tool: target.tool,
+        });
+        await recordSessionRegistry({
+          chatId,
+          sessionId: target.sessionId,
+          tool: target.tool,
+          chatName: newName2,
+          running: false,
+        });
+
+        setChatAvatar(freshToken, chatId, target.tool, "new").catch(() => {});
+
+        const targetToolLabel = toolDisplayName(target.tool);
+        await sendCardReply(
+          freshToken, chatId, `${targetToolLabel} Session Switched`,
+          `已切换到 **${targetToolLabel}** 会话。\n\n` +
+            `**序号:** ${index + 1}\n` +
+            `**Session ID:** ${target.sessionId}\n` +
+            `**工作目录:** \`${cwd2}\`\n\n` +
+            `直接在这里发消息即可继续对话。`,
+          "green"
+        );
+
+        console.log(`[${ts()}] [SESSION] Switched to session ${target.sessionId} (#${index + 1})`);
+        logTrace(tid, "DONE", { outcome: "session_switch", sessionId: target.sessionId, index: index + 1, cwd: cwd2 });
+        return;
+      }
+
       // /git <args>：在「当前会话工作目录」执行 git 命令，把输出回发到群里。
       // 注意 cwd 必须取自 adapter.getSessionInfo（会话真实 cwd），而非
       // getDefaultCwd（下一次 /new 才会使用的默认路径）。
-      if (text.startsWith("/git ") || text === "/git") {
+      if (textLower.startsWith("/git ") || textLower === "/git") {
         const args = text === "/git" ? "" : text.slice(5).trim();
         logTrace(tid, "BRANCH", { cmd: "/git", args: args || "(none)" });
         if (!args) {
@@ -1011,7 +1114,7 @@ async function startBotServiceCore(): Promise<void> {
         const openId = event.sender?.sender_id?.open_id ?? "";
         const chatId = message.chat_id ?? "";
         appendChatLog(chatId, openId, text);
-        if (text === "/new" && openId) {
+        if (text.toLowerCase() === "/new" && openId) {
           console.log(`[MSG] /new from ${openId}, but local relay does not handle /new yet. Use SDK mode.`);
         }
       } catch { /* ignore */ }
