@@ -608,7 +608,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         logTrace(tid, "BRANCH", { cmd: "/sessions" });
         const allSessions = await getAllSessionsStatus();
         const now = Date.now();
-        const cardData = allSessions.map(s => ({
+        const others = allSessions.filter(s => s.chatId !== chatId);
+        const cardData = others.map(s => ({
           sessionId: s.sessionId,
           chatName: s.chatName,
           active: s.active,
@@ -619,8 +620,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }));
         const card = buildSessionsCard(cardData);
         const ok = await sendRawCard(freshToken, chatId, card);
-        console.log(`[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${allSessions.length}`);
-        logTrace(tid, "DONE", { outcome: "sessions", ok, count: allSessions.length });
+        console.log(`[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${others.length}`);
+        logTrace(tid, "DONE", { outcome: "sessions", ok, count: others.length });
         return;
       }
 
@@ -702,17 +703,22 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const index = parseInt(sessionMatch[1], 10) - 1;
         logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
         const allSessions = await getAllSessionsStatus();
-        if (allSessions.length === 0) {
+        // 与 buildSessionsCard 保持一致的排序：Claude Code → Cursor → Codex，组内保持 updatedAt 降序
+        const claudeOrdered = allSessions.filter(s => s.tool !== "cursor" && s.tool !== "codex");
+        const cursorOrdered = allSessions.filter(s => s.tool === "cursor");
+        const codexOrdered = allSessions.filter(s => s.tool === "codex");
+        const ordered = [...claudeOrdered, ...cursorOrdered, ...codexOrdered].filter(s => s.chatId !== chatId);
+        if (ordered.length === 0) {
           await sendCardReply(freshToken, chatId, "/session", "暂无历史会话。", "yellow");
           logTrace(tid, "DONE", { outcome: "session_no_sessions" });
           return;
         }
-        if (index < 0 || index >= allSessions.length) {
-          await sendCardReply(freshToken, chatId, "/session", `序号超出范围，当前共 ${allSessions.length} 个会话。`, "yellow");
-          logTrace(tid, "DONE", { outcome: "session_out_of_range", index: index + 1, total: allSessions.length });
+        if (index < 0 || index >= ordered.length) {
+          await sendCardReply(freshToken, chatId, "/session", `序号超出范围，当前共 ${ordered.length} 个会话。`, "yellow");
+          logTrace(tid, "DONE", { outcome: "session_out_of_range", index: index + 1, total: ordered.length });
           return;
         }
-        const target = allSessions[index];
+        const target = ordered[index];
 
         const existing2 = chatSessionMap.get(chatId);
         if (existing2) {
@@ -736,8 +742,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }
 
         const descPrefix2 = sessionPrefixForTool(target.tool);
-        const newName2 = sessionChatName("新会话", cwd2);
+        const newName2 = target.chatName || sessionChatName("新会话", cwd2);
         await updateChatInfo(freshToken, chatId, newName2, `${descPrefix2} ${target.sessionId}`);
+        console.log(`[${ts()}] [SESSION] Switched to session ${target.sessionId} (#${index + 1}), name="${newName2}"`);
 
         sessionInfoMap.set(chatId, {
           sessionId: target.sessionId,
@@ -767,7 +774,6 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           "green"
         );
 
-        console.log(`[${ts()}] [SESSION] Switched to session ${target.sessionId} (#${index + 1})`);
         logTrace(tid, "DONE", { outcome: "session_switch", sessionId: target.sessionId, index: index + 1, cwd: cwd2 });
         return;
       }
@@ -839,7 +845,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           console.log(`[${ts()}] [BLOCKED] allowInterrupt=false, ignoring message during generation. Hint sent to user.`);
           await sendCardReply(
             freshToken, chatId, "生成中",
-            "AI 正在生成回复中，请先点击卡片上的「停止」按钮停止当前生成后，再发送新消息。",
+            "AI 正在生成回复中，Agent 不会遗忘当前进度，停止后仍可从断点继续。\n请先点击卡片上的「停止」按钮，再发送新消息。",
             "yellow"
           );
           return;
