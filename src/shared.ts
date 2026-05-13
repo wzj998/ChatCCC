@@ -1,7 +1,6 @@
 import { execSync } from "node:child_process";
 import {
   appendFileSync,
-  createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -11,6 +10,7 @@ import {
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
@@ -359,25 +359,48 @@ export function setupFileLogging(logDir: string, prefix: string): { logPath: str
   mkdirSync(logDir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const logPath = join(logDir, `${prefix}-${ts}.log`);
-  const logStream = createWriteStream(logPath, { flags: "a" });
+  writeFileSync(logPath, "", { flag: "a", encoding: "utf8" });
   const origConsoleLog = console.log.bind(console);
   const origConsoleError = console.error.bind(console);
-  let pending = false;
+  const formatArg = (arg: unknown): string => {
+    if (typeof arg === "string") return arg;
+    if (arg instanceof Error) return arg.stack ?? arg.message;
+    return inspect(arg, { depth: 6, breakLength: Infinity, maxArrayLength: 200 });
+  };
   const writeLine = (level: string, args: unknown[]) => {
-    const line = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
-    pending = true;
-    logStream.write(`[${new Date().toISOString()}] [${level}] ${line}\n`, () => { pending = false; });
+    try {
+      const line = args.map(formatArg).join(" ");
+      appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${line}\n`, "utf8");
+    } catch (err) {
+      try {
+        appendStartupTrace("fileLog write failed", { level, error: err instanceof Error ? err.message : String(err) });
+      } catch {
+        // 日志系统自身不能影响主流程
+      }
+    }
   };
   console.log = (...args: unknown[]) => {
     writeLine("LOG", args);
-    origConsoleLog(...args);
+    try {
+      origConsoleLog(...args);
+    } catch {
+      // 控制台输出失败也不能拖垮服务
+    }
   };
   console.error = (...args: unknown[]) => {
     writeLine("ERR", args);
-    origConsoleError(...args);
+    try {
+      origConsoleError(...args);
+    } catch {
+      // 控制台输出失败也不能拖垮服务
+    }
   };
   const flush = () => {
-    if (pending) logStream.end();
+    try {
+      appendFileSync(logPath, "", "utf8");
+    } catch (err) {
+      appendStartupTrace("fileLog flush failed", { error: err instanceof Error ? err.message : String(err) });
+    }
   };
   origConsoleLog(`Log file: ${logPath}`);
   return { logPath, flush };
