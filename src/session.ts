@@ -521,11 +521,11 @@ export async function resumeAndPrompt(
     if (sendInterval) clearInterval(sendInterval);
     revokeAgentImageGrant(imageGrant.token);
     revokeAgentFileGrant(fileGrant.token);
-    clearSessionGrants(sessionId);
   }
 
   const cEntry = chatSessionMap.get(chatId);
   if (!cEntry || cEntry.gen !== myGen) return;
+  clearSessionGrants(sessionId);
   const wasStopped = cEntry.stopped;
   const prevTs = lastMsgTimestamps.get(chatId);
   if (prevTs === undefined || cEntry.msgTimestamp > prevTs) {
