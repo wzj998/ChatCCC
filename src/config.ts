@@ -454,6 +454,7 @@ export const config: AppConfig = loadConfig();
 // （前提是导入端在函数体内读，不是在模块顶层读）。
 
 export const USE_LOCAL = process.argv.includes("--local");
+export const USE_SIMULATE = process.argv.includes("--simulate");
 export let APP_ID = config.feishu.appId;
 export let APP_SECRET = config.feishu.appSecret;
 export const BASE_URL = "https://open.feishu.cn/open-apis";

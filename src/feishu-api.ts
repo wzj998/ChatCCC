@@ -794,6 +794,33 @@ export async function sendCardReply(
   }
 }
 
+export async function sendRawCard(
+  token: string,
+  chatId: string,
+  cardJson: string
+): Promise<boolean> {
+  try {
+    const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: cardJson }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
+    if (data.code !== 0) {
+      console.error(`[${ts()}] [SEND] raw_card FAIL: chatId=${chatId} code=${data.code} msg="${data.msg ?? ""}"`);
+      return false;
+    }
+    console.log(`[${ts()}] [SEND] raw_card OK: chatId=${chatId} msgId=${data.data?.message_id ?? "N/A"}`);
+    return true;
+  } catch (err) {
+    console.error(`[${ts()}] [SEND] raw_card FAIL: chatId=${chatId} ${(err as Error).message}`);
+    return false;
+  }
+}
+
 // 重启后，向最后有发言的会话发送 "已重启" 卡片（基于 chat_logs 的文件修改时间）
 export async function sendRestartCard(token: string): Promise<void> {
   try {

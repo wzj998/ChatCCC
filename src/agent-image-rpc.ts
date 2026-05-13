@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 
-import { getTenantAccessToken, sendImageReply, sendTextReply } from "./feishu-api.ts";
+import { getTenantAccessToken, sendImageReply, sendTextReply } from "./feishu-platform.ts";
 import { ts } from "./config.ts";
 import { logTrace } from "./trace.ts";
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
