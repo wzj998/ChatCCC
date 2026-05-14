@@ -24,6 +24,7 @@ import type { PlatformAdapter } from "./platform-adapter.ts";
 import { setupFileLogging } from "./shared.ts";
 import { appendChatLog } from "./config.ts";
 import { cardJsonToPlainText } from "./card-plain-text.ts";
+import { applyPrivacy } from "./privacy.ts";
 
 interface TerminalQrRenderer {
   generate(
@@ -145,6 +146,8 @@ export function createWechatAdapter(
     async sendText(chatId, text) {
       const wire = getWire();
       if (!wire) return false;
+
+      text = applyPrivacy(text);
 
       // 微信 claw 连发限制：统计用户未回复时已连发条数
       const count = (consecutiveSendCount.get(chatId) ?? 0) + 1;
