@@ -77,6 +77,7 @@ import {
   setChatAvatar,
   updateCardMessage,
   updateChatInfo,
+  disbandChat,
   getOrDownloadImage,
   sendRestartCard,
   verifyAllPermissions,
@@ -103,6 +104,7 @@ import {
   getAdapterForTool,
   stopSession,
   loadSessionRegistryForBinding,
+  removeSessionRegistryRecord,
 } from "./session.ts";
 import {
   bindChatToSession,
@@ -112,6 +114,7 @@ import {
   activePrompts,
   rebuildSessionChatsFromRegistry,
   displayCards,
+  recordLastActiveChat,
 } from "./session-chat-binding.ts";
 import { fixStaleStreamStates } from "./stream-state.ts";
 
@@ -726,6 +729,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
         // 绑定新 session
         bindChatToSession(newSessionId, chatId);
+        recordLastActiveChat(newSessionId, chatId);
 
         const descPrefix = sessionPrefixForTool(descriptionTool);
         const newName = sessionChatName("新会话", cwd);
@@ -772,6 +776,35 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
+      if (textLower === "/deleteg") {
+        logTrace(tid, "BRANCH", { cmd: "/deleteg" });
+        if (chatType === "p2p") {
+          await sendTextReply(freshToken, chatId, "私聊无法使用 /deleteg，该指令仅用于群聊。").catch(() => {});
+          logTrace(tid, "DONE", { outcome: "deleteg_p2p" });
+          return;
+        }
+        console.log(`[${ts()}] [DELETEG] Disbanding group chat ${chatId}, session=${sessionId}`);
+
+        // 先解绑 session（不删除 Agent 会话）
+        unbindChatFromSession(sessionId, chatId);
+        displayCards.delete(chatId);
+        sessionInfoMap.delete(chatId);
+        await removeSessionRegistryRecord(chatId);
+
+        await sendTextReply(freshToken, chatId, "群聊已解散，Agent 会话保留。").catch(() => {});
+
+        // 解散群聊（飞书 API）
+        try {
+          await disbandChat(freshToken, chatId);
+          console.log(`[${ts()}] [DELETEG] Group disbanded: ${chatId}`);
+        } catch (err) {
+          console.error(`[${ts()}] [DELETEG] Disband API failed: ${(err as Error).message}`);
+        }
+
+        logTrace(tid, "DONE", { outcome: "deleteg", chatId, sessionId });
+        return;
+      }
+
       // /session <number>：切换到 /sessions 列表中的指定会话
       const sessionMatch = textLower.match(/^\/session\s+(\d+)$/);
       if (sessionMatch) {
@@ -812,6 +845,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
         // 绑定到新 session
         bindChatToSession(target.sessionId, chatId);
+        recordLastActiveChat(target.sessionId, chatId);
 
         const descPrefix2 = sessionPrefixForTool(target.tool);
         const newName2 = target.chatName || sessionChatName("新会话", cwd2);

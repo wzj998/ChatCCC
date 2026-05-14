@@ -111,6 +111,11 @@ export const SimulatedPlatform: FeishuPlatform = {
     return { name: chat.name, description: chat.description };
   },
 
+  async disbandChat(_token, chatId) {
+    simStore.disbandChat(chatId);
+    console.log(`[${ts()}] [SIM:CHAT] disbanded: ${chatId}`);
+  },
+
   // ---- 头像 ----
   async setChatAvatar(_token, _chatId, _tool, _status) {
     // 模拟模式不需要头像

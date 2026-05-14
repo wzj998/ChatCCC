@@ -43,6 +43,8 @@ import {
   displayCards,
   displayLoops,
   rebuildSessionChatsFromRegistry,
+  recordLastActiveChat,
+  getLastActiveChat,
 } from "./session-chat-binding.ts";
 
 // ---------------------------------------------------------------------------
@@ -245,6 +247,12 @@ export async function recordSessionRegistry(update: SessionRegistryUpdate): Prom
   await saveSessionRegistry(data);
 }
 
+export async function removeSessionRegistryRecord(chatId: string): Promise<void> {
+  const data = await loadSessionRegistry();
+  delete data[chatId];
+  await saveSessionRegistry(data);
+}
+
 export function _setSessionRegistryFileForTest(filePath: string): void {
   sessionRegistryFile = filePath;
 }
@@ -423,6 +431,9 @@ export async function runAgentSession(
 ): Promise<void> {
   const tid = traceId ?? "";
 
+  // 记录用户最后发送消息的群（display loop 只推送到该群）
+  recordLastActiveChat(sessionId, _chatId);
+
   // 并发检查：同一 session 只能有一个活跃 prompt
   if (activePrompts.has(sessionId)) {
     if (tid) logTrace(tid, "BLOCKED", { outcome: "session_busy", sessionId });
@@ -513,9 +524,10 @@ export async function runAgentSession(
   // 启动 display loop
   ensureDisplayLoop(sessionId);
 
-  // 设置所有绑定群头像为 busy
-  for (const cid of getChatsForSession(sessionId)) {
-    setChatAvatar(token, cid, tool, "busy").catch(() => {});
+  // 设置最后活跃群头像为 busy
+  const activeCid = getLastActiveChat(sessionId);
+  if (activeCid) {
+    setChatAvatar(token, activeCid, tool, "busy").catch(() => {});
   }
 
   const state: AccumulatorState = {
@@ -605,6 +617,8 @@ export async function runAgentSession(
           running: false,
         });
       }
+      const active1 = getLastActiveChat(sessionId);
+      if (active1) setChatAvatar(token, active1, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
     } else {
@@ -619,8 +633,9 @@ export async function runAgentSession(
           startTime: finfo?.startTime ?? now,
           running: false,
         });
-        setChatAvatar(token, cid, tool, "idle").catch(() => {});
       }
+      const active2 = getLastActiveChat(sessionId);
+      if (active2) setChatAvatar(token, active2, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
     }
@@ -628,7 +643,7 @@ export async function runAgentSession(
 }
 
 // ---------------------------------------------------------------------------
-// ensureDisplayLoop — 每个 session 一个 display 循环，读文件更新所有绑定群的卡片
+// ensureDisplayLoop — 每个 session 一个 display 循环，读文件更新最后活跃群的卡片
 // ---------------------------------------------------------------------------
 
 const CARD_ROTATE_MS = 9 * 60 * 1000;
@@ -643,9 +658,9 @@ export function ensureDisplayLoop(sessionId: string): void {
       const state = await readStreamState(sessionId);
       if (!state) return;
 
-      const chats = getChatsForSession(sessionId);
-      if (chats.length === 0) {
-        // 无绑定群，若 session 已结束则停止 loop
+      const chatId = getLastActiveChat(sessionId);
+      if (!chatId) {
+        // 无活跃群，若 session 已结束则停止 loop
         if (state.status !== "running") {
           clearInterval(interval);
           displayLoops.delete(sessionId);
@@ -655,100 +670,98 @@ export function ensureDisplayLoop(sessionId: string): void {
 
       const isTerminal = state.status !== "running";
 
-      for (const chatId of chats) {
-        try {
-          // getTenantAccessToken 有缓存，多次调用开销低
-          const tokenModule = await import("./feishu-platform.ts");
-          const token = await tokenModule.getTenantAccessToken();
-          const display = displayCards.get(chatId);
+      try {
+        // getTenantAccessToken 有缓存，多次调用开销低
+        const tokenModule = await import("./feishu-platform.ts");
+        const token = await tokenModule.getTenantAccessToken();
+        const display = displayCards.get(chatId);
 
-          if (isTerminal) {
-            // 发送最终结果
-            if (display) {
-              while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
-              const nextSeq = display.sequence + 1;
-              const headerTitle = state.status === "stopped" ? "已停止" : "完成";
-              const headerTemplate = state.status === "stopped" ? "red" : undefined;
-              const cardContent = state.accumulatedContent || " ";
-              const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-              await updateCardKitCard(token, display.cardId, doneCard, nextSeq).catch(() => {});
-              displayCards.delete(chatId);
+        if (isTerminal) {
+          // 发送最终结果
+          if (display) {
+            while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
+            const nextSeq = display.sequence + 1;
+            const headerTitle = state.status === "stopped" ? "已停止" : "完成";
+            const headerTemplate = state.status === "stopped" ? "red" : undefined;
+            const cardContent = state.accumulatedContent || " ";
+            const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+            await updateCardKitCard(token, display.cardId, doneCard, nextSeq).catch(() => {});
+            displayCards.delete(chatId);
+          }
+          if (state.finalReply) {
+            await sendTextReply(token, chatId, state.finalReply).catch(() => {});
+          } else if (!display && state.accumulatedContent.trim()) {
+            const short = truncateContent(state.accumulatedContent, 30, 4000);
+            await sendTextReply(token, chatId, `[生成过程]\n${short}`).catch(() => {});
+          }
+          setChatAvatar(token, chatId, state.tool, "idle").catch(() => {});
+        } else {
+          // running: 创建或更新卡片
+          if (!display) {
+            const cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
+            if (cardId) {
+              await sendCardKitMessage(token, chatId, cardId).catch(() => null);
+              displayCards.set(chatId, {
+                cardId,
+                sequence: 1,
+                cardBusy: false,
+                cardCreatedAt: Date.now(),
+                lastSentContent: "",
+                streamErrorNotified: false,
+              });
             }
-            if (state.finalReply) {
-              await sendTextReply(token, chatId, state.finalReply).catch(() => {});
-            } else if (!display && state.accumulatedContent.trim()) {
-              const short = truncateContent(state.accumulatedContent, 30, 4000);
-              await sendTextReply(token, chatId, `[生成过程]\n${short}`).catch(() => {});
-            }
-            setChatAvatar(token, chatId, state.tool, "idle").catch(() => {});
           } else {
-            // running: 创建或更新卡片
-            if (!display) {
-              const cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
-              if (cardId) {
-                await sendCardKitMessage(token, chatId, cardId).catch(() => null);
-                displayCards.set(chatId, {
-                  cardId,
-                  sequence: 1,
-                  cardBusy: false,
-                  cardCreatedAt: Date.now(),
-                  lastSentContent: "",
-                  streamErrorNotified: false,
-                });
-              }
-            } else {
-              if (display.cardBusy) continue;
+            if (display.cardBusy) return;
 
-              // 卡片轮转
-              if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
-                display.cardBusy = true;
-                try {
-                  const oldSeqBase = display.sequence;
-                  const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
-                  const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
-                  await updateCardKitCard(token, display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
-                  const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
-                  if (newCardId) {
-                    await sendCardKitMessage(token, chatId, newCardId);
-                    display.cardId = newCardId;
-                    display.sequence = 1;
-                    display.cardCreatedAt = Date.now();
-                    display.lastSentContent = "";
-                    display.streamErrorNotified = false;
-                  }
-                } catch (err) {
-                  console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
-                } finally {
-                  display.cardBusy = false;
-                }
-                continue;
-              }
-
-              dotCount = (dotCount % 9) + 1;
-              const content = truncateContent(state.accumulatedContent + state.finalReply + "\n" + "。".repeat(dotCount));
-              if (content === display.lastSentContent) continue;
-
-              display.lastSentContent = content;
+            // 卡片轮转
+            if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
               display.cardBusy = true;
-              const mySeq = display.sequence + 1;
               try {
-                const card = buildProgressCard(content, { showStop: true, headerTitle: "生成中..." });
-                await updateCardKitCard(token, display.cardId, card, mySeq);
-                display.sequence = mySeq;
-              } catch (err) {
-                console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
-                if (!display.streamErrorNotified) {
-                  display.streamErrorNotified = true;
-                  sendTextReply(token, chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
+                const oldSeqBase = display.sequence;
+                const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
+                const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
+                await updateCardKitCard(token, display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
+                const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
+                if (newCardId) {
+                  await sendCardKitMessage(token, chatId, newCardId);
+                  display.cardId = newCardId;
+                  display.sequence = 1;
+                  display.cardCreatedAt = Date.now();
+                  display.lastSentContent = "";
+                  display.streamErrorNotified = false;
                 }
+              } catch (err) {
+                console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
               } finally {
                 display.cardBusy = false;
               }
+              return;
+            }
+
+            dotCount = (dotCount % 9) + 1;
+            const content = truncateContent(state.accumulatedContent + state.finalReply + "\n" + "。".repeat(dotCount));
+            if (content === display.lastSentContent) return;
+
+            display.lastSentContent = content;
+            display.cardBusy = true;
+            const mySeq = display.sequence + 1;
+            try {
+              const card = buildProgressCard(content, { showStop: true, headerTitle: "生成中..." });
+              await updateCardKitCard(token, display.cardId, card, mySeq);
+              display.sequence = mySeq;
+            } catch (err) {
+              console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
+              if (!display.streamErrorNotified) {
+                display.streamErrorNotified = true;
+                sendTextReply(token, chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
+              }
+            } finally {
+              display.cardBusy = false;
             }
           }
-        } catch (err) {
-          console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
         }
+      } catch (err) {
+        console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
       }
 
       if (isTerminal) {

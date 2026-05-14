@@ -61,6 +61,21 @@ export interface ActivePrompt {
 export const activePrompts = new Map<string, ActivePrompt>();
 
 // ---------------------------------------------------------------------------
+// lastActiveChat: sessionId → 用户最后发送消息的 chatId
+// 用于确保 display loop 只推送到用户最近活跃的群
+// ---------------------------------------------------------------------------
+
+const lastActiveChatMap = new Map<string, { chatId: string; timestamp: number }>();
+
+export function recordLastActiveChat(sessionId: string, chatId: string): void {
+  lastActiveChatMap.set(sessionId, { chatId, timestamp: Date.now() });
+}
+
+export function getLastActiveChat(sessionId: string): string | undefined {
+  return lastActiveChatMap.get(sessionId)?.chatId;
+}
+
+// ---------------------------------------------------------------------------
 // displayCards: chatId → 展示卡片状态（display loop 用）
 // ---------------------------------------------------------------------------
 
@@ -80,6 +95,7 @@ export const displayLoops = new Map<string, () => void>();
 
 export function resetBindingState(): void {
   sessionChatsMap.clear();
+  lastActiveChatMap.clear();
   activePrompts.clear();
   displayCards.clear();
   for (const stop of displayLoops.values()) stop();

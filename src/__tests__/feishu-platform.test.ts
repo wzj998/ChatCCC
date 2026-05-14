@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, sendRestartCard } from "../feishu-platform.ts";
+import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, disbandChat, sendRestartCard } from "../feishu-platform.ts";
 import type { FeishuPlatform } from "../feishu-platform.ts";
 
 const realPlatform = getPlatform();
@@ -16,6 +16,7 @@ describe("feishu-platform", () => {
       getTenantAccessToken: async () => "mock_token",
       sendTextReply: async () => true,
       sendCardReply: async () => true,
+      sendRawCard: async () => true,
       sendImageReply: async () => true,
       sendFileReply: async () => true,
       addReaction: async () => {},
@@ -24,6 +25,7 @@ describe("feishu-platform", () => {
       createGroupChat: async () => "mock_chat",
       updateChatInfo: async () => {},
       getChatInfo: async () => ({ name: "x", description: "y" }),
+      disbandChat: async () => {},
       setChatAvatar: async () => {},
       getOrDownloadImage: async () => "/tmp/img.png",
       verifyAllPermissions: async () => [],
