@@ -14,26 +14,25 @@ function parseArgs(argv) {
 
 function usage() {
   console.error(`Usage:
-  node ${basename(process.argv[1])} --url <url> --token <token> --path <absolute image path> [--caption <text>]`);
+  node ${basename(process.argv[1])} --url <url> --session-id <session_id> --path <absolute image path> [--caption <text>]`);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const url = args.url || process.env.CHATCCC_SEND_IMAGE_URL;
-  const token = args.token || process.env.CHATCCC_SEND_IMAGE_TOKEN;
+  const sessionId = args["session-id"] || args.session_id || process.env.CHATCCC_SESSION_ID;
   const path = args.path;
   const caption = args.caption || "";
 
-  if (!url || !token || !path) {
+  if (!url || !sessionId || !path) {
     usage();
     process.exit(1);
   }
 
-  const body = Buffer.from(JSON.stringify({ path, caption }), "utf8");
+  const body = Buffer.from(JSON.stringify({ session_id: sessionId, path, caption }), "utf8");
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json; charset=utf-8",
     },
     body,
