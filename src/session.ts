@@ -525,7 +525,7 @@ export async function runAgentSession(
   ensureDisplayLoop(sessionId);
 
   // 设置最后活跃群头像为 busy
-  const activeCid = getLastActiveChat(sessionId);
+  const activeCid = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
   if (activeCid) {
     setChatAvatar(token, activeCid, tool, "busy").catch(() => {});
   }
@@ -617,7 +617,7 @@ export async function runAgentSession(
           running: false,
         });
       }
-      const active1 = getLastActiveChat(sessionId);
+      const active1 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
       if (active1) setChatAvatar(token, active1, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
@@ -634,7 +634,7 @@ export async function runAgentSession(
           running: false,
         });
       }
-      const active2 = getLastActiveChat(sessionId);
+      const active2 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
       if (active2) setChatAvatar(token, active2, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
@@ -664,6 +664,12 @@ export function ensureDisplayLoop(sessionId: string): void {
         if (state.status !== "running") {
           clearInterval(interval);
           displayLoops.delete(sessionId);
+          // 兜底：lastActiveChatMap 可能因进程重启丢失，从 registry 映射恢复头像
+          const fallbackChat = getChatsForSession(sessionId)[0];
+          if (fallbackChat) {
+            const t = await import("./feishu-platform.ts").then(m => m.getTenantAccessToken());
+            setChatAvatar(t, fallbackChat, state.tool, "idle").catch(() => {});
+          }
         }
         return;
       }
