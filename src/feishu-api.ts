@@ -15,6 +15,7 @@ import {
   CODEX_SESSION_PREFIX,
   ts,
 } from "./config.ts";
+import { applyPrivacy } from "./privacy.ts";
 import { buildHelpCard } from "./cards.ts";
 
 // ---------------------------------------------------------------------------
@@ -536,9 +537,10 @@ export async function sendTextReply(
   chatId: string,
   text: string
 ): Promise<boolean> {
+  const safeText = applyPrivacy(text);
   const card = JSON.stringify({
     config: { wide_screen_mode: true },
-    elements: [{ tag: "markdown", content: text }],
+    elements: [{ tag: "markdown", content: safeText }],
   });
   try {
     const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
@@ -778,10 +780,12 @@ export async function sendCardReply(
   content: string,
   template = "green"
 ): Promise<boolean> {
+  const safeTitle = applyPrivacy(title);
+  const safeContent = applyPrivacy(content);
   const card = JSON.stringify({
     config: { wide_screen_mode: true },
-    header: { template, title: { content: title, tag: "plain_text" } },
-    elements: [{ tag: "div", text: { tag: "lark_md", content } }],
+    header: { template, title: { content: safeTitle, tag: "plain_text" } },
+    elements: [{ tag: "div", text: { tag: "lark_md", content: safeContent } }],
   });
 
   try {

@@ -67,6 +67,7 @@ web_modules/
 
 # Config files (sensitive)
 config.json
+privacy.json
 
 # dotenv files (no longer used)
 .env
