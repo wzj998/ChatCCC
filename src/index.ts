@@ -97,9 +97,11 @@ import {
   initClaudeSession,
   lastMsgTimestamps,
   processedMessages,
+  rebuildBindingsFromRegistry,
   resetState,
   resumeAndPrompt,
   sessionInfoMap,
+  switchChatBinding,
   recordSessionRegistry,
   getAdapterForTool,
   stopSession,
@@ -717,11 +719,10 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           cwd = await getDefaultCwd(chatId);
         }
 
-        // 不 abort 旧 session，只解绑当前 chat
-        // 旧 session 如果正在跑，display loop 继续服务其他群
-        unbindChatFromSession(sessionId, chatId);
-        displayCards.delete(chatId);
-
+        // 第一步:创建新 session(此时尚未碰任何内存绑定,失败可直接返回,
+        // 旧 session 状态完全保留)。
+        // 注意不 abort 旧 session：旧 session 若仍在跑,display loop 会继续
+        // 把卡片推到原群直到 prompt 自然结束(或被 /stop)。
         let newSessionId: string;
         try {
           const init = await initClaudeSession(descriptionTool, cwd);
@@ -732,37 +733,46 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           return;
         }
 
-        // 绑定新 session
-        bindChatToSession(newSessionId, chatId);
-        recordLastActiveChat(newSessionId, chatId);
-
+        // 第二步:事务式切换 chat 绑定 —— 把 chat 从 oldSessionId 改嫁到
+        // newSessionId。switchChatBinding 内部保证:
+        //   - 群聊先调 updateChatInfo 改群描述,失败则内存绑定完全不动
+        //   - 私聊跳过 updateChatInfo(私聊 chatId 调群 API 必然失败)
+        //   - API 成功后统一切换内存:unbind 旧 / clear displayCards / bind 新 /
+        //     recordLastActiveChat / sessionInfoMap.set + 持久化 registry/sessions
+        // 详见 session.ts::switchChatBinding 注释。
         const descPrefix = sessionPrefixForTool(descriptionTool);
         const newName = sessionChatName("新会话", cwd);
-        await updateChatInfo(freshToken, chatId, newName, `${descPrefix} ${newSessionId}`);
-        console.log(`[${ts()}] [NEWH] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
-
-        sessionInfoMap.set(chatId, {
-          sessionId: newSessionId,
-          turnCount: 0,
-          lastContextTokens: 0,
-          startTime: Date.now(),
-          tool: descriptionTool,
-        });
-        await recordSessionRegistry({
+        const switchResult = await switchChatBinding({
           chatId,
-          sessionId: newSessionId,
+          chatType,
+          oldSessionId: sessionId,
+          newSessionId,
           tool: descriptionTool,
           chatName: newName,
-          turnCount: 0,
-          lastContextTokens: 0,
-          startTime: Date.now(),
-          running: false,
+          newDescription: `${descPrefix} ${newSessionId}`,
+          updateChatInfoFn: (cid, name, desc) => updateChatInfo(freshToken, cid, name, desc),
         });
-        await saveSessionTool(newSessionId, descriptionTool, newName);
+        if (!switchResult.ok) {
+          // 飞书 API 失败:内存仍指向旧 session,新 session 已创建但无人使用,
+          // 留在 sessions.json(loadSessionTools)成为 orphan,可由 /sessions
+          // 列表展示供人工清理或下次 /newh 覆盖。代价小于让群 description
+          // 与内存绑定不一致。
+          logTrace(tid, "DONE", { outcome: "newh_update_chat_fail", error: switchResult.error?.message });
+          await sendCardReply(
+            freshToken, chatId, "Error",
+            `更新群描述失败,会话未切换(新 session 已创建但未启用):\n${switchResult.error?.message}`,
+            "red"
+          );
+          return;
+        }
+        if (chatType !== "p2p") {
+          console.log(`[${ts()}] [NEWH] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
+        }
 
         setChatAvatar(freshToken, chatId, descriptionTool, "new").catch(() => {});
 
-        // 如果新 session 有活跃 prompt，启动 display loop 让本群也能看到
+        // 如果新 session 有活跃 prompt,启动 display loop 让本群也能看到。
+        // /newh 后通常是空 session,这里几乎走不到,但留作防御。
         if (isSessionRunning(newSessionId)) {
           const { ensureDisplayLoop } = await import("./session.ts");
           ensureDisplayLoop(newSessionId);
@@ -834,12 +844,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }
         const target = ordered[index];
 
-        // 不 abort 当前 chat 的旧 session，只解绑再重新绑定
-        if (sessionId) {
-          unbindChatFromSession(sessionId, chatId);
-          displayCards.delete(chatId);
-        }
-
+        // 第一步:解析目标 session 的 cwd(adapter.getSessionInfo 失败则 fallback,
+        // 这一步不动任何内存绑定,失败也不脏)。
         const targetAdapter = getAdapterForTool(target.tool);
         let cwd2: string;
         try {
@@ -849,34 +855,43 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           cwd2 = await getDefaultCwd(chatId);
         }
 
-        // 绑定到新 session
-        bindChatToSession(target.sessionId, chatId);
-        recordLastActiveChat(target.sessionId, chatId);
-
+        // 第二步:事务式切换 chat 绑定到 target.sessionId。
+        // switchChatBinding 内部行为同 /newh,详见 session.ts::switchChatBinding。
+        // 注意:这里把 turnCount 沿用 target.turnCount(从 registry 读到的目标 chat
+        // 历史轮数),而不是从 0 开始,这样 /status 显示的轮数延续历史。
         const descPrefix2 = sessionPrefixForTool(target.tool);
         const newName2 = target.chatName || sessionChatName("新会话", cwd2);
-        await updateChatInfo(freshToken, chatId, newName2, `${descPrefix2} ${target.sessionId}`);
-        console.log(`[${ts()}] [SESSION] Switched to session ${target.sessionId} (#${index + 1}), name="${newName2}"`);
-
-        sessionInfoMap.set(chatId, {
-          sessionId: target.sessionId,
-          turnCount: target.turnCount,
-          lastContextTokens: 0,
-          startTime: Date.now(),
-          tool: target.tool,
-        });
-        await recordSessionRegistry({
+        const switchResult = await switchChatBinding({
           chatId,
-          sessionId: target.sessionId,
+          chatType,
+          oldSessionId: sessionId,
+          newSessionId: target.sessionId,
           tool: target.tool,
           chatName: newName2,
-          running: false,
+          newDescription: `${descPrefix2} ${target.sessionId}`,
+          initialTurnCount: target.turnCount,
+          initialContextTokens: 0,
+          updateChatInfoFn: (cid, name, desc) => updateChatInfo(freshToken, cid, name, desc),
         });
-        await saveSessionTool(target.sessionId, target.tool, newName2);
+        if (!switchResult.ok) {
+          logTrace(tid, "DONE", { outcome: "session_update_chat_fail", error: switchResult.error?.message });
+          await sendCardReply(
+            freshToken, chatId, "Error",
+            `更新群描述失败,会话未切换:\n${switchResult.error?.message}`,
+            "red"
+          );
+          return;
+        }
+        if (chatType !== "p2p") {
+          console.log(`[${ts()}] [SESSION] Switched to session ${target.sessionId} (#${index + 1}), name="${newName2}"`);
+        }
 
         setChatAvatar(freshToken, chatId, target.tool, "new").catch(() => {});
 
-        // 如果新 session 有活跃 prompt，加上 display loop
+        // 如果新 session 有活跃 prompt,加上 display loop。注意:此时
+        // recordLastActiveChat 已经把 lastActive 改成当前 chat,会"抢走"
+        // 原有群的 display 推送(见 review 中 corner case 5)。这是已知
+        // 设计权衡:用户主动切换就是想"接管"该 session 的显示。
         if (isSessionRunning(target.sessionId)) {
           const { ensureDisplayLoop } = await import("./session.ts");
           ensureDisplayLoop(target.sessionId);
@@ -1231,25 +1246,34 @@ async function startBotServiceCore(): Promise<void> {
       console.error(`[WS] Local relay error: ${err.message}`);
     });
   } else {
+    // 进程首次启动:此时所有 Map 都是空的,resetState 主要是打个 LOG 标识"开始
+    // 干净状态"。修正残留的 running stream-state 并重建 session→chat 映射。
     resetState();
-    // 启动时修正残留的 running 状态并重建 session→chat 映射
     fixStaleStreamStates().then(async () => {
       const registry = await loadSessionRegistryForBinding();
       rebuildSessionChatsFromRegistry(registry);
     }).catch((err) => console.error(`[${ts()}] Init bindings failed: ${(err as Error).message}`));
 
+    // ⚠️ 关键设计:onReady / onReconnected 只重建只读映射,**绝不**清空运行时
+    // 状态(activePrompts、displayLoops、sessionInfoMap、processedMessages)。
+    // SDK 重连只是底层 WebSocket 抖动,业务层不受影响:
+    //   - 后台 generator 仍在跑、stream-state 仍在被写
+    //   - display loop 仍在向群推送
+    //   - 已处理消息的去重 set 必须保留,避免 SDK 重推老消息时 prompt 跑两遍
+    // 历史 bug:此处曾误调 resetState() 导致重连即让所有后台任务变孤儿,
+    // 同一 session 还可能双开 prompt(详见 session.ts::resetState 注释)。
     const wsClient = new WSClient({
       appId: APP_ID,
       appSecret: APP_SECRET,
       onReady: async () => {
-        resetState();
-        const registry = await loadSessionRegistryForBinding();
-        rebuildSessionChatsFromRegistry(registry);
+        await rebuildBindingsFromRegistry().catch((err) =>
+          console.error(`[${ts()}] [SDK READY] rebuild bindings failed: ${(err as Error).message}`)
+        );
       },
       onReconnected: async () => {
-        resetState();
-        const registry = await loadSessionRegistryForBinding();
-        rebuildSessionChatsFromRegistry(registry);
+        await rebuildBindingsFromRegistry().catch((err) =>
+          console.error(`[${ts()}] [SDK RECONNECT] rebuild bindings failed: ${(err as Error).message}`)
+        );
       },
     });
 
