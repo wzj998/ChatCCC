@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 // mock stream-state 以支持在测试中控制累积长度
-const mockStreamStates = new Map<string, { accumulatedContent: string; finalReply: string }>();
+const mockStreamStates = new Map<string, { accumulatedContent: string; finalReply: string; status?: "running" | "done" | "stopped" }>();
 vi.mock("../stream-state.ts", () => ({
   readStreamState: async (sid: string) => {
     const state = mockStreamStates.get(sid);
     if (!state) return null;
-    return { sessionId: sid, accumulatedContent: state.accumulatedContent, finalReply: state.finalReply, status: "running", chunkCount: 0, turnCount: 0, contextTokens: 0, updatedAt: Date.now(), cwd: "", tool: "claude" };
+    return { sessionId: sid, accumulatedContent: state.accumulatedContent, finalReply: state.finalReply, status: state.status ?? "running", chunkCount: 0, turnCount: 0, contextTokens: 0, updatedAt: Date.now(), cwd: "", tool: "claude" };
   },
   writeStreamState: async () => {},
   createEmptyStreamState: (sid: string, cwd: string, tool: string, turnCount: number) => ({
@@ -41,6 +41,7 @@ import {
   setSessionPlatform,
   recordChatPlatform,
   _getPlatformForChatForTest,
+  ensureDisplayLoop,
 } from "../session.ts";
 import {
   activePrompts,
@@ -182,6 +183,60 @@ describe("chat platform routing", () => {
 // 关键不变量:重建映射后,原有的 activePrompts、sessionInfoMap、displayCards、
 // processedMessages 全部保留——SDK 重连不应当影响后台 prompt 的执行。
 // ---------------------------------------------------------------------------
+
+describe("ensureDisplayLoop WeChat delta", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+  });
+
+  afterEach(() => {
+    resetBindingState();
+    vi.useRealTimers();
+  });
+
+  it("sends only new accumulated content when tool output arrives before an already-sent final reply", async () => {
+    const platform = mockPlatform("wechat");
+    platform.kind = "wechat";
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-wechat", "chat-wechat");
+    recordLastActiveChat("sid-wechat", "chat-wechat");
+    sessionInfoMap.set("chat-wechat", {
+      sessionId: "sid-wechat",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "claude",
+    });
+
+    mockStreamStates.set("sid-wechat", {
+      accumulatedContent: "",
+      finalReply: "partial reply",
+    });
+    ensureDisplayLoop("sid-wechat");
+    await vi.advanceTimersByTimeAsync(3000);
+
+    mockStreamStates.set("sid-wechat", {
+      accumulatedContent: "tool output\n",
+      finalReply: "partial reply",
+    });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(platform.sendText).toHaveBeenNthCalledWith(
+      1,
+      "chat-wechat",
+      "partial reply",
+    );
+    expect(platform.sendText).toHaveBeenNthCalledWith(
+      2,
+      "chat-wechat",
+      "tool output",
+    );
+  });
+});
 
 describe("rebuildBindingsFromRegistry", () => {
   let registryFile = "";
@@ -627,20 +682,22 @@ describe("accumulateBlockContent", () => {
     );
     expect(s.accumulatedContent).toContain("📖"); // 📖
     expect(s.accumulatedContent).toContain("**Read**");
-    expect(s.accumulatedContent).toContain("file_path");
+    expect(s.accumulatedContent).toContain("/tmp/test.txt");
   });
 
   it("accumulates tool_use block with long input truncated", () => {
     const s = freshState();
     const longInput = "x".repeat(500);
     accumulateBlockContent(
-      { type: "tool_use", name: "Bash", input: longInput },
+      { type: "tool_use", name: "Bash", input: { command: longInput } },
       s,
     );
-    expect(s.accumulatedContent).toContain("...");
-    // Should be truncated to 300 + "..."
-    const inputPart = s.accumulatedContent.split("`")[1];
-    expect(inputPart.length).toBeLessThanOrEqual(304); // 300 + "..."
+    // 简化规则截断到 500 chars
+    expect(s.accumulatedContent).toContain("🖥️");
+    expect(s.accumulatedContent).toContain("**Bash**");
+    // command 超过 maxLength=500 时会被截断
+    const body = s.accumulatedContent.split("**Bash** ")[1]?.trim() ?? "";
+    expect(body.length).toBeLessThanOrEqual(503); // 500 + "..."
   });
 
   it("accumulates tool_result block with success icon (✅)", () => {

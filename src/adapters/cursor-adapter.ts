@@ -117,6 +117,7 @@ export function normalizeCursorMessage(
       } else if (block.type === "tool_use") {
         blocks.push({
           type: "tool_use",
+          id: block.tool_use_id,
           name: block.name ?? "unknown",
           input: block.input,
         });
