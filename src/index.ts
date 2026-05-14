@@ -688,6 +688,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const cardData = others.map(s => ({
           sessionId: s.sessionId,
           chatName: s.chatName,
+          chatId: s.chatId,
           active: s.active,
           turnCount: s.turnCount,
           elapsedSeconds: s.active ? Math.floor((now - s.startTime) / 1000) : null,

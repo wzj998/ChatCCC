@@ -255,6 +255,7 @@ export function buildCdCard(
 export function buildSessionsCard(sessions: Array<{
   sessionId: string;
   chatName: string;
+  chatId: string;
   active: boolean;
   turnCount: number;
   elapsedSeconds: number | null;
@@ -293,7 +294,8 @@ export function buildSessionsCard(sessions: Array<{
     }
     const toolLabel = s.tool === "cursor" ? "Cursor" : s.tool === "codex" ? "Codex" : "Claude Code";
     const namePart = s.chatName ? `**${s.chatName}** ` : "";
-    return `**${i + 1}.** ${namePart}\`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
+    const groupTag = s.chatId && s.chatId.startsWith("oc_") ? " (群聊)" : "";
+    return `**${i + 1}.** ${namePart}${groupTag} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
   const lines: string[] = [`共 **${sessions.length}** 个会话:`, ""];

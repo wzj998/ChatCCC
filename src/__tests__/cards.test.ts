@@ -311,7 +311,7 @@ describe("buildSessionsCard", () => {
 
   it("returns valid JSON with session listing", () => {
     const card = buildSessionsCard([
-      { sessionId: "abc123", chatName: "test-group", active: true, turnCount: 5, elapsedSeconds: 120, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "abc123", chatName: "test-group", chatId: "oc_test123", active: true, turnCount: 5, elapsedSeconds: 120, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("共 **1** 个会话");
@@ -322,7 +322,7 @@ describe("buildSessionsCard", () => {
 
   it("shows idle status for inactive sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "xyz", chatName: "", active: false, turnCount: 0, elapsedSeconds: null, model: "Claude Sonnet 4.6", tool: "claude" },
+      { sessionId: "xyz", chatName: "", chatId: "oc_xyz", active: false, turnCount: 0, elapsedSeconds: null, model: "Claude Sonnet 4.6", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("⚪ 空闲");
@@ -330,7 +330,7 @@ describe("buildSessionsCard", () => {
 
   it("shows elapsed time for active sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "active123", chatName: "", active: true, turnCount: 3, elapsedSeconds: 95, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "active123", chatName: "", chatId: "oc_active123", active: true, turnCount: 3, elapsedSeconds: 95, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("1分35秒");
@@ -338,8 +338,8 @@ describe("buildSessionsCard", () => {
 
   it("separates Claude Code and Cursor sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "c1", chatName: "", active: false, turnCount: 1, elapsedSeconds: null, model: "(留空)", tool: "claude" },
-      { sessionId: "c2", chatName: "", active: false, turnCount: 2, elapsedSeconds: null, model: "claude-opus-4-7-max", tool: "cursor" },
+      { sessionId: "c1", chatName: "", chatId: "oc_c1", active: false, turnCount: 1, elapsedSeconds: null, model: "(留空)", tool: "claude" },
+      { sessionId: "c2", chatName: "", chatId: "oc_c2", active: false, turnCount: 2, elapsedSeconds: null, model: "claude-opus-4-7-max", tool: "cursor" },
     ]);
     const parsed = JSON.parse(card);
     const content: string = parsed.elements[0].text.content;
@@ -349,7 +349,7 @@ describe("buildSessionsCard", () => {
 
   it("omits Cursor section when no Cursor sessions", () => {
     const card = buildSessionsCard([
-      { sessionId: "c1", chatName: "", active: false, turnCount: 1, elapsedSeconds: null, model: "(留空)", tool: "claude" },
+      { sessionId: "c1", chatName: "", chatId: "oc_c1", active: false, turnCount: 1, elapsedSeconds: null, model: "(留空)", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     const content: string = parsed.elements[0].text.content;
@@ -359,15 +359,30 @@ describe("buildSessionsCard", () => {
 
   it("displays chatName when provided", () => {
     const card = buildSessionsCard([
-      { sessionId: "abc123", chatName: "帮我写代码-src", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "abc123", chatName: "帮我写代码-src", chatId: "oc_abc123", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[0].text.content).toContain("帮我写代码-src");
   });
 
+  it("shows (群聊) tag for group chat sessions and not for private chats", () => {
+    const card = buildSessionsCard([
+      { sessionId: "g1", chatName: "group-chat", chatId: "oc_group1", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "p1", chatName: "private-chat", chatId: "ou_private1", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+    ]);
+    const content: string = JSON.parse(card).elements[0].text.content;
+    expect(content).toContain("(群聊)");
+    // 群聊会话包含 (群聊)
+    expect(content).toMatch(/group-chat.*\(群聊\)/);
+    // 私聊会话不包含 (群聊)
+    expect(content).toMatch(/private-chat/);
+    const afterPrivateChat = content.split("private-chat")[1];
+    expect(afterPrivateChat).not.toContain("(群聊)");
+  });
+
   it("includes /session help text in non-empty card", () => {
     const card = buildSessionsCard([
-      { sessionId: "abc123", chatName: "", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "abc123", chatName: "", chatId: "oc_abc123", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[2].text.content).toContain("/session 数字");
