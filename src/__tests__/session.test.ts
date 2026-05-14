@@ -288,7 +288,8 @@ describe("getAllSessionsStatus", () => {
     const result = await getAllSessionsStatus();
     expect(result).toHaveLength(2);
     expect(result[0].chatId).toBe("chat1");
-    expect(result[0].active).toBe(true);
+    // running=true in registry doesn't make it active — must be in activePrompts
+    expect(result[0].active).toBe(false);
     expect(result[0].turnCount).toBe(2);
     expect(result[0].chatName).toBe("test-chat-1");
     expect(result[1].chatId).toBe("chat2");

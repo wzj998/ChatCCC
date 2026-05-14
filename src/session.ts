@@ -894,7 +894,7 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
         chatId: info.chatId,
         sessionId: info.sessionId,
         chatName: info.chatName || "",
-        active: info.running === true,
+        active: activePrompts.has(info.sessionId) && !(activePrompts.get(info.sessionId)?.stopped),
         turnCount: info.turnCount,
         startTime: info.startTime,
         model,

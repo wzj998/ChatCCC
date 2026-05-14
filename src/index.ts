@@ -111,6 +111,7 @@ import {
   isSessionRunning,
   activePrompts,
   rebuildSessionChatsFromRegistry,
+  displayCards,
 } from "./session-chat-binding.ts";
 import { fixStaleStreamStates } from "./stream-state.ts";
 
@@ -528,6 +529,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
     // 让新群的默认工作目录继承当前会话的 cwd
     await setDefaultCwd(cwd, newChatId);
+    bindChatToSession(sessionId, newChatId);
     await recordSessionRegistry({
       chatId: newChatId,
       sessionId,
@@ -710,6 +712,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         // 不 abort 旧 session，只解绑当前 chat
         // 旧 session 如果正在跑，display loop 继续服务其他群
         unbindChatFromSession(sessionId, chatId);
+        displayCards.delete(chatId);
 
         let newSessionId: string;
         try {
@@ -795,6 +798,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         // 不 abort 当前 chat 的旧 session，只解绑再重新绑定
         if (sessionId) {
           unbindChatFromSession(sessionId, chatId);
+          displayCards.delete(chatId);
         }
 
         const targetAdapter = getAdapterForTool(target.tool);
