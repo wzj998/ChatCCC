@@ -237,6 +237,7 @@ describe("getAllSessionsStatus", () => {
   beforeEach(async () => {
     chatSessionMap.clear();
     sessionInfoMap.clear();
+    activePrompts.clear();
     const dir = await mkdtemp(join(tmpdir(), "chatccc-session-registry-"));
     registryFile = join(dir, "session-registry.json");
     _setSessionRegistryFileForTest(registryFile);
@@ -315,7 +316,7 @@ describe("getAllSessionsStatus", () => {
     expect(result.some((r) => r.chatId === "chat-4")).toBe(false);
   });
 
-  it("marks disk-running sessions as active without checking chatSessionMap", async () => {
+  it("shows session as inactive when not in activePrompts, regardless of registry running field", async () => {
     await recordSessionRegistry({
       chatId: "chat1",
       sessionId: "s1",
@@ -323,6 +324,21 @@ describe("getAllSessionsStatus", () => {
       running: true,
       updatedAt: 1000,
     });
+
+    const result = await getAllSessionsStatus();
+    // After restart, activePrompts is cleared; registry running=true should not show as active
+    expect(result.find(r => r.chatId === "chat1")!.active).toBe(false);
+  });
+
+  it("shows session as active when in activePrompts", async () => {
+    await recordSessionRegistry({
+      chatId: "chat1",
+      sessionId: "s1",
+      tool: "claude",
+      running: false, // registry says false, but activePrompts wins
+      updatedAt: 1000,
+    });
+    mockActiveSession("chat1");
 
     const result = await getAllSessionsStatus();
     expect(result.find(r => r.chatId === "chat1")!.active).toBe(true);
