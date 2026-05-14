@@ -39,6 +39,8 @@ export interface UnifiedTextFinalBlock {
 
 export interface UnifiedToolUseBlock {
   type: "tool_use";
+  /** 工具调用 ID，用于与 tool_result 对应（Claude SDK 会提供，Cursor 旧格式可能无） */
+  id?: string;
   name: string;
   input: unknown;
 }

@@ -1,0 +1,29 @@
+{
+  "tool_use": {
+    "Read": { "template": "📖 **Read** {file_path}", "maxLength": 300 },
+    "Write": { "template": "✍️ **Write** {file_path}", "maxLength": 300 },
+    "Edit": { "template": "✏️ **Edit** {file_path}", "maxLength": 300 },
+    "Grep": { "template": "🔎 **Grep** {pattern} {path}", "maxLength": 300 },
+    "Glob": { "template": "📂 **Glob** {pattern}", "maxLength": 300 },
+    "Bash": { "template": "🖥️ **Bash** {command}", "maxLength": 500 },
+    "Agent": { "template": "🤖 **Agent** {description}", "maxLength": 300 },
+    "WebSearch": { "template": "🌐 **WebSearch** {query}", "maxLength": 300 },
+    "WebFetch": { "template": "📥 **WebFetch** {url}", "maxLength": 300 },
+    "TodoWrite": { "template": "✅ **TodoWrite**", "maxLength": 200 },
+    "NotebookEdit": { "template": "📓 **NotebookEdit**", "maxLength": 200 },
+    "AskUserQuestion": { "template": "❓ **AskUserQuestion**", "maxLength": 200 }
+  },
+  "tool_result": {
+    "Read": { "template": "✅ *{id}*: 已读取 {file_path}", "maxLength": 200 },
+    "Write": { "template": "✅ *{id}*: 已写入 {file_path}", "maxLength": 200 },
+    "Edit": { "template": "✅ *{id}*: 已编辑 {file_path}", "maxLength": 200 },
+    "Grep": { "template": "✅ *{id}*: 已搜索", "maxLength": 200 },
+    "Glob": { "template": "✅ *{id}*: 已查找", "maxLength": 200 },
+    "Bash": { "template": "✅ *{id}*: 已执行", "maxLength": 200 },
+    "WebSearch": { "template": "✅ *{id}*: 搜索完成", "maxLength": 200 },
+    "WebFetch": { "template": "✅ *{id}*: 抓取完成", "maxLength": 200 },
+    "TodoWrite": { "template": "✅ *{id}*: 任务已更新", "maxLength": 200 },
+    "NotebookEdit": { "template": "✅ *{id}*: Notebook 已更新", "maxLength": 200 },
+    "AskUserQuestion": { "template": "✅ *{id}*: 已询问", "maxLength": 200 }
+  }
+}

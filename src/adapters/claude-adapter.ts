@@ -158,6 +158,7 @@ export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage |
       } else if (block.type === "tool_use") {
         blocks.push({
           type: "tool_use",
+          id: (block as { id?: string }).id,
           name: block.name ?? "unknown",
           input: block.input,
         });

@@ -20,6 +20,7 @@ import {
   ts,
 } from "./config.ts";
 import { buildProgressCard, getToolEmoji, truncateContent } from "./cards.ts";
+import { simplifyToolUse, simplifyToolResult } from "./simplify.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
@@ -385,6 +386,7 @@ export function pickFinalReply(state: AccumulatorState): string {
 export function accumulateBlockContent(
   block: UnifiedBlock,
   state: AccumulatorState,
+  toolCallMap?: Map<string, { name: string; input: unknown }>,
 ): void {
   switch (block.type) {
     case "thinking":
@@ -392,35 +394,55 @@ export function accumulateBlockContent(
       state.accumulatedContent += block.thinking;
       break;
     case "tool_use": {
-      const inputStr =
-        typeof block.input === "object"
-          ? JSON.stringify(block.input)
-          : String(block.input ?? "");
-      const shortInput =
-        inputStr.length > 300 ? inputStr.slice(0, 300) + "..." : inputStr;
-      state.accumulatedContent +=
-        `\n\n${getToolEmoji(block.name)} **${block.name}**\n\`${shortInput}\`\n`;
+      // 记录 tool_use 信息供后续 tool_result 使用
+      if (toolCallMap && block.id) {
+        toolCallMap.set(block.id, { name: block.name, input: block.input });
+      }
+      const simplified = simplifyToolUse(block.name, block.input);
+      if (simplified !== null) {
+        state.accumulatedContent += `\n\n${simplified}\n`;
+      } else {
+        const inputStr =
+          typeof block.input === "object"
+            ? JSON.stringify(block.input)
+            : String(block.input ?? "");
+        const shortInput =
+          inputStr.length > 300 ? inputStr.slice(0, 300) + "..." : inputStr;
+        state.accumulatedContent +=
+          `\n\n${getToolEmoji(block.name)} **${block.name}**\n\`${shortInput}\`\n`;
+      }
       break;
     }
     case "tool_result": {
       const toolUseId = block.tool_use_id;
-      const resultContent = block.content;
-      let resultStr = "";
-      if (typeof resultContent === "string") {
-        resultStr = resultContent;
-      } else if (Array.isArray(resultContent)) {
-        resultStr = resultContent
-          .map((c: { type?: string; text?: string }) => c.text ?? "")
-          .join("");
-      } else if (resultContent) {
-        resultStr = JSON.stringify(resultContent);
-      }
-      const shortResult =
-        resultStr.length > 200 ? resultStr.slice(0, 200) + "..." : resultStr;
       const isError = block.is_error;
-      const icon = isError ? "❌" : "✅"; // ❌ : ✅
-      state.accumulatedContent +=
-        `${icon} *${toolUseId.slice(-6)}*: ${shortResult}\n`;
+      // 查找对应的 tool_use 以获取工具名和输入
+      const toolCall = toolCallMap?.get(toolUseId);
+      const toolName = toolCall?.name;
+      const toolInput = toolCall?.input;
+      const simplified = toolName
+        ? simplifyToolResult(toolName, toolUseId, !!isError, toolInput)
+        : null;
+      if (simplified !== null) {
+        state.accumulatedContent += `${simplified}\n`;
+      } else {
+        const resultContent = block.content;
+        let resultStr = "";
+        if (typeof resultContent === "string") {
+          resultStr = resultContent;
+        } else if (Array.isArray(resultContent)) {
+          resultStr = resultContent
+            .map((c: { type?: string; text?: string }) => c.text ?? "")
+            .join("");
+        } else if (resultContent) {
+          resultStr = JSON.stringify(resultContent);
+        }
+        const shortResult =
+          resultStr.length > 200 ? resultStr.slice(0, 200) + "..." : resultStr;
+        const icon = isError ? "❌" : "✅"; // ❌ : ✅
+        state.accumulatedContent +=
+          `${icon} *${toolUseId.slice(-6)}*: ${shortResult}\n`;
+      }
       break;
     }
     case "redacted_thinking":
@@ -756,11 +778,12 @@ export async function runAgentSession(
 
   let lastFileWrite = Date.now();
   const FILE_WRITE_INTERVAL_MS = 2000;
+  const toolCallMap = new Map<string, { name: string; input: unknown }>();
 
   try {
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal)) {
       for (const block of unifiedMsg.blocks) {
-        accumulateBlockContent(block, state);
+        accumulateBlockContent(block, state, toolCallMap);
 
         if (block.type === "compact_boundary" && block.post_tokens) {
           for (const cid of getChatsForSession(sessionId)) {
