@@ -1,123 +1,30 @@
-import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 
 import { getTenantAccessToken, sendImageReply, sendTextReply } from "./feishu-platform.ts";
 import { ts } from "./config.ts";
-import { logTrace } from "./trace.ts";
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
+import { getAdapterForTool } from "./session.ts";
+import { getChatsForSession } from "./session-chat-binding.ts";
 
 export const AGENT_SEND_IMAGE_PATH = "/api/agent/send-image";
 
-const DEFAULT_GRANT_TTL_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
-
-export interface AgentImageGrant {
-  token: string;
-  url: string;
-  chatId: string;
-  sessionId: string;
-  cwd: string;
-  expiresAt: number;
-  traceId: string;
-}
-
-interface CreateAgentImageGrantInput {
-  chatId: string;
-  sessionId: string;
-  cwd: string;
-  port: number;
-  traceId?: string;
-  nowMs?: number;
-  ttlMs?: number;
-}
-
-const imageGrants = new Map<string, AgentImageGrant>();
-
-function createToken(): string {
-  return randomBytes(24).toString("base64url");
-}
-
-export function createAgentImageGrant(input: CreateAgentImageGrantInput): AgentImageGrant {
-  const now = input.nowMs ?? Date.now();
-  const token = createToken();
-  const grant: AgentImageGrant = {
-    token,
-    url: `http://127.0.0.1:${input.port}${AGENT_SEND_IMAGE_PATH}`,
-    chatId: input.chatId,
-    sessionId: input.sessionId,
-    cwd: input.cwd,
-    expiresAt: now + (input.ttlMs ?? DEFAULT_GRANT_TTL_MS),
-    traceId: input.traceId ?? "",
-  };
-  imageGrants.set(token, grant);
-  if (grant.traceId) logTrace(grant.traceId, "IMAGE_GRANT_CREATED", { sessionId: grant.sessionId, ttlMs: input.ttlMs ?? DEFAULT_GRANT_TTL_MS });
-  return grant;
-}
-
-export function revokeAgentImageGrant(token: string): void {
-  const grant = imageGrants.get(token);
-  if (grant?.traceId) logTrace(grant.traceId, "IMAGE_GRANT_REVOKED", {});
-  imageGrants.delete(token);
-}
-
-export function getAgentImageGrantFromAuthorization(
-  authorization: string | undefined,
-  nowMs = Date.now(),
-): AgentImageGrant | null {
-  const match = (authorization ?? "").match(/^Bearer\s+(.+)$/i);
-  if (!match) return null;
-  const grant = imageGrants.get(match[1]);
-  if (!grant) return null;
-  if (grant.expiresAt <= nowMs) {
-    imageGrants.delete(match[1]);
-    return null;
-  }
-  return grant;
-}
-
-export function buildAgentImageCapabilityPrompt(input: {
-  url: string;
-  token: string;
-  cwd?: string;
-}): string {
-  const lines = [
-    "[ChatCCC local capability: send image]",
-    "You can send an image to the current Feishu chat in real time by calling this local endpoint.",
-    "",
-    `POST ${input.url}`,
-    `Authorization: Bearer ${input.token}`,
-    "Content-Type: application/json; charset=utf-8",
-    "",
-    'Body: {"path":"absolute image file path","caption":"optional caption"}',
-    "",
-    "Rules:",
-    "- Save or choose a local image file first, then call the endpoint.",
-    "- Use an absolute local file path. Do not call Feishu Open Platform directly.",
-    "- Request body must be UTF-8 encoded JSON bytes; caption supports Unicode text, including Chinese.",
-    "- Only call this endpoint when the user asked for an image or when an image is useful to the answer.",
-    "[/ChatCCC local capability: send image]",
-  ];
-  if (input.cwd) {
-    lines.splice(2, 0, `Current working directory: ${input.cwd}`);
-  }
-  return lines.join("\n");
-}
 
 function jsonReply(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
 }
 
-async function resolveAndValidateImagePath(grant: AgentImageGrant, rawPath: unknown): Promise<string> {
+async function resolveAndValidateImagePath(cwd: string, rawPath: unknown): Promise<string> {
   if (typeof rawPath !== "string" || rawPath.trim() === "") {
     throw new Error("path must be a non-empty string");
   }
 
-  const sessionRoot = resolve(grant.cwd);
+  const sessionRoot = resolve(cwd);
   const imagePath = isAbsolute(rawPath)
     ? resolve(rawPath)
     : resolve(sessionRoot, rawPath);
@@ -146,43 +53,101 @@ export async function handleAgentImageRequest(
     return true;
   }
 
-  const grant = getAgentImageGrantFromAuthorization(req.headers.authorization);
-  if (!grant) {
-    jsonReply(res, 401, { ok: false, error: "Invalid or expired image-send token" });
-    return true;
-  }
-  const tid = grant.traceId;
-
-  let payload: { path?: unknown; caption?: unknown };
+  let payload: { session_id?: unknown; path?: unknown; caption?: unknown };
   try {
     payload = await readUtf8JsonBody(req, MAX_REQUEST_BYTES);
   } catch (err) {
-    if (tid) logTrace(tid, "IMAGE_REQ", { outcome: "invalid_json", error: (err as Error).message });
     jsonReply(res, 400, { ok: false, error: (err as Error).message || "Invalid JSON" });
+    return true;
+  }
+
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+  if (!sessionId) {
+    jsonReply(res, 400, { ok: false, error: "Missing session_id" });
+    return true;
+  }
+
+  // 获取 cwd 以校验路径
+  let cwd: string;
+  try {
+    const { getSessionTool } = await import("./session.ts");
+    const tool = await getSessionTool(sessionId);
+    const adapter = getAdapterForTool(tool ?? "claude");
+    const info = await adapter.getSessionInfo(sessionId);
+    if (!info?.cwd) {
+      jsonReply(res, 400, { ok: false, error: "Cannot determine cwd for session" });
+      return true;
+    }
+    cwd = info.cwd;
+  } catch (err) {
+    jsonReply(res, 500, { ok: false, error: `Failed to get session info: ${(err as Error).message}` });
     return true;
   }
 
   let imagePath: string;
   try {
-    imagePath = await resolveAndValidateImagePath(grant, payload.path);
+    imagePath = await resolveAndValidateImagePath(cwd, payload.path);
   } catch (err) {
-    if (tid) logTrace(tid, "IMAGE_REQ", { outcome: "invalid_path", path: String(payload.path), error: (err as Error).message });
     jsonReply(res, 400, { ok: false, error: (err as Error).message });
+    return true;
+  }
+
+  // 发送到所有绑定该 session 的群
+  const chatIds = getChatsForSession(sessionId);
+  if (chatIds.length === 0) {
+    jsonReply(res, 404, { ok: false, error: "No chats bound to this session" });
     return true;
   }
 
   try {
     const token = await getTenantAccessToken();
     const caption = typeof payload.caption === "string" ? payload.caption.trim() : "";
-    await sendImageReply(token, grant.chatId, imagePath);
-    if (caption) await sendTextReply(token, grant.chatId, caption);
-    if (tid) logTrace(tid, "IMAGE_REQ", { outcome: "sent", path: imagePath, hasCaption: !!caption });
-    console.log(`[${ts()}] [AGENT-IMAGE] sent image chat=${grant.chatId} session=${grant.sessionId} path=${imagePath}`);
-    jsonReply(res, 200, { ok: true });
+    let sentCount = 0;
+    for (const cid of chatIds) {
+      try {
+        await sendImageReply(token, cid, imagePath);
+        if (caption) await sendTextReply(token, cid, caption);
+        sentCount++;
+      } catch (err) {
+        console.error(`[${ts()}] [AGENT-IMAGE] send to ${cid} failed: ${(err as Error).message}`);
+      }
+    }
+    console.log(`[${ts()}] [AGENT-IMAGE] sent image to ${sentCount}/${chatIds.length} chats, session=${sessionId} path=${imagePath}`);
+    jsonReply(res, 200, { ok: true, sentTo: sentCount, total: chatIds.length });
   } catch (err) {
-    if (tid) logTrace(tid, "IMAGE_REQ", { outcome: "send_failed", path: imagePath!, error: (err as Error).message });
     console.error(`[${ts()}] [AGENT-IMAGE] send failed: ${(err as Error).message}`);
     jsonReply(res, 500, { ok: false, error: (err as Error).message });
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// 兼容旧版 buildAgentImageCapabilityPrompt（供 im-skills 使用）
+// ---------------------------------------------------------------------------
+
+export function buildAgentImageCapabilityPrompt(input: {
+  url: string;
+  sessionId?: string;
+  cwd?: string;
+}): string {
+  const lines = [
+    "[ChatCCC local capability: send image]",
+    "You can send an image to all chats bound to this session by calling this local endpoint.",
+    "",
+    `POST ${input.url}`,
+    "Content-Type: application/json; charset=utf-8",
+    "",
+    `Body: {"session_id":"${input.sessionId ?? "YOUR_SESSION_ID"}","path":"absolute image file path","caption":"optional caption"}`,
+    "",
+    "Rules:",
+    "- Save or choose a local image file first, then call the endpoint.",
+    "- Use an absolute local file path. Do not call Feishu Open Platform directly.",
+    "- Request body must be UTF-8 encoded JSON bytes; caption supports Unicode text, including Chinese.",
+    "- Only call this endpoint when the user asked for an image or when an image is useful to the answer.",
+    "[/ChatCCC local capability: send image]",
+  ];
+  if (input.cwd) {
+    lines.splice(2, 0, `Current working directory: ${input.cwd}`);
+  }
+  return lines.join("\n");
 }

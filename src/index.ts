@@ -41,7 +41,6 @@ import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   GIT_TIMEOUT_MS,
-  ALLOW_INTERRUPT,
   reloadConfigFromDisk,
   anthropicConfigDisplay,
   LOCAL_RELAY_URL,
@@ -84,17 +83,14 @@ import {
   reportPermissionResults,
   setPlatform,
 } from "./feishu-platform.ts";
-import { buildHelpCard, buildStatusCard, buildProgressCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
-import { updateCardKitCard } from "./cardkit.ts";
+import { buildHelpCard, buildStatusCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
 import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
-import { handleAgentGrantsRequest } from "./agent-grants-rpc.ts";
 import { SimulatedPlatform, SIM_DEFAULT_CHAT_ID } from "./sim-platform.ts";
 import { setMessageHandler } from "./sim-store.ts";
 import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
 import {
   MAX_PROCESSED,
-  chatSessionMap,
   getSessionStatus,
   getAllSessionsStatus,
   initClaudeSession,
@@ -105,7 +101,18 @@ import {
   sessionInfoMap,
   recordSessionRegistry,
   getAdapterForTool,
+  stopSession,
+  loadSessionRegistryForBinding,
 } from "./session.ts";
+import {
+  bindChatToSession,
+  unbindChatFromSession,
+  getChatsForSession,
+  isSessionRunning,
+  activePrompts,
+  rebuildSessionChatsFromRegistry,
+} from "./session-chat-binding.ts";
+import { fixStaleStreamStates } from "./stream-state.ts";
 
 export function cwdDisplayName(cwd: string): string {
   const trimmed = cwd.trim().replace(/[\\/]+$/, "");
@@ -462,6 +469,41 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     const cwd = sessionCwd;
     const initialName = sessionChatName("新会话", cwd);
 
+    // 私聊：不创建群，直接绑定 session 到当前私聊
+    if (chatType === "p2p") {
+      bindChatToSession(sessionId, chatId);
+      sessionInfoMap.set(chatId, {
+        sessionId,
+        turnCount: 0,
+        lastContextTokens: 0,
+        startTime: Date.now(),
+        tool,
+      });
+      await setDefaultCwd(cwd, chatId);
+      await recordSessionRegistry({
+        chatId,
+        sessionId,
+        tool,
+        chatName: initialName,
+        turnCount: 0,
+        startTime: Date.now(),
+        running: false,
+      });
+      await sendCardReply(
+        freshToken, chatId, `${toolLabel} Session Ready`,
+        `这是你的 **${toolLabel}** 私聊会话。\n\n` +
+          `**Session ID:** ${sessionId}\n` +
+          `**工作目录:** \`${cwd}\`\n\n` +
+          `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
+          `发送 **/sessions** 查看所有会话状态。\n` +
+          `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
+        "green"
+      );
+      console.log(`[${ts()}] [NEW] P2P session created: ${sessionId} (${toolLabel})`);
+      logTrace(tid, "DONE", { outcome: "session_ready_p2p", chatId, sessionId, tool });
+      return;
+    }
+
     let newChatId: string;
     try {
       newChatId = await createGroupChat(freshToken, initialName, [openId]);
@@ -515,24 +557,62 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
     return;
   }
 
-  // 私聊没有群 description，无法存储/获取 session ID，跳过群聊检测直接发 help card
-  if (chatType !== "p2p") {
-  try {
-    const token = await getTenantAccessToken();
-    const chatInfo = await getChatInfo(token, chatId);
-    const description = chatInfo.description;
-    const sessionInfo = extractSessionInfo(description);
+  // 检测会话上下文：群聊从 description 获取，私聊从 session-registry 获取
+  let sessionId: string | null = null;
+  let descriptionTool: string | null = null;
+  let toolLabel: string | null = null;
+  let chatInfo: Awaited<ReturnType<typeof getChatInfo>> | undefined;
+  let description: string | undefined;
 
-    if (sessionInfo) {
-      const sessionId = sessionInfo.sessionId;
-      const descriptionTool = sessionInfo.tool;
-      const toolLabel = toolDisplayName(descriptionTool);
-      logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
-      console.log(`[${ts()}] [RESUME] ${toolLabel} session group detected, session=${sessionId} tool=${descriptionTool}`);
+  if (chatType !== "p2p") {
+    try {
+      const token = await getTenantAccessToken();
+      chatInfo = await getChatInfo(token, chatId);
+      description = chatInfo.description;
+      const sessionInfo = extractSessionInfo(description);
+      if (sessionInfo) {
+        sessionId = sessionInfo.sessionId;
+        descriptionTool = sessionInfo.tool;
+        toolLabel = toolDisplayName(descriptionTool);
+      }
+    } catch (err) {
+      logTrace(tid, "BRANCH", { reason: "get_chat_info_failed", error: (err as Error).message });
+      console.log(`[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`);
+    }
+  } else {
+    // 私聊：从 session-registry.json 获取绑定的 session
+    try {
+      const registry = await loadSessionRegistryForBinding();
+      const record = registry[chatId];
+      if (record && record.sessionId && record.tool) {
+        sessionId = record.sessionId;
+        descriptionTool = record.tool;
+        toolLabel = toolDisplayName(descriptionTool);
+        // 确保 sessionInfoMap 中有该私聊的信息
+        if (!sessionInfoMap.has(chatId)) {
+          sessionInfoMap.set(chatId, {
+            sessionId,
+            turnCount: record.turnCount ?? 0,
+            lastContextTokens: record.lastContextTokens ?? 0,
+            startTime: record.startTime ?? Date.now(),
+            tool: descriptionTool,
+          });
+        }
+        bindChatToSession(sessionId, chatId);
+      }
+    } catch (err) {
+      console.log(`[${ts()}] [INFO] Cannot load registry for p2p ${chatId}: ${(err as Error).message}`);
+    }
+  }
+
+  if (sessionId && descriptionTool && toolLabel) {
+    // 有会话上下文 — 路由到命令处理或 prompt
+    logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
+    console.log(`[${ts()}] [RESUME] ${toolLabel} session group detected, session=${sessionId} tool=${descriptionTool}`);
 
       const freshToken = await getTenantAccessToken();
 
-      if (isUntitledSessionChatName(chatInfo.name)) {
+      if (chatType !== "p2p" && isUntitledSessionChatName(chatInfo!.name) && !textLower.startsWith("/")) {
         const MAX_PREFIX = 10;
         const prefix = text.slice(0, MAX_PREFIX);
         const adapter = getAdapterForTool(descriptionTool);
@@ -540,9 +620,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         const sessionCwd = info?.cwd ?? (await getDefaultCwd(chatId));
         const newName = sessionChatName(prefix, sessionCwd);
         try {
-          await updateChatInfo(freshToken, chatId, newName, description);
+          await updateChatInfo(freshToken, chatId, newName, description!);
           console.log(`[${ts()}] [RENAME] First message → group renamed to "${newName}"`);
-          await recordSessionRegistry({ chatId, chatName: newName }).catch(() => {});
+          await recordSessionRegistry({ chatId, sessionId, tool: descriptionTool, chatName: newName }).catch(() => {});
         } catch (err) {
           console.error(`[${ts()}] [RENAME] Failed: ${(err as Error).message}`);
         }
@@ -550,15 +630,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
       if (textLower === "/stop") {
         logTrace(tid, "BRANCH", { cmd: "/stop" });
-        const cEntry = chatSessionMap.get(chatId);
-        if (cEntry) {
-          cEntry.stopped = true;
-          if (cEntry.spinnerTimer) { clearInterval(cEntry.spinnerTimer); cEntry.spinnerTimer = null; }
-          cEntry.close();
-          const prevTs = lastMsgTimestamps.get(chatId);
-          if (prevTs === undefined || cEntry.msgTimestamp > prevTs) {
-            lastMsgTimestamps.set(chatId, cEntry.msgTimestamp);
-          }
+        if (stopSession(sessionId)) {
           console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
           await sendTextReply(freshToken, chatId, "会话已停止。").catch(() => {});
           logTrace(tid, "DONE", { outcome: "stopped" });
@@ -572,8 +644,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       if (textLower === "/status") {
         logTrace(tid, "BRANCH", { cmd: "/status" });
         const status = await getSessionStatus(chatId);
-        const running = chatSessionMap.get(chatId);
-        const isActive = running && !running.stopped;
+        const isActive = isSessionRunning(sessionId);
         const statusText = [
           `**群名:** ${status?.chatName || "—"}`,
           `**Session ID:** \`${status?.sessionId ?? sessionId}\``,
@@ -636,17 +707,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           cwd = await getDefaultCwd(chatId);
         }
 
-        const existing = chatSessionMap.get(chatId);
-        if (existing) {
-          existing.stopped = true;
-          if (existing.spinnerTimer) { clearInterval(existing.spinnerTimer); existing.spinnerTimer = null; }
-          existing.close();
-          const prevTs = lastMsgTimestamps.get(chatId);
-          if (prevTs === undefined || existing.msgTimestamp > prevTs) {
-            lastMsgTimestamps.set(chatId, existing.msgTimestamp);
-          }
-          chatSessionMap.delete(chatId);
-        }
+        // 不 abort 旧 session，只解绑当前 chat
+        // 旧 session 如果正在跑，display loop 继续服务其他群
+        unbindChatFromSession(sessionId, chatId);
 
         let newSessionId: string;
         try {
@@ -657,6 +720,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           await sendCardReply(freshToken, chatId, "Error", `Failed to create new session:\n${(err as Error).message}`, "red");
           return;
         }
+
+        // 绑定新 session
+        bindChatToSession(newSessionId, chatId);
 
         const descPrefix = sessionPrefixForTool(descriptionTool);
         const newName = sessionChatName("新会话", cwd);
@@ -682,6 +748,12 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         });
 
         setChatAvatar(freshToken, chatId, descriptionTool, "new").catch(() => {});
+
+        // 如果新 session 有活跃 prompt，启动 display loop 让本群也能看到
+        if (isSessionRunning(newSessionId)) {
+          const { ensureDisplayLoop } = await import("./session.ts");
+          ensureDisplayLoop(newSessionId);
+        }
 
         await sendCardReply(
           freshToken, chatId, `${toolLabel} Session Reset`,
@@ -720,16 +792,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         }
         const target = ordered[index];
 
-        const existing2 = chatSessionMap.get(chatId);
-        if (existing2) {
-          existing2.stopped = true;
-          if (existing2.spinnerTimer) { clearInterval(existing2.spinnerTimer); existing2.spinnerTimer = null; }
-          existing2.close();
-          const prevTs2 = lastMsgTimestamps.get(chatId);
-          if (prevTs2 === undefined || existing2.msgTimestamp > prevTs2) {
-            lastMsgTimestamps.set(chatId, existing2.msgTimestamp);
-          }
-          chatSessionMap.delete(chatId);
+        // 不 abort 当前 chat 的旧 session，只解绑再重新绑定
+        if (sessionId) {
+          unbindChatFromSession(sessionId, chatId);
         }
 
         const targetAdapter = getAdapterForTool(target.tool);
@@ -740,6 +805,9 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         } catch {
           cwd2 = await getDefaultCwd(chatId);
         }
+
+        // 绑定到新 session
+        bindChatToSession(target.sessionId, chatId);
 
         const descPrefix2 = sessionPrefixForTool(target.tool);
         const newName2 = target.chatName || sessionChatName("新会话", cwd2);
@@ -763,14 +831,21 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
 
         setChatAvatar(freshToken, chatId, target.tool, "new").catch(() => {});
 
+        // 如果新 session 有活跃 prompt，加上 display loop
+        if (isSessionRunning(target.sessionId)) {
+          const { ensureDisplayLoop } = await import("./session.ts");
+          ensureDisplayLoop(target.sessionId);
+        }
+
         const targetToolLabel = toolDisplayName(target.tool);
+        const busyNote = isSessionRunning(target.sessionId) ? "\n\n⚠️ 该会话当前正在生成中，请等待完成后再发送消息。" : "";
         await sendCardReply(
           freshToken, chatId, `${targetToolLabel} Session Switched`,
           `已切换到 **${targetToolLabel}** 会话。\n\n` +
             `**序号:** ${index + 1}\n` +
             `**Session ID:** ${target.sessionId}\n` +
             `**工作目录:** \`${cwd2}\`\n\n` +
-            `直接在这里发消息即可继续对话。`,
+            `直接在这里发消息即可继续对话。${busyNote}`,
           "green"
         );
 
@@ -832,50 +907,16 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         return;
       }
 
-      const existing = chatSessionMap.get(chatId);
-      if (existing && !existing.stopped) {
-        if (msgTimestamp <= existing.msgTimestamp) {
-          logTrace(tid, "DONE", { outcome: "skip_old_message", msgTimestamp, existingTimestamp: existing.msgTimestamp });
-          console.log(`[${ts()}] [SKIP] Older message (${msgTimestamp} <= ${existing.msgTimestamp}), ignoring`);
-          return;
-        }
-
-        if (!ALLOW_INTERRUPT) {
-          logTrace(tid, "BLOCKED", { outcome: "interrupt_disabled", sessionId });
-          console.log(`[${ts()}] [BLOCKED] allowInterrupt=false, ignoring message during generation. Hint sent to user.`);
-          await sendCardReply(
-            freshToken, chatId, "生成中",
-            "AI 正在生成回复中，Agent 不会遗忘当前进度，停止后仍可从断点继续。\n请先点击卡片上的「停止」按钮，再发送新消息。",
-            "yellow"
-          );
-          return;
-        }
-
-        existing.stopped = true;
-        if (existing.spinnerTimer) { clearInterval(existing.spinnerTimer); existing.spinnerTimer = null; }
-        existing.close();
-        const prevTs = lastMsgTimestamps.get(chatId);
-        if (prevTs === undefined || existing.msgTimestamp > prevTs) {
-          lastMsgTimestamps.set(chatId, existing.msgTimestamp);
-        }
-        chatSessionMap.delete(chatId);
-        console.log(`[${ts()}] [INTERRUPT] New message arrived, cancelled previous session ${sessionId}`);
-        logTrace(tid, "INTERRUPT", { oldSessionId: sessionId });
-        if (existing.cardId) {
-          while (existing.cardBusy) {
-            await new Promise(r => setTimeout(r, 20));
-          }
-          const cardId = existing.cardId;
-          const currentContent = existing.accumulatedContent;
-          const interruptedCard = buildProgressCard(
-            currentContent || "新问题已提交，当前回复已中断。",
-            { showStop: false, headerTitle: "已中断", headerTemplate: "yellow" }
-          );
-          let nextSeq = existing.sequence + 1;
-          await updateCardKitCard(freshToken, cardId, interruptedCard, nextSeq).catch((err) => {
-            console.error(`[${ts()}] [INTERRUPT] CardKit update failed: ${(err as Error).message}`);
-          });
-        }
+      // 并发检查：同一 session 只能有一个活跃 prompt
+      if (isSessionRunning(sessionId)) {
+        logTrace(tid, "BLOCKED", { outcome: "session_busy", sessionId });
+        console.log(`[${ts()}] [BLOCKED] Session ${sessionId} is already generating, rejecting message from chat ${chatId}`);
+        await sendCardReply(
+          freshToken, chatId, "生成中",
+          "该会话正在生成回复中，请等待完成后再发送新消息。",
+          "yellow"
+        );
+        return;
       }
 
       try {
@@ -895,13 +936,8 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       }
       return;
     }
-    // 群聊但 description 中没有 session info → 也走 help card
-    logTrace(tid, "BRANCH", { reason: "no_session_info_in_group" });
-  } catch (err) {
-    logTrace(tid, "BRANCH", { reason: "get_chat_info_failed", error: (err as Error).message });
-    console.log(`[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`);
-  }
-  } // end if (chatType !== "p2p")
+
+  // 无会话上下文 → help card
 
   // 私聊或群聊无 session info → 发送 help card
   logTrace(tid, "SEND", { method: "help_card", chatId });
@@ -1151,12 +1187,25 @@ async function startBotServiceCore(): Promise<void> {
     });
   } else {
     resetState();
+    // 启动时修正残留的 running 状态并重建 session→chat 映射
+    fixStaleStreamStates().then(async () => {
+      const registry = await loadSessionRegistryForBinding();
+      rebuildSessionChatsFromRegistry(registry);
+    }).catch((err) => console.error(`[${ts()}] Init bindings failed: ${(err as Error).message}`));
 
     const wsClient = new WSClient({
       appId: APP_ID,
       appSecret: APP_SECRET,
-      onReady: () => { resetState(); },
-      onReconnected: () => { resetState(); },
+      onReady: async () => {
+        resetState();
+        const registry = await loadSessionRegistryForBinding();
+        rebuildSessionChatsFromRegistry(registry);
+      },
+      onReconnected: async () => {
+        resetState();
+        const registry = await loadSessionRegistryForBinding();
+        rebuildSessionChatsFromRegistry(registry);
+      },
     });
 
     console.log(`\n[启动 6/7] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
@@ -1212,7 +1261,7 @@ async function main(): Promise<void> {
     setExtraApiHandler(async (req, res) => {
       const injected = await handleSimInjectMessage(req, res);
       if (injected) return true;
-      return (await handleAgentGrantsRequest(req, res)) || (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+      return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
     });
 
     const simServer = createServer(createUiRouter());
@@ -1270,7 +1319,7 @@ async function main(): Promise<void> {
     });
   });
   setExtraApiHandler(async (req, res) => {
-    return (await handleAgentGrantsRequest(req, res)) || (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+    return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
   });
 
   console.log(`[启动 2/7] 环境与凭证检查`);

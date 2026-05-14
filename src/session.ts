@@ -32,16 +32,18 @@ import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
-import {
-  createAgentImageGrant,
-  revokeAgentImageGrant,
-} from "./agent-image-rpc.ts";
-import {
-  createAgentFileGrant,
-  revokeAgentFileGrant,
-} from "./agent-file-rpc.ts";
-import { setSessionGrants, clearSessionGrants, AGENT_SESSION_GRANTS_PATH } from "./agent-grants-rpc.ts";
 import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
+import { readStreamState, writeStreamState, createEmptyStreamState, fixStaleStreamStates } from "./stream-state.ts";
+import {
+  bindChatToSession,
+  unbindChatFromSession,
+  getChatsForSession,
+  isSessionRunning,
+  activePrompts,
+  displayCards,
+  displayLoops,
+  rebuildSessionChatsFromRegistry,
+} from "./session-chat-binding.ts";
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -54,6 +56,7 @@ export const MAX_PROCESSED = 5000;
 export const lastMsgTimestamps = new Map<string, number>();
 
 export let sessionGen = 0;
+/** @deprecated 使用 activePrompts (session-chat-binding.ts) + displayCards 替代 */
 export const chatSessionMap = new Map<string, {
   gen: number;
   close: () => void;
@@ -68,17 +71,8 @@ export const chatSessionMap = new Map<string, {
 }>();
 
 /**
- * sessionInfoMap 记录每个 chatId 当前会话的"轻量元数据"：
- *
- * 注意此处**不**保存 model / effort：
- *   - Claude 会话：model/effort 由 ChatCCC 启动时的环境变量决定（CLAUDE_MODEL/EFFORT），
- *     getSessionStatus 直接读全局配置即可。
- *   - Cursor 会话：model 是 cursor-agent 自报的运行时值（如 Composer 2 Fast），
- *     由 cursor-adapter 持久化到 cursor-session-meta.json，
- *     getSessionStatus 通过 adapter.getSessionInfo 实时获取；effort 概念不适用。
- *
- * 把 model/effort 从 sessionInfoMap 移除是为了消除"硬塞 CLAUDE_* 给 Cursor"
- * 的不一致 bug——/status、/sessions 必须显示真实工具的真实信息。
+ * sessionInfoMap 记录每个 chatId 当前绑定的会话元数据。
+ * 同一 session 可被多个 chatId 共享；model/effort 不在其中（按 tool 动态解析）。
  */
 export const sessionInfoMap = new Map<string, {
   sessionId: string;
@@ -97,7 +91,12 @@ export function resetState(): void {
   sessionInfoMap.clear();
   processedMessages.clear();
   lastMsgTimestamps.clear();
-  console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions)`);
+  // 清理新的全局状态
+  activePrompts.clear();
+  displayCards.clear();
+  for (const stop of displayLoops.values()) stop();
+  displayLoops.clear();
+  console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions + bindings)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +208,11 @@ async function loadSessionRegistry(): Promise<SessionRegistryData> {
   } catch {
     return {};
   }
+}
+
+/** 供 session-chat-binding.ts 重建映射 */
+export async function loadSessionRegistryForBinding(): Promise<SessionRegistryData> {
+  return loadSessionRegistry();
 }
 
 async function saveSessionRegistry(data: SessionRegistryData): Promise<void> {
@@ -401,43 +405,54 @@ export async function resumeAndPrompt(
   tool: string,
   traceId?: string,
 ): Promise<void> {
+  return runAgentSession(sessionId, userText, token, chatId, msgTimestamp, tool, traceId);
+}
+
+// ---------------------------------------------------------------------------
+// runAgentSession — session 中心的 agent prompt（文件持久化 + display 解耦）
+// ---------------------------------------------------------------------------
+
+export async function runAgentSession(
+  sessionId: string,
+  userText: string,
+  token: string,
+  _chatId: string,
+  msgTimestamp: number,
+  tool: string,
+  traceId?: string,
+): Promise<void> {
   const tid = traceId ?? "";
+
+  // 并发检查：同一 session 只能有一个活跃 prompt
+  if (activePrompts.has(sessionId)) {
+    if (tid) logTrace(tid, "BLOCKED", { outcome: "session_busy", sessionId });
+    console.log(`[${ts()}] [BLOCKED] Session ${sessionId} is already generating`);
+    await sendTextReply(token, _chatId, "该会话正在生成回复中，请等待完成后再发送消息。").catch(() => {});
+    return;
+  }
+
   const adapter = getAdapterForTool(tool);
   const info = await adapter.getSessionInfo(sessionId);
-  const cwd = info?.cwd ?? (await getDefaultCwd(chatId));
-  if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(chatId)?.turnCount ?? 0) + 1 });
+  const cwd = info?.cwd ?? (await getDefaultCwd(_chatId));
+  if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(_chatId)?.turnCount ?? 0) + 1 });
   console.log(
-    `[${ts()}] Resuming ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
+    `[${ts()}] Running ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
   );
-  const imageGrant = createAgentImageGrant({
-    chatId,
-    sessionId,
-    cwd,
-    port: CHATCCC_PORT,
-    traceId: tid || undefined,
-  });
-  const fileGrant = createAgentFileGrant({
-    chatId,
-    sessionId,
-    cwd,
-    port: CHATCCC_PORT,
-    traceId: tid || undefined,
-  });
+
+  // 构建 IM skills prompt（sessionId 方式，无 token）
   const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
   const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
   const skillVariables = {
     cwd,
     session_id: sessionId,
     im_skills_cache_dir: imSkillsCacheDir,
-    session_grants_url: `http://127.0.0.1:${CHATCCC_PORT}${AGENT_SESSION_GRANTS_PATH}`,
-    send_image_url: imageGrant.url,
+    send_image_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-image`,
+    send_file_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-file`,
     send_image_script: join(feishuSkillDir, "send-image.mjs"),
     send_file_script: join(feishuSkillDir, "send-file.mjs"),
     download_video_script: join(feishuSkillDir, "download-video.mjs"),
   };
-  setSessionGrants(sessionId, imageGrant, fileGrant);
   const imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
-  // 渲染子文档到缓存目录，供 Agent 按需读取
   await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
   const userTextWithCapabilities = [
     ...(imSkillsPrompt ? [imSkillsPrompt, ""] : []),
@@ -446,37 +461,43 @@ export async function resumeAndPrompt(
     "[/User message]",
   ].join("\n");
 
+  // 设置活跃 prompt
   const controller = new AbortController();
-
-  chatSessionMap.set(chatId, {
-    gen: ++sessionGen,
-    close: () => controller.abort(),
-    cardId: null,
-    stopped: false,
-    accumulatedContent: "",
-    finalText: "",
-    spinnerTimer: null,
-    msgTimestamp,
-    sequence: 0,
-    cardBusy: false,
-  });
-  const myGen = sessionGen;
-
-  setChatAvatar(token, chatId, tool, "busy").catch(() => {});
-
   const now = Date.now();
-  const existingInfo = sessionInfoMap.get(chatId);
+  activePrompts.set(sessionId, {
+    controller,
+    stopped: false,
+    startTime: now,
+  });
+
+  // 更新 sessionInfoMap（所有绑定群共用）
+  const existingInfo = sessionInfoMap.get(_chatId);
   const nextTurnCount = (existingInfo?.turnCount ?? 0) + 1;
   const nextContextTokens = existingInfo?.lastContextTokens ?? 0;
-  sessionInfoMap.set(chatId, {
-    sessionId,
-    turnCount: nextTurnCount,
-    lastContextTokens: nextContextTokens,
-    startTime: now,
-    tool,
-  });
+  // 对所有绑定的 chatId 更新 sessionInfoMap
+  for (const cid of getChatsForSession(sessionId)) {
+    const ei = sessionInfoMap.get(cid);
+    sessionInfoMap.set(cid, {
+      sessionId,
+      turnCount: nextTurnCount,
+      lastContextTokens: nextContextTokens,
+      startTime: now,
+      tool,
+    });
+  }
+  // 确保触发群也在 map 中
+  if (!sessionInfoMap.has(_chatId)) {
+    sessionInfoMap.set(_chatId, {
+      sessionId,
+      turnCount: nextTurnCount,
+      lastContextTokens: nextContextTokens,
+      startTime: now,
+      tool,
+    });
+  }
+
   await recordSessionRegistry({
-    chatId,
+    chatId: _chatId,
     sessionId,
     tool,
     turnCount: nextTurnCount,
@@ -485,28 +506,16 @@ export async function resumeAndPrompt(
     running: true,
   });
 
-  let cardId: string | null = null;
-  cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch((err) => {
-    if (tid) logTrace(tid, "CARD_CREATE_FAIL", { error: (err as Error).message });
-    console.error(`[${ts()}] [CARDIKT] createCard FAIL: chatId=${chatId} ${(err as Error).message}`);
-    fileLog.flush();
-    sendTextReply(token, chatId, "⚠️ 流式卡片创建失败（可能因限流），将使用文本回复。").catch(() => {});
-    return null;
-  });
-  if (cardId) {
-    const cEntry = chatSessionMap.get(chatId);
-    if (cEntry) { cEntry.cardId = cardId; cEntry.sequence = 1; }
-    const sendOk = await sendCardKitMessage(token, chatId, cardId).catch((err) => {
-      if (tid) logTrace(tid, "CARD_SEND_FAIL", { cardId, error: (err as Error).message });
-      console.error(`[${ts()}] [CARDIKT] sendMessage FAIL: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
-      fileLog.flush();
-      return false;
-    });
-    if (!sendOk) {
-      sendTextReply(token, chatId, "⚠️ 卡片发送失败，将使用文本回复。").catch(() => {});
-      cardId = null;
-      if (cEntry) { cEntry.cardId = null; cEntry.sequence = 0; }
-    }
+  // 初始化 stream-state.json
+  const initialState = createEmptyStreamState(sessionId, cwd, tool, nextTurnCount);
+  await writeStreamState(initialState);
+
+  // 启动 display loop
+  ensureDisplayLoop(sessionId);
+
+  // 设置所有绑定群头像为 busy
+  for (const cid of getChatsForSession(sessionId)) {
+    setChatAvatar(token, cid, tool, "busy").catch(() => {});
   }
 
   const state: AccumulatorState = {
@@ -516,96 +525,21 @@ export async function resumeAndPrompt(
     chunkCount: 0,
   };
 
-  let cardCreatedAt = Date.now();
-  const CARD_ROTATE_MS = 9 * 60 * 1000;
-
-  let dotCount = 0;
-  let lastSentContent = "";
-  let streamErrorNotified = false;
-  let healthLogTicks = 0;
-  // 兜底：setInterval 不 await 异步回调，回调内任何漏接的异常都会变成
-  // unhandledRejection 进而（在 Node 默认策略下）让进程崩。这里用 IIFE + .catch
-  // 整体兜一层，配合内部两个细粒度 try/catch 一起守住。
-  const sendInterval = cardId ? setInterval(() => {
-    void (async () => {
-    const cEntry = chatSessionMap.get(chatId);
-    if (!cEntry || cEntry.stopped || cEntry.cardBusy) return;
-    if (cEntry.cardId !== cardId) return;
-
-    if (Date.now() - cardCreatedAt > CARD_ROTATE_MS) {
-      cEntry.cardBusy = true;
-      try {
-        const oldSeqBase = cEntry.sequence;
-        const oldDisplay = truncateContent(state.accumulatedContent + pickFinalReply(state)) || "处理中...";
-        const oldCard = buildProgressCard(oldDisplay, { showStop: false, headerTitle: "生成中...（上轮）" });
-        await updateCardKitCard(token, cardId!, oldCard, oldSeqBase + 1).catch(() => {});
-        const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
-        if (!newCardId) throw new Error("createCardKitCard returned empty");
-        await sendCardKitMessage(token, chatId, newCardId);
-        cardId = newCardId;
-        cEntry.cardId = newCardId;
-        cEntry.sequence = 1;
-        cardCreatedAt = Date.now();
-        lastSentContent = "";
-        streamErrorNotified = false;
-        console.log(`[${ts()}] [CARDIKT] rotated: old=${oldSeqBase} new=${newCardId} (9min timeout)`);
-      } catch (err) {
-        console.error(`[${ts()}] [CARDIKT] rotation FAIL: ${(err as Error).message}`);
-      } finally {
-        cEntry.cardBusy = false;
-      }
-      return;
-    }
-
-    dotCount = (dotCount % 9) + 1;
-    const content = truncateContent(state.accumulatedContent + pickFinalReply(state) + "\n" + "。".repeat(dotCount));
-    if (content === lastSentContent) return;
-
-    lastSentContent = content;
-    cEntry.cardBusy = true;
-    const mySeq = cEntry.sequence + 1;
-    try {
-      const card = buildProgressCard(content, { showStop: true, headerTitle: "生成中..." });
-      await updateCardKitCard(token, cardId!, card, mySeq);
-      cEntry.sequence = mySeq;
-      cEntry.accumulatedContent = state.accumulatedContent;
-      streamErrorNotified = false;
-      healthLogTicks++;
-      if (healthLogTicks % 10 === 0) {
-        console.log(`[${ts()}] [CARDIKT] update health: seq=${mySeq} content=${state.accumulatedContent.length}chars text=${state.finalText.length}chars cardAge=${Math.round((Date.now() - cardCreatedAt) / 1000)}s`);
-      }
-    } catch (err) {
-      console.error(`[${ts()}] CardKit update error: chatId=${chatId} cardId=${cardId} seq=${mySeq} ${(err as Error).message}`);
-      if (!streamErrorNotified) {
-        streamErrorNotified = true;
-        sendTextReply(token, chatId, "⚠️ 卡片更新失败，结果将以文本形式发送。").catch(() => {});
-      }
-    } finally {
-      cEntry.cardBusy = false;
-    }
-    })().catch((err: unknown) => {
-      const e = err instanceof Error ? err : new Error(String(err));
-      console.error(`[${ts()}] [CARDIKT] spinner tick uncaught: ${e.message}\n${e.stack ?? ""}`);
-      const entry = chatSessionMap.get(chatId);
-      if (entry) entry.cardBusy = false;
-    });
-  }, 3000) : null;
-  if (sendInterval) {
-    const entry = chatSessionMap.get(chatId);
-    if (entry) entry.spinnerTimer = sendInterval;
-  }
+  let lastFileWrite = Date.now();
+  const FILE_WRITE_INTERVAL_MS = 2000;
 
   try {
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal)) {
       for (const block of unifiedMsg.blocks) {
         accumulateBlockContent(block, state);
 
-        // 更新持久化上下文 token 数（compact_boundary 事件）
         if (block.type === "compact_boundary" && block.post_tokens) {
-          const info = sessionInfoMap.get(chatId);
-          if (info) { info.lastContextTokens = block.post_tokens; }
+          for (const cid of getChatsForSession(sessionId)) {
+            const sinfo = sessionInfoMap.get(cid);
+            if (sinfo) sinfo.lastContextTokens = block.post_tokens;
+          }
           await recordSessionRegistry({
-            chatId,
+            chatId: _chatId,
             sessionId,
             tool,
             lastContextTokens: block.post_tokens,
@@ -613,110 +547,234 @@ export async function resumeAndPrompt(
           });
         }
       }
+
+      // 定时写入文件
+      const now2 = Date.now();
+      if (now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
+        lastFileWrite = now2;
+        await writeStreamState({
+          sessionId,
+          status: "running",
+          accumulatedContent: state.accumulatedContent,
+          finalReply: pickFinalReply(state),
+          chunkCount: state.chunkCount,
+          turnCount: nextTurnCount,
+          contextTokens: existingInfo?.lastContextTokens ?? 0,
+          updatedAt: now2,
+          cwd,
+          tool,
+        });
+      }
     }
   } catch (streamErr) {
-    console.error(`[${ts()}] [STREAM] Error in stream loop: ${(streamErr as Error).message}`);
+    console.error(`[${ts()}] [STREAM] Error in stream loop for ${sessionId}: ${(streamErr as Error).message}`);
   } finally {
-    if (sendInterval) clearInterval(sendInterval);
-    revokeAgentImageGrant(imageGrant.token);
-    revokeAgentFileGrant(fileGrant.token);
-  }
+    // 标记 prompt 结束
+    const prompt = activePrompts.get(sessionId);
+    const wasStopped = prompt?.stopped ?? false;
+    activePrompts.delete(sessionId);
 
-  const cEntry = chatSessionMap.get(chatId);
-  if (!cEntry || cEntry.gen !== myGen) return;
-  clearSessionGrants(sessionId);
-  const wasStopped = cEntry.stopped;
-  const prevTs = lastMsgTimestamps.get(chatId);
-  if (prevTs === undefined || cEntry.msgTimestamp > prevTs) {
-    lastMsgTimestamps.set(chatId, cEntry.msgTimestamp);
-  }
-  chatSessionMap.delete(chatId);
-  setChatAvatar(token, chatId, tool, "idle").catch(() => {});
-
-  const finalCardContent = state.accumulatedContent || " ";
-  if (cardId) {
-    while (cEntry.cardBusy) {
-      await new Promise(r => setTimeout(r, 20));
-    }
-    const nextSeq = cEntry.sequence + 1;
-    if (wasStopped) {
-      const stopCard = buildProgressCard(finalCardContent, { showStop: false, headerTitle: "已停止", headerTemplate: "red" });
-      await updateCardKitCard(token, cardId, stopCard, nextSeq).catch((err) => {
-        console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
-        fileLog.flush();
-      });
-    } else {
-      const doneCard = buildProgressCard(finalCardContent, { showStop: false, headerTitle: "完成" });
-      await updateCardKitCard(token, cardId, doneCard, nextSeq).catch((err) => {
-        console.error(`[${ts()}] CardKit finalize: chatId=${chatId} cardId=${cardId} ${(err as Error).message}`);
-        fileLog.flush();
-        sendTextReply(token, chatId, "⚠️ 卡片最终更新失败。").catch(() => {});
-      });
-    }
-  }
-
-  // 在 partial 累加 vs 适配器给出的 final 完整文本之间挑选；
-  // Cursor 流末会发 final 完整快照，若与 partial 累加都直接发会出现两段重复。
-  const finalReply = pickFinalReply(state).trim();
-
-  if (wasStopped) {
-    const finalInfo = sessionInfoMap.get(chatId);
-    await recordSessionRegistry({
-      chatId,
+    // 写最终状态
+    const finalStatus = wasStopped ? "stopped" : "done";
+    const finalReply = pickFinalReply(state).trim();
+    await writeStreamState({
       sessionId,
+      status: finalStatus,
+      accumulatedContent: state.accumulatedContent,
+      finalReply,
+      chunkCount: state.chunkCount,
+      turnCount: nextTurnCount,
+      contextTokens: existingInfo?.lastContextTokens ?? 0,
+      updatedAt: Date.now(),
+      cwd,
       tool,
-      turnCount: finalInfo?.turnCount ?? nextTurnCount,
-      lastContextTokens: finalInfo?.lastContextTokens ?? nextContextTokens,
-      startTime: finalInfo?.startTime ?? now,
-      running: false,
     });
-    if (finalReply) {
-      await sendTextReply(token, chatId, finalReply).catch((err) =>
-        console.error(`[${ts()}] Failed to send partial text: ${(err as Error).message}`)
-      );
-    }
-    console.log(`[${ts()}] Session ${sessionId} stopped by user (content chunks: ${state.chunkCount})`);
-    if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
-    return;
-  }
 
-  if (streamErrorNotified) {
-    if (state.accumulatedContent.trim()) {
-      const shortContent = truncateContent(state.accumulatedContent, 30, 4000);
-      await sendTextReply(token, chatId, `[生成过程]\n${shortContent}`).catch((err) =>
-        console.error(`[${ts()}] Failed to send content fallback: ${(err as Error).message}`)
-      );
-    }
-    if (finalReply) {
-      await sendTextReply(token, chatId, finalReply).catch((err) =>
-        console.error(`[${ts()}] Failed to send text fallback: ${(err as Error).message}`)
-      );
-    }
-  } else {
-    if (finalReply) {
-      await sendTextReply(token, chatId, finalReply).catch((err) =>
-        console.error(`[${ts()}] Failed to send final text: ${(err as Error).message}`)
-      );
-    } else if (!cardId && state.accumulatedContent.trim()) {
-      const shortContent = truncateContent(state.accumulatedContent, 30, 4000);
-      await sendTextReply(token, chatId, `[生成过程]\n${shortContent}`).catch((err) =>
-        console.error(`[${ts()}] Failed to send content text: ${(err as Error).message}`)
-      );
+    // display loop 下一轮会读到最终状态并发送消息
+
+    if (wasStopped) {
+      for (const cid of getChatsForSession(sessionId)) {
+        const finfo = sessionInfoMap.get(cid);
+        await recordSessionRegistry({
+          chatId: cid,
+          sessionId,
+          tool,
+          turnCount: finfo?.turnCount ?? nextTurnCount,
+          lastContextTokens: finfo?.lastContextTokens ?? nextContextTokens,
+          startTime: finfo?.startTime ?? now,
+          running: false,
+        });
+      }
+      console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
+      if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
+    } else {
+      for (const cid of getChatsForSession(sessionId)) {
+        const finfo = sessionInfoMap.get(cid);
+        await recordSessionRegistry({
+          chatId: cid,
+          sessionId,
+          tool,
+          turnCount: finfo?.turnCount ?? nextTurnCount,
+          lastContextTokens: finfo?.lastContextTokens ?? nextContextTokens,
+          startTime: finfo?.startTime ?? now,
+          running: false,
+        });
+        setChatAvatar(token, cid, tool, "idle").catch(() => {});
+      }
+      console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
+      if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
     }
   }
+}
 
-  console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
-  const finalInfo = sessionInfoMap.get(chatId);
-  await recordSessionRegistry({
-    chatId,
-    sessionId,
-    tool,
-    turnCount: finalInfo?.turnCount ?? nextTurnCount,
-    lastContextTokens: finalInfo?.lastContextTokens ?? nextContextTokens,
-    startTime: finalInfo?.startTime ?? now,
-    running: false,
-  });
-  if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
+// ---------------------------------------------------------------------------
+// ensureDisplayLoop — 每个 session 一个 display 循环，读文件更新所有绑定群的卡片
+// ---------------------------------------------------------------------------
+
+const CARD_ROTATE_MS = 9 * 60 * 1000;
+
+export function ensureDisplayLoop(sessionId: string): void {
+  if (displayLoops.has(sessionId)) return;
+
+  let dotCount = 0;
+
+  const interval = setInterval(() => {
+    void (async () => {
+      const state = await readStreamState(sessionId);
+      if (!state) return;
+
+      const chats = getChatsForSession(sessionId);
+      if (chats.length === 0) {
+        // 无绑定群，若 session 已结束则停止 loop
+        if (state.status !== "running") {
+          clearInterval(interval);
+          displayLoops.delete(sessionId);
+        }
+        return;
+      }
+
+      const isTerminal = state.status !== "running";
+
+      for (const chatId of chats) {
+        try {
+          // getTenantAccessToken 有缓存，多次调用开销低
+          const tokenModule = await import("./feishu-platform.ts");
+          const token = await tokenModule.getTenantAccessToken();
+          const display = displayCards.get(chatId);
+
+          if (isTerminal) {
+            // 发送最终结果
+            if (display) {
+              while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
+              const nextSeq = display.sequence + 1;
+              const headerTitle = state.status === "stopped" ? "已停止" : "完成";
+              const headerTemplate = state.status === "stopped" ? "red" : undefined;
+              const cardContent = state.accumulatedContent || " ";
+              const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+              await updateCardKitCard(token, display.cardId, doneCard, nextSeq).catch(() => {});
+              displayCards.delete(chatId);
+            }
+            if (state.finalReply) {
+              await sendTextReply(token, chatId, state.finalReply).catch(() => {});
+            } else if (!display && state.accumulatedContent.trim()) {
+              const short = truncateContent(state.accumulatedContent, 30, 4000);
+              await sendTextReply(token, chatId, `[生成过程]\n${short}`).catch(() => {});
+            }
+            setChatAvatar(token, chatId, state.tool, "idle").catch(() => {});
+          } else {
+            // running: 创建或更新卡片
+            if (!display) {
+              const cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
+              if (cardId) {
+                await sendCardKitMessage(token, chatId, cardId).catch(() => null);
+                displayCards.set(chatId, {
+                  cardId,
+                  sequence: 1,
+                  cardBusy: false,
+                  cardCreatedAt: Date.now(),
+                  lastSentContent: "",
+                  streamErrorNotified: false,
+                });
+              }
+            } else {
+              if (display.cardBusy) continue;
+
+              // 卡片轮转
+              if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
+                display.cardBusy = true;
+                try {
+                  const oldSeqBase = display.sequence;
+                  const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
+                  const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
+                  await updateCardKitCard(token, display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
+                  const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
+                  if (newCardId) {
+                    await sendCardKitMessage(token, chatId, newCardId);
+                    display.cardId = newCardId;
+                    display.sequence = 1;
+                    display.cardCreatedAt = Date.now();
+                    display.lastSentContent = "";
+                    display.streamErrorNotified = false;
+                  }
+                } catch (err) {
+                  console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
+                } finally {
+                  display.cardBusy = false;
+                }
+                continue;
+              }
+
+              dotCount = (dotCount % 9) + 1;
+              const content = truncateContent(state.accumulatedContent + state.finalReply + "\n" + "。".repeat(dotCount));
+              if (content === display.lastSentContent) continue;
+
+              display.lastSentContent = content;
+              display.cardBusy = true;
+              const mySeq = display.sequence + 1;
+              try {
+                const card = buildProgressCard(content, { showStop: true, headerTitle: "生成中..." });
+                await updateCardKitCard(token, display.cardId, card, mySeq);
+                display.sequence = mySeq;
+              } catch (err) {
+                console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
+                if (!display.streamErrorNotified) {
+                  display.streamErrorNotified = true;
+                  sendTextReply(token, chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
+                }
+              } finally {
+                display.cardBusy = false;
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
+        }
+      }
+
+      if (isTerminal) {
+        clearInterval(interval);
+        displayLoops.delete(sessionId);
+      }
+    })().catch((err: unknown) => {
+      const e = err instanceof Error ? err : new Error(String(err));
+      console.error(`[${ts()}] Display loop uncaught for ${sessionId}: ${e.message}`);
+    });
+  }, 3000);
+
+  displayLoops.set(sessionId, () => clearInterval(interval));
+}
+
+// ---------------------------------------------------------------------------
+// stopSession — 停止指定 session 的活跃 prompt
+// ---------------------------------------------------------------------------
+
+export function stopSession(sessionId: string): boolean {
+  const prompt = activePrompts.get(sessionId);
+  if (!prompt) return false;
+  prompt.stopped = true;
+  prompt.controller.abort();
+  console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -783,22 +841,29 @@ export async function getSessionStatus(chatId: string): Promise<SessionStatus | 
   const info = sessionInfoMap.get(chatId);
   if (!info) return null;
 
-  const active = chatSessionMap.get(chatId);
+  const isActive = activePrompts.has(info.sessionId) && !(activePrompts.get(info.sessionId)?.stopped);
   const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
 
   const registry = await loadSessionRegistry();
   const chatName = registry[chatId]?.chatName ?? "";
 
+  // 从 stream-state.json 获取当前累积长度
+  let accumulatedLength = 0;
+  const streamState = await readStreamState(info.sessionId);
+  if (streamState) {
+    accumulatedLength = streamState.accumulatedContent.length + streamState.finalReply.length;
+  }
+
   return {
     sessionId: info.sessionId,
     chatName,
-    running: active !== undefined && !active.stopped,
+    running: isActive,
     turnCount: info.turnCount,
     lastContextTokens: info.lastContextTokens,
     startTime: info.startTime,
     model,
     effort,
-    accumulatedLength: active ? active.accumulatedContent.length + active.finalText.length : 0,
+    accumulatedLength,
   };
 }
 
