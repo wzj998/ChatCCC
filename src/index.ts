@@ -85,6 +85,7 @@ import {
 } from "./cardkit.ts";
 import {
   MAX_PROCESSED,
+  clearAdapterCache,
   loadSessionRegistryForBinding,
   processedMessages,
   rebuildBindingsFromRegistry,
@@ -745,6 +746,7 @@ async function main(): Promise<void> {
   // 会话时自动看到新值）。setup 首次激活走 onActivate 路径，不依赖此 hook。
   setReloadConfigHook(() => {
     reloadConfigFromDisk();
+    clearAdapterCache();
     appendStartupTrace("reload-from-ui: config reloaded", {
       appIdMask: maskAppId(APP_ID),
     });
@@ -769,6 +771,7 @@ async function main(): Promise<void> {
       startSetupMode(CHATCCC_PORT, {
         onActivate: async (httpServer: Server) => {
           reloadConfigFromDisk();
+          clearAdapterCache();
           appendStartupTrace("setup-activate: reloaded config from disk", {
             appIdMaskAfterReload: maskAppId(APP_ID),
           });

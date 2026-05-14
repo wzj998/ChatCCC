@@ -157,7 +157,7 @@ export function createWechatAdapter(
 
       // 第10条且非最终消息：附加 claw 限制提示
       if (count === 10 && !isFinal) {
-        text = text + "\n━━━━━━━━━━━━━━━━━━━━\n后台工作中，由于微信claw机制限制，请唤醒我才能继续发送消息";
+        text = text + "\n━━ 后台工作中，由于微信claw机制限制，请唤醒我才能继续发送消息";
       }
 
       // 超过10条后非最终消息不再发送（claw 限制）

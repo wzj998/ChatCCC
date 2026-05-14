@@ -3,6 +3,7 @@ import {
   applyClaudeApiMode,
   chooseStartPath,
   detectClaudeApiMode,
+  unflattenConfig,
 } from "../web-ui.ts";
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,22 @@ describe("applyClaudeApiMode", () => {
     const out = applyClaudeApiMode(input, "official");
     expect(input).toEqual({ CLAUDE_API_KEY: "sk-x" }); // 原对象未变
     expect(out).not.toBe(input);
+  });
+});
+
+describe("unflattenConfig", () => {
+  it("maps Claude subagent model into claude.subagentModel", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_ANTHROPIC_MODEL: "claude-sonnet-4-6",
+        CHATCCC_ANTHROPIC_SUBAGENT_MODEL: "claude-haiku-4-5-20251001",
+      }),
+    ).toEqual({
+      claude: {
+        model: "claude-sonnet-4-6",
+        subagentModel: "claude-haiku-4-5-20251001",
+      },
+    });
   });
 });
 

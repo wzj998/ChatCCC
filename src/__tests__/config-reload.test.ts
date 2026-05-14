@@ -12,6 +12,7 @@ import {
   CLAUDE_BASE_URL,
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  CLAUDE_SUBAGENT_MODEL,
   CURSOR_AGENT_ARGS,
   CURSOR_AGENT_COMMAND,
   FEISHU_ENABLED,
@@ -45,6 +46,7 @@ const baseAppConfig: AppConfig = {
     enabled: true,
     defaultAgent: true,
     model: "initial-model",
+    subagentModel: "initial-subagent-model",
     effort: "initial-effort",
     apiKey: "sk-initial",
     baseUrl: "https://initial.gw/anthropic",
@@ -78,20 +80,22 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
     expect(APP_SECRET).toBe("NEW_APP_SECRET");
   });
 
-  it("更新 Claude 配置（model / effort / apiKey / baseUrl）", () => {
+  it("更新 Claude 配置（model / subagentModel / effort / apiKey / baseUrl）", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
       claude: {
         enabled: true,
         defaultAgent: true,
-        model: "deepseek-v4-pro",
+        model: "claude-sonnet-4-6",
+        subagentModel: "claude-haiku-4-5-20251001",
         effort: "high",
         apiKey: "sk-newkey",
         baseUrl: "https://gw2.example/anthropic",
       },
     });
 
-    expect(CLAUDE_MODEL).toBe("deepseek-v4-pro");
+    expect(CLAUDE_MODEL).toBe("claude-sonnet-4-6");
+    expect(CLAUDE_SUBAGENT_MODEL).toBe("claude-haiku-4-5-20251001");
     expect(CLAUDE_EFFORT).toBe("high");
     expect(CLAUDE_API_KEY).toBe("sk-newkey");
     expect(CLAUDE_BASE_URL).toBe("https://gw2.example/anthropic");

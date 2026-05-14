@@ -29,4 +29,29 @@ describe("createWechatAdapter", () => {
     expect(text).toContain("/new");
     expect(log).toHaveBeenCalledWith("[WECHAT] sendRawCard degraded to text");
   });
+
+  it("reports unsent non-final messages after the claw limit", async () => {
+    const wire = {
+      push: vi.fn(async (_chatId: string, _text: string) => "msg-id"),
+      sendText: vi.fn(
+        async (_chatId: string, _text: string, _contextToken?: string) =>
+          "msg-id",
+      ),
+    };
+    const log = vi.fn();
+    const platform = createWechatAdapter({
+      getWire: () => wire,
+      log,
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await expect(platform.sendText("wx-chat-limit", `chunk ${i}`)).resolves.toBe(true);
+    }
+
+    await expect(platform.sendText("wx-chat-limit", "chunk 10")).resolves.toBe(false);
+    expect(wire.push).toHaveBeenCalledTimes(10);
+    expect(log).toHaveBeenCalledWith(
+      "[WECHAT] sendText skipped (claw limit): chatId=wx-chat-limit count=11",
+    );
+  });
 });
