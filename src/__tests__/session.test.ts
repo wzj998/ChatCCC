@@ -1,7 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+// mock stream-state 以支持在测试中控制累积长度
+const mockStreamStates = new Map<string, { accumulatedContent: string; finalReply: string }>();
+vi.mock("../stream-state.ts", () => ({
+  readStreamState: async (sid: string) => {
+    const state = mockStreamStates.get(sid);
+    if (!state) return null;
+    return { sessionId: sid, accumulatedContent: state.accumulatedContent, finalReply: state.finalReply, status: "running", chunkCount: 0, turnCount: 0, contextTokens: 0, updatedAt: Date.now(), cwd: "", tool: "claude" };
+  },
+  writeStreamState: async () => {},
+  createEmptyStreamState: (sid: string, cwd: string, tool: string, turnCount: number) => ({
+    sessionId: sid, status: "running" as const, accumulatedContent: "", finalReply: "", chunkCount: 0, turnCount, contextTokens: 0, updatedAt: Date.now(), cwd, tool,
+  }),
+  fixStaleStreamStates: async () => {},
+}));
 import {
   chatSessionMap,
   sessionInfoMap,
@@ -19,6 +34,7 @@ import {
   _setAdapterForToolForTest,
   _clearAdapterCacheForTest,
 } from "../session.ts";
+import { activePrompts } from "../session-chat-binding.ts";
 import type { AccumulatorState } from "../session.ts";
 import type { ToolAdapter, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
 
@@ -28,6 +44,18 @@ function mockActiveSession(chatId: string, overrides: Partial<{
   finalText: string;
   stopped: boolean;
 }> = {}) {
+  const info = sessionInfoMap.get(chatId);
+  const sessionId = info?.sessionId ?? "test-session-id";
+  activePrompts.set(sessionId, {
+    controller: new AbortController(),
+    stopped: overrides.stopped ?? false,
+    startTime: Date.now(),
+  });
+  mockStreamStates.set(sessionId, {
+    accumulatedContent: overrides.accumulatedContent ?? "thinking...",
+    finalReply: overrides.finalText ?? "",
+  });
+  // 保留 chatSessionMap 兼容旧测试
   chatSessionMap.set(chatId, {
     gen: 1,
     close: () => {},
@@ -98,6 +126,8 @@ describe("getSessionStatus", () => {
   beforeEach(() => {
     chatSessionMap.clear();
     sessionInfoMap.clear();
+    activePrompts.clear();
+    mockStreamStates.clear();
   });
 
   afterEach(() => {

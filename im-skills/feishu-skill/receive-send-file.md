@@ -4,25 +4,17 @@
 
 Videos are sent as regular files (not media), which looks cleaner in Feishu.
 
-First, query the current send token:
-```bash
-curl "{{session_grants_url}}?sid={{session_id}}"
-```
-
-Then send with the returned url and token:
-
 ### Script (recommended)
 ```bash
-node "{{send_file_script}}" --url <url_from_query> --token <token_from_query> --path "<absolute file path>" --caption "<optional caption>"
+node "{{send_file_script}}" --url "{{send_file_url}}" --session-id "{{session_id}}" --path "<absolute file path>" --caption "<optional caption>"
 ```
 
 ### Direct HTTP
 ```http
-POST <url_from_query>
-Authorization: Bearer <token_from_query>
+POST {{send_file_url}}
 Content-Type: application/json; charset=utf-8
 
-{"path":"<absolute file path>","caption":"<optional caption>"}
+{"session_id":"{{session_id}}","path":"<absolute file path>","caption":"<optional caption>"}
 ```
 
 ### Rules
