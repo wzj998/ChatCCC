@@ -197,6 +197,10 @@ export class SimStore extends EventEmitter {
     }
   }
 
+  disbandChat(chatId: string): void {
+    this.chats.delete(chatId);
+  }
+
   // ---- 消息管理 ----
 
   /** 任何参与者发送消息 */

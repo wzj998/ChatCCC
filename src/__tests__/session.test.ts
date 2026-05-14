@@ -338,6 +338,7 @@ describe("getAllSessionsStatus", () => {
       running: false, // registry says false, but activePrompts wins
       updatedAt: 1000,
     });
+    mockSessionInfo("chat1", { sessionId: "s1" });
     mockActiveSession("chat1");
 
     const result = await getAllSessionsStatus();

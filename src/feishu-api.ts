@@ -236,6 +236,18 @@ export async function getChatInfo(
   };
 }
 
+export async function disbandChat(
+  token: string,
+  chatId: string
+): Promise<void> {
+  const resp = await fetch(`${BASE_URL}/im/v1/chats/${chatId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = (await resp.json()) as { code: number; msg?: string };
+  if (data.code !== 0) throw new Error(`[${data.code}] ${data.msg}`);
+}
+
 export function extractSessionInfo(description: string): { sessionId: string; tool: string } | null {
   const PREFIXES: Array<{ prefix: string; tool: string }> = [
     { prefix: CLAUDE_SESSION_PREFIX, tool: "claude" },
