@@ -45,6 +45,7 @@ import {
   rebuildSessionChatsFromRegistry,
   recordLastActiveChat,
   getLastActiveChat,
+  pickDisplayChat,
 } from "./session-chat-binding.ts";
 
 // ---------------------------------------------------------------------------
@@ -136,11 +137,14 @@ export function getAdapterForTool(tool: string): ToolAdapter {
 interface SessionToolRecord {
   tool: string;
   createdAt: number;
+  chatName?: string;
 }
+
+let sessionToolsFile = SESSIONS_FILE;
 
 async function loadSessionTools(): Promise<Record<string, SessionToolRecord>> {
   try {
-    const raw = await readFile(SESSIONS_FILE, "utf-8");
+    const raw = await readFile(sessionToolsFile, "utf-8");
     return JSON.parse(raw);
   } catch {
     return {};
@@ -149,17 +153,23 @@ async function loadSessionTools(): Promise<Record<string, SessionToolRecord>> {
 
 async function saveSessionTools(data: Record<string, SessionToolRecord>): Promise<void> {
   try {
-    await mkdir(dirname(SESSIONS_FILE), { recursive: true });
-    await writeFile(SESSIONS_FILE, JSON.stringify(data, null, 2), "utf-8");
+    await mkdir(dirname(sessionToolsFile), { recursive: true });
+    await writeFile(sessionToolsFile, JSON.stringify(data, null, 2), "utf-8");
   } catch (err) {
     console.error(`[${ts()}] Failed to save sessions.json: ${(err as Error).message}`);
     fileLog.flush();
   }
 }
 
-export async function saveSessionTool(sessionId: string, tool: string): Promise<void> {
+export async function saveSessionTool(sessionId: string, tool: string, chatName?: string): Promise<void> {
   const data = await loadSessionTools();
-  data[sessionId] = { tool, createdAt: Date.now() };
+  const existing = data[sessionId];
+  const mergedChatName = chatName ?? existing?.chatName;
+  data[sessionId] = {
+    tool,
+    createdAt: existing?.createdAt ?? Date.now(),
+    ...(mergedChatName ? { chatName: mergedChatName } : {}),
+  };
   await saveSessionTools(data);
 }
 
@@ -167,6 +177,14 @@ export async function getSessionTool(sessionId: string): Promise<string | null> 
   const data = await loadSessionTools();
   const record = data[sessionId];
   return record?.tool ?? null;
+}
+
+export function _setSessionToolsFileForTest(filePath: string): void {
+  sessionToolsFile = filePath;
+}
+
+export function _resetSessionToolsFileForTest(): void {
+  sessionToolsFile = SESSIONS_FILE;
 }
 
 // ---------------------------------------------------------------------------
@@ -658,7 +676,9 @@ export function ensureDisplayLoop(sessionId: string): void {
       const state = await readStreamState(sessionId);
       if (!state) return;
 
-      const chatId = getLastActiveChat(sessionId);
+      // pickDisplayChat 在 lastActiveChat 已与本 session 解绑时返回 undefined，
+      // 避免 /newh 等改嫁场景下旧 session 仍向已离开群推卡片。
+      const chatId = pickDisplayChat(sessionId);
       if (!chatId) {
         // 无活跃群，若 session 已结束则停止 loop
         if (state.status !== "running") {
@@ -901,9 +921,31 @@ export interface SessionsListEntry {
 
 export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
   const registry = await loadSessionRegistry();
-  const entries = Object.values(registry)
+  const registryEntries = Object.values(registry)
     .filter((record) => record.chatId && record.sessionId && record.tool)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((record) => ({ ...record, sortTime: record.updatedAt }));
+  const registeredSessionIds = new Set(registryEntries.map((record) => record.sessionId));
+  const sessionTools = await loadSessionTools();
+  const orphanEntries = Object.entries(sessionTools)
+    .filter(([sessionId, record]) => sessionId && record?.tool && !registeredSessionIds.has(sessionId))
+    .map(([sessionId, record]) => {
+      const createdAt = Number.isFinite(record.createdAt) ? record.createdAt : 0;
+      const active = activePrompts.get(sessionId);
+      return {
+        chatId: "",
+        sessionId,
+        tool: record.tool,
+        chatName: record.chatName ?? "",
+        turnCount: 0,
+        lastContextTokens: 0,
+        startTime: active?.startTime ?? createdAt,
+        updatedAt: createdAt,
+        running: false,
+        sortTime: active?.startTime ?? createdAt,
+      };
+    });
+  const entries = [...registryEntries, ...orphanEntries]
+    .sort((a, b) => b.sortTime - a.sortTime)
     .slice(0, 20);
   // 并行解析每个 session 的 model/effort（cursor 涉及异步 store IO）
   return Promise.all(

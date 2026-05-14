@@ -42,8 +42,11 @@ export function appendStartupTrace(message: string, extra?: Record<string, unkno
 // 进程树：当前进程及其所有祖先（用于避免 taskkill /T 误杀启动链）
 // ---------------------------------------------------------------------------
 
-/** 自当前 PID 沿父链上溯直到系统进程，包含自身 */
+let _cachedAncestorSet: Set<number> | undefined;
+
+/** 自当前 PID 沿父链上溯直到系统进程，包含自身。结果会被缓存，同一进程内多次调用复用。 */
 export function getProcessAncestorPidSet(): Set<number> {
+  if (_cachedAncestorSet) return _cachedAncestorSet;
   const ancestors = new Set<number>();
   let cur: number = process.pid;
   const maxHops = 48;
@@ -74,6 +77,7 @@ export function getProcessAncestorPidSet(): Set<number> {
     if (parent === undefined || Number.isNaN(parent) || parent === cur) break;
     cur = parent;
   }
+  _cachedAncestorSet = ancestors;
   return ancestors;
 }
 
@@ -137,8 +141,9 @@ function collectListeningPidsOnPortWindows(port: number, netstatOut: string): nu
   return out;
 }
 
-/** 在 createRelayServer 之前调用：清掉本机该端口上仍在监听的旧进程（不杀当前进程树祖先） */
-export function freeRelayListenPort(port: number): void {
+/** 在 createRelayServer 之前调用：清掉本机该端口上仍在监听的旧进程（不杀当前进程树祖先）。
+ *  返回实际 kill 的进程数。 */
+export function freeRelayListenPort(port: number): number {
   const ancestors = getProcessAncestorPidSet();
   appendStartupTrace("freeRelayListenPort: begin", {
     port,
@@ -147,9 +152,10 @@ export function freeRelayListenPort(port: number): void {
 
   if (process.platform !== "win32") {
     appendStartupTrace("freeRelayListenPort: skip (non-Windows)", { port });
-    return;
+    return 0;
   }
 
+  let killed = 0;
   try {
     const portOut = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8", windowsHide: true });
     const pids = collectListeningPidsOnPortWindows(port, portOut);
@@ -159,11 +165,32 @@ export function freeRelayListenPort(port: number): void {
       console.log(`[KILL] Free port ${port}: killing LISTENING/UDP holder PID ${pidNum}...`);
       appendStartupTrace("freeRelayListenPort: killByPid", { port, pid: pidNum });
       killByPid(pidNum);
+      killed++;
     }
   } catch {
     appendStartupTrace("freeRelayListenPort: netstat/findstr (no rows or error)", { port });
   }
-  appendStartupTrace("freeRelayListenPort: end", { port });
+  appendStartupTrace("freeRelayListenPort: end", { port, killed });
+  return killed;
+}
+
+/**
+ * 轮询等待端口释放（Windows 下 taskkill 后端口可能不会立即释放）。
+ * 在 freeRelayListenPort kill 了进程后调用，确认端口真正空闲再 listen。
+ */
+export async function waitForPortFree(port: number, timeoutMs = 3000): Promise<void> {
+  if (process.platform !== "win32") return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const out = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8", windowsHide: true });
+      const pids = collectListeningPidsOnPortWindows(port, out);
+      if (pids.length === 0) return;
+    } catch {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
 }
 
 // ---------------------------------------------------------------------------

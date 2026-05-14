@@ -380,6 +380,14 @@ describe("buildSessionsCard", () => {
     expect(afterPrivateChat).not.toContain("(群聊)");
   });
 
+  it("shows chat id missing for sessions without a chat binding", () => {
+    const card = buildSessionsCard([
+      { sessionId: "orphan", chatName: "", chatId: "", active: true, turnCount: 0, elapsedSeconds: 3, model: "Claude Opus 4.7", tool: "claude" },
+    ]);
+    const content: string = JSON.parse(card).elements[0].text.content;
+    expect(content).toContain("chat id缺失");
+  });
+
   it("includes /session help text in non-empty card", () => {
     const card = buildSessionsCard([
       { sessionId: "abc123", chatName: "", chatId: "oc_abc123", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
