@@ -109,6 +109,13 @@ export interface DisplayCardState {
   cardCreatedAt: number;
   lastSentContent: string;
   streamErrorNotified: boolean;
+  /** 卡片轮转时记录的基线，轮转后只展示增量 */
+  rotationAccLen?: number;
+  rotationFinalReply?: string;
+  /** WeChat delta: 上次发送时 accumulatedContent 的长度 */
+  lastSentAccLen?: number;
+  /** WeChat delta: 上次发送时的 finalReply */
+  lastSentFinalReply?: string;
 }
 
 export const displayCards = new Map<string, DisplayCardState>();

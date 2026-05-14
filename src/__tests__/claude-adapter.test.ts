@@ -685,6 +685,14 @@ describe("createClaudeAdapter — env 注入", () => {
     // 确保每个用例从干净的 process.env 起步
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.ANTHROPIC_MODEL;
+    delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+    delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+    delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+    delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
   });
 
   // 用例之间清掉我们写入的 env，避免互相污染
@@ -778,6 +786,51 @@ describe("createClaudeAdapter — env 注入", () => {
     const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
     expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-x");
     expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/anthropic");
+  });
+
+  it("ChatCCC API config is isolated from Claude settings auth/model env", async () => {
+    setupMockCreateSession();
+    process.env.ANTHROPIC_AUTH_TOKEN = "token-from-claude-settings";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-from-claude-settings";
+    process.env.ANTHROPIC_MODEL = "model-from-claude-settings";
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "sonnet-from-claude-settings";
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = "subagent-from-claude-settings";
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = "max";
+    const adapter = createClaudeAdapter({
+      model: "chatccc-model",
+      effort: "high",
+      isEmpty: (v) => v.trim() === "",
+      apiKey: "sk-chatccc",
+      baseUrl: "https://chatccc-gateway.example/anthropic",
+    });
+
+    await adapter.createSession("/cwd");
+
+    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
+    expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-chatccc");
+    expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://chatccc-gateway.example/anthropic");
+    expect(opts.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(opts.env.ANTHROPIC_MODEL).toBeUndefined();
+    expect(opts.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(opts.env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined();
+    expect(opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it("第三方 API 配置时仍然加载 CLAUDE.md（settingSources 始终为 project+local）", async () => {
+    setupMockCreateSession();
+    const adapter = createClaudeAdapter({
+      model: "",
+      effort: "",
+      isEmpty: (v) => v.trim() === "",
+      apiKey: "sk-chatccc",
+      baseUrl: "https://chatccc-gateway.example/anthropic",
+    });
+
+    await adapter.createSession("/cwd");
+
+    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
+    expect(opts.settingSources).toEqual(["project", "local"]);
   });
 
   it("不修改主进程 process.env（永不污染）", async () => {

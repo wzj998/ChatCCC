@@ -115,11 +115,11 @@ export function buildHelpCard(
   const greeting = opts.greeting ?? `你发送了: ${userText}`;
   const defaultToolLabel = opts.defaultToolLabel ?? "Claude Code";
   const lines = [
-    `发送 **/new** 创建新会话（默认 ${defaultToolLabel}）`,
-    "发送 **/new claude** 创建新 Claude 对话",
+    `发送 **/new** 创建新会话（使用 /cd 设置的目录，默认 ${defaultToolLabel}）`,
+    "发送 **/new claude** 创建新 Claude 会话",
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
-    "发送 **/newh** 重置当前会话（保留工作目录，同一群内继续）",
+    "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
   ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },
@@ -212,7 +212,7 @@ export function buildCdCard(
     elements.push({ tag: "hr" });
     elements.push({
       tag: "div",
-      text: { tag: "lark_md", content: "**最近使用过的路径（点击切换）:**" },
+      text: { tag: "lark_md", content: "**最近使用过的路径:**" },
     });
     elements.push({
       tag: "action",

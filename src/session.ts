@@ -20,12 +20,6 @@ import {
   ts,
 } from "./config.ts";
 import { buildProgressCard, getToolEmoji, truncateContent } from "./cards.ts";
-import {
-  createCardKitCard,
-  sendCardKitMessage,
-  updateCardKitCard,
-} from "./cardkit.ts";
-import { sendTextReply, setChatAvatar } from "./feishu-platform.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
@@ -33,6 +27,7 @@ import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
+import type { PlatformAdapter } from "./platform-adapter.ts";
 import { readStreamState, writeStreamState, createEmptyStreamState, fixStaleStreamStates } from "./stream-state.ts";
 import {
   bindChatToSession,
@@ -57,6 +52,36 @@ export const MAX_PROCESSED = 5000;
 
 /** 每个 chatId 上一次已处理消息的时间戳，用于拦截延迟送达的旧消息 */
 export const lastMsgTimestamps = new Map<string, number>();
+
+// ---------------------------------------------------------------------------
+// 平台引用 —— session 模块通过此引用访问 IM 平台操作，
+// 避免 import feishu-platform.ts 造成的耦合。
+// 由 index.ts 在启动时调用 setSessionPlatform 注入。
+// ---------------------------------------------------------------------------
+
+let platformRef: PlatformAdapter | null = null;
+const chatPlatformMap = new Map<string, PlatformAdapter>();
+
+/** 注入当前 IM 平台适配器，供 session 模块使用 */
+export function setSessionPlatform(platform: PlatformAdapter): void {
+  platformRef = platform;
+}
+
+export function recordChatPlatform(chatId: string, platform: PlatformAdapter): void {
+  chatPlatformMap.set(chatId, platform);
+}
+
+export function forgetChatPlatform(chatId: string): void {
+  chatPlatformMap.delete(chatId);
+}
+
+function platformForChat(chatId: string): PlatformAdapter | null {
+  return chatPlatformMap.get(chatId) ?? platformRef;
+}
+
+export function _getPlatformForChatForTest(chatId: string): PlatformAdapter | null {
+  return platformForChat(chatId);
+}
 
 export let sessionGen = 0;
 /** @deprecated 使用 activePrompts (session-chat-binding.ts) + displayCards 替代 */
@@ -117,6 +142,7 @@ export function resetState(): void {
   sessionInfoMap.clear();
   processedMessages.clear();
   lastMsgTimestamps.clear();
+  chatPlatformMap.clear();
   activePrompts.clear();
   displayCards.clear();
   for (const stop of displayLoops.values()) stop();
@@ -582,13 +608,13 @@ export async function initClaudeSession(tool: string, overrideCwd?: string, chat
 export async function resumeAndPrompt(
   sessionId: string,
   userText: string,
-  token: string,
+  platform: PlatformAdapter,
   chatId: string,
   msgTimestamp: number,
   tool: string,
   traceId?: string,
 ): Promise<void> {
-  return runAgentSession(sessionId, userText, token, chatId, msgTimestamp, tool, traceId);
+  return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId);
 }
 
 // ---------------------------------------------------------------------------
@@ -598,7 +624,7 @@ export async function resumeAndPrompt(
 export async function runAgentSession(
   sessionId: string,
   userText: string,
-  token: string,
+  platform: PlatformAdapter,
   _chatId: string,
   msgTimestamp: number,
   tool: string,
@@ -607,47 +633,23 @@ export async function runAgentSession(
   const tid = traceId ?? "";
 
   // 记录用户最后发送消息的群（display loop 只推送到该群）
+  recordChatPlatform(_chatId, platform);
   recordLastActiveChat(sessionId, _chatId);
 
   // 并发检查：同一 session 只能有一个活跃 prompt
   if (activePrompts.has(sessionId)) {
     if (tid) logTrace(tid, "BLOCKED", { outcome: "session_busy", sessionId });
     console.log(`[${ts()}] [BLOCKED] Session ${sessionId} is already generating`);
-    await sendTextReply(token, _chatId, "该会话正在生成回复中，请等待完成后再发送消息。").catch(() => {});
+    const isWechatBusy = platform.kind === "wechat";
+    const busyMsg = isWechatBusy
+      ? "当前正在生成回复中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。"
+      : "该会话正在生成回复中，请等待完成后再发送消息。";
+    await platform.sendText(_chatId, busyMsg).catch(() => {});
     return;
   }
 
-  const adapter = getAdapterForTool(tool);
-  const info = await adapter.getSessionInfo(sessionId);
-  const cwd = info?.cwd ?? (await getDefaultCwd(_chatId));
-  if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(_chatId)?.turnCount ?? 0) + 1 });
-  console.log(
-    `[${ts()}] Running ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
-  );
-
-  // 构建 IM skills prompt（sessionId 方式，无 token）
-  const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
-  const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
-  const skillVariables = {
-    cwd,
-    session_id: sessionId,
-    im_skills_cache_dir: imSkillsCacheDir,
-    send_image_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-image`,
-    send_file_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-file`,
-    send_image_script: join(feishuSkillDir, "send-image.mjs"),
-    send_file_script: join(feishuSkillDir, "send-file.mjs"),
-    download_video_script: join(feishuSkillDir, "download-video.mjs"),
-  };
-  const imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
-  await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
-  const userTextWithCapabilities = [
-    ...(imSkillsPrompt ? [imSkillsPrompt, ""] : []),
-    "[User message]",
-    userText,
-    "[/User message]",
-  ].join("\n");
-
-  // 设置活跃 prompt
+  // 立即标记活跃，确保 /sessions、isSessionRunning 等查询在异步准备阶段就能看到运行状态。
+  // 注意：下面的 try/catch 在准备失败时会清理 activePrompts。
   const controller = new AbortController();
   const now = Date.now();
   activePrompts.set(sessionId, {
@@ -655,6 +657,46 @@ export async function runAgentSession(
     stopped: false,
     startTime: now,
   });
+
+  // 异步准备工作（session info、IM skills prompt 等）
+  let adapter: ToolAdapter;
+  let info: Awaited<ReturnType<ToolAdapter["getSessionInfo"]>>;
+  let cwd: string;
+  try {
+    adapter = getAdapterForTool(tool);
+    info = await adapter.getSessionInfo(sessionId);
+    cwd = info?.cwd ?? (await getDefaultCwd(_chatId));
+    if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(_chatId)?.turnCount ?? 0) + 1 });
+    console.log(
+      `[${ts()}] Running ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
+    );
+
+    // 构建 IM skills prompt（sessionId 方式，无 token）
+    const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
+    const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
+    const skillVariables = {
+      cwd,
+      session_id: sessionId,
+      im_skills_cache_dir: imSkillsCacheDir,
+      send_image_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-image`,
+      send_file_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-file`,
+      send_image_script: join(feishuSkillDir, "send-image.mjs"),
+      send_file_script: join(feishuSkillDir, "send-file.mjs"),
+      download_video_script: join(feishuSkillDir, "download-video.mjs"),
+    };
+    var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
+    await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
+    var userTextWithCapabilities = [
+      ...(imSkillsPrompt ? [imSkillsPrompt, ""] : []),
+      "[User message]",
+      userText,
+      "[/User message]",
+    ].join("\n");
+  } catch (preambleErr) {
+    // 准备工作失败，清理活跃标记，避免"僵尸"活跃状态阻塞后续消息
+    activePrompts.delete(sessionId);
+    throw preambleErr;
+  }
 
   // 更新 sessionInfoMap（所有绑定群共用）
   const existingInfo = sessionInfoMap.get(_chatId);
@@ -702,7 +744,7 @@ export async function runAgentSession(
   // 设置最后活跃群头像为 busy
   const activeCid = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
   if (activeCid) {
-    setChatAvatar(token, activeCid, tool, "busy").catch(() => {});
+    platform.setChatAvatar(activeCid, tool, "busy").catch(() => {});
   }
 
   const state: AccumulatorState = {
@@ -793,7 +835,7 @@ export async function runAgentSession(
         });
       }
       const active1 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
-      if (active1) setChatAvatar(token, active1, tool, "idle").catch(() => {});
+      if (active1) platform.setChatAvatar(active1, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
     } else {
@@ -810,7 +852,7 @@ export async function runAgentSession(
         });
       }
       const active2 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
-      if (active2) setChatAvatar(token, active2, tool, "idle").catch(() => {});
+      if (active2) platform.setChatAvatar(active2, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
     }
@@ -843,10 +885,22 @@ export function ensureDisplayLoop(sessionId: string): void {
           displayLoops.delete(sessionId);
           // 兜底：lastActiveChatMap 可能因进程重启丢失，从 registry 映射恢复头像
           const fallbackChat = getChatsForSession(sessionId)[0];
-          if (fallbackChat) {
-            const t = await import("./feishu-platform.ts").then(m => m.getTenantAccessToken());
-            setChatAvatar(t, fallbackChat, state.tool, "idle").catch(() => {});
+          const fallbackPlatform = fallbackChat ? platformForChat(fallbackChat) : null;
+          if (fallbackChat && fallbackPlatform) {
+            fallbackPlatform.setChatAvatar(fallbackChat, state.tool, "idle").catch(() => {});
           }
+        }
+        return;
+      }
+
+      // 交叉验证：chat 当前绑定的 session 是否仍是本 display loop 的 session。
+      // 若 chat 已被切换到其他 session（如 /new p2p 未解绑旧 session 的历史遗留
+      // 或任何未来新增的切换路径），旧 loop 必须停推，避免向已离开的 chat 推送内容。
+      const currentSessionForChat = sessionInfoMap.get(chatId)?.sessionId;
+      if (currentSessionForChat && currentSessionForChat !== sessionId) {
+        if (state.status !== "running") {
+          clearInterval(interval);
+          displayLoops.delete(sessionId);
         }
         return;
       }
@@ -854,92 +908,203 @@ export function ensureDisplayLoop(sessionId: string): void {
       const isTerminal = state.status !== "running";
 
       try {
-        // getTenantAccessToken 有缓存，多次调用开销低
-        const tokenModule = await import("./feishu-platform.ts");
-        const token = await tokenModule.getTenantAccessToken();
+        const p = platformForChat(chatId);
+        if (!p) return;
         const display = displayCards.get(chatId);
 
+        const isWechat = p.kind === "wechat";
+
         if (isTerminal) {
-          // 发送最终结果
-          if (display) {
-            while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
-            const nextSeq = display.sequence + 1;
-            const headerTitle = state.status === "stopped" ? "已停止" : "完成";
-            const headerTemplate = state.status === "stopped" ? "red" : undefined;
-            const cardContent = state.accumulatedContent || " ";
-            const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-            await updateCardKitCard(token, display.cardId, doneCard, nextSeq).catch(() => {});
-            displayCards.delete(chatId);
+          if (isWechat) {
+            // WeChat: 没有卡片需要终结，用 delta 逻辑发剩余内容，避免重发已推送的部分
+            // 分开追踪 accumulatedContent 和 finalReply，而非拼接后对比
+            const prevAccLen = display?.lastSentAccLen ?? 0;
+            const prevFinalReply = display?.lastSentFinalReply ?? "";
+            const accDelta = state.accumulatedContent.slice(prevAccLen);
+            let replyDelta: string;
+            if (prevFinalReply && state.finalReply.startsWith(prevFinalReply)) {
+              replyDelta = state.finalReply.slice(prevFinalReply.length);
+            } else {
+              replyDelta = state.finalReply;
+            }
+            const remaining = (accDelta + replyDelta).trim();
+            const tail = "━━━ 回答结束 ━━━";
+            const finalMsg = remaining ? remaining + "\n" + tail : tail;
+            await p.sendText(chatId, finalMsg).catch(() => {});
+            if (display) displayCards.delete(chatId);
+          } else {
+            // 发送最终结果（卡片平台）
+            if (display) {
+              while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
+              const nextSeq = display.sequence + 1;
+              const headerTitle = state.status === "stopped" ? "已停止" : "完成";
+              const headerTemplate = state.status === "stopped" ? "red" : undefined;
+              const cardContent = state.accumulatedContent || " ";
+              const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+              await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+              displayCards.delete(chatId);
+            }
+            if (state.finalReply) {
+              await p.sendText(chatId, state.finalReply).catch(() => {});
+            } else if (!display && state.accumulatedContent.trim()) {
+              const short = truncateContent(state.accumulatedContent, 30, 4000);
+              await p.sendText(chatId, `[生成过程]\n${short}`).catch(() => {});
+            }
           }
-          if (state.finalReply) {
-            await sendTextReply(token, chatId, state.finalReply).catch(() => {});
-          } else if (!display && state.accumulatedContent.trim()) {
-            const short = truncateContent(state.accumulatedContent, 30, 4000);
-            await sendTextReply(token, chatId, `[生成过程]\n${short}`).catch(() => {});
-          }
-          setChatAvatar(token, chatId, state.tool, "idle").catch(() => {});
+          p.setChatAvatar(chatId, state.tool, "idle").catch(() => {});
         } else {
-          // running: 创建或更新卡片
-          if (!display) {
-            const cardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
-            if (cardId) {
-              await sendCardKitMessage(token, chatId, cardId).catch(() => null);
+          // running: 创建或更新展示
+          if (isWechat) {
+            // WeChat: 不使用卡片，基于 agent 真实 delta 推送 raw content
+            if (!display) {
               displayCards.set(chatId, {
-                cardId,
-                sequence: 1,
+                cardId: "",
+                sequence: 0,
                 cardBusy: false,
                 cardCreatedAt: Date.now(),
                 lastSentContent: "",
                 streamErrorNotified: false,
               });
             }
-          } else {
-            if (display.cardBusy) return;
+            const d = displayCards.get(chatId);
+            if (!d || d.cardBusy) return;
 
-            // 卡片轮转
-            if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
-              display.cardBusy = true;
-              try {
-                const oldSeqBase = display.sequence;
-                const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
-                const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
-                await updateCardKitCard(token, display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
-                const newCardId = await createCardKitCard(token, buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
-                if (newCardId) {
-                  await sendCardKitMessage(token, chatId, newCardId);
-                  display.cardId = newCardId;
-                  display.sequence = 1;
-                  display.cardCreatedAt = Date.now();
-                  display.lastSentContent = "";
-                  display.streamErrorNotified = false;
+            // 分开追踪 accumulatedContent 和 finalReply 的已发送位置。
+            // 如果只用 rawFull.startsWith(prevRaw)，当新的 tool_use/tool_result
+            // 插入到 accumulatedContent 中间时，rawFull 不再以 prevRaw 开头，
+            // 会回退到发送完整内容 → 产生大量重复。
+            const prevAccLen = d.lastSentAccLen ?? 0;
+            const prevFinalReply = d.lastSentFinalReply ?? "";
+            const accDelta = state.accumulatedContent.slice(prevAccLen);
+            let replyDelta: string;
+            if (prevFinalReply && state.finalReply.startsWith(prevFinalReply)) {
+              replyDelta = state.finalReply.slice(prevFinalReply.length);
+            } else {
+              replyDelta = state.finalReply;
+            }
+            const delta = (accDelta + replyDelta).trim();
+            if (!delta) return;
+
+            d.cardBusy = true;
+            try {
+              const ok = await p.sendText(chatId, delta);
+              if (ok) {
+                d.lastSentAccLen = state.accumulatedContent.length;
+                d.lastSentFinalReply = state.finalReply;
+                d.lastSentContent = delta;
+              } else {
+                // 发送失败（限流等），不更新光标，下次合并重试
+                return;
+              }
+            } catch (err) {
+              console.error(`[${ts()}] WeChat sendText error: chatId=${chatId} ${(err as Error).message}`);
+              if (!d.streamErrorNotified) {
+                d.streamErrorNotified = true;
+                p.sendText(chatId, "文本发送失败，请稍后查看结果。").catch(() => {});
+              }
+            } finally {
+              d.cardBusy = false;
+            }
+          } else {
+            // 非 WeChat: 卡片流程
+            if (!display) {
+              const cardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
+              if (cardId) {
+                await p.cardSend(chatId, cardId).catch(() => null);
+                displayCards.set(chatId, {
+                  cardId,
+                  sequence: 1,
+                  cardBusy: false,
+                  cardCreatedAt: Date.now(),
+                  lastSentContent: "",
+                  streamErrorNotified: false,
+                });
+              }
+            } else {
+              if (display.cardBusy) return;
+
+              // 卡片轮转
+              if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
+                display.cardBusy = true;
+                try {
+                  const oldSeqBase = display.sequence;
+                  const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
+                  const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
+                  await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
+                  const newCardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
+                  if (newCardId) {
+                    await p.cardSend(chatId, newCardId);
+                    display.cardId = newCardId;
+                    display.sequence = 1;
+                    display.cardCreatedAt = Date.now();
+                    // 记录基线：分开追踪 accumulatedContent 长度和 finalReply，
+                    // 避免 tool 内容中间插入时前缀匹配失败 → 回退发完整内容
+                    display.rotationAccLen = state.accumulatedContent.length;
+                    display.rotationFinalReply = state.finalReply;
+                    display.lastSentContent = "";
+                    display.streamErrorNotified = false;
+                  }
+                } catch (err) {
+                  console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
+                } finally {
+                  display.cardBusy = false;
                 }
+                return;
+              }
+
+              // 轮转后：分开追踪 accumulatedContent 和 finalReply 增量，
+              // 避免 tool 内容插入中间时前缀匹配失败
+              if (display.rotationAccLen !== undefined) {
+                const accDelta = state.accumulatedContent.slice(display.rotationAccLen);
+                const rotReply = display.rotationFinalReply ?? "";
+                let replyDelta: string;
+                if (rotReply && state.finalReply.startsWith(rotReply)) {
+                  replyDelta = state.finalReply.slice(rotReply.length);
+                } else {
+                  replyDelta = state.finalReply;
+                }
+                const delta = (accDelta + replyDelta).trim();
+                if (!delta || delta === display.lastSentContent) return;
+                display.lastSentContent = delta;
+                const deltaCard = buildProgressCard(truncateContent(delta) || "处理中...", { showStop: true, headerTitle: "生成中..." });
+                display.cardBusy = true;
+                const mySeq = display.sequence + 1;
+                try {
+                  await p.cardUpdate(display.cardId, deltaCard, mySeq);
+                  display.sequence = mySeq;
+                } catch (err) {
+                  console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
+                  if (!display.streamErrorNotified) {
+                    display.streamErrorNotified = true;
+                    p.sendText(chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
+                  }
+                } finally {
+                  display.cardBusy = false;
+                }
+                return;
+              }
+
+              dotCount = (dotCount % 9) + 1;
+              const fullContent = state.accumulatedContent + state.finalReply + "\n" + "。".repeat(dotCount);
+              if (fullContent === display.lastSentContent) return;
+
+              display.lastSentContent = fullContent;
+              const cardContent = truncateContent(fullContent);
+              display.cardBusy = true;
+              const mySeq = display.sequence + 1;
+              try {
+                const card = buildProgressCard(cardContent, { showStop: true, headerTitle: "生成中..." });
+                await p.cardUpdate(display.cardId, card, mySeq);
+                display.sequence = mySeq;
               } catch (err) {
-                console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
+                console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
+                if (!display.streamErrorNotified) {
+                  display.streamErrorNotified = true;
+                  p.sendText(chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
+                }
               } finally {
                 display.cardBusy = false;
               }
-              return;
-            }
-
-            dotCount = (dotCount % 9) + 1;
-            const content = truncateContent(state.accumulatedContent + state.finalReply + "\n" + "。".repeat(dotCount));
-            if (content === display.lastSentContent) return;
-
-            display.lastSentContent = content;
-            display.cardBusy = true;
-            const mySeq = display.sequence + 1;
-            try {
-              const card = buildProgressCard(content, { showStop: true, headerTitle: "生成中..." });
-              await updateCardKitCard(token, display.cardId, card, mySeq);
-              display.sequence = mySeq;
-            } catch (err) {
-              console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
-              if (!display.streamErrorNotified) {
-                display.streamErrorNotified = true;
-                sendTextReply(token, chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
-              }
-            } finally {
-              display.cardBusy = false;
             }
           }
         }

@@ -94,8 +94,19 @@ export interface FeishuConfig {
   appSecret: string;
 }
 
+export interface PlatformConfig {
+  enabled: boolean;
+  reuseTokenOnStart?: boolean;
+}
+
+export interface PlatformsConfig {
+  feishu: PlatformConfig;
+  ilink: PlatformConfig;
+}
+
 export interface AppConfig {
   feishu: FeishuConfig;
+  platforms: PlatformsConfig;
   port: number;
   gitTimeoutSeconds: number;
   /** 若为 false，AI 生成过程中用户发送消息不会打断，须先点「停止」再发送新消息 */
@@ -287,6 +298,7 @@ function autofillToolPathsAfterSampleCopy(configFile: string): void {
 function loadConfig(): AppConfig {
   const defaults: AppConfig = {
     feishu: { appId: "", appSecret: "" },
+    platforms: { feishu: { enabled: true }, ilink: { enabled: true } },
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
@@ -404,6 +416,21 @@ function loadConfig(): AppConfig {
       appId: feishu.appId ?? "",
       appSecret: feishu.appSecret ?? "",
     },
+    platforms: {
+      feishu: {
+        enabled: typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.feishu === "object"
+          ? Boolean(((parsed.platforms as unknown as Record<string, unknown>).feishu as Record<string, unknown>).enabled ?? true)
+          : true,
+      },
+      ilink: {
+        enabled: typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.ilink === "object"
+          ? Boolean(((parsed.platforms as unknown as Record<string, unknown>).ilink as Record<string, unknown>).enabled ?? true)
+          : true,
+        reuseTokenOnStart: typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.ilink === "object"
+          ? Boolean(((parsed.platforms as unknown as Record<string, unknown>).ilink as Record<string, unknown>).reuseTokenOnStart ?? true)
+          : true,
+      },
+    },
     port: typeof parsed.port === "number" ? parsed.port : 18080,
     gitTimeoutSeconds: typeof parsed.gitTimeoutSeconds === "number" ? parsed.gitTimeoutSeconds : 180,
     allowInterrupt: typeof parsed.allowInterrupt === "boolean" ? parsed.allowInterrupt : false,
@@ -461,6 +488,9 @@ export const USE_LOCAL = process.argv.includes("--local");
 export const USE_SIMULATE = process.argv.includes("--simulate");
 export let APP_ID = config.feishu.appId;
 export let APP_SECRET = config.feishu.appSecret;
+export let FEISHU_ENABLED = config.platforms.feishu.enabled;
+export let ILINK_ENABLED = config.platforms.ilink.enabled;
+export let ILINK_REUSE_TOKEN_ON_START = config.platforms.ilink.reuseTokenOnStart ?? true;
 export const BASE_URL = "https://open.feishu.cn/open-apis";
 export const CHATCCC_PORT = config.port;
 
@@ -539,6 +569,9 @@ export function applyLoadedConfig(next: AppConfig): void {
 
   APP_ID = next.feishu.appId;
   APP_SECRET = next.feishu.appSecret;
+  FEISHU_ENABLED = next.platforms.feishu.enabled;
+  ILINK_ENABLED = next.platforms.ilink.enabled;
+  ILINK_REUSE_TOKEN_ON_START = next.platforms.ilink.reuseTokenOnStart ?? true;
   CLAUDE_MODEL = next.claude.model;
   CLAUDE_EFFORT = next.claude.effort;
   CLAUDE_API_KEY = next.claude.apiKey;

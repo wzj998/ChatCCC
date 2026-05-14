@@ -160,7 +160,7 @@ export function createWechatAdapter(
       // 超过10条后非最终消息不再发送（claw 限制）
       if (count > 10 && !isFinal) {
         log(`[WECHAT] sendText skipped (claw limit): chatId=${chatId} count=${count}`);
-        return true;
+        return false;
       }
 
       try {
