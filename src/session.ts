@@ -393,7 +393,8 @@ export function accumulateBlockContent(
   switch (block.type) {
     case "thinking":
       state.chunkCount++;
-      state.accumulatedContent += block.thinking;
+      // 用引用块标记思考内容（中文无法斜体，引用块有视觉区分）
+      state.accumulatedContent += `\n> ${block.thinking.replace(/\n/g, "\n> ")}\n`;
       break;
     case "tool_use": {
       // 记录 tool_use 信息供后续 tool_result 使用
