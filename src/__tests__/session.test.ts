@@ -662,7 +662,7 @@ describe("accumulateBlockContent", () => {
   it("accumulates thinking block into accumulatedContent", () => {
     const s = freshState();
     accumulateBlockContent({ type: "thinking", thinking: "Let me think..." }, s);
-    expect(s.accumulatedContent).toBe("Let me think...");
+    expect(s.accumulatedContent).toBe("\n> Let me think...\n");
     expect(s.chunkCount).toBe(1);
     expect(s.finalText).toBe("");
   });
@@ -786,7 +786,7 @@ describe("accumulateBlockContent", () => {
     );
     accumulateBlockContent({ type: "text", text: "I found the results." }, s);
 
-    expect(s.accumulatedContent).toContain("Hmm...");
+    expect(s.accumulatedContent).toContain("> Hmm...");
     expect(s.accumulatedContent).toContain("Grep");
     expect(s.accumulatedContent).toContain("found 3 matches");
     expect(s.finalText).toBe("I found the results.");
