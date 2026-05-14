@@ -85,6 +85,29 @@ export const sessionInfoMap = new Map<string, {
   tool: string;
 }>();
 
+/**
+ * 清空所有进程内运行时状态。
+ *
+ * ⚠️ 红线：**绝对不要**在飞书 SDK 的 onReady / onReconnected 回调里调用本函数。
+ * SDK 的 WebSocket 重连只是底层连接抖动，业务层（活跃 prompt、display loop、
+ * stream-state 文件、轮数计数）完全不受影响。在重连里调 resetState 会：
+ *   1) `activePrompts.clear()` 只是删 Map，**不会** abort 后台 generator。
+ *      generator 继续跑、继续写 stream-state.json，但 display loop 已被
+ *      stop，用户群里再也看不到任何更新；最终回复永远不发到群。
+ *   2) 该 sessionId 在内存里"看似空闲"，下一条用户消息进来会**第二次进入**
+ *      `runAgentSession`，同一个 cursor/claude session 同时跑两条 prompt，
+ *      输出互相串扰、token 计费翻倍。
+ *   3) `processedMessages` / `lastMsgTimestamps` 被清，SDK 重连后若服务端
+ *      重推已 ack 的消息，去重失效会让同一 prompt 被处理两次。
+ *   4) `sessionInfoMap` 清空后，群再发消息时 nextTurnCount 从 1 重新计数。
+ *
+ * 合法调用点：
+ *   - 单元测试 setup（清测试间状态）
+ *   - 进程首次启动（此时 Map 都是空的，调用纯粹是为了打 LOG）
+ *
+ * SDK 重连场景请改用 `rebuildBindingsFromRegistry()`，它只重建 sessionId →
+ * chatId 映射，不动任何运行时状态。
+ */
 export function resetState(): void {
   for (const entry of chatSessionMap.values()) {
     if (entry.spinnerTimer) clearInterval(entry.spinnerTimer);
@@ -94,13 +117,15 @@ export function resetState(): void {
   sessionInfoMap.clear();
   processedMessages.clear();
   lastMsgTimestamps.clear();
-  // 清理新的全局状态
   activePrompts.clear();
   displayCards.clear();
   for (const stop of displayLoops.values()) stop();
   displayLoops.clear();
   console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions + bindings)`);
 }
+
+// 注:`rebuildBindingsFromRegistry` 定义在下方与 loadSessionRegistry 同区域,
+// 是 onReady/onReconnected 取代 resetState 的正确入口。
 
 // ---------------------------------------------------------------------------
 // Adapter: 按 tool 创建并缓存
@@ -233,6 +258,26 @@ async function loadSessionRegistry(): Promise<SessionRegistryData> {
 /** 供 session-chat-binding.ts 重建映射 */
 export async function loadSessionRegistryForBinding(): Promise<SessionRegistryData> {
   return loadSessionRegistry();
+}
+
+/**
+ * 从持久化的 registry 重建 sessionId → chatId 映射。
+ *
+ * 设计契约（替代之前 onReady/onReconnected 误用的 resetState）：
+ *   - **不动** activePrompts：后台 prompt 在 SDK 重连后必须继续被识别为活跃,
+ *     否则下条用户消息会绕过 isSessionRunning 检查再开一条 prompt,
+ *     导致同一 sessionId 双开 generator
+ *   - **不动** sessionInfoMap：内存里的轮数/contextTokens 比 registry 更新
+ *   - **不动** displayCards / displayLoops：正在跑的 prompt 还需要它们继续推卡片
+ *   - **不动** processedMessages / lastMsgTimestamps：SDK 重连若重推已 ack 消息,
+ *     去重 set 还在才能避免同一 prompt 跑两遍
+ *
+ * 唯一被重建的是 sessionChatsMap（通过调用 rebuildSessionChatsFromRegistry）——
+ * 该 Map 是从 registry 派生的纯只读映射,重建是幂等且廉价的。
+ */
+export async function rebuildBindingsFromRegistry(): Promise<void> {
+  const registry = await loadSessionRegistry();
+  rebuildSessionChatsFromRegistry(registry);
 }
 
 async function saveSessionRegistry(data: SessionRegistryData): Promise<void> {
@@ -377,6 +422,118 @@ export function accumulateBlockContent(
       break;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// switchChatBinding — /newh、/session N 共用的事务式"切换 chat 绑定"
+// ---------------------------------------------------------------------------
+//
+// 设计契约（解决三类历史 bug）：
+//
+//   1. 私聊不能调 updateChatInfo（飞书 API 在 p2p chatId 上会返回非 0 → throw）。
+//      之前的实现没判断 chatType,私聊 /newh、/session N 走到 updateChatInfo
+//      就直接抛错,留下"内存已切换、registry 没更新"的脏状态。
+//
+//   2. updateChatInfo 群聊也可能因为网络/频控失败。之前的代码顺序是
+//        先 unbind 旧 → bind 新 → 再调 updateChatInfo
+//      API 失败后内存绑定已经切走,但群 description 还是旧 sessionId。
+//      下次用户在群里发消息时,extractSessionInfo 拿到旧 sessionId,而内存绑定
+//      指向新 sessionId,路由完全错乱（参考 /newh 的 corner case 7）。
+//
+//   3. 改成"先 API 后内存"的顺序后,API 失败就完全不切换内存,下次消息按
+//      旧 description 正常路由到旧 session,新创建的 session 留在 sessions.json
+//      里成为可清理的 orphan。
+//
+// 调用方约定：
+//   - newSessionId 必须是已经 createSession 完成的真实 session（本函数不创建）
+//   - oldSessionId 为 null 表示当前 chat 没有任何旧绑定（比如私聊首次绑）
+//   - 私聊跳过 updateChatInfo,直接做内存切换 + registry 持久化
+//   - API 失败时：
+//       * 不动内存绑定 / sessionInfoMap / displayCards
+//       * 返回 { ok: false, error }
+//       * 调用方负责把错误反馈给用户
+// ---------------------------------------------------------------------------
+
+export interface SwitchChatBindingArgs {
+  chatId: string;
+  chatType: string;
+  oldSessionId: string | null;
+  newSessionId: string;
+  tool: string;
+  /** 群名（私聊忽略） */
+  chatName: string;
+  /** 群描述（私聊忽略），通常为 `${sessionPrefixForTool(tool)} ${newSessionId}` */
+  newDescription: string;
+  /** 切换后 sessionInfoMap 的初始 turnCount/lastContextTokens（如沿用历史） */
+  initialTurnCount?: number;
+  initialContextTokens?: number;
+  /** 飞书 updateChatInfo 实现，依赖注入便于测试 mock */
+  updateChatInfoFn: (chatId: string, name: string, description: string) => Promise<void>;
+}
+
+export interface SwitchChatBindingResult {
+  ok: boolean;
+  error?: Error;
+}
+
+export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<SwitchChatBindingResult> {
+  const {
+    chatId,
+    chatType,
+    oldSessionId,
+    newSessionId,
+    tool,
+    chatName,
+    newDescription,
+    initialTurnCount = 0,
+    initialContextTokens = 0,
+    updateChatInfoFn,
+  } = args;
+
+  // Step 1: 群聊场景先调用飞书 API（不可逆操作放最前）。
+  // 私聊跳过——p2p chatId 调 updateChatInfo 必然失败。
+  if (chatType !== "p2p") {
+    try {
+      await updateChatInfoFn(chatId, chatName, newDescription);
+    } catch (err) {
+      // API 失败：完全不动内存,调用方负责回报用户。
+      return { ok: false, error: err as Error };
+    }
+  }
+
+  // Step 2: API 成功（或私聊跳过）后,原子地切换内存绑定。
+  // 这一段全是同步 Map 操作,不会失败。
+  if (oldSessionId) {
+    unbindChatFromSession(oldSessionId, chatId);
+    displayCards.delete(chatId);
+  }
+  bindChatToSession(newSessionId, chatId);
+  recordLastActiveChat(newSessionId, chatId);
+
+  const now = Date.now();
+  sessionInfoMap.set(chatId, {
+    sessionId: newSessionId,
+    turnCount: initialTurnCount,
+    lastContextTokens: initialContextTokens,
+    startTime: now,
+    tool,
+  });
+
+  // Step 3: 持久化（registry + sessions.json）。
+  // 这两步即使失败也不影响内存正确性,下次 prompt 会再写一次。
+  await recordSessionRegistry({
+    chatId,
+    sessionId: newSessionId,
+    tool,
+    chatName,
+    turnCount: initialTurnCount,
+    lastContextTokens: initialContextTokens,
+    startTime: now,
+    running: false,
+  });
+  await saveSessionTool(newSessionId, tool, chatName);
+
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
