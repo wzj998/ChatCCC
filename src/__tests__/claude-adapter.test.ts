@@ -788,6 +788,45 @@ describe("createClaudeAdapter — env 注入", () => {
     expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/anthropic");
   });
 
+  it("官方 API 模式下 subagentModel 不注入 env，也不覆盖 Claude 登录环境", async () => {
+    setupMockCreateSession();
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-from-login";
+    const adapter = createClaudeAdapter({
+      model: "claude-sonnet-4-6",
+      subagentModel: "claude-haiku-4-5-20251001",
+      effort: "",
+      isEmpty: (v) => v.trim() === "",
+      apiKey: "",
+      baseUrl: "",
+    });
+
+    await adapter.createSession("/cwd");
+
+    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
+    expect(opts).not.toHaveProperty("env");
+  });
+
+  it("第三方 API 模式下 subagentModel 通过 CLAUDE_CODE_SUBAGENT_MODEL 覆盖 Haiku", async () => {
+    setupMockCreateSession();
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-from-login";
+    const adapter = createClaudeAdapter({
+      model: "claude-sonnet-4-6",
+      subagentModel: "claude-haiku-4-5-20251001",
+      effort: "",
+      isEmpty: (v) => v.trim() === "",
+      apiKey: "sk-thirdparty",
+      baseUrl: "https://gateway.example/anthropic",
+    });
+
+    await adapter.createSession("/cwd");
+
+    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
+    expect(opts.model).toBe("claude-sonnet-4-6");
+    expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-thirdparty");
+    expect(opts.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe("claude-haiku-4-5-20251001");
+    expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
   it("ChatCCC API config is isolated from Claude settings auth/model env", async () => {
     setupMockCreateSession();
     process.env.ANTHROPIC_AUTH_TOKEN = "token-from-claude-settings";

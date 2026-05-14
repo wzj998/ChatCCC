@@ -31,7 +31,7 @@ interface AppConfig {
   platforms?: { feishu?: { enabled?: boolean }; ilink?: { enabled?: boolean } };
   port?: number;
   gitTimeoutSeconds?: number;
-  claude?: { enabled?: boolean; defaultAgent?: boolean; model?: string; effort?: string; apiKey?: string; baseUrl?: string };
+  claude?: { enabled?: boolean; defaultAgent?: boolean; model?: string; subagentModel?: string; effort?: string; apiKey?: string; baseUrl?: string };
   // `command` 是已废弃的旧字段名，保留只读以兼容升级前的 config.json
   cursor?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string };
   codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; effort?: string };
@@ -126,7 +126,11 @@ function readToolPath(tool?: { path?: string; command?: string }): string {
 function loadConfig(): AppConfig {
   if (!existsSync(CONFIG_FILE)) return {};
   try {
-    return JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+    let raw = readFileSync(CONFIG_FILE, "utf8");
+    // 移除可能意外写入的 UTF-8 BOM，避免 JSON.parse 失败导致返回空对象、
+    // UI 显示所有配置为空。
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    return JSON.parse(raw);
   } catch {
     return {};
   }
@@ -330,7 +334,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 }
 
 // Convert flat key-value pairs to nested config structure
-function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown> {
+export function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(flat)) {
     if (key === "CHATCCC_APP_ID") {
@@ -360,6 +364,9 @@ function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown>
     } else if (key === "CHATCCC_ANTHROPIC_MODEL") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_ANTHROPIC_SUBAGENT_MODEL") {
+      result.claude = result.claude || {};
+      (result.claude as Record<string, unknown>).subagentModel = val;
     } else if (key === "CHATCCC_ANTHROPIC_EFFORT") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).effort = val;
@@ -705,6 +712,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <label>模型</label>
               <input type="text" id="field-CHATCCC_ANTHROPIC_MODEL" placeholder="留空表示不向 SDK 传 model">
             </div>
+            <div class="form-group" id="claude-subagent-model-field">
+              <label>Subagent 模型</label>
+              <input type="text" id="field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL" placeholder="留空表示不向 SDK 传 CLAUDE_CODE_SUBAGENT_MODEL">
+            </div>
             <div class="form-group">
               <label>思考深度 (Effort)</label>
               <input type="text" id="field-CHATCCC_ANTHROPIC_EFFORT" placeholder="留空表示不向 SDK 传 effort">
@@ -844,6 +855,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row" id="cfg-row-CLAUDE_API_KEY"><span class="key">API Key</span><span class="val" id="cfg-CLAUDE_API_KEY">-</span></div>
         <div class="config-row" id="cfg-row-CLAUDE_BASE_URL"><span class="key">Base URL</span><span class="val" id="cfg-CLAUDE_BASE_URL">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-ANTHROPIC_MODEL">-</span></div>
+        <div class="config-row" id="cfg-row-ANTHROPIC_SUBAGENT_MODEL"><span class="key">Subagent 模型</span><span class="val" id="cfg-ANTHROPIC_SUBAGENT_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-ANTHROPIC_EFFORT">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-claude" onchange="setDashboardDefaultAgent('claude', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('claude')">编辑</button>
@@ -911,7 +923,7 @@ let state = {
 var step2InputBound = false;
 
 const AGENT_FIELDS = {
-  claude: ['CLAUDE_API_KEY','CLAUDE_BASE_URL','CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_EFFORT'],
+  claude: ['CLAUDE_API_KEY','CLAUDE_BASE_URL','CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_EFFORT']
 };
@@ -925,7 +937,11 @@ var claudeApiMode = 'official';
 // 示例只是引导）；官方模式不列举任何具体值，避免给出过期/不支持的取值产生误导。
 var CLAUDE_MODEL_PLACEHOLDER = {
   official: '留空表示不向 SDK 传 model',
-  thirdparty: 'deepseek-v4-pro'
+  thirdparty: 'claude-sonnet-4-6'
+};
+var CLAUDE_SUBAGENT_MODEL_PLACEHOLDER = {
+  official: '留空表示不向 SDK 传 CLAUDE_CODE_SUBAGENT_MODEL',
+  thirdparty: 'claude-haiku-4-5-20251001'
 };
 var CLAUDE_EFFORT_PLACEHOLDER = {
   official: '留空表示不向 SDK 传 effort',
@@ -943,13 +959,23 @@ function onClaudeApiModeChange(mode) {
   if (editThirdPartyEl) {
     editThirdPartyEl.classList.toggle('hidden', mode !== 'thirdparty');
   }
+  var wizardSubagentField = document.getElementById('claude-subagent-model-field');
+  if (wizardSubagentField) wizardSubagentField.classList.toggle('hidden', mode !== 'thirdparty');
+  document.querySelectorAll('[data-claude-subagent-field]').forEach(function(el){
+    el.classList.toggle('hidden', mode !== 'thirdparty');
+  });
   // 同步 model / effort 输入框的 placeholder（Wizard + Edit Modal 两处都更新）
   var modelPlaceholder = CLAUDE_MODEL_PLACEHOLDER[mode] || CLAUDE_MODEL_PLACEHOLDER.official;
+  var subagentModelPlaceholder = CLAUDE_SUBAGENT_MODEL_PLACEHOLDER[mode] || CLAUDE_SUBAGENT_MODEL_PLACEHOLDER.official;
   var effortPlaceholder = CLAUDE_EFFORT_PLACEHOLDER[mode] || CLAUDE_EFFORT_PLACEHOLDER.official;
   var wizardModelEl = document.getElementById('field-CHATCCC_ANTHROPIC_MODEL');
   if (wizardModelEl) wizardModelEl.placeholder = modelPlaceholder;
   var editModelEl = document.getElementById('edit-CHATCCC_ANTHROPIC_MODEL');
   if (editModelEl) editModelEl.placeholder = modelPlaceholder;
+  var wizardSubagentModelEl = document.getElementById('field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL');
+  if (wizardSubagentModelEl) wizardSubagentModelEl.placeholder = subagentModelPlaceholder;
+  var editSubagentModelEl = document.getElementById('edit-CHATCCC_ANTHROPIC_SUBAGENT_MODEL');
+  if (editSubagentModelEl) editSubagentModelEl.placeholder = subagentModelPlaceholder;
   var wizardEffortEl = document.getElementById('field-CHATCCC_ANTHROPIC_EFFORT');
   if (wizardEffortEl) wizardEffortEl.placeholder = effortPlaceholder;
   var editEffortEl = document.getElementById('edit-CHATCCC_ANTHROPIC_EFFORT');
@@ -1200,7 +1226,7 @@ function isAgentEnabled(node, keys) {
   return false;
 }
 
-var CLAUDE_FALLBACK_KEYS = ['apiKey','baseUrl','model','effort'];
+var CLAUDE_FALLBACK_KEYS = ['apiKey','baseUrl','model','subagentModel','effort'];
 var CURSOR_FALLBACK_KEYS = ['path','command','model'];
 var CODEX_FALLBACK_KEYS = ['path','command','model','effort'];
 
@@ -1210,6 +1236,7 @@ function renderStep2() {
     prefillNested('field-CLAUDE_API_KEY', c.claude.apiKey);
     prefillNested('field-CLAUDE_BASE_URL', c.claude.baseUrl);
     prefillNested('field-CHATCCC_ANTHROPIC_MODEL', c.claude.model);
+    prefillNested('field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL', c.claude.subagentModel);
     prefillNested('field-CHATCCC_ANTHROPIC_EFFORT', c.claude.effort);
   }
   // 按已有 apiKey/baseUrl 判定初始 API 模式，并相应显示/隐藏字段
@@ -1285,6 +1312,7 @@ function collectAllFields() {
   vars.CHATCCC_CODEX_DEFAULT_AGENT = state.defaultAgent === 'codex';
   if (state.agentsEnabled.claude) {
     AGENT_FIELDS.claude.forEach(function(key){
+      if (claudeApiMode !== 'thirdparty' && key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') return;
       var el = document.getElementById('field-' + key);
       if (el && el.value.trim()) vars[key] = el.value.trim();
     });
@@ -1345,6 +1373,7 @@ function renderStep3() {
       if (claudeApiMode === 'thirdparty') {
         lines.push('<div class="config-row"><span class="key">API Key</span><span class="val">' + (vars.CLAUDE_API_KEY ? '***已设置***' : '(未设置)') + '</span></div>');
         if (vars.CLAUDE_BASE_URL) lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + vars.CLAUDE_BASE_URL + '</span></div>');
+        lines.push('<div class="config-row"><span class="key">Subagent 模型</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_SUBAGENT_MODEL || '(留空)') + '</span></div>');
       }
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_EFFORT || '(留空)') + '</span></div>');
@@ -1542,6 +1571,8 @@ function updateDashboardUI() {
   document.getElementById('cfg-CLAUDE_API_KEY').textContent = claudeApiKey ? '***已设置***' : '-';
   document.getElementById('cfg-CLAUDE_BASE_URL').textContent = claudeBaseUrl || '-';
   document.getElementById('cfg-ANTHROPIC_MODEL').textContent = (c.claude && c.claude.model) || '(留空)';
+  document.getElementById('cfg-row-ANTHROPIC_SUBAGENT_MODEL').style.display = isThirdPartyClaude ? '' : 'none';
+  document.getElementById('cfg-ANTHROPIC_SUBAGENT_MODEL').textContent = (c.claude && c.claude.subagentModel) || '(留空)';
   document.getElementById('cfg-ANTHROPIC_EFFORT').textContent = (c.claude && c.claude.effort) || '(留空)';
   document.getElementById('cfg-CURSOR_PATH').textContent = (c.cursor && (c.cursor.path || c.cursor.command)) || '-';
   document.getElementById('cfg-CURSOR_MODEL').textContent = (c.cursor && c.cursor.model) || '(留空)';
@@ -1603,7 +1634,7 @@ function editSection(section) {
   var labelMap = {
     'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
     'CLAUDE_API_KEY': 'API Key', 'CLAUDE_BASE_URL': 'Base URL',
-    'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
+    'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
@@ -1630,6 +1661,7 @@ function editSection(section) {
   }
 
   var thirdPartyOpened = false;
+  var thirdPartyClosed = false;
   fields.forEach(function(key){
     var val = state.config[key] || '';
     // Also check nested config
@@ -1641,6 +1673,7 @@ function editSection(section) {
         if (key === 'CLAUDE_API_KEY') val = state.config.claude.apiKey || '';
         else if (key === 'CLAUDE_BASE_URL') val = state.config.claude.baseUrl || '';
         else if (key === 'CHATCCC_ANTHROPIC_MODEL') val = state.config.claude.model || '';
+        else if (key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') val = state.config.claude.subagentModel || '';
         else if (key === 'CHATCCC_ANTHROPIC_EFFORT') val = state.config.claude.effort || '';
       } else if (section === 'cursor' && state.config.cursor) {
         if (key === 'CHATCCC_CURSOR_PATH') val = state.config.cursor.path || state.config.cursor.command || '';
@@ -1653,18 +1686,28 @@ function editSection(section) {
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
     var isClaudeThirdPartyField = section === 'claude' && (key === 'CLAUDE_API_KEY' || key === 'CLAUDE_BASE_URL');
+    var isClaudeSubagentField = section === 'claude' && key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL';
 
     if (isClaudeThirdPartyField && !thirdPartyOpened) {
       html += '<div id="edit-claude-thirdparty-fields"' + (claudeApiMode === 'thirdparty' ? '' : ' class="hidden"') + '>';
       thirdPartyOpened = true;
     }
 
-    html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
+    // 在第三方字段之后、第一个通用字段之前闭合 wrapper，
+    // 避免 model / subagentModel / effort 被包裹在 hidden div 中。
+    if (thirdPartyOpened && !thirdPartyClosed && !isClaudeThirdPartyField) {
+      html += '</div>';
+      thirdPartyClosed = true;
+    }
+
+    var groupClass = 'form-group' + (isClaudeSubagentField && claudeApiMode !== 'thirdparty' ? ' hidden' : '');
+    var subagentAttr = isClaudeSubagentField ? ' data-claude-subagent-field="1"' : '';
+    html += '<div class="' + groupClass + '"' + subagentAttr + '><label>' + (labelMap[key] || key) + '</label>';
     html += '<input type="' + (isSecret ? 'password' : 'text') + '" id="edit-' + key + '" value="' + String(val).replace(/"/g,'&quot;') + '">';
     html += '</div>';
   });
 
-  if (thirdPartyOpened) html += '</div>';
+  if (thirdPartyOpened && !thirdPartyClosed) html += '</div>';
 
   document.getElementById('edit-modal-fields').innerHTML = html;
   document.getElementById('edit-modal').classList.remove('hidden');
@@ -1688,6 +1731,7 @@ async function saveEdit() {
 
   var vars = {};
   fields.forEach(function(key){
+    if (editSectionType === 'claude' && claudeApiMode !== 'thirdparty' && key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') return;
     var el = document.getElementById('edit-' + key);
     if (el) vars[key] = el.value.trim();
   });

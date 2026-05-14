@@ -6,6 +6,7 @@ import {
   CLAUDE_BASE_URL,
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  CLAUDE_SUBAGENT_MODEL,
   CHATCCC_PORT,
   PROJECT_ROOT,
   SESSIONS_FILE,
@@ -172,6 +173,7 @@ export function getAdapterForTool(tool: string): ToolAdapter {
   } else {
     adapter = createClaudeAdapter({
       model: CLAUDE_MODEL,
+      subagentModel: CLAUDE_SUBAGENT_MODEL,
       effort: CLAUDE_EFFORT,
       isEmpty: isAnthropicConfigEmpty,
       apiKey: CLAUDE_API_KEY,
@@ -606,7 +608,7 @@ function formatToolConfigForLog(tool: string, sessionModel?: string): string {
       : "effort=(由 codex config.toml 决定)";
     return `model=${modelStr}, ${effortStr}`;
   }
-  return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
+  return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
 }
 
 export async function initClaudeSession(tool: string, overrideCwd?: string, chatId?: string): Promise<{ sessionId: string; cwd: string }> {
@@ -1322,6 +1324,10 @@ export function _setAdapterForToolForTest(tool: string, adapter: ToolAdapter): v
   adapterCache.set(tool, adapter);
 }
 
-export function _clearAdapterCacheForTest(): void {
+export function clearAdapterCache(): void {
   adapterCache.clear();
+}
+
+export function _clearAdapterCacheForTest(): void {
+  clearAdapterCache();
 }

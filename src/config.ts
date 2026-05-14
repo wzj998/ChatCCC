@@ -63,6 +63,7 @@ export interface ClaudeConfig {
   /** 是否作为 /new 未指定工具时使用的默认 Agent */
   defaultAgent: boolean;
   model: string;
+  subagentModel: string;
   effort: string;
   apiKey: string;
   baseUrl: string;
@@ -302,7 +303,7 @@ function loadConfig(): AppConfig {
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
-    claude: { enabled: false, defaultAgent: true, model: "", effort: "", apiKey: "", baseUrl: "" },
+    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "" },
     cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
@@ -336,6 +337,9 @@ function loadConfig(): AppConfig {
   let raw: string;
   try {
     raw = readFileSync(CONFIG_FILE, "utf-8");
+    // 移除可能意外写入的 UTF-8 BOM（如通过记事本编辑等场景），
+    // 避免 JSON.parse 因 BOM 失败导致返回空默认值、丢失所有配置。
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   } catch (err) {
     console.error(`[CONFIG] 无法读取 config.json: ${(err as Error).message}`);
     return defaults;
@@ -378,6 +382,7 @@ function loadConfig(): AppConfig {
   const claudeNonEmpty = (): boolean =>
     Boolean(
       (typeof claude.model === "string" && claude.model.trim()) ||
+      (typeof claude.subagentModel === "string" && claude.subagentModel.trim()) ||
       (typeof claude.effort === "string" && claude.effort.trim()) ||
       (typeof claude.apiKey === "string" && claude.apiKey.trim()) ||
       (typeof claude.baseUrl === "string" && claude.baseUrl.trim()),
@@ -438,6 +443,7 @@ function loadConfig(): AppConfig {
       enabled: claudeEnabled,
       defaultAgent: defaultTool === "claude",
       model: normalizeOptionalConfigField(claude.model, { label: "claude.model" }),
+      subagentModel: normalizeOptionalConfigField(claude.subagentModel, { label: "claude.subagentModel" }),
       effort: normalizeOptionalConfigField(claude.effort, { label: "claude.effort" }),
       apiKey: claude.apiKey ?? "",
       baseUrl: claude.baseUrl ?? "",
@@ -498,6 +504,7 @@ export const CHATCCC_PORT = config.port;
 export const LOCAL_RELAY_URL = `ws://127.0.0.1:${CHATCCC_PORT}`;
 
 export let CLAUDE_MODEL = config.claude.model;
+export let CLAUDE_SUBAGENT_MODEL = config.claude.subagentModel;
 export let CLAUDE_EFFORT = config.claude.effort;
 /** Anthropic 兼容网关的 API key（仅经 SDK 子进程 env 传递，从不写入主进程 process.env） */
 export let CLAUDE_API_KEY = config.claude.apiKey;
@@ -573,6 +580,7 @@ export function applyLoadedConfig(next: AppConfig): void {
   ILINK_ENABLED = next.platforms.ilink.enabled;
   ILINK_REUSE_TOKEN_ON_START = next.platforms.ilink.reuseTokenOnStart ?? true;
   CLAUDE_MODEL = next.claude.model;
+  CLAUDE_SUBAGENT_MODEL = next.claude.subagentModel;
   CLAUDE_EFFORT = next.claude.effort;
   CLAUDE_API_KEY = next.claude.apiKey;
   CLAUDE_BASE_URL = next.claude.baseUrl;
@@ -703,6 +711,11 @@ export function reportEnvironmentVariableReadout(): void {
   console.log(`  [默认] [可选] claude.model`);
   console.log(
     `         Claude 模型: ${anthropicConfigDisplay(CLAUDE_MODEL)}（留空时不向 SDK 传 model）`
+  );
+
+  console.log(`  [默认] [可选] claude.subagentModel`);
+  console.log(
+    `         Claude Subagent 模型: ${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}（留空时不向 SDK 传 CLAUDE_CODE_SUBAGENT_MODEL）`
   );
 
   console.log(`  [默认] [可选] claude.effort`);

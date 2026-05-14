@@ -242,6 +242,9 @@ class CodexAdapter implements ToolAdapter {
 
     const proc = spawnCodex(args, cwd, userText);
 
+    const onAbort = () => { proc.kill(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
     try {
       for await (const raw of readJsonLines(proc, signal)) {
         if (signal?.aborted) break;
@@ -261,6 +264,7 @@ class CodexAdapter implements ToolAdapter {
         if (normalized) yield normalized;
       }
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       proc.kill();
     }
   }

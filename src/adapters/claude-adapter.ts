@@ -53,6 +53,7 @@ interface SdkMessageLike {
 
 export interface ClaudeAdapterOptions {
   model: string;
+  subagentModel?: string;
   effort: string;
   /** 判断字段是否为"不传给 SDK"的占位（项目约定：空字符串/全空白） */
   isEmpty: (value: string) => boolean;
@@ -83,14 +84,17 @@ export interface ClaudeAdapterOptions {
 function buildSdkEnv(
   apiKey: string | undefined,
   baseUrl: string | undefined,
+  subagentModel: string | undefined,
 ): Record<string, string | undefined> | undefined {
   const apiKeyTrim = (apiKey ?? "").trim();
   const baseUrlTrim = (baseUrl ?? "").trim();
-  if (!apiKeyTrim && !baseUrlTrim) return undefined;
+  const subagentModelTrim = (subagentModel ?? "").trim();
+  const hasApiOverride = Boolean(apiKeyTrim || baseUrlTrim);
+  if (!hasApiOverride) return undefined;
 
   const env: Record<string, string | undefined> = { ...process.env };
-  // ChatCCC's Claude API config is authoritative when present. Remove Claude
-  // Code/user settings env that can silently override gateway/auth/model choice.
+  // ChatCCC's third-party Claude API config is authoritative when present.
+  // Remove Claude Code/user settings env that can silently override gateway/auth/model choice.
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   delete env.ANTHROPIC_MODEL;
@@ -101,8 +105,12 @@ function buildSdkEnv(
   delete env.CLAUDE_CODE_EFFORT_LEVEL;
 
   if (apiKeyTrim) env.ANTHROPIC_API_KEY = apiKeyTrim;
-  if (baseUrlTrim) env.ANTHROPIC_BASE_URL = baseUrlTrim;
-  else delete env.ANTHROPIC_BASE_URL;
+  if (baseUrlTrim) {
+    env.ANTHROPIC_BASE_URL = baseUrlTrim;
+  } else {
+    delete env.ANTHROPIC_BASE_URL;
+  }
+  if (subagentModelTrim) env.CLAUDE_CODE_SUBAGENT_MODEL = subagentModelTrim;
   return env;
 }
 
@@ -126,6 +134,7 @@ function buildSessionOptions(
   isEmpty: (value: string) => boolean,
   apiKey: string | undefined,
   baseUrl: string | undefined,
+  subagentModel: string | undefined,
 ): Record<string, unknown> {
   const o: Record<string, unknown> = {
     cwd,
@@ -136,7 +145,7 @@ function buildSessionOptions(
   };
   if (!isEmpty(model)) o.model = model;
   if (!isEmpty(effort)) o.effort = effort;
-  const env = buildSdkEnv(apiKey, baseUrl);
+  const env = buildSdkEnv(apiKey, baseUrl, subagentModel);
   if (env) o.env = env;
   return o;
 }
@@ -213,6 +222,7 @@ class ClaudeAdapter implements ToolAdapter {
   readonly sessionDescPrefix = "Claude Code Session:";
   private model: string;
   private effort: string;
+  private subagentModel: string | undefined;
   private isEmpty: (value: string) => boolean;
   private apiKey: string | undefined;
   private baseUrl: string | undefined;
@@ -220,6 +230,7 @@ class ClaudeAdapter implements ToolAdapter {
   constructor(options: ClaudeAdapterOptions) {
     this.model = options.model;
     this.effort = options.effort;
+    this.subagentModel = options.subagentModel;
     this.isEmpty = options.isEmpty;
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl;
@@ -233,6 +244,7 @@ class ClaudeAdapter implements ToolAdapter {
       this.isEmpty,
       this.apiKey,
       this.baseUrl,
+      this.subagentModel,
     );
     const session = unstable_v2_createSession(sessionOpts as any);
 
@@ -277,11 +289,19 @@ class ClaudeAdapter implements ToolAdapter {
       this.isEmpty,
       this.apiKey,
       this.baseUrl,
+      this.subagentModel,
     );
     const session = unstable_v2_resumeSession(
       sessionId,
       sessionOpts as any,
     );
+
+    if (signal?.aborted) {
+      session.close();
+      return;
+    }
+    const onAbort = () => { session.close(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     await session.send(userText);
 
@@ -296,6 +316,7 @@ class ClaudeAdapter implements ToolAdapter {
         if (normalized) yield normalized;
       }
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       session.close();
     }
   }

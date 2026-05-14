@@ -346,6 +346,9 @@ class CursorAdapter implements ToolAdapter {
     const proc = spawnAgent(["--resume", sessionId], cwd, userText);
     this.activeProcs.add(proc);
 
+    const onAbort = () => { proc.kill(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
     try {
       for await (const raw of readJsonLines(proc, signal)) {
         if (signal?.aborted) break;
@@ -367,6 +370,7 @@ class CursorAdapter implements ToolAdapter {
         if (normalized) yield normalized;
       }
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       proc.kill();
       this.activeProcs.delete(proc);
     }
