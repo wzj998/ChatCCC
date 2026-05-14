@@ -860,6 +860,12 @@ export async function sendRestartCard(token: string): Promise<void> {
       return;
     }
 
+    // 微信 chat ID 无法通过飞书 API 发送，跳过
+    if (latestChatId.includes("@im.wechat")) {
+      console.log(`[${ts()}] [RESTART] Latest chat is WeChat (${latestChatId}), skipping Feishu notification`);
+      return;
+    }
+
     console.log(`[${ts()}] [RESTART] Latest active chat: ${latestChatId} (mtime=${new Date(latestTime).toISOString()})`);
 
     const restartCard = buildHelpCard("", { greeting: "Bot 已启动完成，可以继续使用。" });

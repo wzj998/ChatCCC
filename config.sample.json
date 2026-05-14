@@ -3,6 +3,10 @@
     "appId": "",
     "appSecret": ""
   },
+  "platforms": {
+    "feishu": { "enabled": true },
+    "ilink": { "enabled": true, "reuseTokenOnStart": true }
+  },
   "port": 18080,
   "gitTimeoutSeconds": 180,
   "allowInterrupt": false,

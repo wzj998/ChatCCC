@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile, writeFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -20,6 +20,7 @@ const USER_DATA_DIR = join(homedir(), ".chatccc");
 const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
 const PID_FILE = join(USER_DATA_DIR, "state", "runtime.pid");
+const ILINK_AUTH_PATH = join(USER_DATA_DIR, "state", "ilink-auth.json");
 
 // ---------------------------------------------------------------------------
 // Helpers — config.json parsing & generation
@@ -27,6 +28,7 @@ const PID_FILE = join(USER_DATA_DIR, "state", "runtime.pid");
 
 interface AppConfig {
   feishu?: { appId?: string; appSecret?: string };
+  platforms?: { feishu?: { enabled?: boolean }; ilink?: { enabled?: boolean } };
   port?: number;
   gitTimeoutSeconds?: number;
   claude?: { enabled?: boolean; defaultAgent?: boolean; model?: string; effort?: string; apiKey?: string; baseUrl?: string };
@@ -260,10 +262,14 @@ function readRequestBody(req: IncomingMessage): Promise<string> {
 
 async function handleApiCheck(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const hasConfig = existsSync(CONFIG_FILE);
-  const hasCreds = hasConfig && (() => {
+  let hasCreds = false;
+  if (hasConfig) {
     const c = loadConfig();
-    return Boolean(c.feishu?.appId?.trim() && c.feishu?.appSecret?.trim());
-  })();
+    const feishuEnabled = c.platforms?.feishu?.enabled !== false; // 默认 true（向后兼容）
+    const ilinkEnabled = c.platforms?.ilink?.enabled !== false;
+    const feishuOk = feishuEnabled && Boolean(c.feishu?.appId?.trim() && c.feishu?.appSecret?.trim());
+    hasCreds = feishuOk || ilinkEnabled;
+  }
   jsonReply(res, 200, { hasConfig, hasCreds, configPath: CONFIG_FILE });
 }
 
@@ -271,7 +277,14 @@ async function handleGetConfig(_req: IncomingMessage, res: ServerResponse): Prom
   const running = isServiceRunning();
   const pid = getServicePid();
   const vars = loadConfig();
-  jsonReply(res, 200, { vars, running, pid });
+  let ilinkAuthExists = false;
+  if (existsSync(ILINK_AUTH_PATH)) {
+    try {
+      const auth = JSON.parse(readFileSync(ILINK_AUTH_PATH, "utf8"));
+      ilinkAuthExists = Boolean(auth.token);
+    } catch { /* ignore parse errors */ }
+  }
+  jsonReply(res, 200, { vars, running, pid, ilinkAuthExists });
 }
 
 async function handlePostConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -326,6 +339,14 @@ function unflattenConfig(flat: Record<string, unknown>): Record<string, unknown>
     } else if (key === "CHATCCC_APP_SECRET") {
       result.feishu = result.feishu || {};
       (result.feishu as Record<string, unknown>).appSecret = val;
+    } else if (key === "CHATCCC_FEISHU_ENABLED") {
+      result.platforms = result.platforms || {};
+      (result.platforms as Record<string, unknown>).feishu = (result.platforms as Record<string, unknown>).feishu || {};
+      ((result.platforms as Record<string, unknown>).feishu as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_ILINK_ENABLED") {
+      result.platforms = result.platforms || {};
+      (result.platforms as Record<string, unknown>).ilink = (result.platforms as Record<string, unknown>).ilink || {};
+      ((result.platforms as Record<string, unknown>).ilink as Record<string, unknown>).enabled = val === true || val === "true";
     } else if (key === "CHATCCC_PORT") {
       result.port = parseInt(val as string, 10) || 18080;
     } else if (key === "CHATCCC_GIT_TIMEOUT_SECONDS") {
@@ -474,6 +495,17 @@ async function handleValidate(req: IncomingMessage, res: ServerResponse): Promis
   jsonReply(res, 200, result);
 }
 
+async function handleForgetIlink(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    if (existsSync(ILINK_AUTH_PATH)) {
+      unlinkSync(ILINK_AUTH_PATH);
+    }
+    jsonReply(res, 200, { ok: true });
+  } catch (err) {
+    jsonReply(res, 500, { ok: false, error: (err as Error).message });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // HTML page (embedded template)
 // ---------------------------------------------------------------------------
@@ -576,20 +608,43 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
     </div>
     <div class="step-label-bar" id="step-label-bar">第 1 步 / 共 3 步</div>
 
-    <!-- Step 1: 飞书应用（首次必填） -->
+    <!-- Step 1: 平台配置 -->
     <div id="step-1" class="card">
-      <h2>飞书应用</h2>
-      <p style="color:#64748b;font-size:14px;margin-bottom:16px">先填写飞书自建应用凭证。从飞书开放平台「凭证与基础信息」复制 App ID 与 App Secret。</p>
+      <h2>平台配置</h2>
+      <p style="color:#64748b;font-size:14px;margin-bottom:16px">选择要启用的 IM 平台，至少开启一个。平台关闭时不需填写对应凭证。</p>
 
-      <div class="form-group">
-        <label>CHATCCC_APP_ID *</label>
-        <input type="text" id="field-CHATCCC_APP_ID" placeholder="cli_xxxxxxxxxxxx">
-        <div class="hint">必填</div>
+      <!-- 飞书 -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px" id="platform-block-feishu">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-weight:600;font-size:14px">飞书</div>
+            <div style="font-size:12px;color:#64748b">通过飞书自建应用收发消息、管理群聊</div>
+          </div>
+          <input type="checkbox" class="agent-toggle" id="platform-enable-feishu" checked onchange="onWizardPlatformToggle('feishu', this.checked)">
+        </div>
+        <div id="feishu-cred-fields" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
+          <div class="form-group" style="margin-bottom:10px">
+            <label>CHATCCC_APP_ID *</label>
+            <input type="text" id="field-CHATCCC_APP_ID" placeholder="cli_xxxxxxxxxxxx">
+            <div class="hint">飞书开放平台「凭证与基础信息」→ App ID</div>
+          </div>
+          <div class="form-group">
+            <label>CHATCCC_APP_SECRET *</label>
+            <input type="password" id="field-CHATCCC_APP_SECRET" placeholder="...">
+            <div class="hint">飞书开放平台「凭证与基础信息」→ App Secret</div>
+          </div>
+        </div>
       </div>
-      <div class="form-group">
-        <label>CHATCCC_APP_SECRET *</label>
-        <input type="password" id="field-CHATCCC_APP_SECRET" placeholder="...">
-        <div class="hint">必填</div>
+
+      <!-- 微信 iLink -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px" id="platform-block-ilink">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-weight:600;font-size:14px">微信 iLink</div>
+            <div style="font-size:12px;color:#64748b">启动后扫码登录，通过微信收发消息（仅支持私聊）</div>
+          </div>
+          <input type="checkbox" class="agent-toggle" id="platform-enable-ilink" checked onchange="onWizardPlatformToggle('ilink', this.checked)">
+        </div>
       </div>
 
       <div class="btn-group" style="justify-content:flex-end">
@@ -750,11 +805,35 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
     </div>
 
     <details class="card config-section">
-      <summary>飞书应用</summary>
+      <summary>飞书</summary>
       <div class="section-detail">
+        <div class="config-row">
+          <span class="key">状态</span>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" class="agent-toggle" id="dash-platform-feishu" onchange="onPlatformToggle('feishu', this.checked)">
+            <span id="dash-platform-feishu-label">已启用</span>
+          </label>
+        </div>
         <div class="config-row"><span class="key">App ID</span><span class="val" id="cfg-APP_ID">-</span></div>
         <div class="config-row"><span class="key">App Secret</span><span class="val" id="cfg-APP_SECRET">-</span></div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('feishu')">编辑</button>
+      </div>
+    </details>
+
+    <details class="card config-section">
+      <summary>微信 iLink</summary>
+      <div class="section-detail">
+        <div class="config-row">
+          <span class="key">状态</span>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" class="agent-toggle" id="dash-platform-ilink" onchange="onPlatformToggle('ilink', this.checked)">
+            <span id="dash-platform-ilink-label">未启用</span>
+          </label>
+        </div>
+        <div id="ilink-forget-row" style="margin-top:6px;display:none">
+          <button class="btn btn-outline" style="font-size:12px" onclick="forgetIlink()">忘记扫码</button>
+          <span style="font-size:11px;color:#94a3b8;margin-left:8px">清除登录状态，重启后重新扫码</span>
+        </div>
       </div>
     </details>
 
@@ -823,7 +902,9 @@ let state = {
   wizardStep: 1,
   config: {},
   running: false,
-  pid: null
+  pid: null,
+  // 平台开关；默认全开，renderStep1() 会按已存在 config 回填
+  platformsEnabled: { feishu: true, ilink: true }
 };
 
 // Step 2 输入事件是否已绑（避免每次 goStep(2) 重复绑定）
@@ -877,7 +958,44 @@ function onClaudeApiModeChange(mode) {
   updateStep2NextBtn();
 }
 
-/** 切换某个 Agent 的启用状态：联动卡片高亮 + fieldset 禁用 + 下一步按钮校验 */
+function onWizardPlatformToggle(platform, enabled) {
+  state.platformsEnabled[platform] = enabled;
+  // 飞书凭证字段跟随开关显示/隐藏
+  if (platform === 'feishu') {
+    var credFields = document.getElementById('feishu-cred-fields');
+    if (credFields) credFields.style.display = enabled ? '' : 'none';
+  }
+}
+async function onPlatformToggle(platform, enabled) {
+  var vars = {};
+  if (platform === 'feishu') vars.CHATCCC_FEISHU_ENABLED = enabled;
+  else vars.CHATCCC_ILINK_ENABLED = enabled;
+  var result = await api('/api/config', 'POST', { vars: vars, claudeApiMode: detectClaudeApiModeFromConfig(state.config && state.config.claude) });
+  if (result.ok) {
+    state.config.platforms = state.config.platforms || {};
+    state.config.platforms[platform] = state.config.platforms[platform] || {};
+    state.config.platforms[platform].enabled = enabled;
+    var label = document.getElementById('dash-platform-' + platform + '-label');
+    if (label) label.textContent = enabled ? '已启用' : '未启用';
+    toast((platform === 'feishu' ? '飞书' : '微信 iLink') + (enabled ? ' 已启用' : ' 已禁用') + '。需重启服务生效。');
+  } else {
+    toast('保存失败: ' + (result.error || '未知错误'), 'error');
+    // 还原 toggle
+    var toggle = document.getElementById('dash-platform-' + platform);
+    if (toggle) toggle.checked = !enabled;
+  }
+}
+async function forgetIlink() {
+  if (!confirm('清除微信登录状态后，重启服务将需要重新扫码。确定吗？')) return;
+  var r = await api('/api/ilink/forget', 'POST');
+  if (r && r.ok) {
+    toast('已清除微信登录状态。重启后将需要重新扫码。');
+    var row = document.getElementById('ilink-forget-row');
+    if (row) row.style.display = 'none';
+  } else {
+    toast('清除失败：' + ((r && r.error) || '未知错误'), 'error');
+  }
+}
 function onAgentToggle(agent, enabled) {
   state.agentsEnabled[agent] = enabled;
   var card = document.getElementById('agent-card-' + agent);
@@ -1012,10 +1130,16 @@ async function showWizard() {
 }
 
 function goStep1Next() {
-  var appId = (document.getElementById('field-CHATCCC_APP_ID').value || '').trim();
-  var appSecret = (document.getElementById('field-CHATCCC_APP_SECRET').value || '').trim();
-  if (!appId || !appSecret) {
-    toast('请先填写飞书 App ID 和 App Secret', 'error');
+  // 飞书启用时必须填写凭证；飞书未启用时跳过
+  if (state.platformsEnabled.feishu) {
+    var appId = (document.getElementById('field-CHATCCC_APP_ID').value || '').trim();
+    var appSecret = (document.getElementById('field-CHATCCC_APP_SECRET').value || '').trim();
+    if (!appId || !appSecret) {
+      toast('飞书已启用，请先填写 App ID 和 App Secret', 'error');
+      return;
+    }
+  } else if (!state.platformsEnabled.ilink) {
+    toast('请至少启用一个平台（飞书或微信 iLink）', 'error');
     return;
   }
   goStep(2);
@@ -1048,6 +1172,17 @@ function renderStep1() {
   var f = c.feishu || {};
   prefillNested('field-CHATCCC_APP_ID', f.appId);
   prefillNested('field-CHATCCC_APP_SECRET', f.appSecret);
+  // 平台开关：按已有 config 回填，缺省飞书和微信都开启
+  var feishuEnabled = c.platforms && c.platforms.feishu ? c.platforms.feishu.enabled !== false : true;
+  var ilinkEnabled = c.platforms && c.platforms.ilink ? c.platforms.ilink.enabled !== false : true;
+  state.platformsEnabled = { feishu: feishuEnabled, ilink: ilinkEnabled };
+  var feToggle = document.getElementById('platform-enable-feishu');
+  if (feToggle) feToggle.checked = feishuEnabled;
+  // 飞书凭证字段初始显隐
+  var credFields = document.getElementById('feishu-cred-fields');
+  if (credFields) credFields.style.display = feishuEnabled ? '' : 'none';
+  var ilToggle = document.getElementById('platform-enable-ilink');
+  if (ilToggle) ilToggle.checked = ilinkEnabled;
 }
 
 /**
@@ -1137,6 +1272,8 @@ function collectAllFields() {
     var el = document.getElementById('field-' + key);
     if (el && el.value.trim()) vars[key] = el.value.trim();
   });
+  vars.CHATCCC_FEISHU_ENABLED = !!state.platformsEnabled.feishu;
+  vars.CHATCCC_ILINK_ENABLED = !!state.platformsEnabled.ilink;
   vars.CHATCCC_CLAUDE_ENABLED = !!state.agentsEnabled.claude;
   vars.CHATCCC_CURSOR_ENABLED = !!state.agentsEnabled.cursor;
   vars.CHATCCC_CODEX_ENABLED = !!state.agentsEnabled.codex;
@@ -1174,9 +1311,20 @@ function collectAllFields() {
 function renderStep3() {
   var vars = collectAllFields();
   var lines = [];
-  lines.push('<h3 style="margin-bottom:8px">飞书应用</h3>');
-  lines.push('<div class="config-row"><span class="key">CHATCCC_APP_ID</span><span class="val">' + (vars.CHATCCC_APP_ID || '<span style="color:#ef4444">未填写</span>') + '</span></div>');
-  lines.push('<div class="config-row"><span class="key">CHATCCC_APP_SECRET</span><span class="val">' + (vars.CHATCCC_APP_SECRET ? '***已设置***' : '<span style="color:#ef4444">未填写</span>') + '</span></div>');
+
+  lines.push('<h3 style="margin-bottom:8px">飞书</h3>');
+  lines.push('<div class="config-row"><span class="key">状态</span><span class="val">' + (state.platformsEnabled.feishu ? '已启用' : '已禁用') + '</span></div>');
+  if (state.platformsEnabled.feishu) {
+    lines.push('<div class="config-row"><span class="key">CHATCCC_APP_ID</span><span class="val">' + (vars.CHATCCC_APP_ID || '<span style="color:#ef4444">未填写</span>') + '</span></div>');
+    lines.push('<div class="config-row"><span class="key">CHATCCC_APP_SECRET</span><span class="val">' + (vars.CHATCCC_APP_SECRET ? '***已设置***' : '<span style="color:#ef4444">未填写</span>') + '</span></div>');
+  }
+
+  lines.push('<h3 style="margin:16px 0 8px">微信 iLink</h3>');
+  lines.push('<div class="config-row"><span class="key">状态</span><span class="val">' + (state.platformsEnabled.ilink ? '已启用' : '已禁用') + '</span></div>');
+
+  if (!state.platformsEnabled.feishu && !state.platformsEnabled.ilink) {
+    lines.push('<div style="color:#ef4444;margin-top:8px">未启用任何平台</div>');
+  }
 
   lines.push('<h3 style="margin:16px 0 8px">已启用的 AI Agent</h3>');
   var enabledList = [];
@@ -1264,8 +1412,8 @@ async function setDashboardDefaultAgent(agent, enabled) {
 
 async function saveAndStart() {
   var vars = collectAllFields();
-  if (!vars.CHATCCC_APP_ID || !vars.CHATCCC_APP_SECRET) {
-    toast('请先填写飞书 App ID 和 App Secret', 'error');
+  if (state.platformsEnabled.feishu && (!vars.CHATCCC_APP_ID || !vars.CHATCCC_APP_SECRET)) {
+    toast('飞书已启用，请先填写 App ID 和 App Secret', 'error');
     return;
   }
   var ok = await saveConfig(vars);
@@ -1305,6 +1453,7 @@ async function loadDashboard() {
   state.config = configData.vars || {};
   state.running = configData.running;
   state.pid = configData.pid;
+  state.ilinkAuthExists = configData.ilinkAuthExists || false;
 
   updateDashboardUI();
   if (state.running) { pollStatus(); }
@@ -1342,6 +1491,14 @@ function updateDashboardUI() {
 
   // Config summary
   var c = state.config;
+
+  // Platform toggles
+  var feishuEnabled = c.platforms && c.platforms.feishu ? c.platforms.feishu.enabled !== false : true;
+  var fsToggle = document.getElementById('dash-platform-feishu');
+  if (fsToggle) fsToggle.checked = feishuEnabled;
+  var fsLabel = document.getElementById('dash-platform-feishu-label');
+  if (fsLabel) fsLabel.textContent = feishuEnabled ? '已启用' : '已禁用';
+  state.platformsEnabled.feishu = feishuEnabled;
   document.getElementById('cfg-APP_ID').textContent = c.feishu && c.feishu.appId ? c.feishu.appId.slice(0,8) + '...' + c.feishu.appId.slice(-4) : '-';
   document.getElementById('cfg-APP_SECRET').textContent = c.feishu && c.feishu.appSecret ? '***已设置***' : '-';
 
@@ -1351,6 +1508,21 @@ function updateDashboardUI() {
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
   state.agentsEnabled = { claude: claudeOn, cursor: cursorOn, codex: codexOn };
   state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn);
+
+  // 微信 iLink 平台开关：同步复选框和标签
+  var ilinkEnabled = c.platforms && c.platforms.ilink ? c.platforms.ilink.enabled !== false : true;
+  var ilToggle = document.getElementById('dash-platform-ilink');
+  if (ilToggle) ilToggle.checked = ilinkEnabled;
+  var ilLabel = document.getElementById('dash-platform-ilink-label');
+  if (ilLabel) ilLabel.textContent = ilinkEnabled ? '已启用' : '已禁用';
+  state.platformsEnabled.ilink = ilinkEnabled;
+
+  // 微信 iLink "忘记扫码" 按钮：仅在 ilink 已启用且有已保存 token 时显示
+  var ilinkForgetRow = document.getElementById('ilink-forget-row');
+  if (ilinkForgetRow) {
+    ilinkForgetRow.style.display = (ilinkEnabled && state.ilinkAuthExists) ? '' : 'none';
+  }
+
   document.getElementById('dash-claude').style.display = claudeOn ? '' : 'none';
   document.getElementById('dash-cursor').style.display = cursorOn ? '' : 'none';
   document.getElementById('dash-codex').style.display = codexOn ? '' : 'none';
@@ -1424,7 +1596,7 @@ function editSection(section) {
   if (section === 'feishu') fields = FEISHU_FIELDS;
   else fields = AGENT_FIELDS[section] || [];
 
-  var titleMap = { feishu: '飞书应用', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
+  var titleMap = { feishu: '飞书', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
   document.getElementById('edit-modal-title').textContent = '编辑 ' + (titleMap[section] || section);
 
   var html = '';
@@ -1582,6 +1754,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/start" && method === "POST") return handleStartService(req, res);
   if (url === "/api/stop" && method === "POST") return handleStopService(req, res);
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);
+  if (url === "/api/ilink/forget" && method === "POST") return handleForgetIlink(req, res);
 
   // Serve HTML page for all other GET requests
   if (method === "GET") {

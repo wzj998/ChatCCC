@@ -71,6 +71,45 @@ export function createSimAgent(userId: string): SimAgent {
   // 确保用户有至少一个会话（bot 私聊自动创建）
   simStore.createP2pChat(userId);
 
+  function onEvent(event: "message", handler: MessageEventCallback): void;
+  function onEvent(event: "invited_to_group", handler: InvitedToGroupCallback): void;
+  function onEvent(
+    event: "message" | "invited_to_group",
+    handler: MessageEventCallback | InvitedToGroupCallback,
+  ): void {
+    if (event === "message") {
+      const messageHandler = handler as MessageEventCallback;
+      const filteredHandler = (payload: { chatId: string; message: SimMessage }) => {
+        // 只推送给该用户所在群的消息
+        const chat = simStore.getChat(payload.chatId);
+        if (chat && chat.memberIds.includes(userId)) {
+          messageHandler(payload.chatId, payload.message);
+        }
+      };
+      // 保存映射以便 off 能移除
+      (handler as any).__filtered = filteredHandler;
+      simStore.on("message", filteredHandler);
+    } else {
+      const invitedHandler = handler as InvitedToGroupCallback;
+      const filteredHandler = (payload: { chatId: string; userId: string }) => {
+        if (payload.userId === userId) {
+          invitedHandler(payload.chatId, payload.userId);
+        }
+      };
+      (handler as any).__filtered = filteredHandler;
+      simStore.on("member_added", filteredHandler);
+    }
+  }
+
+  function offEvent(event: string, handler: (...args: any[]) => void): void {
+    const filtered = (handler as any).__filtered;
+    if (event === "message" && filtered) {
+      simStore.off("message", filtered);
+    } else if (event === "invited_to_group" && filtered) {
+      simStore.off("member_added", filtered);
+    }
+  }
+
   const agent: SimAgent = {
     userId,
     account,
@@ -101,37 +140,9 @@ export function createSimAgent(userId: string): SimAgent {
       }));
     },
 
-    on(event, handler) {
-      if (event === "message") {
-        const filteredHandler = (payload: { chatId: string; message: SimMessage }) => {
-          // 只推送给该用户所在群的消息
-          const chat = simStore.getChat(payload.chatId);
-          if (chat && chat.memberIds.includes(userId)) {
-            handler(payload.chatId, payload.message);
-          }
-        };
-        // 保存映射以便 off 能移除
-        (handler as any).__filtered = filteredHandler;
-        simStore.on("message", filteredHandler);
-      } else if (event === "invited_to_group") {
-        const filteredHandler = (payload: { chatId: string; userId: string }) => {
-          if (payload.userId === userId) {
-            handler(payload.chatId, payload.userId);
-          }
-        };
-        (handler as any).__filtered = filteredHandler;
-        simStore.on("member_added", filteredHandler);
-      }
-    },
+    on: onEvent,
 
-    off(event, handler) {
-      const filtered = (handler as any).__filtered;
-      if (event === "message" && filtered) {
-        simStore.off("message", filtered);
-      } else if (event === "invited_to_group" && filtered) {
-        simStore.off("member_added", filtered);
-      }
-    },
+    off: offEvent,
 
     waitForReply(chatId, timeoutMs = 30000) {
       return new Promise((resolve) => {

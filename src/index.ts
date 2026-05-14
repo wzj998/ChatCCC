@@ -22,10 +22,7 @@
  *   npm run demo:create-group -- --local   (local relay mode)
  */
 
-import { spawn } from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { resolve, dirname } from "node:path";
 
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
@@ -37,27 +34,20 @@ import {
   CHATCCC_PORT,
   APP_ID,
   APP_SECRET,
+  FEISHU_ENABLED,
+  ILINK_ENABLED,
+  ILINK_REUSE_TOKEN_ON_START,
   BASE_URL,
-  CLAUDE_EFFORT,
-  CLAUDE_MODEL,
-  GIT_TIMEOUT_MS,
-  reloadConfigFromDisk,
-  anthropicConfigDisplay,
   LOCAL_RELAY_URL,
   PID_FILE,
   PROJECT_ROOT,
   USE_LOCAL,
   USE_SIMULATE,
   appendChatLog,
-  explainMissingFeishuCredentialsAndExit,
   fileLog,
+  reloadConfigFromDisk,
   reportEnvironmentVariableReadout,
-  getDefaultCwd,
   maskAppId,
-  setDefaultCwd,
-  getRecentDirs,
-  addRecentDir,
-  sessionPrefixForTool,
   resolveDefaultAgentTool,
   toolDisplayName,
   ts,
@@ -84,55 +74,85 @@ import {
   reportPermissionResults,
   setPlatform,
 } from "./feishu-platform.ts";
-import { buildHelpCard, buildStatusCard, buildCdContent, buildCdCard, buildSessionsCard } from "./cards.ts";
-import { handleAgentImageRequest } from "./agent-image-rpc.ts";
-import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { SimulatedPlatform, SIM_DEFAULT_CHAT_ID } from "./sim-platform.ts";
 import { setMessageHandler } from "./sim-store.ts";
-import { formatGitResult, gitResultHeaderTemplate, runGitCommand } from "./git-command.ts";
+import { handleAgentImageRequest } from "./agent-image-rpc.ts";
+import { handleAgentFileRequest } from "./agent-file-rpc.ts";
+import {
+  createCardKitCard,
+  sendCardKitMessage,
+  updateCardKitCard,
+} from "./cardkit.ts";
 import {
   MAX_PROCESSED,
-  getSessionStatus,
-  getAllSessionsStatus,
-  initClaudeSession,
-  lastMsgTimestamps,
+  loadSessionRegistryForBinding,
   processedMessages,
   rebuildBindingsFromRegistry,
   resetState,
-  resumeAndPrompt,
-  sessionInfoMap,
-  switchChatBinding,
-  recordSessionRegistry,
-  getAdapterForTool,
-  stopSession,
-  loadSessionRegistryForBinding,
-  removeSessionRegistryRecord,
-  saveSessionTool,
+  setSessionPlatform,
 } from "./session.ts";
 import {
-  bindChatToSession,
-  unbindChatFromSession,
-  getChatsForSession,
-  isSessionRunning,
-  activePrompts,
   rebuildSessionChatsFromRegistry,
-  displayCards,
-  recordLastActiveChat,
 } from "./session-chat-binding.ts";
 import { fixStaleStreamStates } from "./stream-state.ts";
+import { handleCommand, type PlatformAdapter } from "./orchestrator.ts";
+import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
 
-export function cwdDisplayName(cwd: string): string {
-  const trimmed = cwd.trim().replace(/[\\/]+$/, "");
-  return trimmed.split(/[\\/]/).filter(Boolean).pop() || trimmed || "cwd";
+// ---------------------------------------------------------------------------
+// Feishu 平台适配器
+// ---------------------------------------------------------------------------
+
+function createFeishuAdapter(): PlatformAdapter {
+  const auth = () => getTenantAccessToken();
+  return {
+    // ---- 基础消息 ----
+    async sendText(chatId, text) {
+      return sendTextReply(await auth(), chatId, text);
+    },
+    async sendCard(chatId, title, content, template) {
+      return sendCardReply(await auth(), chatId, title, content, template);
+    },
+    async sendRawCard(chatId, cardJson) {
+      return sendRawCard(await auth(), chatId, cardJson);
+    },
+
+    // ---- 群聊管理 ----
+    async createGroup(name, userIds) {
+      return createGroupChat(await auth(), name, userIds);
+    },
+    async updateChatInfo(chatId, name, description) {
+      return updateChatInfo(await auth(), chatId, name, description);
+    },
+    async getChatInfo(chatId) {
+      return getChatInfo(await auth(), chatId);
+    },
+    async disbandChat(chatId) {
+      return disbandChat(await auth(), chatId);
+    },
+    async setChatAvatar(chatId, tool, status) {
+      return setChatAvatar(await auth(), chatId, tool, status);
+    },
+
+    extractSessionInfo(description) {
+      return extractSessionInfo(description);
+    },
+
+    // ---- 进度展示（CardKit 委托） ----
+    async cardCreate(cardJson) {
+      return createCardKitCard(await auth(), cardJson);
+    },
+    async cardSend(chatId, cardId) {
+      return sendCardKitMessage(await auth(), chatId, cardId);
+    },
+    async cardUpdate(cardId, cardJson, sequence) {
+      return updateCardKitCard(await auth(), cardId, cardJson, sequence);
+    },
+  };
 }
 
-export function sessionChatName(left: string, cwd: string): string {
-  return `${left}-${cwdDisplayName(cwd)}`;
-}
-
-function isUntitledSessionChatName(name: string): boolean {
-  return name === "新会话" || name.startsWith("新会话-");
-}
+const feishuPlatform = createFeishuAdapter();
+const wechatPlatform = createWechatAdapter();
+setSessionPlatform(feishuPlatform);
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -271,6 +291,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
 // ---------------------------------------------------------------------------
 
 let broadcastToRelay: (data: unknown) => void = () => {};
+const wechatSignal = { stopped: false };
 
 // ---------------------------------------------------------------------------
 // Simulate mode: inject message via HTTP
@@ -310,7 +331,7 @@ async function handleSimInjectMessage(req: IncomingMessage, res: ServerResponse)
   appendChatLog(chatId, openId, text);
 
   // Fire and forget: process command, respond 202 immediately
-  handleCommand(text, chatId, openId, Date.now(), chatType).catch((err) =>
+  handleCommand(feishuPlatform, text, chatId, openId, Date.now(), chatType).catch((err) =>
     console.error(`[${ts()}] [SIM:INJECT] handleCommand error: ${(err as Error).message}`)
   );
 
@@ -320,699 +341,6 @@ async function handleSimInjectMessage(req: IncomingMessage, res: ServerResponse)
 }
 
 // ---------------------------------------------------------------------------
-// Command handler
-// ---------------------------------------------------------------------------
-
-async function handleCommand(text: string, chatId: string, openId: string, msgTimestamp: number, chatType = "group", traceId?: string): Promise<void> {
-  const tid = traceId ?? makeTraceId();
-  const textLower = text.toLowerCase();
-  if (textLower === "/restart") {
-    logTrace(tid, "BRANCH", { cmd: "/restart" });
-    const restartToken = await getTenantAccessToken();
-    await sendTextReply(restartToken, chatId, "正在重启...").catch(() => {});
-    logTrace(tid, "DONE", { outcome: "restart" });
-    console.log(`[${ts()}] [RESTART] Spawning new process...`);
-    const child = spawn("npx", ["tsx", "src/index.ts"], {
-      cwd: PROJECT_ROOT,
-      detached: true,
-      stdio: "ignore",
-      shell: true,
-    });
-    child.unref();
-    setTimeout(() => process.exit(0), 200);
-    return;
-  }
-
-  if (textLower === "/cd" || textLower.startsWith("/cd ")) {
-    logTrace(tid, "BRANCH", { cmd: "/cd", arg: text.slice(3).trim() || "(none)" });
-    const cdToken = await getTenantAccessToken();
-    const currentDir = await getDefaultCwd(chatId);
-
-    // 获取当前会话的实际工作路径（若在会话群内）
-    let sessionCwd: string | undefined;
-    try {
-      const chatInfo = await getChatInfo(cdToken, chatId);
-      const sessionInfoResult = extractSessionInfo(chatInfo.description);
-      if (sessionInfoResult) {
-        const adapter = getAdapterForTool(sessionInfoResult.tool);
-        const info = await adapter.getSessionInfo(sessionInfoResult.sessionId);
-        sessionCwd = info?.cwd;
-      }
-    } catch { /* 非会话群或获取失败，不显示 */ }
-
-    const arg = text.slice(3).trim(); // everything after "/cd" (may be empty)
-
-    // Resolve target directory
-    let targetDir: string;
-    if (!arg) {
-      targetDir = currentDir;
-    } else if (arg === "..") {
-      targetDir = dirname(currentDir);
-    } else {
-      targetDir = resolve(currentDir, arg);
-    }
-
-    // Verify the target exists and is a directory
-    try {
-      const s = await stat(targetDir);
-      if (!s.isDirectory()) {
-        logTrace(tid, "DONE", { outcome: "cd_not_dir", targetDir });
-        await sendCardReply(cdToken, chatId, "新会话工作路径", `路径存在但不是目录:\n\`${targetDir}\``, "red");
-        return;
-      }
-    } catch {
-      logTrace(tid, "DONE", { outcome: "cd_not_found", targetDir });
-      await sendCardReply(cdToken, chatId, "新会话工作路径", `路径不存在:\n\`${targetDir}\``, "red");
-      return;
-    }
-
-    // Change working dir if user provided a path
-    const isUpdate = !!arg && targetDir !== currentDir;
-    if (isUpdate) {
-      await setDefaultCwd(targetDir, chatId);
-      await addRecentDir(targetDir);
-    }
-
-    // Read directory entries
-    let entries: string[];
-    try {
-      entries = await readdir(targetDir);
-    } catch (err) {
-      logTrace(tid, "DONE", { outcome: "cd_readdir_fail", error: (err as Error).message });
-      await sendCardReply(cdToken, chatId, "新会话工作路径", `无法读取目录:\n\`${targetDir}\`\n\n${(err as Error).message}`, "red");
-      return;
-    }
-
-    // Sort: directories first, then files, alphabetically within each group
-    const withStats: { name: string; isDir: boolean }[] = [];
-    for (const name of entries) {
-      try {
-        const s = await stat(resolve(targetDir, name));
-        withStats.push({ name, isDir: s.isDirectory() });
-      } catch { withStats.push({ name, isDir: false }); }
-    }
-    withStats.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-
-    if (!arg) {
-      // /cd 无参数：展示卡片（含最近使用路径按钮）
-      const recentDirs = await getRecentDirs();
-      const card = buildCdCard(targetDir, withStats, recentDirs, sessionCwd);
-      const ok = await sendRawCard(cdToken, chatId, card);
-      console.log(`[${ts()}] [CD] card sent, ok=${ok}, recentDirs=${recentDirs.length}`);
-      logTrace(tid, "DONE", { outcome: "cd_card", ok });
-    } else {
-      // /cd <path>：切换目录，发送文本卡片
-      const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
-      await sendCardReply(cdToken, chatId, "新会话工作路径", content, "blue");
-      logTrace(tid, "DONE", { outcome: "cd_path", targetDir, isUpdate });
-    }
-    return;
-  }
-
-  if (textLower === "/new" || textLower.startsWith("/new ")) {
-    const toolArg = text.slice(5).trim().toLowerCase();
-    const tool = toolArg || "claude";
-    logTrace(tid, "BRANCH", { cmd: "/new", tool });
-    const validTools = ["claude", "cursor", "codex"];
-    if (!validTools.includes(tool)) {
-      logTrace(tid, "DONE", { outcome: "new_invalid_tool", tool });
-      const warnToken = await getTenantAccessToken();
-      await sendCardReply(warnToken, chatId, "Error", `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex)。`, "red");
-      return;
-    }
-    const toolLabel = toolDisplayName(tool);
-
-    if (!openId) {
-      logTrace(tid, "DONE", { outcome: "new_no_openid" });
-      console.log(`[${ts()}] [WARN] Cannot get sender open_id`);
-      const warnToken = await getTenantAccessToken();
-      await sendCardReply(warnToken, chatId, "Error", "Cannot identify sender.", "red");
-      return;
-    }
-
-    const freshToken = await getTenantAccessToken();
-
-    let sessionId: string;
-    let sessionCwd: string;
-    try {
-      const init = await initClaudeSession(tool, undefined, chatId);
-      sessionId = init.sessionId;
-      sessionCwd = init.cwd;
-      console.log(`[${ts()}] [STEP 1/4] ${toolLabel} session created: ${sessionId} → OK`);
-    } catch (err) {
-      console.error(`[${ts()}] [STEP 1/4] FAIL: ${(err as Error).message}`);
-      logTrace(tid, "DONE", { outcome: "new_session_fail", error: (err as Error).message });
-      await sendCardReply(
-        freshToken, chatId, "Error",
-        `Failed to initialize ${toolLabel} session:\n${(err as Error).message}`,
-        "red"
-      );
-      return;
-    }
-
-    const cwd = sessionCwd;
-    const initialName = sessionChatName("新会话", cwd);
-
-    // 私聊：不创建群，直接绑定 session 到当前私聊
-    if (chatType === "p2p") {
-      bindChatToSession(sessionId, chatId);
-      sessionInfoMap.set(chatId, {
-        sessionId,
-        turnCount: 0,
-        lastContextTokens: 0,
-        startTime: Date.now(),
-        tool,
-      });
-      await setDefaultCwd(cwd, chatId);
-      await recordSessionRegistry({
-        chatId,
-        sessionId,
-        tool,
-        chatName: initialName,
-        turnCount: 0,
-        startTime: Date.now(),
-        running: false,
-      });
-      await saveSessionTool(sessionId, tool, initialName);
-      await sendCardReply(
-        freshToken, chatId, `${toolLabel} Session Ready`,
-        `这是你的 **${toolLabel}** 私聊会话。\n\n` +
-          `**Session ID:** ${sessionId}\n` +
-          `**工作目录:** \`${cwd}\`\n\n` +
-          `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
-          `发送 **/sessions** 查看所有会话状态。\n` +
-          `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
-        "green"
-      );
-      console.log(`[${ts()}] [NEW] P2P session created: ${sessionId} (${toolLabel})`);
-      logTrace(tid, "DONE", { outcome: "session_ready_p2p", chatId, sessionId, tool });
-      return;
-    }
-
-    let newChatId: string;
-    try {
-      newChatId = await createGroupChat(freshToken, initialName, [openId]);
-      console.log(`[${ts()}] [STEP 2/4] Created Feishu group: ${newChatId}  → OK`);
-    } catch (err) {
-      console.error(`[${ts()}] [STEP 2/4] FAIL: ${(err as Error).message}`);
-      logTrace(tid, "DONE", { outcome: "new_group_fail", error: (err as Error).message });
-      await sendCardReply(freshToken, chatId, "Error", `Failed to create group:\n${(err as Error).message}`, "red");
-      return;
-    }
-
-    try {
-      const descPrefix = sessionPrefixForTool(tool);
-      await updateChatInfo(freshToken, newChatId, initialName, `${descPrefix} ${sessionId}`);
-      console.log(`[${ts()}] [STEP 3/4] Renamed group → name="${initialName}" (${toolLabel}) → OK`);
-    } catch (err) {
-      console.error(`[${ts()}] [STEP 3/4] FAIL: ${(err as Error).message}`);
-      logTrace(tid, "DONE", { outcome: "new_rename_fail", error: (err as Error).message });
-      await sendCardReply(freshToken, chatId, "Error", `Group created but rename failed:\n${(err as Error).message}`, "yellow");
-      return;
-    }
-
-    // 让新群的默认工作目录继承当前会话的 cwd
-    await setDefaultCwd(cwd, newChatId);
-    bindChatToSession(sessionId, newChatId);
-    await recordSessionRegistry({
-      chatId: newChatId,
-      sessionId,
-      tool,
-      chatName: initialName,
-      turnCount: 0,
-      startTime: Date.now(),
-      running: false,
-    });
-    await saveSessionTool(sessionId, tool, initialName);
-
-    const adapter = getAdapterForTool(tool);
-    await sendCardReply(
-      freshToken, newChatId, `${toolLabel} Session Ready`,
-      `群聊已创建，这是你的 **${toolLabel}** 会话群。\n\n` +
-        `**Session ID:** ${sessionId}\n` +
-        `**工作目录:** \`${cwd}\`\n\n` +
-        `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
-        `发送 **/sessions** 查看所有会话状态。\n` +
-        `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
-      "green"
-    );
-
-    console.log(`[${ts()}] [STEP 4/4] Replied to new group → OK`);
-    logTrace(tid, "DONE", { outcome: "session_ready", newChatId, sessionId, tool });
-    setChatAvatar(freshToken, newChatId, tool, "new").catch(() => {});
-    console.log(`${"=".repeat(60)}`);
-    return;
-  }
-
-  // 检测会话上下文：群聊从 description 获取，私聊从 session-registry 获取
-  let sessionId: string | null = null;
-  let descriptionTool: string | null = null;
-  let toolLabel: string | null = null;
-  let chatInfo: Awaited<ReturnType<typeof getChatInfo>> | undefined;
-  let description: string | undefined;
-
-  if (chatType !== "p2p") {
-    try {
-      const token = await getTenantAccessToken();
-      chatInfo = await getChatInfo(token, chatId);
-      description = chatInfo.description;
-      const sessionInfo = extractSessionInfo(description);
-      if (sessionInfo) {
-        sessionId = sessionInfo.sessionId;
-        descriptionTool = sessionInfo.tool;
-        toolLabel = toolDisplayName(descriptionTool);
-      }
-    } catch (err) {
-      logTrace(tid, "BRANCH", { reason: "get_chat_info_failed", error: (err as Error).message });
-      console.log(`[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`);
-    }
-  } else {
-    // 私聊：从 session-registry.json 获取绑定的 session
-    try {
-      const registry = await loadSessionRegistryForBinding();
-      const record = registry[chatId];
-      if (record && record.sessionId && record.tool) {
-        sessionId = record.sessionId;
-        descriptionTool = record.tool;
-        toolLabel = toolDisplayName(descriptionTool);
-        // 确保 sessionInfoMap 中有该私聊的信息
-        if (!sessionInfoMap.has(chatId)) {
-          sessionInfoMap.set(chatId, {
-            sessionId,
-            turnCount: record.turnCount ?? 0,
-            lastContextTokens: record.lastContextTokens ?? 0,
-            startTime: record.startTime ?? Date.now(),
-            tool: descriptionTool,
-          });
-        }
-        bindChatToSession(sessionId, chatId);
-      }
-    } catch (err) {
-      console.log(`[${ts()}] [INFO] Cannot load registry for p2p ${chatId}: ${(err as Error).message}`);
-    }
-  }
-
-  if (sessionId && descriptionTool && toolLabel) {
-    // 有会话上下文 — 路由到命令处理或 prompt
-    logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
-    console.log(`[${ts()}] [RESUME] ${toolLabel} session group detected, session=${sessionId} tool=${descriptionTool}`);
-
-      const freshToken = await getTenantAccessToken();
-
-      if (chatType !== "p2p" && isUntitledSessionChatName(chatInfo!.name) && !textLower.startsWith("/")) {
-        const MAX_PREFIX = 10;
-        const prefix = text.slice(0, MAX_PREFIX);
-        const adapter = getAdapterForTool(descriptionTool);
-        const info = await adapter.getSessionInfo(sessionId).catch(() => undefined);
-        const sessionCwd = info?.cwd ?? (await getDefaultCwd(chatId));
-        const newName = sessionChatName(prefix, sessionCwd);
-        try {
-          await updateChatInfo(freshToken, chatId, newName, description!);
-          console.log(`[${ts()}] [RENAME] First message → group renamed to "${newName}"`);
-          await recordSessionRegistry({ chatId, sessionId, tool: descriptionTool, chatName: newName }).catch(() => {});
-          await saveSessionTool(sessionId, descriptionTool, newName).catch(() => {});
-        } catch (err) {
-          console.error(`[${ts()}] [RENAME] Failed: ${(err as Error).message}`);
-        }
-      }
-
-      if (textLower === "/stop") {
-        logTrace(tid, "BRANCH", { cmd: "/stop" });
-        if (stopSession(sessionId)) {
-          console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
-          await sendTextReply(freshToken, chatId, "会话已停止。").catch(() => {});
-          logTrace(tid, "DONE", { outcome: "stopped" });
-        } else {
-          await sendTextReply(freshToken, chatId, "当前没有正在进行的会话。").catch(() => {});
-          logTrace(tid, "DONE", { outcome: "stop_no_session" });
-        }
-        return;
-      }
-
-      if (textLower === "/status") {
-        logTrace(tid, "BRANCH", { cmd: "/status" });
-        const status = await getSessionStatus(chatId);
-        const isActive = isSessionRunning(sessionId);
-        const statusText = [
-          `**群名:** ${status?.chatName || "—"}`,
-          `**Session ID:** \`${status?.sessionId ?? sessionId}\``,
-          `**工具:** ${toolLabel}`,
-          `**状态:** ${isActive ? "🟢 运行中" : "⚪ 空闲"}`,
-          `**已对话轮数:** ${status?.turnCount ?? 0}`,
-          `**模型:** ${status?.model ?? anthropicConfigDisplay(CLAUDE_MODEL)}`,
-        ];
-        // effort 仅在该工具有此概念时显示（status?.effort 为 null 表示
-        // 当前工具没有 effort，如 Cursor，应隐藏整行避免误导）
-        if (status?.effort != null) {
-          statusText.push(`**Effort:** ${status.effort}`);
-        }
-        if (isActive) {
-          const elapsed = Math.floor((Date.now() - (status!.startTime)) / 1000);
-          const mins = Math.floor(elapsed / 60);
-          const secs = elapsed % 60;
-          statusText.push(`**本轮已运行:** ${mins}分${secs}秒`);
-          statusText.push(`**已产出总字符:** ${status!.accumulatedLength.toLocaleString()}`);
-        }
-        if (status?.lastContextTokens) {
-          statusText.push(`**上下文 Token 数:** ~${status.lastContextTokens.toLocaleString()}`);
-        }
-        const card = buildStatusCard(statusText.join("\n"), isActive ? "blue" : "green");
-        const ok = await sendRawCard(freshToken, chatId, card);
-        console.log(`[${ts()}] [STATUS] card sent, ok=${ok}`);
-        logTrace(tid, "DONE", { outcome: "status", ok });
-        return;
-      }
-
-      if (textLower === "/sessions") {
-        logTrace(tid, "BRANCH", { cmd: "/sessions" });
-        const allSessions = await getAllSessionsStatus();
-        const now = Date.now();
-        const others = allSessions.filter(s => s.chatId !== chatId);
-        const cardData = others.map(s => ({
-          sessionId: s.sessionId,
-          chatName: s.chatName,
-          chatId: s.chatId,
-          active: s.active,
-          turnCount: s.turnCount,
-          elapsedSeconds: s.active ? Math.floor((now - s.startTime) / 1000) : null,
-          model: s.model,
-          tool: s.tool,
-        }));
-        const card = buildSessionsCard(cardData);
-        const ok = await sendRawCard(freshToken, chatId, card);
-        console.log(`[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${others.length}`);
-        logTrace(tid, "DONE", { outcome: "sessions", ok, count: others.length });
-        return;
-      }
-
-      if (textLower === "/newh") {
-        logTrace(tid, "BRANCH", { cmd: "/newh" });
-        const adapter = getAdapterForTool(descriptionTool);
-        let cwd: string;
-        try {
-          const info = await adapter.getSessionInfo(sessionId);
-          cwd = info?.cwd ?? (await getDefaultCwd(chatId));
-        } catch {
-          cwd = await getDefaultCwd(chatId);
-        }
-
-        // 第一步:创建新 session(此时尚未碰任何内存绑定,失败可直接返回,
-        // 旧 session 状态完全保留)。
-        // 注意不 abort 旧 session：旧 session 若仍在跑,display loop 会继续
-        // 把卡片推到原群直到 prompt 自然结束(或被 /stop)。
-        let newSessionId: string;
-        try {
-          const init = await initClaudeSession(descriptionTool, cwd);
-          newSessionId = init.sessionId;
-        } catch (err) {
-          logTrace(tid, "DONE", { outcome: "newh_session_fail", error: (err as Error).message });
-          await sendCardReply(freshToken, chatId, "Error", `Failed to create new session:\n${(err as Error).message}`, "red");
-          return;
-        }
-
-        // 第二步:事务式切换 chat 绑定 —— 把 chat 从 oldSessionId 改嫁到
-        // newSessionId。switchChatBinding 内部保证:
-        //   - 群聊先调 updateChatInfo 改群描述,失败则内存绑定完全不动
-        //   - 私聊跳过 updateChatInfo(私聊 chatId 调群 API 必然失败)
-        //   - API 成功后统一切换内存:unbind 旧 / clear displayCards / bind 新 /
-        //     recordLastActiveChat / sessionInfoMap.set + 持久化 registry/sessions
-        // 详见 session.ts::switchChatBinding 注释。
-        const descPrefix = sessionPrefixForTool(descriptionTool);
-        const newName = sessionChatName("新会话", cwd);
-        const switchResult = await switchChatBinding({
-          chatId,
-          chatType,
-          oldSessionId: sessionId,
-          newSessionId,
-          tool: descriptionTool,
-          chatName: newName,
-          newDescription: `${descPrefix} ${newSessionId}`,
-          updateChatInfoFn: (cid, name, desc) => updateChatInfo(freshToken, cid, name, desc),
-        });
-        if (!switchResult.ok) {
-          // 飞书 API 失败:内存仍指向旧 session,新 session 已创建但无人使用,
-          // 留在 sessions.json(loadSessionTools)成为 orphan,可由 /sessions
-          // 列表展示供人工清理或下次 /newh 覆盖。代价小于让群 description
-          // 与内存绑定不一致。
-          logTrace(tid, "DONE", { outcome: "newh_update_chat_fail", error: switchResult.error?.message });
-          await sendCardReply(
-            freshToken, chatId, "Error",
-            `更新群描述失败,会话未切换(新 session 已创建但未启用):\n${switchResult.error?.message}`,
-            "red"
-          );
-          return;
-        }
-        if (chatType !== "p2p") {
-          console.log(`[${ts()}] [NEWH] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`);
-        }
-
-        setChatAvatar(freshToken, chatId, descriptionTool, "new").catch(() => {});
-
-        // 如果新 session 有活跃 prompt,启动 display loop 让本群也能看到。
-        // /newh 后通常是空 session,这里几乎走不到,但留作防御。
-        if (isSessionRunning(newSessionId)) {
-          const { ensureDisplayLoop } = await import("./session.ts");
-          ensureDisplayLoop(newSessionId);
-        }
-
-        await sendCardReply(
-          freshToken, chatId, `${toolLabel} Session Reset`,
-          `会话已重置为新的 **${toolLabel}** 会话。\n\n` +
-            `**Session ID:** ${newSessionId}\n` +
-            `**工作目录:** \`${cwd}\`\n\n` +
-            `直接在这里发消息即可继续对话。`,
-          "green"
-        );
-
-        console.log(`[${ts()}] [NEWH] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`);
-        logTrace(tid, "DONE", { outcome: "newh", newSessionId, cwd });
-        return;
-      }
-
-      if (textLower === "/deleteg") {
-        logTrace(tid, "BRANCH", { cmd: "/deleteg" });
-        if (chatType === "p2p") {
-          await sendTextReply(freshToken, chatId, "私聊无法使用 /deleteg，该指令仅用于群聊。").catch(() => {});
-          logTrace(tid, "DONE", { outcome: "deleteg_p2p" });
-          return;
-        }
-        console.log(`[${ts()}] [DELETEG] Disbanding group chat ${chatId}, session=${sessionId}`);
-
-        // 先解绑 session（不删除 Agent 会话）
-        unbindChatFromSession(sessionId, chatId);
-        displayCards.delete(chatId);
-        sessionInfoMap.delete(chatId);
-        await removeSessionRegistryRecord(chatId);
-
-        await sendTextReply(freshToken, chatId, "群聊已解散，Agent 会话保留。").catch(() => {});
-
-        // 解散群聊（飞书 API）
-        try {
-          await disbandChat(freshToken, chatId);
-          console.log(`[${ts()}] [DELETEG] Group disbanded: ${chatId}`);
-        } catch (err) {
-          console.error(`[${ts()}] [DELETEG] Disband API failed: ${(err as Error).message}`);
-        }
-
-        logTrace(tid, "DONE", { outcome: "deleteg", chatId, sessionId });
-        return;
-      }
-
-      // /session <number>：切换到 /sessions 列表中的指定会话
-      const sessionMatch = textLower.match(/^\/session\s+(\d+)$/);
-      if (sessionMatch) {
-        const index = parseInt(sessionMatch[1], 10) - 1;
-        logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
-        const allSessions = await getAllSessionsStatus();
-        // 与 buildSessionsCard 保持一致的排序：Claude Code → Cursor → Codex，组内保持 updatedAt 降序
-        const claudeOrdered = allSessions.filter(s => s.tool !== "cursor" && s.tool !== "codex");
-        const cursorOrdered = allSessions.filter(s => s.tool === "cursor");
-        const codexOrdered = allSessions.filter(s => s.tool === "codex");
-        const ordered = [...claudeOrdered, ...cursorOrdered, ...codexOrdered].filter(s => s.chatId !== chatId);
-        if (ordered.length === 0) {
-          await sendCardReply(freshToken, chatId, "/session", "暂无历史会话。", "yellow");
-          logTrace(tid, "DONE", { outcome: "session_no_sessions" });
-          return;
-        }
-        if (index < 0 || index >= ordered.length) {
-          await sendCardReply(freshToken, chatId, "/session", `序号超出范围，当前共 ${ordered.length} 个会话。`, "yellow");
-          logTrace(tid, "DONE", { outcome: "session_out_of_range", index: index + 1, total: ordered.length });
-          return;
-        }
-        const target = ordered[index];
-
-        // 第一步:解析目标 session 的 cwd(adapter.getSessionInfo 失败则 fallback,
-        // 这一步不动任何内存绑定,失败也不脏)。
-        const targetAdapter = getAdapterForTool(target.tool);
-        let cwd2: string;
-        try {
-          const targetInfo = await targetAdapter.getSessionInfo(target.sessionId);
-          cwd2 = targetInfo?.cwd ?? (await getDefaultCwd(chatId));
-        } catch {
-          cwd2 = await getDefaultCwd(chatId);
-        }
-
-        // 第二步:事务式切换 chat 绑定到 target.sessionId。
-        // switchChatBinding 内部行为同 /newh,详见 session.ts::switchChatBinding。
-        // 注意:这里把 turnCount 沿用 target.turnCount(从 registry 读到的目标 chat
-        // 历史轮数),而不是从 0 开始,这样 /status 显示的轮数延续历史。
-        const descPrefix2 = sessionPrefixForTool(target.tool);
-        const newName2 = target.chatName || sessionChatName("新会话", cwd2);
-        const switchResult = await switchChatBinding({
-          chatId,
-          chatType,
-          oldSessionId: sessionId,
-          newSessionId: target.sessionId,
-          tool: target.tool,
-          chatName: newName2,
-          newDescription: `${descPrefix2} ${target.sessionId}`,
-          initialTurnCount: target.turnCount,
-          initialContextTokens: 0,
-          updateChatInfoFn: (cid, name, desc) => updateChatInfo(freshToken, cid, name, desc),
-        });
-        if (!switchResult.ok) {
-          logTrace(tid, "DONE", { outcome: "session_update_chat_fail", error: switchResult.error?.message });
-          await sendCardReply(
-            freshToken, chatId, "Error",
-            `更新群描述失败,会话未切换:\n${switchResult.error?.message}`,
-            "red"
-          );
-          return;
-        }
-        if (chatType !== "p2p") {
-          console.log(`[${ts()}] [SESSION] Switched to session ${target.sessionId} (#${index + 1}), name="${newName2}"`);
-        }
-
-        setChatAvatar(freshToken, chatId, target.tool, "new").catch(() => {});
-
-        // 如果新 session 有活跃 prompt,加上 display loop。注意:此时
-        // recordLastActiveChat 已经把 lastActive 改成当前 chat,会"抢走"
-        // 原有群的 display 推送(见 review 中 corner case 5)。这是已知
-        // 设计权衡:用户主动切换就是想"接管"该 session 的显示。
-        if (isSessionRunning(target.sessionId)) {
-          const { ensureDisplayLoop } = await import("./session.ts");
-          ensureDisplayLoop(target.sessionId);
-        }
-
-        const targetToolLabel = toolDisplayName(target.tool);
-        const busyNote = isSessionRunning(target.sessionId) ? "\n\n⚠️ 该会话当前正在生成中，请等待完成后再发送消息。" : "";
-        await sendCardReply(
-          freshToken, chatId, `${targetToolLabel} Session Switched`,
-          `已切换到 **${targetToolLabel}** 会话。\n\n` +
-            `**序号:** ${index + 1}\n` +
-            `**Session ID:** ${target.sessionId}\n` +
-            `**工作目录:** \`${cwd2}\`\n\n` +
-            `直接在这里发消息即可继续对话。${busyNote}`,
-          "green"
-        );
-
-        logTrace(tid, "DONE", { outcome: "session_switch", sessionId: target.sessionId, index: index + 1, cwd: cwd2 });
-        return;
-      }
-
-      // /git <args>：在「当前会话工作目录」执行 git 命令，把输出回发到群里。
-      // 注意 cwd 必须取自 adapter.getSessionInfo（会话真实 cwd），而非
-      // getDefaultCwd（下一次 /new 才会使用的默认路径）。
-      if (textLower.startsWith("/git ") || textLower === "/git") {
-        const args = text === "/git" ? "" : text.slice(5).trim();
-        logTrace(tid, "BRANCH", { cmd: "/git", args: args || "(none)" });
-        if (!args) {
-          logTrace(tid, "DONE", { outcome: "git_no_args" });
-          await sendCardReply(
-            freshToken, chatId, "/git",
-            "用法：`/git <子命令> [参数]`，例如 `/git status`、`/git log --oneline -n 5`。",
-            "yellow"
-          );
-          return;
-        }
-
-        const adapter = getAdapterForTool(descriptionTool);
-        let cwd: string | undefined;
-        try {
-          const info = await adapter.getSessionInfo(sessionId);
-          cwd = info?.cwd;
-        } catch (err) {
-          console.error(`[${ts()}] [GIT] getSessionInfo FAIL: ${(err as Error).message}`);
-        }
-        if (!cwd) {
-          logTrace(tid, "DONE", { outcome: "git_no_cwd", tool: descriptionTool });
-          // Cursor 会话的 cwd 依赖 state/cursor-session-meta.json 持久化映射；
-          // 升级前创建的旧会话或映射文件丢失时，向会话发送一次普通消息即可触发
-          // adapter 自动学习并补全（resume 流首条 init 事件携带 cwd）。
-          const isCursor = descriptionTool === "cursor";
-          const hint = isCursor
-            ? "无法获取当前 Cursor 会话的工作目录（缺少 sessionId→cwd 持久化映射）。请先在本群发送一条普通消息（让 adapter 从 cursor-agent 流中自动补回 cwd），然后再试 /git；若仍失败，可用 /new 重建会话。"
-            : `无法获取当前会话的工作目录（${toolLabel} adapter 未返回 cwd）。请先与 AI 对话一次再试，或检查会话是否仍存在。`;
-          await sendCardReply(freshToken, chatId, "/git", hint, "red");
-          return;
-        }
-
-        console.log(`[${ts()}] [GIT] chat=${chatId} cwd=${cwd} cmd="git ${args}" timeoutMs=${GIT_TIMEOUT_MS}`);
-        const result = await runGitCommand(args, cwd, { timeoutMs: GIT_TIMEOUT_MS });
-        console.log(`[${ts()}] [GIT] exitCode=${result.exitCode}, durationMs=${result.durationMs}, truncated=${result.truncated}, timedOut=${result.timedOut}`);
-        const content = formatGitResult(args, cwd, result);
-        const template = gitResultHeaderTemplate(result);
-        await sendCardReply(freshToken, chatId, "/git 输出", content, template);
-        logTrace(tid, "DONE", { outcome: "git_result", exitCode: result.exitCode, durationMs: result.durationMs });
-        return;
-      }
-
-      const lastTs = lastMsgTimestamps.get(chatId);
-      if (lastTs !== undefined && msgTimestamp <= lastTs) {
-        logTrace(tid, "DONE", { outcome: "skip_old_message_no_session", msgTimestamp, lastTimestamp: lastTs });
-        console.log(`[${ts()}] [SKIP] Older message (${msgTimestamp} <= ${lastTs}), no active session, ignoring`);
-        return;
-      }
-
-      // 并发检查：同一 session 只能有一个活跃 prompt
-      if (isSessionRunning(sessionId)) {
-        logTrace(tid, "BLOCKED", { outcome: "session_busy", sessionId });
-        console.log(`[${ts()}] [BLOCKED] Session ${sessionId} is already generating, rejecting message from chat ${chatId}`);
-        await sendCardReply(
-          freshToken, chatId, "生成中",
-          "该会话正在生成回复中，请等待完成后再发送新消息。",
-          "yellow"
-        );
-        return;
-      }
-
-      try {
-        logTrace(tid, "RESUME", { sessionId, tool: descriptionTool });
-        await resumeAndPrompt(sessionId, text, freshToken, chatId, msgTimestamp, descriptionTool, tid);
-        logTrace(tid, "DONE", { outcome: "resume_done", sessionId });
-        console.log(`[${ts()}] [RESUME] Session ${sessionId} done`);
-      } catch (err) {
-        logTrace(tid, "DONE", { outcome: "resume_fail", error: (err as Error).message });
-        console.error(`[${ts()}] [RESUME] FAIL: ${(err as Error).message}`);
-        fileLog.flush();
-        await sendCardReply(
-          freshToken, chatId, "Error",
-          `Failed to resume ${toolLabel} session:\n${(err as Error).message}`,
-          "red"
-        );
-      }
-      return;
-    }
-
-  // 无会话上下文 → help card
-
-  // 私聊或群聊无 session info → 发送 help card
-  logTrace(tid, "SEND", { method: "help_card", chatId });
-  const replyToken = await getTenantAccessToken();
-  const card = buildHelpCard(text);
-  const ok = await sendRawCard(replyToken, chatId, card);
-  if (!ok) {
-    console.error(`[${ts()}] [SEND] help_card FAIL: chatId=${chatId}`);
-    logTrace(tid, "DONE", { outcome: "help_card_fail" });
-  } else {
-    console.log(`[${ts()}] [SEND] help_card OK: chatId=${chatId}`);
-    logTrace(tid, "DONE", { outcome: "help_card_sent" });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // startBotService — 飞书 service 的启动逻辑（独立于 main()）
 // ---------------------------------------------------------------------------
@@ -1149,7 +477,7 @@ async function startBotServiceCore(): Promise<void> {
         const delayToken = await getTenantAccessToken();
         await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
       }
-      await handleCommand(text, chatId, openId, msgTimestamp, chatType, traceId);
+      await handleCommand(feishuPlatform, text, chatId, openId, msgTimestamp, chatType, traceId);
       } catch (err) {
         logTrace(traceId, "ERROR", { message: (err as Error).message });
         console.error(`[${ts()}] [FATAL] im.message.receive_v1 handler crashed: ${(err as Error).message}`);
@@ -1189,7 +517,7 @@ async function startBotServiceCore(): Promise<void> {
       const result = parseCardAction(data);
       if (!result) return;
       console.log(`[BTN] chat=${result.chatId} text="${result.text}"`);
-      handleCommand(result.text, result.chatId, result.openId, Date.now()).catch((err) =>
+      handleCommand(feishuPlatform, result.text, result.chatId, result.openId, Date.now()).catch((err) =>
         console.error(`[${ts()}] [BTN] handleCommand failed: ${(err as Error).message}`)
       );
       } catch (err) {
@@ -1214,7 +542,7 @@ async function startBotServiceCore(): Promise<void> {
         const data = JSON.parse(raw.toString()) as Evt;
         const action = parseCardAction(data);
         if (action) {
-          handleCommand(action.text, action.chatId, action.openId, Date.now()).catch((err) =>
+          handleCommand(feishuPlatform, action.text, action.chatId, action.openId, Date.now()).catch((err) =>
             console.error(`[${ts()}] [BTN] handleCommand failed: ${(err as Error).message}`)
           );
           return;
@@ -1298,6 +626,40 @@ async function startBotServiceCore(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// WeChat iLink supervisor — 自动重连
+// ---------------------------------------------------------------------------
+
+async function startWechatSupervisor(): Promise<void> {
+  if (!ILINK_ENABLED) {
+    console.log("[WX] 微信 iLink 未启用（platforms.ilink.enabled 不为 true），跳过。");
+    return;
+  }
+
+  console.log("\n[WX] 启动微信 iLink 平台...");
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  while (!wechatSignal.stopped) {
+    try {
+      await startWechatPlatform(
+        (text, chatId, openId, msgTimestamp, chatType, traceId) =>
+          handleCommand(wechatPlatform, text, chatId, openId, msgTimestamp, chatType, traceId),
+        wechatSignal,
+        ILINK_REUSE_TOKEN_ON_START,
+      );
+    } catch (err) {
+      console.error(
+        `[WX] 微信 iLink 崩溃: ${(err as Error).message}`,
+      );
+    }
+    if (wechatSignal.stopped) break;
+    console.log("[WX] 5 秒后重试...");
+    await sleep(5000);
+  }
+  console.log("[WX] 微信 iLink 平台已停止。");
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1324,7 +686,7 @@ async function main(): Promise<void> {
     // 注册消息处理器，让 SimAgent.sendMessage() 能进程内触发 handleCommand
     setMessageHandler(
       (text, chatId, openId, _ts, chatType, traceId) =>
-        handleCommand(text, chatId, openId, Date.now(), chatType, traceId),
+        handleCommand(feishuPlatform, text, chatId, openId, Date.now(), chatType, traceId),
     );
 
     setExtraApiHandler(async (req, res) => {
@@ -1395,45 +757,43 @@ async function main(): Promise<void> {
   reportEnvironmentVariableReadout();
   console.log(`  工作目录: ${process.cwd()}`);
   console.log(`  包根目录: ${PROJECT_ROOT}`);
-  appendStartupTrace("main: before feishu credential check", {
-    hasAppId: Boolean(APP_ID.trim()),
-    hasAppSecret: Boolean(APP_SECRET.trim()),
-  });
-  if (!APP_ID.trim() || !APP_SECRET.trim()) {
-    // 凭证不全：进 setup 向导。注入 onActivate 回调让用户点"保存并启动"
-    // 时，原地（同进程）调用 startBotService，复用 setup HTTP server。
-    startSetupMode(CHATCCC_PORT, {
-      onActivate: async (httpServer: Server) => {
-        // 关键：用户刚把新凭证写入 config.json，需要先把进程内的 APP_ID 等
-        // 常量同步到磁盘最新值，否则 startBotService 拿到的是 chatccc 启动时
-        // 加载的（空）凭证。reloadConfigFromDisk 利用 ES module live binding
-        // 让所有"export let"消费方自动看到新值。
-        reloadConfigFromDisk();
-        appendStartupTrace("setup-activate: reloaded config from disk", {
-          appIdMaskAfterReload: maskAppId(APP_ID),
-        });
-        try {
-          await startBotService({ httpServer, port: CHATCCC_PORT });
-          // 切换成功：注册 SIGINT/SIGTERM 让 Ctrl-C 也能优雅退出
-          installShutdownHandlers(httpServer);
-          return { ok: true };
-        } catch (err) {
-          appendStartupTrace("setup-activate: startBotService failed", {
-            message: (err as Error).message,
-          });
-          // 不退出 chatccc 进程——setup HTTP server 还在监听，让用户改完
-          // config 再点一次。
-          return { ok: false, error: (err as Error).message };
-        }
-      },
-    });
-    return;
-  }
-  console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
-  appendStartupTrace("main: feishu credentials ok", { appIdMask: maskAppId(APP_ID) });
 
-  // 凭证齐全：自己起 HTTP server（同时挂 UI router），再调 startBotService
-  // 把 WS 中继和飞书 SDK 挂上去。
+  if (FEISHU_ENABLED) {
+    appendStartupTrace("main: before feishu credential check", {
+      hasAppId: Boolean(APP_ID.trim()),
+      hasAppSecret: Boolean(APP_SECRET.trim()),
+    });
+    if (!APP_ID.trim() || !APP_SECRET.trim()) {
+      // 凭证不全：进 setup 向导。注入 onActivate 回调让用户点"保存并启动"
+      // 时，原地（同进程）调用 startBotService，复用 setup HTTP server。
+      startSetupMode(CHATCCC_PORT, {
+        onActivate: async (httpServer: Server) => {
+          reloadConfigFromDisk();
+          appendStartupTrace("setup-activate: reloaded config from disk", {
+            appIdMaskAfterReload: maskAppId(APP_ID),
+          });
+          try {
+            await startBotService({ httpServer, port: CHATCCC_PORT });
+            installShutdownHandlers(httpServer);
+            return { ok: true };
+          } catch (err) {
+            appendStartupTrace("setup-activate: startBotService failed", {
+              message: (err as Error).message,
+            });
+            return { ok: false, error: (err as Error).message };
+          }
+        },
+      });
+      return;
+    }
+    console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
+    appendStartupTrace("main: feishu credentials ok", { appIdMask: maskAppId(APP_ID) });
+  } else {
+    console.log("  飞书平台未启用（platforms.feishu.enabled = false），跳过飞书凭证检查。\n");
+    appendStartupTrace("main: feishu disabled", {});
+  }
+
+  // 启动 HTTP server（同时挂 UI router，供 dashboard / setup / agent image/file 使用）
   appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
   const killed = freeRelayListenPort(CHATCCC_PORT);
   appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT, killed });
@@ -1451,12 +811,19 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
-  try {
-    await startBotService({ httpServer, port: CHATCCC_PORT });
-  } catch (err) {
-    printServiceDidNotStart((err as Error).message);
-    process.exit(1);
+  if (FEISHU_ENABLED) {
+    try {
+      await startBotService({ httpServer, port: CHATCCC_PORT });
+    } catch (err) {
+      printServiceDidNotStart((err as Error).message);
+      process.exit(1);
+    }
   }
+
+  // 启动微信 iLink 平台（后台运行，不阻塞飞书）
+  startWechatSupervisor().catch((err) =>
+    console.error(`[WX] 微信 supervisor 异常退出: ${(err as Error).message}`),
+  );
 
   installShutdownHandlers(httpServer);
 }
@@ -1498,8 +865,8 @@ async function listenWithRetry(
  * 先写盘，再走这里。
  */
 function installShutdownHandlers(httpServer: Server): void {
-  process.on("SIGINT", () => { console.log("\nShutting down..."); httpServer.close(); process.exit(0); });
-  process.on("SIGTERM", () => { httpServer.close(); process.exit(0); });
+  process.on("SIGINT", () => { console.log("\nShutting down..."); wechatSignal.stopped = true; httpServer.close(); process.exit(0); });
+  process.on("SIGTERM", () => { wechatSignal.stopped = true; httpServer.close(); process.exit(0); });
 }
 
 main().catch((err: Error) => {

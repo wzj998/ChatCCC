@@ -14,8 +14,10 @@ import {
   CLAUDE_MODEL,
   CURSOR_AGENT_ARGS,
   CURSOR_AGENT_COMMAND,
+  FEISHU_ENABLED,
   GIT_TIMEOUT_MS,
   GIT_TIMEOUT_SECONDS,
+  ILINK_ENABLED,
   applyLoadedConfig,
   config,
   resolveDefaultAgentTool,
@@ -35,8 +37,10 @@ import {
 
 const baseAppConfig: AppConfig = {
   feishu: { appId: "INITIAL_APP", appSecret: "INITIAL_SECRET" },
+  platforms: { feishu: { enabled: true }, ilink: { enabled: true } },
   port: 18080,
   gitTimeoutSeconds: 180,
+  allowInterrupt: false,
   claude: {
     enabled: true,
     defaultAgent: true,
@@ -102,6 +106,19 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
     expect(GIT_TIMEOUT_SECONDS).toBe(240);
     // 派生值必须跟着更新，否则 /git 仍然按旧 timeout 运行
     expect(GIT_TIMEOUT_MS).toBe(240 * 1000);
+  });
+
+  it("更新平台开关（默认飞书和微信都开启）", () => {
+    expect(FEISHU_ENABLED).toBe(true);
+    expect(ILINK_ENABLED).toBe(true);
+
+    applyLoadedConfig({
+      ...structuredClone(baseAppConfig),
+      platforms: { feishu: { enabled: false }, ilink: { enabled: true } },
+    });
+
+    expect(FEISHU_ENABLED).toBe(false);
+    expect(ILINK_ENABLED).toBe(true);
   });
 
   it("CURSOR_AGENT_ARGS 跟随 cursor.model 重新解析", () => {

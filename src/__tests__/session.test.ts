@@ -38,6 +38,9 @@ import {
   _resetSessionToolsFileForTest,
   _setAdapterForToolForTest,
   _clearAdapterCacheForTest,
+  setSessionPlatform,
+  recordChatPlatform,
+  _getPlatformForChatForTest,
 } from "../session.ts";
 import {
   activePrompts,
@@ -52,6 +55,7 @@ import {
 } from "../session-chat-binding.ts";
 import type { AccumulatorState } from "../session.ts";
 import type { ToolAdapter, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
+import type { PlatformAdapter } from "../platform-adapter.ts";
 
 // Helper to create a mock active session entry
 function mockActiveSession(chatId: string, overrides: Partial<{
@@ -116,6 +120,23 @@ function mockAdapter(getInfo: (sid: string) => SessionInfo | undefined): ToolAda
   };
 }
 
+function mockPlatform(name: string): PlatformAdapter {
+  return {
+    sendText: vi.fn(async () => true),
+    sendCard: vi.fn(async () => true),
+    sendRawCard: vi.fn(async () => true),
+    createGroup: vi.fn(async () => `${name}-group`),
+    updateChatInfo: vi.fn(async () => {}),
+    getChatInfo: vi.fn(async () => ({ name, description: "" })),
+    disbandChat: vi.fn(async () => {}),
+    setChatAvatar: vi.fn(async () => {}),
+    extractSessionInfo: vi.fn(() => null),
+    cardCreate: vi.fn(async () => `${name}-card`),
+    cardSend: vi.fn(async () => `${name}-message`),
+    cardUpdate: vi.fn(async () => {}),
+  };
+}
+
 describe("resetState", () => {
   it("clears all maps and sets", () => {
     chatSessionMap.set("chat1", {
@@ -134,6 +155,23 @@ describe("resetState", () => {
     expect(chatSessionMap.size).toBe(0);
     expect(sessionInfoMap.size).toBe(0);
     expect(processedMessages.size).toBe(0);
+  });
+});
+
+describe("chat platform routing", () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  it("uses the platform recorded for the chat before falling back to the default platform", () => {
+    const feishu = mockPlatform("feishu");
+    const wechat = mockPlatform("wechat");
+
+    setSessionPlatform(feishu);
+    recordChatPlatform("wx-chat", wechat);
+
+    expect(_getPlatformForChatForTest("wx-chat")).toBe(wechat);
+    expect(_getPlatformForChatForTest("feishu-chat")).toBe(feishu);
   });
 });
 

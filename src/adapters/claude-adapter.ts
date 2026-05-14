@@ -89,9 +89,30 @@ function buildSdkEnv(
   if (!apiKeyTrim && !baseUrlTrim) return undefined;
 
   const env: Record<string, string | undefined> = { ...process.env };
+  // ChatCCC's Claude API config is authoritative when present. Remove Claude
+  // Code/user settings env that can silently override gateway/auth/model choice.
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete env.ANTHROPIC_MODEL;
+  delete env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+  delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  delete env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  delete env.CLAUDE_CODE_SUBAGENT_MODEL;
+  delete env.CLAUDE_CODE_EFFORT_LEVEL;
+
   if (apiKeyTrim) env.ANTHROPIC_API_KEY = apiKeyTrim;
   if (baseUrlTrim) env.ANTHROPIC_BASE_URL = baseUrlTrim;
+  else delete env.ANTHROPIC_BASE_URL;
   return env;
+}
+
+function resolveSettingSources(
+  _apiKey: string | undefined,
+  _baseUrl: string | undefined,
+): Array<"project" | "local"> {
+  // CLAUDE.md / CLAUDE.local.md 是 Agent 指令文件，与 API 来源无关，
+  // 无论使用官方 Anthropic 还是第三方网关都应加载。
+  return ["project", "local"];
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +132,7 @@ function buildSessionOptions(
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
-    settingSources: ["project", "local"],
+    settingSources: resolveSettingSources(apiKey, baseUrl),
   };
   if (!isEmpty(model)) o.model = model;
   if (!isEmpty(effort)) o.effort = effort;
