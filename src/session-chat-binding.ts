@@ -31,6 +31,13 @@ export function unbindChatFromSession(sessionId: string, chatId: string): void {
     chats.delete(chatId);
     if (chats.size === 0) sessionChatsMap.delete(sessionId);
   }
+  // 双保险：lastActiveChatMap 是 sessionId → 最后活跃 chatId 的快照，
+  // 若被解绑的 chatId 正好是该 session 的 lastActive（典型场景：/newh
+  // 把当前群从旧 session 改嫁到新 session），不清理会让旧 session 的
+  // display loop 继续向已离开的群推送卡片。
+  if (lastActiveChatMap.get(sessionId)?.chatId === chatId) {
+    lastActiveChatMap.delete(sessionId);
+  }
 }
 
 export function getChatsForSession(sessionId: string): string[] {
@@ -73,6 +80,22 @@ export function recordLastActiveChat(sessionId: string, chatId: string): void {
 
 export function getLastActiveChat(sessionId: string): string | undefined {
   return lastActiveChatMap.get(sessionId)?.chatId;
+}
+
+/**
+ * display loop 决定推送目标 chat 的纯函数：
+ * 仅当 lastActiveChat 仍然绑定到该 session 时才返回，否则返回 undefined。
+ *
+ * 修复 bug：用户 `/newh` 把当前群从旧 session 改嫁到新 session 后，旧
+ * session 的 lastActiveChatMap 残留旧 chatId 快照，display loop 会继续
+ * 在该群创建/更新卡片。这里通过交叉验证 sessionChatsMap 把这种悬挂记录
+ * 排除掉——loop 拿到 undefined 就走"无活跃群"分支自然停推。
+ */
+export function pickDisplayChat(sessionId: string): string | undefined {
+  const candidate = lastActiveChatMap.get(sessionId)?.chatId;
+  if (!candidate) return undefined;
+  const chats = sessionChatsMap.get(sessionId);
+  return chats?.has(candidate) ? candidate : undefined;
 }
 
 // ---------------------------------------------------------------------------

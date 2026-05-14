@@ -294,8 +294,8 @@ export function buildSessionsCard(sessions: Array<{
     }
     const toolLabel = s.tool === "cursor" ? "Cursor" : s.tool === "codex" ? "Codex" : "Claude Code";
     const namePart = s.chatName ? `**${s.chatName}** ` : "";
-    const groupTag = s.chatId && s.chatId.startsWith("oc_") ? " (群聊)" : "";
-    return `**${i + 1}.** ${namePart}${groupTag} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
+    const chatTag = !s.chatId ? " (chat id缺失)" : s.chatId.startsWith("oc_") ? " (群聊)" : "";
+    return `**${i + 1}.** ${namePart}${chatTag} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
   const lines: string[] = [`共 **${sessions.length}** 个会话:`, ""];

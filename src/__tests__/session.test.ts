@@ -26,15 +26,26 @@ import {
   getSessionStatus,
   getAllSessionsStatus,
   recordSessionRegistry,
+  saveSessionTool,
   accumulateBlockContent,
   pickFinalReply,
   UNKNOWN_MODEL_PLACEHOLDER,
   _setSessionRegistryFileForTest,
   _resetSessionRegistryFileForTest,
+  _setSessionToolsFileForTest,
+  _resetSessionToolsFileForTest,
   _setAdapterForToolForTest,
   _clearAdapterCacheForTest,
 } from "../session.ts";
-import { activePrompts } from "../session-chat-binding.ts";
+import {
+  activePrompts,
+  bindChatToSession,
+  unbindChatFromSession,
+  recordLastActiveChat,
+  getLastActiveChat,
+  pickDisplayChat,
+  resetBindingState,
+} from "../session-chat-binding.ts";
 import type { AccumulatorState } from "../session.ts";
 import type { ToolAdapter, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
 
@@ -233,6 +244,7 @@ describe("getSessionStatus", () => {
 
 describe("getAllSessionsStatus", () => {
   let registryFile = "";
+  let sessionsFile = "";
 
   beforeEach(async () => {
     chatSessionMap.clear();
@@ -240,12 +252,15 @@ describe("getAllSessionsStatus", () => {
     activePrompts.clear();
     const dir = await mkdtemp(join(tmpdir(), "chatccc-session-registry-"));
     registryFile = join(dir, "session-registry.json");
+    sessionsFile = join(dir, "sessions.json");
     _setSessionRegistryFileForTest(registryFile);
+    _setSessionToolsFileForTest(sessionsFile);
   });
 
   afterEach(async () => {
     _clearAdapterCacheForTest();
     _resetSessionRegistryFileForTest();
+    _resetSessionToolsFileForTest();
     if (registryFile) {
       await rm(dirname(registryFile), { recursive: true, force: true });
     }
@@ -296,6 +311,32 @@ describe("getAllSessionsStatus", () => {
     expect(result[1].chatId).toBe("chat2");
     expect(result[1].active).toBe(false);
     expect(result[1].chatName).toBe("test-chat-2");
+  });
+
+  it("includes recent sessions without a registry chat binding", async () => {
+    await saveSessionTool("orphan-session", "claude");
+    activePrompts.set("orphan-session", {
+      controller: new AbortController(),
+      stopped: false,
+      startTime: 3000,
+    });
+
+    const result = await getAllSessionsStatus();
+    expect(result).toHaveLength(1);
+    expect(result[0].sessionId).toBe("orphan-session");
+    expect(result[0].chatId).toBe("");
+    expect(result[0].active).toBe(true);
+    expect(result[0].turnCount).toBe(0);
+  });
+
+  it("orphan sessions preserve chatName from sessions.json", async () => {
+    await saveSessionTool("orphan-with-name", "claude", "帮我写代码-src");
+    const result = await getAllSessionsStatus();
+    expect(result).toHaveLength(1);
+    expect(result[0].sessionId).toBe("orphan-with-name");
+    expect(result[0].chatId).toBe("");
+    expect(result[0].chatName).toBe("帮我写代码-src");
+    expect(result[0].active).toBe(false);
   });
 
   it("returns recent disk sessions by updatedAt desc, limited to 20", async () => {
@@ -633,5 +674,81 @@ describe("pickFinalReply", () => {
         chunkCount: 0,
       }),
     ).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickDisplayChat — display loop 选择推送目标 chat 的纯函数
+// 关键不变量：仅当某 chatId 既是 session 的"最后活跃 chat"且仍然绑定到该
+// session 时才返回。否则返回 undefined（loop 当作"无活跃群"，不推送）。
+// 这是为了修复 /newh 后旧 session 仍向已解绑群推卡片的 bug。
+// ---------------------------------------------------------------------------
+
+describe("pickDisplayChat", () => {
+  beforeEach(() => {
+    resetBindingState();
+  });
+
+  it("绑定 + 记录活跃后，返回该 chatId", () => {
+    bindChatToSession("sid-A", "chat_X");
+    recordLastActiveChat("sid-A", "chat_X");
+    expect(pickDisplayChat("sid-A")).toBe("chat_X");
+  });
+
+  it("从未记录过活跃 chat 时返回 undefined", () => {
+    bindChatToSession("sid-A", "chat_X");
+    expect(pickDisplayChat("sid-A")).toBeUndefined();
+  });
+
+  it("最后活跃 chat 已被解绑（如 /newh 场景）时返回 undefined，避免向已离开本 session 的群推送", () => {
+    bindChatToSession("sid-A", "chat_X");
+    recordLastActiveChat("sid-A", "chat_X");
+    // 模拟 /newh：chat_X 被解绑，转给新 session
+    unbindChatFromSession("sid-A", "chat_X");
+    expect(pickDisplayChat("sid-A")).toBeUndefined();
+  });
+
+  it("session 仍绑定其他 chat 但 lastActive 是已解绑 chat 时返回 undefined（不应回退到任意绑定）", () => {
+    // 多群共享 session 的极端情况：lastActive 指向 chat_X，但 chat_X 已解绑
+    bindChatToSession("sid-A", "chat_X");
+    bindChatToSession("sid-A", "chat_Y");
+    recordLastActiveChat("sid-A", "chat_X");
+    unbindChatFromSession("sid-A", "chat_X");
+    expect(pickDisplayChat("sid-A")).toBeUndefined();
+  });
+
+  it("session 绑定多个 chat 且 lastActive 是仍绑定的 chat 时正确返回", () => {
+    bindChatToSession("sid-A", "chat_X");
+    bindChatToSession("sid-A", "chat_Y");
+    recordLastActiveChat("sid-A", "chat_Y");
+    expect(pickDisplayChat("sid-A")).toBe("chat_Y");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// unbindChatFromSession — 双保险：清理 lastActiveChatMap[sessionId]
+// 若该 sessionId 的 lastActive 正好指向被解绑的 chatId，则一并清掉，
+// 防止后续逻辑（不仅 display loop）读到悬挂的旧记录。
+// ---------------------------------------------------------------------------
+
+describe("unbindChatFromSession 同步清理 lastActiveChatMap", () => {
+  beforeEach(() => {
+    resetBindingState();
+  });
+
+  it("解绑的 chat 正是 lastActive 时清掉记录", () => {
+    bindChatToSession("sid-A", "chat_X");
+    recordLastActiveChat("sid-A", "chat_X");
+    unbindChatFromSession("sid-A", "chat_X");
+    expect(getLastActiveChat("sid-A")).toBeUndefined();
+  });
+
+  it("解绑的 chat 不是 lastActive 时保留 lastActive", () => {
+    // chat_X 是 lastActive，解绑 chat_Y 不应影响
+    bindChatToSession("sid-A", "chat_X");
+    bindChatToSession("sid-A", "chat_Y");
+    recordLastActiveChat("sid-A", "chat_X");
+    unbindChatFromSession("sid-A", "chat_Y");
+    expect(getLastActiveChat("sid-A")).toBe("chat_X");
   });
 });

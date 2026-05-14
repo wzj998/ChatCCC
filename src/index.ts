@@ -30,7 +30,7 @@ import { resolve, dirname } from "node:path";
 import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
-import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging } from "./shared.ts";
+import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, waitForPortFree } from "./shared.ts";
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
 import { makeTraceId, logTrace } from "./trace.ts";
 import {
@@ -105,6 +105,7 @@ import {
   stopSession,
   loadSessionRegistryForBinding,
   removeSessionRegistryRecord,
+  saveSessionTool,
 } from "./session.ts";
 import {
   bindChatToSession,
@@ -493,6 +494,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
         startTime: Date.now(),
         running: false,
       });
+      await saveSessionTool(sessionId, tool, initialName);
       await sendCardReply(
         freshToken, chatId, `${toolLabel} Session Ready`,
         `这是你的 **${toolLabel}** 私聊会话。\n\n` +
@@ -542,6 +544,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
       startTime: Date.now(),
       running: false,
     });
+    await saveSessionTool(sessionId, tool, initialName);
 
     const adapter = getAdapterForTool(tool);
     await sendCardReply(
@@ -628,6 +631,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           await updateChatInfo(freshToken, chatId, newName, description!);
           console.log(`[${ts()}] [RENAME] First message → group renamed to "${newName}"`);
           await recordSessionRegistry({ chatId, sessionId, tool: descriptionTool, chatName: newName }).catch(() => {});
+          await saveSessionTool(sessionId, descriptionTool, newName).catch(() => {});
         } catch (err) {
           console.error(`[${ts()}] [RENAME] Failed: ${(err as Error).message}`);
         }
@@ -754,6 +758,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           startTime: Date.now(),
           running: false,
         });
+        await saveSessionTool(newSessionId, descriptionTool, newName);
 
         setChatAvatar(freshToken, chatId, descriptionTool, "new").catch(() => {});
 
@@ -867,6 +872,7 @@ async function handleCommand(text: string, chatId: string, openId: string, msgTi
           chatName: newName2,
           running: false,
         });
+        await saveSessionTool(target.sessionId, target.tool, newName2);
 
         setChatAvatar(freshToken, chatId, target.tool, "new").catch(() => {});
 
@@ -1405,22 +1411,14 @@ async function main(): Promise<void> {
   // 凭证齐全：自己起 HTTP server（同时挂 UI router），再调 startBotService
   // 把 WS 中继和飞书 SDK 挂上去。
   appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
-  freeRelayListenPort(CHATCCC_PORT);
-  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT });
+  const killed = freeRelayListenPort(CHATCCC_PORT);
+  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT, killed });
+  if (killed > 0) {
+    await waitForPortFree(CHATCCC_PORT);
+    appendStartupTrace("main: port free confirmed", { CHATCCC_PORT });
+  }
   const httpServer = createServer(createUiRouter());
-  await new Promise<void>((resolveListen, rejectListen) => {
-    const onError = (err: NodeJS.ErrnoException): void => {
-      httpServer.removeListener("listening", onListening);
-      rejectListen(err);
-    };
-    const onListening = (): void => {
-      httpServer.removeListener("error", onError);
-      resolveListen();
-    };
-    httpServer.once("error", onError);
-    httpServer.once("listening", onListening);
-    httpServer.listen(CHATCCC_PORT, "127.0.0.1");
-  }).catch((err: NodeJS.ErrnoException) => {
+  await listenWithRetry(httpServer, CHATCCC_PORT, "127.0.0.1").catch((err: NodeJS.ErrnoException) => {
     console.error(`\n[启动] 本地中继 WebSocket 监听失败：端口 ${CHATCCC_PORT}（${err.code ?? "?"} — ${err.message}）`);
     console.error(
       "  处理建议: 关闭占用该端口的其它程序，或在 config.json 的 port 字段里改成其它未占用端口（如 18081）。"
@@ -1437,6 +1435,36 @@ async function main(): Promise<void> {
   }
 
   installShutdownHandlers(httpServer);
+}
+
+/**
+ * 带重试的 server.listen，Windows 端口释放有延迟时自动重试。
+ */
+async function listenWithRetry(
+  server: ReturnType<typeof createServer>,
+  port: number,
+  host: string,
+  maxRetries = 3,
+): Promise<void> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.once("listening", resolve);
+        server.listen(port, host);
+      });
+      return;
+    } catch (err: unknown) {
+      const e = err as NodeJS.ErrnoException;
+      server.removeAllListeners("listening");
+      server.removeAllListeners("error");
+      if (e.code === "EADDRINUSE" && i < maxRetries - 1) {
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /**
