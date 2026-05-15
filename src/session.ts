@@ -675,7 +675,7 @@ export async function runAgentSession(
     const isWechatBusy = platform.kind === "wechat";
     const busyMsg = isWechatBusy
       ? "当前正在生成回复中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。"
-      : "该会话正在生成回复中，请等待完成后再发送消息。";
+      : "该会话正在生成回复中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。";
     await platform.sendText(_chatId, busyMsg).catch(() => {});
     return;
   }
@@ -705,7 +705,9 @@ export async function runAgentSession(
 
     // 构建 IM skills prompt（sessionId 方式，无 token）
     const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
-    const wechatSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-skill");
+    const wechatImageSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-image-skill");
+    const wechatFileSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-file-skill");
+    const wechatVideoSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-video-skill");
     const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
     const skillVariables = {
       cwd,
@@ -716,7 +718,9 @@ export async function runAgentSession(
       send_image_script: join(feishuSkillDir, "send-image.mjs"),
       send_file_script: join(feishuSkillDir, "send-file.mjs"),
       download_video_script: join(feishuSkillDir, "download-video.mjs"),
-      wechat_send_image_script: join(wechatSkillDir, "send-image.mjs"),
+      wechat_send_image_script: join(wechatImageSkillDir, "send-image.mjs"),
+      wechat_send_file_script: join(wechatFileSkillDir, "send-file.mjs"),
+      wechat_send_video_script: join(wechatVideoSkillDir, "send-video.mjs"),
     };
     var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
     await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
