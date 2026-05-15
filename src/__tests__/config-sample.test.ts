@@ -18,13 +18,13 @@ describe("config.sample.json", () => {
     expect(sample.platforms?.ilink?.enabled).toBe(true);
   });
 
-  it("uses an Anthropic official main model and leaves subagent override empty by default", () => {
+  it("leaves Claude model and subagent model empty by default so the SDK uses its own defaults", () => {
     const configSamplePath = join(process.cwd(), "config.sample.json");
     const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
       claude?: { model?: unknown; subagentModel?: unknown };
     };
 
-    expect(sample.claude?.model).toBe("claude-sonnet-4-6");
+    expect(sample.claude?.model).toBe("");
     expect(sample.claude?.subagentModel).toBe("");
   });
 });

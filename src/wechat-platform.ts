@@ -19,7 +19,7 @@ import {
   type GetUpdatesResponse,
   type WeixinMessage,
 } from "@openilink/openilink-sdk-node";
-import type { CDNMedia, ImageItem } from "@openilink/openilink-sdk-node";
+import type { CDNMedia, FileItem, ImageItem, VideoItem } from "@openilink/openilink-sdk-node";
 
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { setupFileLogging } from "./shared.ts";
@@ -539,6 +539,37 @@ async function downloadWechatImage(imageItem: ImageItem, msgId?: number): Promis
   return localPath;
 }
 
+async function downloadWechatFile(fileItem: FileItem, msgId?: number): Promise<string> {
+  const wire = ilinkWire;
+  if (!wire) throw new Error("iLink wire not available");
+  if (!fileItem.media) throw new Error("file item has no media");
+
+  const data = await wire.downloadMedia(fileItem.media);
+  const fileName = fileItem.file_name || "file";
+  const ext = extname(fileName).toLowerCase() || extFromMimeOrName(undefined);
+  const key = fileItem.media.aes_key?.slice(0, 16) ?? (msgId?.toString() ?? Date.now().toString());
+  await mkdirSync(WECHAT_IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(WECHAT_IMAGE_DOWNLOAD_DIR, `wx_${key}_${fileName}`);
+  writeFileSync(localPath, data);
+  platformLog(`文件已下载: ${localPath}`);
+  return localPath;
+}
+
+async function downloadWechatVideo(videoItem: VideoItem, msgId?: number): Promise<string> {
+  const wire = ilinkWire;
+  if (!wire) throw new Error("iLink wire not available");
+  if (!videoItem.media) throw new Error("video item has no media");
+
+  const data = await wire.downloadMedia(videoItem.media);
+  const ext = extFromMimeOrName(undefined);
+  const key = videoItem.media.aes_key?.slice(0, 16) ?? (msgId?.toString() ?? Date.now().toString());
+  await mkdirSync(WECHAT_IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(WECHAT_IMAGE_DOWNLOAD_DIR, `wx_${key}${ext}`);
+  writeFileSync(localPath, data);
+  platformLog(`视频已下载: ${localPath}`);
+  return localPath;
+}
+
 async function handleWechatMessage(
   message: WeixinMessage,
   handler: MessageHandler,
@@ -564,8 +595,10 @@ async function handleWechatMessage(
   const text = extractText(message).trim();
   const msgTimestamp = message.create_time_ms ?? Date.now();
 
-  // 检测并下载图片
+  // 检测并下载图片/文件/视频
   const imagePaths: string[] = [];
+  const filePaths: string[] = [];
+  const videoPaths: string[] = [];
   const items = message.item_list;
   if (items) {
     for (const item of items) {
@@ -577,14 +610,38 @@ async function handleWechatMessage(
           platformLog(`图片下载失败: ${(err as Error).message}`);
         }
       }
+      if (item.file_item?.media) {
+        try {
+          const localPath = await downloadWechatFile(item.file_item, message.message_id);
+          filePaths.push(localPath);
+        } catch (err) {
+          platformLog(`文件下载失败: ${(err as Error).message}`);
+        }
+      }
+      if (item.video_item?.media) {
+        try {
+          const localPath = await downloadWechatVideo(item.video_item, message.message_id);
+          videoPaths.push(localPath);
+        } catch (err) {
+          platformLog(`视频下载失败: ${(err as Error).message}`);
+        }
+      }
     }
   }
 
-  // 构建消息文本：文本内容 + 图片路径
+  // 构建消息文本：文本内容 + 图片/文件/视频路径
   let fullText = text;
   if (imagePaths.length > 0) {
     const imageLines = imagePaths.map((p) => `[图片] ${p}`).join("\n");
     fullText = fullText ? `${fullText}\n${imageLines}` : imageLines;
+  }
+  if (filePaths.length > 0) {
+    const fileLines = filePaths.map((p) => `[文件] ${p}`).join("\n");
+    fullText = fullText ? `${fullText}\n${fileLines}` : fileLines;
+  }
+  if (videoPaths.length > 0) {
+    const videoLines = videoPaths.map((p) => `[视频] ${p}`).join("\n");
+    fullText = fullText ? `${fullText}\n${videoLines}` : videoLines;
   }
 
   // 纯图片且无文字时跳过（避免空消息触发会话）
@@ -594,7 +651,7 @@ async function handleWechatMessage(
   }
 
   platformLog(
-    `收到消息: chatId=${chatId} text="${text.slice(0, 80)}" images=${imagePaths.length}`,
+    `收到消息: chatId=${chatId} text="${text.slice(0, 80)}" images=${imagePaths.length} files=${filePaths.length} videos=${videoPaths.length}`,
   );
   appendChatLog(chatId, chatId, fullText);
 

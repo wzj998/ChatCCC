@@ -92,6 +92,17 @@ export function _getPlatformForChatForTest(chatId: string): PlatformAdapter | nu
   return platformForChat(chatId);
 }
 
+export function getPlatformForChat(chatId: string): PlatformAdapter | null {
+  return platformForChat(chatId);
+}
+
+function imSkillNamesForPlatform(platform: PlatformAdapter): string[] {
+  if (platform.kind === "wechat") {
+    return ["wechat-skill"];
+  }
+  return ["feishu-skill"];
+}
+
 export let sessionGen = 0;
 /** @deprecated 使用 activePrompts (session-chat-binding.ts) + displayCards 替代 */
 export const chatSessionMap = new Map<string, {
@@ -717,9 +728,12 @@ export async function runAgentSession(
       send_file_script: join(feishuSkillDir, "send-file.mjs"),
       download_video_script: join(feishuSkillDir, "download-video.mjs"),
       wechat_send_image_script: join(wechatSkillDir, "send-image.mjs"),
+      wechat_send_file_script: join(wechatSkillDir, "send-file.mjs"),
+      wechat_send_video_script: join(wechatSkillDir, "send-video.mjs"),
     };
-    var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
-    await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);
+    const enabledSkillNames = imSkillNamesForPlatform(platform);
+    var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables, enabledSkillNames });
+    await exportSkillSubDocs({ variables: skillVariables, enabledSkillNames }, imSkillsCacheDir);
     var userTextWithCapabilities = [
       ...(imSkillsPrompt ? [imSkillsPrompt, ""] : []),
       "[User message]",

@@ -11,6 +11,7 @@ export interface ImSkillVariableMap {
 
 export interface BuildImSkillsPromptInput {
   skillsDir?: string;
+  enabledSkillNames?: readonly string[];
   variables: ImSkillVariableMap;
 }
 
@@ -52,8 +53,12 @@ async function loadSkillDocs(skillsDir: string): Promise<ImSkillDoc[]> {
 
 export async function buildImSkillsPrompt(input: BuildImSkillsPromptInput): Promise<string> {
   const skillsDir = input.skillsDir ?? DEFAULT_IM_SKILLS_DIR;
+  const enabledSkillNames = input.enabledSkillNames
+    ? new Set(input.enabledSkillNames)
+    : null;
   const docs = await loadSkillDocs(skillsDir);
   return docs
+    .filter((doc) => !enabledSkillNames || enabledSkillNames.has(doc.name))
     .map((doc) => {
       const rendered = renderTemplate(doc.content, input.variables).trim();
       return [
@@ -74,6 +79,9 @@ export async function exportSkillSubDocs(
   outputDir: string,
 ): Promise<string[]> {
   const skillsDir = input.skillsDir ?? DEFAULT_IM_SKILLS_DIR;
+  const enabledSkillNames = input.enabledSkillNames
+    ? new Set(input.enabledSkillNames)
+    : null;
   const files: string[] = [];
 
   let entries;
@@ -85,6 +93,7 @@ export async function exportSkillSubDocs(
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (enabledSkillNames && !enabledSkillNames.has(entry.name)) continue;
     const skillPath = join(skillsDir, entry.name);
 
     let subFiles;

@@ -7,6 +7,7 @@ import { ts } from "./config.ts";
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
 import { getAdapterForTool } from "./session.ts";
 import { getChatsForSession } from "./session-chat-binding.ts";
+import { splitFeishuTargetChats } from "./agent-platform-routing.ts";
 
 export const AGENT_SEND_IMAGE_PATH = "/api/agent/send-image";
 
@@ -99,11 +100,25 @@ export async function handleAgentImageRequest(
     return true;
   }
 
+  const { getPlatformForChat } = await import("./session.ts");
+  const { targetChatIds, skippedUnsupported } = splitFeishuTargetChats(
+    chatIds,
+    (cid) => getPlatformForChat(cid)?.kind,
+  );
+  if (targetChatIds.length === 0) {
+    jsonReply(res, 409, {
+      ok: false,
+      error: "This endpoint only sends to Feishu chats. The bound chats are WeChat chats; use the WeChat image helper script instead.",
+      skippedUnsupported,
+    });
+    return true;
+  }
+
   try {
     const token = await getTenantAccessToken();
     const caption = typeof payload.caption === "string" ? payload.caption.trim() : "";
     let sentCount = 0;
-    for (const cid of chatIds) {
+    for (const cid of targetChatIds) {
       try {
         await sendImageReply(token, cid, imagePath);
         if (caption) await sendTextReply(token, cid, caption);
@@ -112,8 +127,8 @@ export async function handleAgentImageRequest(
         console.error(`[${ts()}] [AGENT-IMAGE] send to ${cid} failed: ${(err as Error).message}`);
       }
     }
-    console.log(`[${ts()}] [AGENT-IMAGE] sent image to ${sentCount}/${chatIds.length} chats, session=${sessionId} path=${imagePath}`);
-    jsonReply(res, 200, { ok: true, sentTo: sentCount, total: chatIds.length });
+    console.log(`[${ts()}] [AGENT-IMAGE] sent image to ${sentCount}/${targetChatIds.length} Feishu chats, session=${sessionId} path=${imagePath} skippedUnsupported=${skippedUnsupported.length}`);
+    jsonReply(res, 200, { ok: true, sentTo: sentCount, total: targetChatIds.length, skippedUnsupported });
   } catch (err) {
     console.error(`[${ts()}] [AGENT-IMAGE] send failed: ${(err as Error).message}`);
     jsonReply(res, 500, { ok: false, error: (err as Error).message });

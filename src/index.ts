@@ -24,7 +24,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { WSClient, EventDispatcher, Domain } from "@larksuiteoapi/node-sdk";
+import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, waitForPortFree } from "./shared.ts";
@@ -50,8 +50,6 @@ import {
   maskAppId,
   resolveDefaultAgentTool,
   toolDisplayName,
-  config,
-  feishuDomainToSdkDomain,
   ts,
 } from "./config.ts";
 import { printServiceDidNotStart, printServiceRunningHint } from "./exit-banner.ts";
@@ -215,7 +213,15 @@ async function formatMessageContent(message: { message_id?: string; message_type
     return `[视频] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
   }
 
-  // 其他类型（file, audio, sticker）直接给原始 JSON
+  if (message.message_type === "file") {
+    const fileKey = content.file_key as string | undefined;
+    const fileName = (content.file_name as string) || "download.bin";
+    const messageId = message.message_id;
+    if (!fileKey || !messageId) return contentStr;
+    return `[文件] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
+  }
+
+  // 其他类型（audio, sticker 等）直接给原始 JSON
   return contentStr;
 }
 
@@ -405,7 +411,7 @@ async function startBotServiceCore(): Promise<void> {
     console.error(`  接口: POST ${BASE_URL}/auth/v3/tenant_access_token/internal`);
     console.error("  常见原因:");
     console.error(
-      `    - 本机网络无法访问 ${new URL(BASE_URL).hostname}（可尝试：关闭系统/终端代理、检查防火墙；Windows 可管理员运行 netsh winsock reset 后重启）`,
+      "    - 本机网络无法访问 open.feishu.cn（可尝试：关闭系统/终端代理、检查防火墙；Windows 可管理员运行 netsh winsock reset 后重启）",
     );
     console.error("    - App ID / App Secret 与开放平台「凭证与基础信息」不一致");
     console.error("    - 自建应用尚未创建/发布可用版本");
@@ -596,7 +602,6 @@ async function startBotServiceCore(): Promise<void> {
     const wsClient = new WSClient({
       appId: APP_ID,
       appSecret: APP_SECRET,
-      domain: feishuDomainToSdkDomain(config.feishu.domain),
       onReady: async () => {
         await rebuildBindingsFromRegistry().catch((err) =>
           console.error(`[${ts()}] [SDK READY] rebuild bindings failed: ${(err as Error).message}`)
