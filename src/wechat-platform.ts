@@ -224,9 +224,11 @@ export function createWechatAdapter(
       }
 
       try {
-        await sendWechatTextRaw(wire, chatId, text);
-        const preview = text.length > 60 ? text.slice(0, 60) + "..." : text;
-        log(`[WECHAT] sendText OK: chatId=${chatId} len=${text.length} count=${count} text="${preview}"`);
+        // 最后一步：非最终回复压缩行数（最多11行：头5 + ... + 尾5）
+        const sendText = isFinal ? text : compressGeneratingText(text);
+        await sendWechatTextRaw(wire, chatId, sendText);
+        const preview = sendText.length > 60 ? sendText.slice(0, 60) + "..." : sendText;
+        log(`[WECHAT] sendText OK: chatId=${chatId} len=${sendText.length} count=${count} text="${preview}"`);
         return true;
       } catch (err) {
         log(`[WECHAT] sendText failed: ${(err as Error).message}`);
