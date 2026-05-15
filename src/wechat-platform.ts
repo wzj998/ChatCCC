@@ -500,18 +500,6 @@ async function handleWechatMessage(
   // 用户回复，重置 claw 连发计数
   consecutiveSendCount.set(chatId, 0);
 
-  // 非指令消息：立即发送"生成中..."，让用户知道消息已收到并正在处理
-  if (text && !text.startsWith("/") && ilinkWire) {
-    const ctxToken = contextTokenMap.get(chatId);
-    if (ctxToken) {
-      ilinkWire.sendText(chatId, "生成中...", ctxToken).catch(() => {});
-    } else {
-      ilinkWire.push(chatId, "生成中...").catch(() => {});
-    }
-    // "生成中..." 计为第1条连发消息
-    consecutiveSendCount.set(chatId, 1);
-  }
-
   // WeChat 中所有会话都视为 p2p，/new 复用 p2p 路径（等同飞书 /newh 效果）
   // 不 await：避免长 prompt 阻塞后续消息处理（如 /cd、/stop 等命令）
   handler(text, chatId, chatId, msgTimestamp, "p2p").catch((err) => {
