@@ -1,7 +1,8 @@
 {
   "feishu": {
     "appId": "",
-    "appSecret": ""
+    "appSecret": "",
+    "domain": "feishu"
   },
   "platforms": {
     "feishu": { "enabled": true },

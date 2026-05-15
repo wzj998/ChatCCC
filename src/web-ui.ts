@@ -342,6 +342,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_APP_SECRET") {
       result.feishu = result.feishu || {};
       (result.feishu as Record<string, unknown>).appSecret = val;
+    } else if (key === "CHATCCC_FEISHU_DOMAIN") {
+      result.feishu = result.feishu || {};
+      (result.feishu as Record<string, unknown>).domain = val;
     } else if (key === "CHATCCC_FEISHU_ENABLED") {
       result.platforms = result.platforms || {};
       (result.platforms as Record<string, unknown>).feishu = (result.platforms as Record<string, unknown>).feishu || {};
@@ -639,6 +642,14 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <input type="password" id="field-CHATCCC_APP_SECRET" placeholder="...">
             <div class="hint">飞书开放平台「凭证与基础信息」→ App Secret</div>
           </div>
+          <div class="form-group">
+            <label>平台域名</label>
+            <select id="field-CHATCCC_FEISHU_DOMAIN">
+              <option value="feishu">飞书 (open.feishu.cn)</option>
+              <option value="lark">Lark (open.larksuite.com)</option>
+            </select>
+            <div class="hint">国际版 Lark 用户请选择 Lark</div>
+          </div>
         </div>
       </div>
 
@@ -826,6 +837,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         </div>
         <div class="config-row"><span class="key">App ID</span><span class="val" id="cfg-APP_ID">-</span></div>
         <div class="config-row"><span class="key">App Secret</span><span class="val" id="cfg-APP_SECRET">-</span></div>
+        <div class="config-row"><span class="key">平台域名</span><span class="val" id="cfg-FEISHU_DOMAIN">-</span></div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('feishu')">编辑</button>
       </div>
     </details>
@@ -926,7 +938,7 @@ const AGENT_FIELDS = {
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_EFFORT']
 };
-const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
+const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET','CHATCCC_FEISHU_DOMAIN'];
 
 // 当前选中的 Claude API 模式（"official" / "thirdparty"）
 // Wizard / Dashboard 都通过这个变量驱动 UI 显隐和提交时的 mode 字段
@@ -1197,6 +1209,7 @@ function renderStep1() {
   var f = c.feishu || {};
   prefillNested('field-CHATCCC_APP_ID', f.appId);
   prefillNested('field-CHATCCC_APP_SECRET', f.appSecret);
+  prefillNested('field-CHATCCC_FEISHU_DOMAIN', f.domain || 'feishu');
   // 平台开关：按已有 config 回填；首次配置（无飞书凭证）时默认关闭飞书、开启微信
   var hasExistingCreds = Boolean(c.feishu?.appId?.trim() && c.feishu?.appSecret?.trim());
   var feishuEnabled = hasExistingCreds
@@ -1349,6 +1362,7 @@ function renderStep3() {
   if (state.platformsEnabled.feishu) {
     lines.push('<div class="config-row"><span class="key">CHATCCC_APP_ID</span><span class="val">' + (vars.CHATCCC_APP_ID || '<span style="color:#ef4444">未填写</span>') + '</span></div>');
     lines.push('<div class="config-row"><span class="key">CHATCCC_APP_SECRET</span><span class="val">' + (vars.CHATCCC_APP_SECRET ? '***已设置***' : '<span style="color:#ef4444">未填写</span>') + '</span></div>');
+    lines.push('<div class="config-row"><span class="key">平台域名</span><span class="val">' + ((vars.CHATCCC_FEISHU_DOMAIN === 'lark') ? 'Lark (open.larksuite.com)' : '飞书 (open.feishu.cn)') + '</span></div>');
   }
 
   lines.push('<h3 style="margin:16px 0 8px">微信 iLink</h3>');
@@ -1534,6 +1548,7 @@ function updateDashboardUI() {
   state.platformsEnabled.feishu = feishuEnabled;
   document.getElementById('cfg-APP_ID').textContent = c.feishu && c.feishu.appId ? c.feishu.appId.slice(0,8) + '...' + c.feishu.appId.slice(-4) : '-';
   document.getElementById('cfg-APP_SECRET').textContent = c.feishu && c.feishu.appSecret ? '***已设置***' : '-';
+  document.getElementById('cfg-FEISHU_DOMAIN').textContent = (c.feishu && c.feishu.domain === 'lark') ? 'Lark (open.larksuite.com)' : '飞书 (open.feishu.cn)';
 
   // 只显示已启用的 Agent 卡片（按 enabled 字段；缺省时退回到"任一字段非空"兼容旧 config）
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
@@ -1636,7 +1651,7 @@ function editSection(section) {
 
   var html = '';
   var labelMap = {
-    'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
+    'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret', 'CHATCCC_FEISHU_DOMAIN': '平台域名',
     'CLAUDE_API_KEY': 'API Key', 'CLAUDE_BASE_URL': 'Base URL',
     'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
@@ -1673,6 +1688,7 @@ function editSection(section) {
       if (section === 'feishu') {
         if (key === 'CHATCCC_APP_ID' && state.config.feishu) val = state.config.feishu.appId || '';
         else if (key === 'CHATCCC_APP_SECRET' && state.config.feishu) val = state.config.feishu.appSecret || '';
+        else if (key === 'CHATCCC_FEISHU_DOMAIN' && state.config.feishu) val = state.config.feishu.domain || 'feishu';
       } else if (section === 'claude' && state.config.claude) {
         if (key === 'CLAUDE_API_KEY') val = state.config.claude.apiKey || '';
         else if (key === 'CLAUDE_BASE_URL') val = state.config.claude.baseUrl || '';
@@ -1707,7 +1723,14 @@ function editSection(section) {
     var groupClass = 'form-group' + (isClaudeSubagentField && claudeApiMode !== 'thirdparty' ? ' hidden' : '');
     var subagentAttr = isClaudeSubagentField ? ' data-claude-subagent-field="1"' : '';
     html += '<div class="' + groupClass + '"' + subagentAttr + '><label>' + (labelMap[key] || key) + '</label>';
-    html += '<input type="' + (isSecret ? 'password' : 'text') + '" id="edit-' + key + '" value="' + String(val).replace(/"/g,'&quot;') + '">';
+    if (key === 'CHATCCC_FEISHU_DOMAIN') {
+      html += '<select id="edit-' + key + '">';
+      html += '<option value="feishu"' + (val === 'lark' ? '' : ' selected') + '>飞书 (open.feishu.cn)</option>';
+      html += '<option value="lark"' + (val === 'lark' ? ' selected' : '') + '>Lark (open.larksuite.com)</option>';
+      html += '</select>';
+    } else {
+      html += '<input type="' + (isSecret ? 'password' : 'text') + '" id="edit-' + key + '" value="' + String(val).replace(/"/g,'&quot;') + '">';
+    }
     html += '</div>';
   });
 
