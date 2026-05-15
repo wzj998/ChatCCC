@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
+import { Domain } from "@larksuiteoapi/node-sdk";
+
 import { printServiceDidNotStart } from "./exit-banner.ts";
 import { appendStartupTrace, setupFileLogging } from "./shared.ts";
 import {
@@ -90,9 +92,25 @@ export interface CodexConfig {
   effort: string;
 }
 
+export type FeishuDomain = "feishu" | "lark";
+
 export interface FeishuConfig {
   appId: string;
   appSecret: string;
+  /** "feishu" (默认) → https://open.feishu.cn, "lark" → https://open.larksuite.com */
+  domain?: FeishuDomain;
+}
+
+/** 用户配置的 domain 字符串 → SDK Domain 枚举 */
+export function feishuDomainToSdkDomain(domain?: FeishuDomain): Domain {
+  return domain === "lark" ? Domain.Lark : Domain.Feishu;
+}
+
+/** 用户配置的 domain 字符串 → REST API base URL */
+export function feishuDomainToBaseUrl(domain?: FeishuDomain): string {
+  return domain === "lark"
+    ? "https://open.larksuite.com/open-apis"
+    : "https://open.feishu.cn/open-apis";
 }
 
 export interface PlatformConfig {
@@ -298,7 +316,7 @@ function autofillToolPathsAfterSampleCopy(configFile: string): void {
 
 function loadConfig(): AppConfig {
   const defaults: AppConfig = {
-    feishu: { appId: "", appSecret: "" },
+    feishu: { appId: "", appSecret: "", domain: "feishu" },
     platforms: { feishu: { enabled: true }, ilink: { enabled: true } },
     port: 18080,
     gitTimeoutSeconds: 180,
@@ -358,6 +376,8 @@ function loadConfig(): AppConfig {
   }
 
   const feishu = parsed.feishu ?? { appId: "", appSecret: "" };
+  const feishuDomain: FeishuDomain =
+    (feishu as { domain?: unknown }).domain === "lark" ? "lark" : "feishu";
   const claude = parsed.claude ?? {} as Partial<ClaudeConfig>;
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
@@ -420,6 +440,7 @@ function loadConfig(): AppConfig {
     feishu: {
       appId: feishu.appId ?? "",
       appSecret: feishu.appSecret ?? "",
+      domain: feishuDomain,
     },
     platforms: {
       feishu: {
@@ -497,7 +518,7 @@ export let APP_SECRET = config.feishu.appSecret;
 export let FEISHU_ENABLED = config.platforms.feishu.enabled;
 export let ILINK_ENABLED = config.platforms.ilink.enabled;
 export let ILINK_REUSE_TOKEN_ON_START = config.platforms.ilink.reuseTokenOnStart ?? true;
-export const BASE_URL = "https://open.feishu.cn/open-apis";
+export let BASE_URL = feishuDomainToBaseUrl(config.feishu.domain);
 export const CHATCCC_PORT = config.port;
 
 /** 与 CHATCCC_PORT 一致，供 --local 连接本机中继 */
@@ -576,6 +597,7 @@ export function applyLoadedConfig(next: AppConfig): void {
 
   APP_ID = next.feishu.appId;
   APP_SECRET = next.feishu.appSecret;
+  BASE_URL = feishuDomainToBaseUrl(next.feishu.domain);
   FEISHU_ENABLED = next.platforms.feishu.enabled;
   ILINK_ENABLED = next.platforms.ilink.enabled;
   ILINK_REUSE_TOKEN_ON_START = next.platforms.ilink.reuseTokenOnStart ?? true;
