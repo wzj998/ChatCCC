@@ -698,6 +698,7 @@ export async function runAgentSession(
 
     // 构建 IM skills prompt（sessionId 方式，无 token）
     const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
+    const wechatSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-skill");
     const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
     const skillVariables = {
       cwd,
@@ -708,6 +709,7 @@ export async function runAgentSession(
       send_image_script: join(feishuSkillDir, "send-image.mjs"),
       send_file_script: join(feishuSkillDir, "send-file.mjs"),
       download_video_script: join(feishuSkillDir, "download-video.mjs"),
+      wechat_send_image_script: join(wechatSkillDir, "send-image.mjs"),
     };
     var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables });
     await exportSkillSubDocs({ variables: skillVariables }, imSkillsCacheDir);

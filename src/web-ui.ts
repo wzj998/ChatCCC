@@ -270,9 +270,8 @@ async function handleApiCheck(_req: IncomingMessage, res: ServerResponse): Promi
   if (hasConfig) {
     const c = loadConfig();
     const feishuEnabled = c.platforms?.feishu?.enabled !== false; // 默认 true（向后兼容）
-    const ilinkEnabled = c.platforms?.ilink?.enabled !== false;
     const feishuOk = feishuEnabled && Boolean(c.feishu?.appId?.trim() && c.feishu?.appSecret?.trim());
-    hasCreds = feishuOk || ilinkEnabled;
+    hasCreds = feishuOk || !feishuEnabled;
   }
   jsonReply(res, 200, { hasConfig, hasCreds, configPath: CONFIG_FILE });
 }
@@ -1198,9 +1197,14 @@ function renderStep1() {
   var f = c.feishu || {};
   prefillNested('field-CHATCCC_APP_ID', f.appId);
   prefillNested('field-CHATCCC_APP_SECRET', f.appSecret);
-  // 平台开关：按已有 config 回填，缺省飞书和微信都开启
-  var feishuEnabled = c.platforms && c.platforms.feishu ? c.platforms.feishu.enabled !== false : true;
-  var ilinkEnabled = c.platforms && c.platforms.ilink ? c.platforms.ilink.enabled !== false : true;
+  // 平台开关：按已有 config 回填；首次配置（无飞书凭证）时默认关闭飞书、开启微信
+  var hasExistingCreds = Boolean(c.feishu?.appId?.trim() && c.feishu?.appSecret?.trim());
+  var feishuEnabled = hasExistingCreds
+    ? (c.platforms?.feishu?.enabled !== false)
+    : false;
+  var ilinkEnabled = hasExistingCreds
+    ? (c.platforms?.ilink?.enabled !== false)
+    : true;
   state.platformsEnabled = { feishu: feishuEnabled, ilink: ilinkEnabled };
   var feToggle = document.getElementById('platform-enable-feishu');
   if (feToggle) feToggle.checked = feishuEnabled;

@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
 
 import {
@@ -19,6 +19,7 @@ import {
   type GetUpdatesResponse,
   type WeixinMessage,
 } from "@openilink/openilink-sdk-node";
+import type { CDNMedia, ImageItem } from "@openilink/openilink-sdk-node";
 
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { setupFileLogging } from "./shared.ts";
@@ -56,10 +57,17 @@ const { logPath: WECHAT_LOG_PATH } =
   setupFileLogging(ILINK_LOG_DIR, "wechat");
 
 let ilinkWire: OpenIlinkWire | null = null;
+
+/** 获取当前 iLink wire 实例（供外部脚本/测试使用） */
+export function getIlinkWire(): OpenIlinkWire | null {
+  return ilinkWire;
+}
 /** chatId → 最新 context_token */
 const contextTokenMap = new Map<string, string>();
 /** chatId → 用户未回复时已连发消息数 */
 const consecutiveSendCount = new Map<string, number>();
+/** chatId → claw 限制后等待用户唤醒再补发的最终消息 */
+const pendingClawFinalText = new Map<string, string>();
 const textCardMap = new Map<string, { chatId?: string; text: string; lastSentText: string; lastSentAt: number }>();
 let textCardSeq = 0;
 let platformLog: (msg: string) => void = () => {};
@@ -85,6 +93,49 @@ function compressGeneratingText(text: string): string {
   const lines = text.split("\n");
   if (lines.length <= 10) return text;
   return [...lines.slice(0, 5), "...", ...lines.slice(-5)].join("\n");
+}
+
+async function sendWechatTextRaw(wire: WechatWireSender, chatId: string, text: string): Promise<void> {
+  const contextToken = contextTokenMap.get(chatId);
+  if (contextToken) {
+    await wire.sendText(chatId, text, contextToken);
+  } else {
+    await wire.push(chatId, text);
+  }
+}
+
+async function flushPendingClawFinalText(
+  chatId: string,
+  wire: WechatWireSender | null,
+  log: (msg: string) => void,
+): Promise<boolean> {
+  const text = pendingClawFinalText.get(chatId);
+  if (!text || !wire) return false;
+
+  try {
+    await sendWechatTextRaw(wire, chatId, text);
+    pendingClawFinalText.delete(chatId);
+    consecutiveSendCount.set(chatId, 1);
+    log(`[WECHAT] pending final sent after claw wake: chatId=${chatId} len=${text.length}`);
+    return true;
+  } catch (err) {
+    log(`[WECHAT] pending final send failed: ${(err as Error).message}`);
+    return false;
+  }
+}
+
+export function _resetWechatClawStateForTest(): void {
+  consecutiveSendCount.clear();
+  pendingClawFinalText.clear();
+  contextTokenMap.clear();
+}
+
+export async function _flushPendingClawFinalTextForTest(
+  chatId: string,
+  wire: WechatWireSender | null,
+  log: (msg: string) => void = () => {},
+): Promise<boolean> {
+  return flushPendingClawFinalText(chatId, wire, log);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,19 +211,20 @@ export function createWechatAdapter(
         text = text + "\n━━ 后台工作中，由于微信claw机制限制，请唤醒我才能继续发送消息";
       }
 
-      // 超过10条后非最终消息不再发送（claw 限制）
-      if (count > 10 && !isFinal) {
-        log(`[WECHAT] sendText skipped (claw limit): chatId=${chatId} count=${count}`);
-        return false;
+      // 超过10条后不再直接发送。微信端 claw 可能会静默丢弃，即使 iLink 返回 OK。
+      if (count > 10) {
+        if (isFinal) {
+          pendingClawFinalText.set(chatId, text);
+          log(`[WECHAT] final queued (claw limit): chatId=${chatId} count=${count} len=${text.length}`);
+          return true;
+        } else {
+          log(`[WECHAT] sendText skipped (claw limit): chatId=${chatId} count=${count}`);
+          return false;
+        }
       }
 
       try {
-        const contextToken = contextTokenMap.get(chatId);
-        if (contextToken) {
-          await wire.sendText(chatId, text, contextToken);
-        } else {
-          await wire.push(chatId, text);
-        }
+        await sendWechatTextRaw(wire, chatId, text);
         const preview = text.length > 60 ? text.slice(0, 60) + "..." : text;
         log(`[WECHAT] sendText OK: chatId=${chatId} len=${text.length} count=${count} text="${preview}"`);
         return true;
@@ -467,6 +519,44 @@ export async function startWechatPlatform(
   );
 }
 
+const WECHAT_IMAGE_DOWNLOAD_DIR = join(homedir(), ".chatccc", "images", "downloads");
+
+function extFromMimeOrName(mime?: string | null, fileName?: string | null): string {
+  if (mime) {
+    const map: Record<string, string> = {
+      "image/png": ".png",
+      "image/jpeg": ".jpg",
+      "image/webp": ".webp",
+      "image/gif": ".gif",
+      "image/bmp": ".bmp",
+      "image/svg+xml": ".svg",
+    };
+    const key = mime.split(";")[0].trim().toLowerCase();
+    if (map[key]) return map[key];
+  }
+  if (fileName) {
+    const ext = extname(fileName).toLowerCase();
+    if (ext) return ext;
+  }
+  return ".png";
+}
+
+async function downloadWechatImage(imageItem: ImageItem, msgId?: number): Promise<string> {
+  const wire = ilinkWire;
+  if (!wire) throw new Error("iLink wire not available");
+  if (!imageItem.media) throw new Error("image item has no media");
+
+  const data = await wire.downloadMedia(imageItem.media);
+  const mime = (imageItem as Record<string, unknown>).mime_type as string | undefined;
+  const ext = extFromMimeOrName(mime);
+  const key = imageItem.media.aes_key?.slice(0, 16) ?? (msgId?.toString() ?? Date.now().toString());
+  await mkdirSync(WECHAT_IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(WECHAT_IMAGE_DOWNLOAD_DIR, `wx_${key}${ext}`);
+  writeFileSync(localPath, data);
+  platformLog(`图片已下载: ${localPath}`);
+  return localPath;
+}
+
 async function handleWechatMessage(
   message: WeixinMessage,
   handler: MessageHandler,
@@ -492,17 +582,52 @@ async function handleWechatMessage(
   const text = extractText(message).trim();
   const msgTimestamp = message.create_time_ms ?? Date.now();
 
+  // 检测并下载图片
+  const imagePaths: string[] = [];
+  const items = message.item_list;
+  if (items) {
+    for (const item of items) {
+      if (item.image_item?.media) {
+        try {
+          const localPath = await downloadWechatImage(item.image_item, message.message_id);
+          imagePaths.push(localPath);
+        } catch (err) {
+          platformLog(`图片下载失败: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
+
+  // 构建消息文本：文本内容 + 图片路径
+  let fullText = text;
+  if (imagePaths.length > 0) {
+    const imageLines = imagePaths.map((p) => `[图片] ${p}`).join("\n");
+    fullText = fullText ? `${fullText}\n${imageLines}` : imageLines;
+  }
+
+  // 纯图片且无文字时跳过（避免空消息触发会话）
+  if (!fullText.trim()) {
+    platformLog(`跳过纯媒体消息（无文本）: chatId=${chatId}`);
+    return;
+  }
+
   platformLog(
-    `收到消息: chatId=${chatId} text="${text.slice(0, 80)}"`,
+    `收到消息: chatId=${chatId} text="${text.slice(0, 80)}" images=${imagePaths.length}`,
   );
-  appendChatLog(chatId, chatId, text);
+  appendChatLog(chatId, chatId, fullText);
 
   // 用户回复，重置 claw 连发计数
   consecutiveSendCount.set(chatId, 0);
 
+  // 如果上一轮最终消息因 claw 被暂存，这次用户消息只作为唤醒使用。
+  if (pendingClawFinalText.has(chatId)) {
+    await flushPendingClawFinalText(chatId, ilinkWire, platformLog);
+    return;
+  }
+
   // WeChat 中所有会话都视为 p2p，/new 复用 p2p 路径（等同飞书 /newh 效果）
   // 不 await：避免长 prompt 阻塞后续消息处理（如 /cd、/stop 等命令）
-  handler(text, chatId, chatId, msgTimestamp, "p2p").catch((err) => {
+  handler(fullText, chatId, chatId, msgTimestamp, "p2p").catch((err) => {
     platformLog(`消息处理失败: ${(err as Error).stack ?? (err as Error).message}`);
   });
 }
