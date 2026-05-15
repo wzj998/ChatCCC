@@ -1,13 +1,26 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, extname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 
 import { Client as OpenIlinkWire } from "@openilink/openilink-sdk-node";
 
 const ILINK_AUTH_PATH = join(homedir(), ".chatccc", "state", "ilink-auth.json");
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const ALLOWED_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+const MAX_FILE_BYTES = 30 * 1024 * 1024;
+const ALLOWED_EXTS = new Set([
+  ".txt",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".csv",
+  ".ppt",
+  ".pptx",
+  ".zip",
+  ".tar",
+  ".gz",
+]);
 
 function parseArgs(argv) {
   const result = {};
@@ -22,32 +35,40 @@ function parseArgs(argv) {
 
 function usage() {
   console.error(`Usage:
-  node ${basename(process.argv[1])} --path <absolute image path> [--caption <text>]`);
+  node ${basename(process.argv[1])} --path <absolute file path> [--caption <text>]`);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const imagePath = args.path;
+  const filePath = args.path;
   const caption = args.caption || "";
 
-  if (!imagePath) {
+  if (!filePath) {
     usage();
     process.exit(1);
   }
+  if (!isAbsolute(filePath)) {
+    console.error("File path must be absolute.");
+    process.exit(1);
+  }
 
-  const ext = extname(imagePath).toLowerCase();
+  const ext = extname(filePath).toLowerCase();
   if (!ALLOWED_EXTS.has(ext)) {
-    console.error(`Unsupported image extension: ${ext || "(none)"}`);
+    console.error(`Unsupported file extension: ${ext || "(none)"}`);
     process.exit(1);
   }
 
-  const st = statSync(imagePath);
+  const st = statSync(filePath);
   if (!st.isFile()) {
-    console.error("Image path is not a file");
+    console.error("File path is not a file");
     process.exit(1);
   }
-  if (st.size > MAX_IMAGE_BYTES) {
-    console.error("Image file exceeds 10MB limit");
+  if (st.size <= 0) {
+    console.error("File is empty");
+    process.exit(1);
+  }
+  if (st.size > MAX_FILE_BYTES) {
+    console.error("File exceeds 30MB limit");
     process.exit(1);
   }
 
@@ -63,14 +84,14 @@ async function main() {
     process.exit(1);
   }
 
-  const imgData = readFileSync(imagePath);
-  const fileName = basename(imagePath);
+  const fileData = readFileSync(filePath);
+  const fileName = basename(filePath);
 
   const wire = new OpenIlinkWire(snap.token, {
     base_url: snap.baseUrl,
   });
 
-  await wire.sendMediaFile(snap.lastChatId, snap.contextToken, imgData, fileName, caption);
+  await wire.sendMediaFile(snap.lastChatId, snap.contextToken, fileData, fileName, caption);
   console.log(JSON.stringify({ ok: true, sentTo: 1 }));
 }
 

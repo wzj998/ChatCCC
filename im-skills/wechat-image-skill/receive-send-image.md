@@ -2,11 +2,11 @@
 
 ## Receive Images
 
-Images sent to the bot are **automatically downloaded** to `~/.chatccc/images/downloads/` with the `wx_` filename prefix.
+Images sent to the bot are automatically downloaded to `~/.chatccc/images/downloads/` with the `wx_` filename prefix.
 
 The message text you receive will include the downloaded path in the format:
-```
-[图片] C:\Users\<用户名>\.chatccc\images\downloads\wx_<key>.png
+```text
+[图片] C:\Users\<user>\.chatccc\images\downloads\wx_<key>.png
 ```
 
 You can read the image file at that path to understand what the user sent.
@@ -34,6 +34,6 @@ await wire.sendMediaFile(chatId, contextToken, imageBuffer, "filename.png", "cap
 - Save or choose a local image file first.
 - Use an absolute local path.
 - Supported formats: .png, .jpg, .jpeg, .webp, .gif, .bmp.
-- Max image size: 10MB (SDK guideline; larger files upload slower).
+- Max image size: 10MB.
 - Only send an image when the user asked for one or when it materially helps the answer.
-- **Claw 限制**: 图片发送也计入微信 claw 连发计数，连续 10 条未回复会截断。
+- Image sending counts as an outgoing WeChat message. Avoid repeated unsolicited sends.
