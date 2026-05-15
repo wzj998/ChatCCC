@@ -98,7 +98,7 @@ export function getPlatformForChat(chatId: string): PlatformAdapter | null {
 
 function imSkillNamesForPlatform(platform: PlatformAdapter): string[] {
   if (platform.kind === "wechat") {
-    return ["wechat-skill"];
+    return ["wechat-image-skill", "wechat-file-skill", "wechat-video-skill"];
   }
   return ["feishu-skill"];
 }
@@ -716,7 +716,9 @@ export async function runAgentSession(
 
     // 构建 IM skills prompt（sessionId 方式，无 token）
     const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
-    const wechatSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-skill");
+    const wechatImageSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-image-skill");
+    const wechatFileSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-file-skill");
+    const wechatVideoSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-video-skill");
     const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
     const skillVariables = {
       cwd,
@@ -727,9 +729,9 @@ export async function runAgentSession(
       send_image_script: join(feishuSkillDir, "send-image.mjs"),
       send_file_script: join(feishuSkillDir, "send-file.mjs"),
       download_video_script: join(feishuSkillDir, "download-video.mjs"),
-      wechat_send_image_script: join(wechatSkillDir, "send-image.mjs"),
-      wechat_send_file_script: join(wechatSkillDir, "send-file.mjs"),
-      wechat_send_video_script: join(wechatSkillDir, "send-video.mjs"),
+      wechat_send_image_script: join(wechatImageSkillDir, "send-image.mjs"),
+      wechat_send_file_script: join(wechatFileSkillDir, "send-file.mjs"),
+      wechat_send_video_script: join(wechatVideoSkillDir, "send-video.mjs"),
     };
     const enabledSkillNames = imSkillNamesForPlatform(platform);
     var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables, enabledSkillNames });
