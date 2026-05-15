@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
 
 import {
@@ -19,7 +19,7 @@ import {
   type GetUpdatesResponse,
   type WeixinMessage,
 } from "@openilink/openilink-sdk-node";
-import type { FileItem, ImageItem, VideoItem } from "@openilink/openilink-sdk-node";
+import type { CDNMedia, FileItem, ImageItem, VideoItem } from "@openilink/openilink-sdk-node";
 
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { setupFileLogging } from "./shared.ts";
@@ -502,31 +502,8 @@ export async function startWechatPlatform(
 }
 
 const WECHAT_IMAGE_DOWNLOAD_DIR = join(homedir(), ".chatccc", "images", "downloads");
-const WECHAT_FILE_DOWNLOAD_DIR = join(homedir(), ".chatccc", "files", "downloads");
-const WECHAT_VIDEO_DOWNLOAD_DIR = join(homedir(), ".chatccc", "videos", "downloads");
 
-type WechatMediaDownloader = Pick<OpenIlinkWire, "downloadMedia">;
-
-interface WechatMediaDownloadOptions {
-  wire?: WechatMediaDownloader | null;
-  imageDir?: string;
-  fileDir?: string;
-  videoDir?: string;
-  log?: (msg: string) => void;
-}
-
-interface WechatDownloadedMediaAttachments {
-  imagePaths: string[];
-  filePaths: string[];
-  videoPaths: string[];
-  messageLines: string[];
-}
-
-function extFromMimeOrName(
-  mime?: string | null,
-  fileName?: string | null,
-  fallback = ".bin",
-): string {
+function extFromMimeOrName(mime?: string | null, fileName?: string | null): string {
   if (mime) {
     const map: Record<string, string> = {
       "image/png": ".png",
@@ -535,17 +512,6 @@ function extFromMimeOrName(
       "image/gif": ".gif",
       "image/bmp": ".bmp",
       "image/svg+xml": ".svg",
-      "video/mp4": ".mp4",
-      "video/quicktime": ".mov",
-      "video/x-msvideo": ".avi",
-      "video/x-matroska": ".mkv",
-      "video/webm": ".webm",
-      "video/x-flv": ".flv",
-      "text/plain": ".txt",
-      "text/csv": ".csv",
-      "application/pdf": ".pdf",
-      "application/zip": ".zip",
-      "application/gzip": ".gz",
     };
     const key = mime.split(";")[0].trim().toLowerCase();
     if (map[key]) return map[key];
@@ -554,143 +520,54 @@ function extFromMimeOrName(
     const ext = extname(fileName).toLowerCase();
     if (ext) return ext;
   }
-  return fallback;
+  return ".png";
 }
 
-async function downloadWechatImage(
-  imageItem: ImageItem,
-  msgId?: number,
-  options: WechatMediaDownloadOptions = {},
-): Promise<string> {
-  const wire = options.wire ?? ilinkWire;
+async function downloadWechatImage(imageItem: ImageItem, msgId?: number): Promise<string> {
+  const wire = ilinkWire;
   if (!wire) throw new Error("iLink wire not available");
   if (!imageItem.media) throw new Error("image item has no media");
 
   const data = await wire.downloadMedia(imageItem.media);
   const mime = (imageItem as Record<string, unknown>).mime_type as string | undefined;
-  const fileName = (imageItem as Record<string, unknown>).file_name as string | undefined;
-  const ext = extFromMimeOrName(mime, fileName, ".png");
+  const ext = extFromMimeOrName(mime);
   const key = imageItem.media.aes_key?.slice(0, 16) ?? (msgId?.toString() ?? Date.now().toString());
-  const downloadDir = options.imageDir ?? WECHAT_IMAGE_DOWNLOAD_DIR;
-  mkdirSync(downloadDir, { recursive: true });
-  const localPath = join(downloadDir, `wx_${key}${ext}`);
+  await mkdirSync(WECHAT_IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(WECHAT_IMAGE_DOWNLOAD_DIR, `wx_${key}${ext}`);
   writeFileSync(localPath, data);
   platformLog(`图片已下载: ${localPath}`);
   return localPath;
 }
 
-function safeLocalFileName(fileName: string): string {
-  return basename(fileName).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-}
-
-async function downloadWechatFile(
-  fileItem: FileItem,
-  msgId?: number,
-  options: WechatMediaDownloadOptions = {},
-): Promise<string> {
-  const wire = options.wire ?? ilinkWire;
+async function downloadWechatFile(fileItem: FileItem, msgId?: number): Promise<string> {
+  const wire = ilinkWire;
   if (!wire) throw new Error("iLink wire not available");
   if (!fileItem.media) throw new Error("file item has no media");
 
   const data = await wire.downloadMedia(fileItem.media);
-  const mime = (fileItem as Record<string, unknown>).mime_type as string | undefined;
-  const ext = extFromMimeOrName(mime, fileItem.file_name, ".bin");
-  const key =
-    fileItem.md5?.slice(0, 16) ??
-    fileItem.media.aes_key?.slice(0, 16) ??
-    (msgId?.toString() ?? Date.now().toString());
-  const localName = fileItem.file_name
-    ? `wx_${key}_${safeLocalFileName(fileItem.file_name)}`
-    : `wx_${key}${ext}`;
-  const downloadDir = options.fileDir ?? WECHAT_FILE_DOWNLOAD_DIR;
-  mkdirSync(downloadDir, { recursive: true });
-  const localPath = join(downloadDir, localName);
+  const fileName = fileItem.file_name || "file";
+  const ext = extname(fileName).toLowerCase() || extFromMimeOrName(undefined);
+  const key = fileItem.media.aes_key?.slice(0, 16) ?? (msgId?.toString() ?? Date.now().toString());
+  await mkdirSync(WECHAT_IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(WECHAT_IMAGE_DOWNLOAD_DIR, `wx_${key}_${fileName}`);
   writeFileSync(localPath, data);
-  (options.log ?? platformLog)(`文件已下载: ${localPath}`);
+  platformLog(`文件已下载: ${localPath}`);
   return localPath;
 }
 
-async function downloadWechatVideo(
-  videoItem: VideoItem,
-  msgId?: number,
-  options: WechatMediaDownloadOptions = {},
-): Promise<string> {
-  const wire = options.wire ?? ilinkWire;
+async function downloadWechatVideo(videoItem: VideoItem, msgId?: number): Promise<string> {
+  const wire = ilinkWire;
   if (!wire) throw new Error("iLink wire not available");
   if (!videoItem.media) throw new Error("video item has no media");
 
   const data = await wire.downloadMedia(videoItem.media);
-  const mime = (videoItem as Record<string, unknown>).mime_type as string | undefined;
-  const fileName = (videoItem as Record<string, unknown>).file_name as string | undefined;
-  const ext = extFromMimeOrName(mime, fileName, ".mp4");
-  const key =
-    videoItem.video_md5?.slice(0, 16) ??
-    videoItem.media.aes_key?.slice(0, 16) ??
-    (msgId?.toString() ?? Date.now().toString());
-  const downloadDir = options.videoDir ?? WECHAT_VIDEO_DOWNLOAD_DIR;
-  mkdirSync(downloadDir, { recursive: true });
-  const localPath = join(downloadDir, `wx_${key}${ext}`);
+  const ext = extFromMimeOrName(undefined);
+  const key = videoItem.media.aes_key?.slice(0, 16) ?? (msgId?.toString() ?? Date.now().toString());
+  await mkdirSync(WECHAT_IMAGE_DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(WECHAT_IMAGE_DOWNLOAD_DIR, `wx_${key}${ext}`);
   writeFileSync(localPath, data);
-  (options.log ?? platformLog)(`视频已下载: ${localPath}`);
+  platformLog(`视频已下载: ${localPath}`);
   return localPath;
-}
-
-async function downloadWechatMediaAttachments(
-  message: WeixinMessage,
-  options: WechatMediaDownloadOptions = {},
-): Promise<WechatDownloadedMediaAttachments> {
-  const imagePaths: string[] = [];
-  const filePaths: string[] = [];
-  const videoPaths: string[] = [];
-  const messageLines: string[] = [];
-  const items = message.item_list;
-  if (items) {
-    for (const item of items) {
-      if (item.image_item?.media) {
-        try {
-          const localPath = await downloadWechatImage(item.image_item, message.message_id, options);
-          imagePaths.push(localPath);
-          messageLines.push(`[图片] ${localPath}`);
-        } catch (err) {
-          (options.log ?? platformLog)(`图片下载失败: ${(err as Error).message}`);
-        }
-      }
-
-      if (item.file_item?.media) {
-        try {
-          const localPath = await downloadWechatFile(item.file_item, message.message_id, options);
-          filePaths.push(localPath);
-          messageLines.push(`[文件] ${localPath}`);
-        } catch (err) {
-          (options.log ?? platformLog)(`文件下载失败: ${(err as Error).message}`);
-        }
-      }
-
-      if (item.video_item?.media) {
-        try {
-          const localPath = await downloadWechatVideo(item.video_item, message.message_id, options);
-          videoPaths.push(localPath);
-          messageLines.push(`[视频] ${localPath}`);
-        } catch (err) {
-          (options.log ?? platformLog)(`视频下载失败: ${(err as Error).message}`);
-        }
-      }
-    }
-  }
-
-  return {
-    imagePaths,
-    filePaths,
-    videoPaths,
-    messageLines,
-  };
-}
-
-export async function _downloadWechatMediaAttachmentsForTest(
-  message: WeixinMessage,
-  options: WechatMediaDownloadOptions,
-): Promise<WechatDownloadedMediaAttachments> {
-  return downloadWechatMediaAttachments(message, options);
 }
 
 async function handleWechatMessage(
@@ -718,23 +595,63 @@ async function handleWechatMessage(
   const text = extractText(message).trim();
   const msgTimestamp = message.create_time_ms ?? Date.now();
 
-  const mediaAttachments = await downloadWechatMediaAttachments(message);
-
-  // 构建消息文本：文本内容 + 媒体路径
-  let fullText = text;
-  if (mediaAttachments.messageLines.length > 0) {
-    const mediaLines = mediaAttachments.messageLines.join("\n");
-    fullText = fullText ? `${fullText}\n${mediaLines}` : mediaLines;
+  // 检测并下载图片/文件/视频
+  const imagePaths: string[] = [];
+  const filePaths: string[] = [];
+  const videoPaths: string[] = [];
+  const items = message.item_list;
+  if (items) {
+    for (const item of items) {
+      if (item.image_item?.media) {
+        try {
+          const localPath = await downloadWechatImage(item.image_item, message.message_id);
+          imagePaths.push(localPath);
+        } catch (err) {
+          platformLog(`图片下载失败: ${(err as Error).message}`);
+        }
+      }
+      if (item.file_item?.media) {
+        try {
+          const localPath = await downloadWechatFile(item.file_item, message.message_id);
+          filePaths.push(localPath);
+        } catch (err) {
+          platformLog(`文件下载失败: ${(err as Error).message}`);
+        }
+      }
+      if (item.video_item?.media) {
+        try {
+          const localPath = await downloadWechatVideo(item.video_item, message.message_id);
+          videoPaths.push(localPath);
+        } catch (err) {
+          platformLog(`视频下载失败: ${(err as Error).message}`);
+        }
+      }
+    }
   }
 
-  // 纯媒体且无可下载内容时跳过（避免空消息触发会话）
+  // 构建消息文本：文本内容 + 图片/文件/视频路径
+  let fullText = text;
+  if (imagePaths.length > 0) {
+    const imageLines = imagePaths.map((p) => `[图片] ${p}`).join("\n");
+    fullText = fullText ? `${fullText}\n${imageLines}` : imageLines;
+  }
+  if (filePaths.length > 0) {
+    const fileLines = filePaths.map((p) => `[文件] ${p}`).join("\n");
+    fullText = fullText ? `${fullText}\n${fileLines}` : fileLines;
+  }
+  if (videoPaths.length > 0) {
+    const videoLines = videoPaths.map((p) => `[视频] ${p}`).join("\n");
+    fullText = fullText ? `${fullText}\n${videoLines}` : videoLines;
+  }
+
+  // 纯图片且无文字时跳过（避免空消息触发会话）
   if (!fullText.trim()) {
     platformLog(`跳过纯媒体消息（无文本）: chatId=${chatId}`);
     return;
   }
 
   platformLog(
-    `收到消息: chatId=${chatId} text="${text.slice(0, 80)}" images=${mediaAttachments.imagePaths.length} files=${mediaAttachments.filePaths.length} videos=${mediaAttachments.videoPaths.length}`,
+    `收到消息: chatId=${chatId} text="${text.slice(0, 80)}" images=${imagePaths.length} files=${filePaths.length} videos=${videoPaths.length}`,
   );
   appendChatLog(chatId, chatId, fullText);
 
