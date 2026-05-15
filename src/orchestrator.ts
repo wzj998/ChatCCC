@@ -21,7 +21,6 @@ import {
   setDefaultCwd,
   getRecentDirs,
   addRecentDir,
-  resolveDefaultAgentTool,
   sessionPrefixForTool,
   toolDisplayName,
   ts,
@@ -241,7 +240,7 @@ export async function handleCommand(
 
   if (textLower === "/new" || textLower.startsWith("/new ")) {
     const toolArg = text.slice(5).trim().toLowerCase();
-    const tool = toolArg || resolveDefaultAgentTool();
+    const tool = toolArg || "claude";
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
     const validTools = ["claude", "cursor", "codex"];
     if (!validTools.includes(tool)) {
@@ -889,7 +888,7 @@ export async function handleCommand(
 
       const targetToolLabel = toolDisplayName(target.tool);
       const busyNote = isSessionRunning(target.sessionId)
-        ? "\n\n⚠️ 该会话当前正在生成中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。"
+        ? "\n\n⚠️ 该会话当前正在生成中，请等待完成后再发送消息。"
         : "";
       await platform.sendCard(
         chatId,
@@ -991,7 +990,7 @@ export async function handleCommand(
       await platform.sendCard(
         chatId,
         "生成中",
-        "该会话正在生成回复中，请等待完成后再发送新消息。如需中断生成，请发送 /stop 指令。",
+        "该会话正在生成回复中，请等待完成后再发送新消息。",
         "yellow",
       );
       return;
