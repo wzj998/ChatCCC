@@ -30,6 +30,13 @@ import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
+
+// 微信显示循环压缩：头5 + ... + 尾5，避免在最后一步 sendText 中压缩指令回复
+function compressWechatDisplayText(text: string): string {
+  const lines = text.split("\n");
+  if (lines.length <= 10) return text;
+  return [...lines.slice(0, 5), "...", ...lines.slice(-5)].join("\n");
+}
 import { readStreamState, writeStreamState, createEmptyStreamState, fixStaleStreamStates } from "./stream-state.ts";
 import {
   bindChatToSession,
@@ -1015,7 +1022,7 @@ export function ensureDisplayLoop(sessionId: string): void {
 
             d.cardBusy = true;
             try {
-              const ok = await p.sendText(chatId, delta);
+              const ok = await p.sendText(chatId, compressWechatDisplayText(delta));
               if (ok) {
                 d.lastSentAccLen = state.accumulatedContent.length;
                 d.lastSentFinalReply = state.finalReply;

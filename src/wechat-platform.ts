@@ -66,13 +66,19 @@ export function getIlinkWire(): OpenIlinkWire | null {
 const contextTokenMap = new Map<string, string>();
 /** chatId → 用户未回复时已连发消息数 */
 const consecutiveSendCount = new Map<string, number>();
-/** chatId → claw 限制后等待用户唤醒再补发的最终消息 */
-const pendingClawFinalText = new Map<string, string>();
+/** chatId → 上一次 sendText 成功的时间戳 */
+const lastSendTimeMap = new Map<string, number>();
 const textCardMap = new Map<string, { chatId?: string; text: string; lastSentText: string; lastSentAt: number }>();
 let textCardSeq = 0;
 let platformLog: (msg: string) => void = () => {};
 
 const TEXT_CARD_UPDATE_INTERVAL_MS = 30_000;
+
+/** 微信连发间隔阈值：第5条起限制 ≥ 此值（默认10秒），测试可覆写 */
+let wxMinSendIntervalMs = 10_000;
+export function _setWxMinSendIntervalMsForTest(ms: number): void {
+  wxMinSendIntervalMs = ms;
+}
 
 type WechatWireSender = Pick<OpenIlinkWire, "sendText" | "push">;
 
@@ -89,7 +95,7 @@ function isFinalReplyText(text: string): boolean {
   return text.includes("━━━ 回答结束 ━━━");
 }
 
-function compressGeneratingText(text: string): string {
+export function compressGeneratingText(text: string): string {
   const lines = text.split("\n");
   if (lines.length <= 10) return text;
   return [...lines.slice(0, 5), "...", ...lines.slice(-5)].join("\n");
@@ -104,38 +110,10 @@ async function sendWechatTextRaw(wire: WechatWireSender, chatId: string, text: s
   }
 }
 
-async function flushPendingClawFinalText(
-  chatId: string,
-  wire: WechatWireSender | null,
-  log: (msg: string) => void,
-): Promise<boolean> {
-  const text = pendingClawFinalText.get(chatId);
-  if (!text || !wire) return false;
-
-  try {
-    await sendWechatTextRaw(wire, chatId, text);
-    pendingClawFinalText.delete(chatId);
-    consecutiveSendCount.set(chatId, 1);
-    log(`[WECHAT] pending final sent after claw wake: chatId=${chatId} len=${text.length}`);
-    return true;
-  } catch (err) {
-    log(`[WECHAT] pending final send failed: ${(err as Error).message}`);
-    return false;
-  }
-}
-
 export function _resetWechatClawStateForTest(): void {
   consecutiveSendCount.clear();
-  pendingClawFinalText.clear();
   contextTokenMap.clear();
-}
-
-export async function _flushPendingClawFinalTextForTest(
-  chatId: string,
-  wire: WechatWireSender | null,
-  log: (msg: string) => void = () => {},
-): Promise<boolean> {
-  return flushPendingClawFinalText(chatId, wire, log);
+  lastSendTimeMap.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -206,29 +184,31 @@ export function createWechatAdapter(
 
       const isFinal = isFinalReplyText(text);
 
-      // 第10条且非最终消息：附加 claw 限制提示
-      if (count === 10 && !isFinal) {
-        text = text + "\n━━ 后台工作中，由于微信claw机制限制，请唤醒我才能继续发送消息";
+      // 第9条且非最终消息：附加 claw 限制提示，此后禁止继续发送生成消息
+      if (count === 9 && !isFinal) {
+        text = text + "\n---由于微信claw机制限制，不再发送过程，稍后把最终结果发送给你---";
       }
 
-      // 超过10条后不再直接发送。微信端 claw 可能会静默丢弃，即使 iLink 返回 OK。
-      if (count > 10) {
-        if (isFinal) {
-          pendingClawFinalText.set(chatId, text);
-          log(`[WECHAT] final queued (claw limit): chatId=${chatId} count=${count} len=${text.length}`);
-          return true;
-        } else {
-          log(`[WECHAT] sendText skipped (claw limit): chatId=${chatId} count=${count}`);
-          return false;
+      // 超过9条后不允许发送非最终消息（生成消息），最终结果消息仍然允许
+      if (count > 9 && !isFinal) {
+        log(`[WECHAT] sendText skipped (claw limit): chatId=${chatId} count=${count}`);
+        return false;
+      }
+
+      // 第5条起限制发送间隔 ≥ 10 秒（前4条保持原有 3s 显示循环节奏）
+      if (count > 4) {
+        const lastSentAt = lastSendTimeMap.get(chatId) ?? 0;
+        const elapsed = Date.now() - lastSentAt;
+        if (elapsed < wxMinSendIntervalMs) {
+          await new Promise((r) => setTimeout(r, wxMinSendIntervalMs - elapsed));
         }
       }
 
       try {
-        // 最后一步：非最终回复压缩行数（最多11行：头5 + ... + 尾5）
-        const sendText = isFinal ? text : compressGeneratingText(text);
-        await sendWechatTextRaw(wire, chatId, sendText);
-        const preview = sendText.length > 60 ? sendText.slice(0, 60) + "..." : sendText;
-        log(`[WECHAT] sendText OK: chatId=${chatId} len=${sendText.length} count=${count} text="${preview}"`);
+        await sendWechatTextRaw(wire, chatId, text);
+        lastSendTimeMap.set(chatId, Date.now());
+        const preview = text.length > 60 ? text.slice(0, 60) + "..." : text;
+        log(`[WECHAT] sendText OK: chatId=${chatId} len=${text.length} count=${count} text="${preview}"`);
         return true;
       } catch (err) {
         log(`[WECHAT] sendText failed: ${(err as Error).message}`);
@@ -620,12 +600,6 @@ async function handleWechatMessage(
 
   // 用户回复，重置 claw 连发计数
   consecutiveSendCount.set(chatId, 0);
-
-  // 如果上一轮最终消息因 claw 被暂存，这次用户消息只作为唤醒使用。
-  if (pendingClawFinalText.has(chatId)) {
-    await flushPendingClawFinalText(chatId, ilinkWire, platformLog);
-    return;
-  }
 
   // WeChat 中所有会话都视为 p2p，/new 复用 p2p 路径（等同飞书 /newh 效果）
   // 不 await：避免长 prompt 阻塞后续消息处理（如 /cd、/stop 等命令）
