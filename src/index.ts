@@ -818,8 +818,8 @@ async function main(): Promise<void> {
     try {
       await startBotService({ httpServer, port: CHATCCC_PORT });
     } catch (err) {
-      printServiceDidNotStart((err as Error).message);
-      process.exit(1);
+      console.error(`\n[飞书] 启动失败: ${(err as Error).message}`);
+      console.error("[飞书] 微信等其他平台不受影响，将继续启动。\n");
     }
   }
 
