@@ -30,12 +30,6 @@ function walkUpForConfig(startDir) {
   return result;
 }
 
-function getBaseUrl(domain) {
-  return domain === "lark"
-    ? "https://open.larksuite.com/open-apis"
-    : "https://open.feishu.cn/open-apis";
-}
-
 async function findConfig() {
   const paths = [
     join(homedir(), ".chatccc", "config.json"),
@@ -50,7 +44,7 @@ async function findConfig() {
       const appSecret = cfg.feishu?.appSecret || "";
       if (appId && appSecret) {
         console.error(`Using config: ${path}`);
-        return { appId, appSecret, baseUrl: getBaseUrl(cfg.feishu?.domain) };
+        return { appId, appSecret };
       }
     } catch {
       // Try the next candidate.
@@ -59,8 +53,8 @@ async function findConfig() {
   throw new Error(`Could not find Feishu config. Tried: ${paths.slice(0, 3).join(", ")}...`);
 }
 
-async function getTenantAccessToken(appId, appSecret, baseUrl) {
-  const response = await fetch(`${baseUrl}/auth/v3/tenant_access_token/internal`, {
+async function getTenantAccessToken(appId, appSecret) {
+  const response = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: Buffer.from(JSON.stringify({ app_id: appId, app_secret: appSecret }), "utf8"),
@@ -72,10 +66,10 @@ async function getTenantAccessToken(appId, appSecret, baseUrl) {
   return data.tenant_access_token;
 }
 
-async function findMessageId(token, baseUrl, chatId, fileKey) {
+async function findMessageId(token, chatId, fileKey) {
   let pageToken = "";
   for (let page = 0; page < 10; page++) {
-    const url = new URL(`${baseUrl}/im/v1/messages`);
+    const url = new URL("https://open.feishu.cn/open-apis/im/v1/messages");
     url.searchParams.set("receive_id_type", "chat_id");
     url.searchParams.set("receive_id", chatId);
     url.searchParams.set("page_size", "50");
@@ -107,8 +101,8 @@ function safeFileName(name) {
   return (name || "download.bin").replace(/[\\/:*?"<>|]/g, "_");
 }
 
-async function downloadResource(token, baseUrl, messageId, fileKey, fileName) {
-  const url = `${baseUrl}/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=file`;
+async function downloadResource(token, messageId, fileKey, fileName) {
+  const url = `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=file`;
   console.error(`Downloading: ${url}`);
 
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -137,12 +131,12 @@ async function main() {
     process.exit(1);
   }
 
-  const { appId, appSecret, baseUrl } = await findConfig();
-  const token = await getTenantAccessToken(appId, appSecret, baseUrl);
+  const { appId, appSecret } = await findConfig();
+  const token = await getTenantAccessToken(appId, appSecret);
 
   let messageId = args["message-id"] || "";
   if (!messageId && args["chat-id"]) {
-    messageId = await findMessageId(token, baseUrl, args["chat-id"], args["file-key"]);
+    messageId = await findMessageId(token, args["chat-id"], args["file-key"]);
     if (!messageId) {
       throw new Error(`No message found for file_key=${args["file-key"]}`);
     }
@@ -155,7 +149,6 @@ async function main() {
 
   const localPath = await downloadResource(
     token,
-    baseUrl,
     messageId,
     args["file-key"],
     args.name || "download.bin",

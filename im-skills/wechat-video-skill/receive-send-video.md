@@ -2,14 +2,14 @@
 
 ## Receive Videos
 
-Videos sent to the bot are automatically downloaded to `~/.chatccc/videos/downloads/` with the `wx_` filename prefix.
+Videos sent to the bot are **automatically downloaded** to `~/.chatccc/images/downloads/` with the `wx_` filename prefix.
 
 The message text you receive will include the downloaded path in the format:
-```text
-[视频] C:\Users\<user>\.chatccc\videos\downloads\wx_<key>.mp4
+```
+[视频] C:\Users\<用户名>\.chatccc\images\downloads\wx_<key>.mp4
 ```
 
-You can read the video file at that path to inspect, transcode, trim, or forward it.
+You can read the video file at that path to understand what the user sent.
 
 ## Send Videos
 
@@ -26,16 +26,14 @@ The underlying SDK call is:
 ```ts
 import { Client as OpenIlinkWire } from "@openilink/openilink-sdk-node";
 const wire = new OpenIlinkWire(token, { base_url: baseUrl });
-await wire.sendMediaFile(chatId, contextToken, videoBuffer, "filename.mp4", "caption");
+await wire.sendMediaFile(chatId, contextToken, videoBuffer, "video.mp4", "caption");
 ```
-
-The SDK detects video MIME types from the file name and routes `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`, and `.flv` as videos.
 
 ### Rules
 
 - Save or choose a local video file first.
 - Use an absolute local path.
 - Supported formats: .mp4, .mov, .avi, .mkv, .webm, .flv.
-- Max video size: 30MB.
+- Max video size: 100MB.
 - Only send a video when the user asked for one or when it materially helps the answer.
-- Video sending counts as an outgoing WeChat message. Avoid repeated unsolicited sends.
+- **Claw 限制**: 视频发送也计入微信 claw 连发计数，连续 10 条未回复会截断。

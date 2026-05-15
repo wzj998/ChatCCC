@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 
 import { Client as OpenIlinkWire } from "@openilink/openilink-sdk-node";
 
 const ILINK_AUTH_PATH = join(homedir(), ".chatccc", "state", "ilink-auth.json");
-const MAX_VIDEO_BYTES = 30 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const ALLOWED_EXTS = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv"]);
 
 function parseArgs(argv) {
@@ -34,10 +34,6 @@ async function main() {
     usage();
     process.exit(1);
   }
-  if (!isAbsolute(videoPath)) {
-    console.error("Video path must be absolute.");
-    process.exit(1);
-  }
 
   const ext = extname(videoPath).toLowerCase();
   if (!ALLOWED_EXTS.has(ext)) {
@@ -51,7 +47,7 @@ async function main() {
     process.exit(1);
   }
   if (st.size > MAX_VIDEO_BYTES) {
-    console.error("Video file exceeds 30MB limit");
+    console.error("Video file exceeds 100MB limit");
     process.exit(1);
   }
 

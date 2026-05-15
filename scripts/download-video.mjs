@@ -19,18 +19,14 @@ async function findConfig() {
       const cfg = JSON.parse(raw);
       const appId = cfg.feishu?.appId ?? "";
       const appSecret = cfg.feishu?.appSecret ?? "";
-      const domain = cfg.feishu?.domain ?? "feishu";
-      const baseUrl = domain === "lark"
-        ? "https://open.larksuite.com/open-apis"
-        : "https://open.feishu.cn/open-apis";
-      if (appId && appSecret) { console.log(`使用配置: ${configFile}`); return { appId, appSecret, baseUrl }; }
+      if (appId && appSecret) { console.log(`使用配置: ${configFile}`); return { appId, appSecret }; }
     } catch { /* skip */ }
   }
   throw new Error(`找不到飞书配置。尝试了: ${CONFIG_PATHS.join(", ")}`);
 }
 
-async function getTenantAccessToken(appId, appSecret, baseUrl) {
-  const resp = await fetch(`${baseUrl}/auth/v3/tenant_access_token/internal`, {
+async function getTenantAccessToken(appId, appSecret) {
+  const resp = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
   });
@@ -39,11 +35,11 @@ async function getTenantAccessToken(appId, appSecret, baseUrl) {
   return data.tenant_access_token;
 }
 
-async function findMessageId(token, baseUrl, chatId, fileKey) {
+async function findMessageId(token, chatId, fileKey) {
   let pageToken, page = 0;
   while (page < 10) {
     page++;
-    let url = `${baseUrl}/im/v1/messages?receive_id_type=chat_id&receive_id=${chatId}&page_size=50`;
+    let url = `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id&receive_id=${chatId}&page_size=50`;
     if (pageToken) url += `&page_token=${pageToken}`;
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const data = await resp.json();
@@ -57,8 +53,8 @@ async function findMessageId(token, baseUrl, chatId, fileKey) {
   return null;
 }
 
-async function downloadMedia(token, baseUrl, messageId, fileKey, fileName) {
-  const url = `${baseUrl}/im/v1/messages/${messageId}/resources/${fileKey}?type=file`;
+async function downloadMedia(token, messageId, fileKey, fileName) {
+  const url = `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`;
   console.log(`下载: ${url}`);
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`HTTP ${resp.status}: ${t.slice(0, 200)}`); }
@@ -84,16 +80,16 @@ async function main() {
     console.error("用法: node scripts/download-video.mjs --chat-id <chat_id> --file-key <file_key> [--name <name>]");
     process.exit(1);
   }
-  const { appId, appSecret, baseUrl } = await findConfig();
+  const { appId, appSecret } = await findConfig();
   console.log("获取 tenant_access_token ...");
-  const token = await getTenantAccessToken(appId, appSecret, baseUrl);
+  const token = await getTenantAccessToken(appId, appSecret);
   console.log("已获取 token");
   const fileName = args["--name"] || "video.mp4";
   console.log(`在群 ${args["--chat-id"]} 中查找 file_key=${args["--file-key"]} ...`);
-  const messageId = await findMessageId(token, baseUrl, args["--chat-id"], args["--file-key"]);
+  const messageId = await findMessageId(token, args["--chat-id"], args["--file-key"]);
   if (!messageId) throw new Error(`未找到 file_key=${args["--file-key"]} 对应的消息`);
   console.log(`找到 message_id=${messageId}`);
-  const localPath = await downloadMedia(token, baseUrl, messageId, args["--file-key"], fileName);
+  const localPath = await downloadMedia(token, messageId, args["--file-key"], fileName);
   console.log(`下载完成: ${localPath}`);
 }
 

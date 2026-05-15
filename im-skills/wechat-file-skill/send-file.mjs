@@ -1,25 +1,16 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 
 import { Client as OpenIlinkWire } from "@openilink/openilink-sdk-node";
 
 const ILINK_AUTH_PATH = join(homedir(), ".chatccc", "state", "ilink-auth.json");
-const MAX_FILE_BYTES = 30 * 1024 * 1024;
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const ALLOWED_EXTS = new Set([
-  ".txt",
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".csv",
-  ".ppt",
-  ".pptx",
-  ".zip",
-  ".tar",
-  ".gz",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
+  ".txt", ".zip", ".tar", ".gz", ".rar", ".7z",
+  ".mp3", ".wav", ".ogg", ".aac", ".m4a",
 ]);
 
 function parseArgs(argv) {
@@ -47,10 +38,6 @@ async function main() {
     usage();
     process.exit(1);
   }
-  if (!isAbsolute(filePath)) {
-    console.error("File path must be absolute.");
-    process.exit(1);
-  }
 
   const ext = extname(filePath).toLowerCase();
   if (!ALLOWED_EXTS.has(ext)) {
@@ -63,12 +50,8 @@ async function main() {
     console.error("File path is not a file");
     process.exit(1);
   }
-  if (st.size <= 0) {
-    console.error("File is empty");
-    process.exit(1);
-  }
   if (st.size > MAX_FILE_BYTES) {
-    console.error("File exceeds 30MB limit");
+    console.error("File exceeds 100MB limit");
     process.exit(1);
   }
 
