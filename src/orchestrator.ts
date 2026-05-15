@@ -80,6 +80,14 @@ function isUntitledSessionChatName(name: string): boolean {
   return name === "新会话" || name.startsWith("新会话-");
 }
 
+function shouldSendWechatProcessingAck(
+  platform: PlatformAdapter,
+  textLower: string,
+  chatType: string,
+): boolean {
+  return platform.kind === "wechat" && chatType === "p2p" && !textLower.startsWith("/");
+}
+
 // ---------------------------------------------------------------------------
 // handleCommand — 平台无关的命令分发
 // ---------------------------------------------------------------------------
@@ -986,6 +994,10 @@ export async function handleCommand(
         "yellow",
       );
       return;
+    }
+
+    if (shouldSendWechatProcessingAck(platform, textLower, chatType)) {
+      await platform.sendText(chatId, "生成中...").catch(() => {});
     }
 
     try {
