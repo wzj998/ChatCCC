@@ -686,7 +686,7 @@ export async function runAgentSession(
     const isWechatBusy = platform.kind === "wechat";
     const busyMsg = isWechatBusy
       ? "当前正在生成回复中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。"
-      : "该会话正在生成回复中，请等待完成后再发送消息。";
+      : "该会话正在生成回复中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。";
     await platform.sendText(_chatId, busyMsg).catch(() => {});
     return;
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, extname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 
 import { Client as OpenIlinkWire } from "@openilink/openilink-sdk-node";
@@ -32,6 +32,10 @@ async function main() {
 
   if (!imagePath) {
     usage();
+    process.exit(1);
+  }
+  if (!isAbsolute(imagePath)) {
+    console.error("Image path must be absolute.");
     process.exit(1);
   }
 

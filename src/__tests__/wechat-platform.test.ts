@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { buildHelpCard } from "../cards.ts";
 import {
+  _downloadWechatMediaAttachmentsForTest,
   _resetWechatClawStateForTest,
   _setWxMinSendIntervalMsForTest,
   createWechatAdapter,
@@ -107,5 +111,66 @@ describe("createWechatAdapter", () => {
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("[WECHAT] sendText OK"),
     );
+  });
+});
+
+describe("WeChat media receive helpers", () => {
+  it("downloads image, file, and video items and returns message attachment paths", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "chatccc-wx-media-"));
+    const imageDir = join(tempRoot, "images");
+    const fileDir = join(tempRoot, "files");
+    const videoDir = join(tempRoot, "videos");
+    try {
+      const imageMedia = { aes_key: "image-key-1234567890", encrypt_query_param: "image" };
+      const fileMedia = { aes_key: "file-key-1234567890", encrypt_query_param: "file" };
+      const videoMedia = { aes_key: "video-key-1234567890", encrypt_query_param: "video" };
+      const wire = {
+        downloadMedia: vi.fn(async (media: unknown) => {
+          if (media === imageMedia) return Buffer.from("image-data");
+          if (media === fileMedia) return Buffer.from("file-data");
+          if (media === videoMedia) return Buffer.from("video-data");
+          throw new Error("unexpected media");
+        }),
+      };
+
+      const result = await _downloadWechatMediaAttachmentsForTest(
+        {
+          message_id: 123,
+          item_list: [
+            { image_item: { media: imageMedia } },
+            {
+              file_item: {
+                media: fileMedia,
+                file_name: "report.txt",
+                md5: "1234567890abcdef1234567890abcdef",
+              },
+            },
+            {
+              video_item: {
+                media: videoMedia,
+                video_md5: "abcdef1234567890abcdef",
+              },
+            },
+          ],
+        },
+        { wire, imageDir, fileDir, videoDir },
+      );
+
+      expect(result.imagePaths).toHaveLength(1);
+      expect(result.filePaths).toHaveLength(1);
+      expect(result.videoPaths).toHaveLength(1);
+      expect(result.messageLines[0]).toMatch(/^\[图片\] /);
+      expect(result.messageLines[1]).toMatch(/^\[文件\] /);
+      expect(result.messageLines[2]).toMatch(/^\[视频\] /);
+      expect(result.imagePaths[0]).toContain(join("images", "wx_image-key-123456.png"));
+      expect(result.filePaths[0]).toContain(join("files", "wx_1234567890abcdef_report.txt"));
+      expect(result.videoPaths[0]).toContain(join("videos", "wx_abcdef1234567890.mp4"));
+      await expect(readFile(result.imagePaths[0], "utf8")).resolves.toBe("image-data");
+      await expect(readFile(result.filePaths[0], "utf8")).resolves.toBe("file-data");
+      await expect(readFile(result.videoPaths[0], "utf8")).resolves.toBe("video-data");
+      expect(wire.downloadMedia).toHaveBeenCalledTimes(3);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });

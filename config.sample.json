@@ -13,7 +13,7 @@
   "claude": {
     "enabled": false,
     "defaultAgent": true,
-    "model": "",
+    "model": "claude-sonnet-4-6",
     "subagentModel": "",
     "effort": "",
     "apiKey": "",
