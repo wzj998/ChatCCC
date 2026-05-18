@@ -146,7 +146,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendCard).toHaveBeenCalledWith(
       "wx-chat",
       "生成中",
-      "该会话正在生成回复中，请等待完成后再发送新消息。",
+      "该会话正在生成回复中，请等待完成后再发送新消息。也可以发送 /stop 结束，已完成的步骤不会丢失。",
       "yellow",
     );
   });
