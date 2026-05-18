@@ -28,7 +28,7 @@ import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
-import { buildImSkillsPrompt, exportSkillSubDocs } from "./im-skills.ts";
+import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 
 // 微信显示循环压缩：头5 + ... + 尾5，避免在最后一步 sendText 中压缩指令回复
@@ -685,8 +685,8 @@ export async function runAgentSession(
     console.log(`[${ts()}] [BLOCKED] Session ${sessionId} is already generating`);
     const isWechatBusy = platform.kind === "wechat";
     const busyMsg = isWechatBusy
-      ? "当前正在生成回复中，请等待完成后再发送消息。如需中断生成，请发送 /stop 指令。"
-      : "该会话正在生成回复中，请等待完成后再发送消息。";
+      ? "当前正在生成回复中，请等待完成后再发送消息。也可以发送 /stop 结束，已完成的步骤不会丢失。"
+      : "该会话正在生成回复中，请等待完成后再发送消息。也可以发送 /stop 结束，已完成的步骤不会丢失。";
     await platform.sendText(_chatId, busyMsg).catch(() => {});
     return;
   }
@@ -734,7 +734,7 @@ export async function runAgentSession(
       wechat_send_video_script: join(wechatVideoSkillDir, "send-video.mjs"),
     };
     const enabledSkillNames = imSkillNamesForPlatform(platform);
-    var imSkillsPrompt = await buildImSkillsPrompt({ variables: skillVariables, enabledSkillNames });
+    var imSkillsPrompt = await buildImSkillsPromptCached({ variables: skillVariables, enabledSkillNames });
     await exportSkillSubDocs({ variables: skillVariables, enabledSkillNames }, imSkillsCacheDir);
     var userTextWithCapabilities = [
       ...(imSkillsPrompt ? [imSkillsPrompt, ""] : []),
