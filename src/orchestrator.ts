@@ -295,8 +295,9 @@ export async function handleCommand(
     const cwd = sessionCwd;
     const initialName = sessionChatName("新会话", cwd);
 
-    // 私聊：不创建群，直接绑定 session 到当前私聊
-    if (chatType === "p2p") {
+    // 微信私聊：不创建群，直接绑定 session 到当前私聊
+    // 飞书私聊：也要建群
+    if (chatType === "p2p" && platform.kind === "wechat") {
       // 先解绑旧 session（如果存在），避免旧 session 的 display loop
       // 继续往同一个 chat 推送内容（/newh 走 switchChatBinding 已有此逻辑，
       // 但 /new p2p 之前遗漏了解绑）。
