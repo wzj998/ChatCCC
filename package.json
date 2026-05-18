@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.69",
+  "version": "0.2.70",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -34,7 +34,8 @@
     "demo:codex-hi": "tsx demo/codex_say_hi.ts",
     "demo:ilink-echo": "tsx demo/ilink_echo_probe.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "node scripts/postinstall-sharp-check.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.47",
