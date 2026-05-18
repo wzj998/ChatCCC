@@ -21,6 +21,7 @@ import {
   setDefaultCwd,
   getRecentDirs,
   addRecentDir,
+  resolveDefaultAgentTool,
   sessionPrefixForTool,
   toolDisplayName,
   ts,
@@ -240,7 +241,7 @@ export async function handleCommand(
 
   if (textLower === "/new" || textLower.startsWith("/new ")) {
     const toolArg = text.slice(5).trim().toLowerCase();
-    const tool = toolArg || "claude";
+    const tool = toolArg || resolveDefaultAgentTool();
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
     const validTools = ["claude", "cursor", "codex"];
     if (!validTools.includes(tool)) {
@@ -643,7 +644,7 @@ export async function handleCommand(
         model: s.model,
         tool: s.tool,
       }));
-      const card = buildSessionsCard(cardData);
+      const card = buildSessionsCard(cardData, { defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()) });
       const ok = await platform.sendRawCard(chatId, card);
       console.log(
         `[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${cardData.length}`,
@@ -1032,7 +1033,7 @@ export async function handleCommand(
 
   // 无会话上下文 → help card
   logTrace(tid, "SEND", { method: "help_card", chatId });
-  const card = buildHelpCard(text);
+  const card = buildHelpCard(text, { defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()) });
   const ok = await platform.sendRawCard(chatId, card);
   if (!ok) {
     console.error(`[${ts()}] [SEND] help_card FAIL: chatId=${chatId}`);
