@@ -129,6 +129,7 @@ export function buildHelpCard(
       { tag: "div", text: { tag: "lark_md", content: lines } },
       buildButtons([
         { text: `新建默认会话（/new，${defaultToolLabel}）`, value: JSON.stringify({ cmd: "new" }), type: "primary" },
+        { text: "新建 Claude 会话（/new claude）", value: JSON.stringify({ cmd: "new claude" }), type: "primary" },
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
         { text: "新建 Codex 会话（/new codex）", value: JSON.stringify({ cmd: "new codex" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
