@@ -29,6 +29,7 @@ import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, waitForPortFree } from "./shared.ts";
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
+import { buildPlatformStartupPlan } from "./platform-startup.ts";
 import { makeTraceId, logTrace } from "./trace.ts";
 import {
   CHATCCC_PORT,
@@ -668,6 +669,36 @@ async function startWechatSupervisor(): Promise<void> {
   console.log("[WX] 微信 iLink 平台已停止。");
 }
 
+async function startConfiguredPlatforms(
+  httpServer: Server,
+  options: { failOnFeishuError: boolean },
+): Promise<void> {
+  const plan = buildPlatformStartupPlan({
+    feishuEnabled: FEISHU_ENABLED,
+    ilinkEnabled: ILINK_ENABLED,
+  });
+
+  if (plan.startFeishu) {
+    try {
+      await startBotService({ httpServer, port: CHATCCC_PORT });
+    } catch (err) {
+      if (options.failOnFeishuError) throw err;
+      console.error(`\n[飞书] 启动失败: ${(err as Error).message}`);
+      console.error("[飞书] 微信等其他平台不受影响，将继续启动。\n");
+    }
+  } else {
+    console.log("[飞书] 平台未启用，跳过飞书启动。");
+  }
+
+  if (plan.startIlink) {
+    startWechatSupervisor().catch((err) =>
+      console.error(`[WX] 微信 supervisor 异常退出: ${(err as Error).message}`),
+    );
+  } else {
+    console.log("[WX] 微信 iLink 未启用，跳过微信启动。");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -784,11 +815,11 @@ async function main(): Promise<void> {
             appIdMaskAfterReload: maskAppId(APP_ID),
           });
           try {
-            await startBotService({ httpServer, port: CHATCCC_PORT });
+            await startConfiguredPlatforms(httpServer, { failOnFeishuError: true });
             installShutdownHandlers(httpServer);
             return { ok: true };
           } catch (err) {
-            appendStartupTrace("setup-activate: startBotService failed", {
+            appendStartupTrace("setup-activate: startConfiguredPlatforms failed", {
               message: (err as Error).message,
             });
             return { ok: false, error: (err as Error).message };
@@ -822,19 +853,7 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
-  if (FEISHU_ENABLED) {
-    try {
-      await startBotService({ httpServer, port: CHATCCC_PORT });
-    } catch (err) {
-      console.error(`\n[飞书] 启动失败: ${(err as Error).message}`);
-      console.error("[飞书] 微信等其他平台不受影响，将继续启动。\n");
-    }
-  }
-
-  // 启动微信 iLink 平台（后台运行，不阻塞飞书）
-  startWechatSupervisor().catch((err) =>
-    console.error(`[WX] 微信 supervisor 异常退出: ${(err as Error).message}`),
-  );
+  await startConfiguredPlatforms(httpServer, { failOnFeishuError: false });
 
   installShutdownHandlers(httpServer);
 }
