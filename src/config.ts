@@ -613,7 +613,15 @@ export async function getRecentDirs(): Promise<string[]> {
   try {
     const raw = await readFile(RECENT_DIRS_FILE, "utf-8");
     const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr.filter((d: unknown) => typeof d === "string");
+    if (Array.isArray(arr)) {
+      const seen = new Set<string>();
+      return arr.filter((d: unknown): d is string => {
+        if (typeof d !== "string") return false;
+        if (seen.has(d)) return false;
+        seen.add(d);
+        return true;
+      });
+    }
   } catch { /* file doesn't exist or corrupted */ }
   return [];
 }
