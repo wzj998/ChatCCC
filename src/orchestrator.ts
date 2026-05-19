@@ -32,6 +32,8 @@ import {
   buildCdContent,
   buildCdCard,
   buildSessionsCard,
+  buildQueuedCard,
+  buildQueueFullCard,
 } from "./cards.ts";
 import {
   formatGitResult,
@@ -60,6 +62,8 @@ import {
   isSessionRunning,
   displayCards,
   recordLastActiveChat,
+  enqueueMessage,
+  cancelQueuedMessage,
 } from "./session-chat-binding.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
@@ -306,6 +310,7 @@ export async function handleCommand(
       if (oldRecord?.sessionId && oldRecord.sessionId !== sessionId) {
         unbindChatFromSession(oldRecord.sessionId, chatId);
         displayCards.delete(chatId);
+        cancelQueuedMessage(oldRecord.sessionId);
       }
       bindChatToSession(sessionId, chatId);
       sessionInfoMap.set(chatId, {
@@ -586,6 +591,19 @@ export async function handleCommand(
           .sendText(chatId, "当前没有正在进行的会话。")
           .catch(() => {});
         logTrace(tid, "DONE", { outcome: "stop_no_session" });
+      }
+      return;
+    }
+
+    if (textLower === "/cancel") {
+      logTrace(tid, "BRANCH", { cmd: "/cancel" });
+      if (cancelQueuedMessage(sessionId)) {
+        console.log(`[${ts()}] [CANCEL] Queue cancelled for session=${sessionId}`);
+        await platform.sendText(chatId, "已取消缓存队列中的消息。").catch(() => {});
+        logTrace(tid, "DONE", { outcome: "cancelled" });
+      } else {
+        await platform.sendText(chatId, "当前缓存队列中没有消息。").catch(() => {});
+        logTrace(tid, "DONE", { outcome: "cancel_no_queue" });
       }
       return;
     }
@@ -980,21 +998,32 @@ export async function handleCommand(
       return;
     }
 
-    // 并发检查：同一 session 只能有一个活跃 prompt
+    // 并发检查：同一 session 只能有一个活跃 prompt，多余消息进入队列
     if (isSessionRunning(sessionId)) {
-      logTrace(tid, "BLOCKED", {
-        outcome: "session_busy",
-        sessionId,
+      const queued = enqueueMessage(sessionId, {
+        text, chatId, openId, msgTimestamp, chatType, traceId: tid,
       });
-      console.log(
-        `[${ts()}] [BLOCKED] Session ${sessionId} is already generating, rejecting message from chat ${chatId}`,
-      );
-      await platform.sendCard(
-        chatId,
-        "生成中",
-        "该会话正在生成回复中，请等待完成后再发送新消息。也可以发送 /stop 结束，已完成的步骤不会丢失。",
-        "yellow",
-      );
+      if (queued) {
+        logTrace(tid, "QUEUED", { sessionId });
+        console.log(
+          `[${ts()}] [QUEUED] Session ${sessionId} is busy, message from chat ${chatId} enqueued`,
+        );
+        if (platform.kind === "wechat") {
+          await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+        } else {
+          await platform.sendRawCard(chatId, buildQueuedCard(text)).catch(() => {});
+        }
+      } else {
+        logTrace(tid, "QUEUE_FULL", { sessionId });
+        console.log(
+          `[${ts()}] [QUEUE_FULL] Session ${sessionId} queue full, rejecting message from chat ${chatId}`,
+        );
+        if (platform.kind === "wechat") {
+          await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
+        } else {
+          await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
+        }
+      }
       return;
     }
 

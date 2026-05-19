@@ -142,13 +142,14 @@ describe("handleCommand WeChat processing ack", () => {
 
     await handleCommand(platform, "继续说明", "wx-chat", "wx-user", Date.now(), "p2p");
 
+    // 不再发"生成中"卡片，改为入队文本通知
     expect(platform.sendText).not.toHaveBeenCalledWith("wx-chat", "生成中...");
-    expect(platform.sendCard).toHaveBeenCalledWith(
+    expect(platform.sendText).toHaveBeenCalledWith(
       "wx-chat",
-      "生成中",
-      "该会话正在生成回复中，请等待完成后再发送新消息。也可以发送 /stop 结束，已完成的步骤不会丢失。",
-      "yellow",
+      "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。",
     );
+    // sendCard 不再被调用（WeChat 用 sendText）
+    expect(platform.sendCard).not.toHaveBeenCalled();
   });
 
   it("sends the WeChat processing ack after the busy check for normal prompts", async () => {

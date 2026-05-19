@@ -346,6 +346,47 @@ export function buildSessionsCard(sessions: Array<{
   });
 }
 
+// 队列缓存卡片（消息已进入缓存队列，带取消按钮）
+export function buildQueuedCard(text: string): string {
+  const preview = text.length > 100 ? text.slice(0, 100) + "…" : text;
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "blue", title: { content: "消息已进入缓存队列", tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: `当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。\n\n> ${preview}` } },
+      { tag: "hr" },
+      {
+        tag: "action",
+        actions: [{
+          tag: "button",
+          text: { tag: "plain_text", content: "取消缓存（/cancel）" },
+          type: "danger",
+          value: { action: "cancel" },
+        }],
+      },
+    ],
+  });
+}
+
+// 队列满卡片（提示 /stop 或 /cancel）
+export function buildQueueFullCard(): string {
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "yellow", title: { content: "消息队列已满", tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: "当前缓存队列中已有消息等待处理，请等待或发送指令：\n- **/stop** — 停止当前生成\n- **/cancel** — 取消队列中的消息" } },
+      { tag: "hr" },
+      {
+        tag: "action",
+        actions: [
+          { tag: "button", text: { tag: "plain_text", content: "取消缓存（/cancel）" }, type: "danger", value: { action: "cancel" } },
+          { tag: "button", text: { tag: "plain_text", content: "停止生成（/stop）" }, type: "default", value: { action: "stop" } },
+        ],
+      },
+    ],
+  });
+}
+
 // 状态卡片（带关闭按钮）
 export function buildStatusCard(statusText: string, template = "blue"): string {
   return JSON.stringify({
