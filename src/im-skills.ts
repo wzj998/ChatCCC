@@ -70,6 +70,37 @@ export async function buildImSkillsPrompt(input: BuildImSkillsPromptInput): Prom
     .join("\n\n");
 }
 
+// ---------------------------------------------------------------------------
+// 会话级缓存：相同 session_id + cwd 的渲染结果完全相同，避免每轮重复读文件+渲染
+// ---------------------------------------------------------------------------
+
+const promptCache = new Map<string, string>();
+
+function promptCacheKey(input: BuildImSkillsPromptInput): string {
+  const names = input.enabledSkillNames
+    ? [...input.enabledSkillNames].sort().join(",")
+    : "*";
+  const { session_id, cwd } = input.variables;
+  return `${input.skillsDir ?? DEFAULT_IM_SKILLS_DIR}|${names}|${session_id}|${cwd}`;
+}
+
+/** 带会话级缓存的 buildImSkillsPrompt。同 session + 同 cwd 时直接返回缓存的渲染结果。 */
+export async function buildImSkillsPromptCached(input: BuildImSkillsPromptInput): Promise<string> {
+  const key = promptCacheKey(input);
+  const cached = promptCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = await buildImSkillsPrompt(input);
+  promptCache.set(key, result);
+  return result;
+}
+
+/** 清除指定会话的缓存（如 /cd 后 cwd 变了，旧 key 不再需要） */
+export function clearImSkillsPromptCache(sessionId: string): void {
+  for (const key of promptCache.keys()) {
+    if (key.includes(`|${sessionId}|`)) promptCache.delete(key);
+  }
+}
+
 /**
  * 渲染技能目录下的子文档（skill.md 除外）并写入 outputDir。
  * 返回写入的文件路径列表。通常在会话初始化时调用，写入的文档供 Agent 按需读取。
