@@ -95,6 +95,7 @@ import {
 } from "./session.ts";
 import {
   rebuildSessionChatsFromRegistry,
+  setQueueConsumer,
 } from "./session-chat-binding.ts";
 import { fixStaleStreamStates } from "./stream-state.ts";
 import { handleCommand, type PlatformAdapter } from "./orchestrator.ts";
@@ -155,6 +156,13 @@ function createFeishuAdapter(): PlatformAdapter {
 const feishuPlatform = createFeishuAdapter();
 const wechatPlatform = createWechatAdapter();
 setSessionPlatform(feishuPlatform);
+
+// 注册队列消费回调：session 生成完成后自动处理缓存消息
+setQueueConsumer((platform, msg) => {
+  handleCommand(platform, msg.text, msg.chatId, msg.openId, msg.msgTimestamp, msg.chatType, msg.traceId).catch(err =>
+    console.error(`[${ts()}] Queue consume failed: ${(err as Error).message}`)
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -276,7 +284,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", newh: "/newh" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", cancel: "/cancel", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", newh: "/newh" };
   let text = CMD_MAP[cmd] ?? "";
   if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
     const path = (action.value as Record<string, string>).path;

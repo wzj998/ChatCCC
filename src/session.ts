@@ -50,6 +50,9 @@ import {
   recordLastActiveChat,
   getLastActiveChat,
   pickDisplayChat,
+  dequeueMessage,
+  consumeQueuedMessage,
+  cancelQueuedMessage,
 } from "./session-chat-binding.ts";
 
 // ---------------------------------------------------------------------------
@@ -575,6 +578,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
   if (oldSessionId) {
     unbindChatFromSession(oldSessionId, chatId);
     displayCards.delete(chatId);
+    cancelQueuedMessage(oldSessionId);
   }
   bindChatToSession(newSessionId, chatId);
   recordLastActiveChat(newSessionId, chatId);
@@ -853,6 +857,15 @@ export async function runAgentSession(
     const prompt = activePrompts.get(sessionId);
     const wasStopped = prompt?.stopped ?? false;
     activePrompts.delete(sessionId);
+
+    // 消费队列中的缓存消息（异步，不阻塞后续清理）
+    const queued = dequeueMessage(sessionId);
+    if (queued) {
+      console.log(`[${ts()}] [QUEUE] Consuming queued message for session ${sessionId}: "${queued.text.slice(0, 50)}"`);
+      setImmediate(() => {
+        consumeQueuedMessage(platform, queued);
+      });
+    }
 
     // 写最终状态
     const finalStatus = wasStopped ? "stopped" : "done";
@@ -1184,6 +1197,7 @@ export function stopSession(sessionId: string): boolean {
   const prompt = activePrompts.get(sessionId);
   if (!prompt) return false;
   prompt.stopped = true;
+  cancelQueuedMessage(sessionId);
   prompt.controller.abort();
   console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
   return true;

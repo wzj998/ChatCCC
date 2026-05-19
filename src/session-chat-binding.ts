@@ -5,6 +5,8 @@
 // 由 session.ts 在初始化时调用 rebuildSessionChatsFromRegistry 重建
 // ---------------------------------------------------------------------------
 
+import type { PlatformAdapter } from "./platform-adapter.ts";
+
 const sessionChatsMap = new Map<string, Set<string>>();
 
 /** 从 registry 数据重建映射（由 session.ts 调用，避免循环依赖） */
@@ -123,10 +125,60 @@ export const displayCards = new Map<string, DisplayCardState>();
 /** displayLoops: sessionId → 展示循环的 stop 函数 */
 export const displayLoops = new Map<string, () => void>();
 
+// ---------------------------------------------------------------------------
+// queuedMessages: sessionId → 缓存消息（生成中排队，队列最大长度 1）
+// ---------------------------------------------------------------------------
+
+export interface QueuedMessage {
+  text: string;
+  chatId: string;
+  openId: string;
+  msgTimestamp: number;
+  chatType: string;
+  traceId?: string;
+}
+
+export const queuedMessages = new Map<string, QueuedMessage>();
+
+export function enqueueMessage(sessionId: string, msg: QueuedMessage): boolean {
+  if (queuedMessages.has(sessionId)) return false;
+  queuedMessages.set(sessionId, msg);
+  return true;
+}
+
+export function dequeueMessage(sessionId: string): QueuedMessage | undefined {
+  const msg = queuedMessages.get(sessionId);
+  queuedMessages.delete(sessionId);
+  return msg;
+}
+
+export function cancelQueuedMessage(sessionId: string): boolean {
+  return queuedMessages.delete(sessionId);
+}
+
+export function hasQueuedMessage(sessionId: string): boolean {
+  return queuedMessages.has(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// 队列消费回调（由 index.ts 注入，避免 session.ts → orchestrator.ts 循环依赖）
+// ---------------------------------------------------------------------------
+
+let onConsumeQueuedMessage: ((platform: PlatformAdapter, msg: QueuedMessage) => void) | null = null;
+
+export function setQueueConsumer(fn: (platform: PlatformAdapter, msg: QueuedMessage) => void): void {
+  onConsumeQueuedMessage = fn;
+}
+
+export function consumeQueuedMessage(platform: PlatformAdapter, msg: QueuedMessage): void {
+  onConsumeQueuedMessage?.(platform, msg);
+}
+
 export function resetBindingState(): void {
   sessionChatsMap.clear();
   lastActiveChatMap.clear();
   activePrompts.clear();
+  queuedMessages.clear();
   displayCards.clear();
   for (const stop of displayLoops.values()) stop();
   displayLoops.clear();
