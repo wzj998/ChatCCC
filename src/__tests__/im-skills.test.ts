@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildImSkillsPrompt, exportSkillSubDocs } from "../im-skills.ts";
+import {
+  buildImSkillsPrompt,
+  buildImSkillsPromptCached,
+  clearImSkillsPromptCache,
+  exportSkillSubDocs,
+} from "../im-skills.ts";
 
 let tempRoot: string | null = null;
 
@@ -96,5 +101,25 @@ describe("IM skills prompt rendering", () => {
     expect(prompt).toContain("[ChatCCC IM skill: feishu-skill]");
     expect(prompt).toContain("[ChatCCC IM skill: wechat-skill]");
     expect(exported.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("exports cached prompt helpers used by session startup", async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), "chatccc-im-skills-cache-"));
+    const skillDir = join(tempRoot, "feishu-skill");
+    await mkdir(skillDir);
+    await writeFile(join(skillDir, "skill.md"), "cwd={{cwd}}", "utf-8");
+
+    const input = {
+      skillsDir: tempRoot,
+      variables: { cwd: "C:/first", session_id: "sid_cache" },
+    };
+    const first = await buildImSkillsPromptCached(input);
+    await writeFile(join(skillDir, "skill.md"), "cwd={{cwd}} changed", "utf-8");
+    const cached = await buildImSkillsPromptCached(input);
+    clearImSkillsPromptCache("sid_cache");
+    const refreshed = await buildImSkillsPromptCached(input);
+
+    expect(cached).toBe(first);
+    expect(refreshed).toContain("changed");
   });
 });
