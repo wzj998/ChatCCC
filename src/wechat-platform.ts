@@ -153,7 +153,10 @@ function printScanMaterial(content: string): void {
   platformLog(content);
   platformLog("========== 终端二维码 ==========");
   terminalQr.generate(content, { small: true }, (renderedQr) => {
-    platformLog(renderedQr);
+    // 逐行用裸 console.log 输出，避免 platformLog 前缀导致首行错位
+    for (const line of renderedQr.split("\n")) {
+      console.log(`          ${line}`);
+    }
   });
   platformLog("========== 请使用微信扫描上方二维码登录 ==========\n");
 }
