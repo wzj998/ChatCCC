@@ -101,6 +101,25 @@ export function pickDisplayChat(sessionId: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// queuePreservedChat: 队列消费时保留 display loop 目标 chat
+// 队列消息来自其他群时，不应把 display loop 重定向到该群
+// ---------------------------------------------------------------------------
+
+const queuePreservedChatMap = new Map<string, string>();
+
+/** 队列消费前保存当前 display chat，消费完后自动清除（一次性） */
+export function setQueuePreservedChat(sessionId: string, chatId: string): void {
+  queuePreservedChatMap.set(sessionId, chatId);
+}
+
+/** 获取并清除队列保存的 display chat，没有则返回 undefined */
+export function consumeQueuePreservedChat(sessionId: string): string | undefined {
+  const chat = queuePreservedChatMap.get(sessionId);
+  queuePreservedChatMap.delete(sessionId);
+  return chat;
+}
+
+// ---------------------------------------------------------------------------
 // displayCards: chatId → 展示卡片状态（display loop 用）
 // ---------------------------------------------------------------------------
 
