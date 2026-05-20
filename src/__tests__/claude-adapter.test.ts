@@ -581,7 +581,7 @@ describe("createClaudeAdapter — sessionOpts 形状", () => {
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       autoCompactEnabled: true,
-      settingSources: ["project", "local"],
+      settingSources: ["user", "project", "local"],
     });
   });
 
@@ -856,7 +856,7 @@ describe("createClaudeAdapter — env 注入", () => {
     expect(opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
   });
 
-  it("第三方 API 配置时仍然加载 CLAUDE.md（settingSources 始终为 project+local）", async () => {
+  it("第三方 API 配置时仍然加载 CLAUDE.md（settingSources 包含 user+project+local）", async () => {
     setupMockCreateSession();
     const adapter = createClaudeAdapter({
       model: "",
@@ -869,7 +869,7 @@ describe("createClaudeAdapter — env 注入", () => {
     await adapter.createSession("/cwd");
 
     const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.settingSources).toEqual(["project", "local"]);
+    expect(opts.settingSources).toEqual(["user", "project", "local"]);
   });
 
   it("不修改主进程 process.env（永不污染）", async () => {
