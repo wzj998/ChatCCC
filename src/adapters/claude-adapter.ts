@@ -117,10 +117,12 @@ function buildSdkEnv(
 function resolveSettingSources(
   _apiKey: string | undefined,
   _baseUrl: string | undefined,
-): Array<"project" | "local"> {
+): Array<"user" | "project" | "local"> {
   // CLAUDE.md / CLAUDE.local.md 是 Agent 指令文件，与 API 来源无关，
   // 无论使用官方 Anthropic 还是第三方网关都应加载。
-  return ["project", "local"];
+  // 包含 "user" 以使 ~/.claude/settings.json 中的配置（如 mcpServers）生效；
+  // buildSdkEnv() 会删除可能冲突的 env 变量，确保网关配置不被覆盖。
+  return ["user", "project", "local"];
 }
 
 // ---------------------------------------------------------------------------
