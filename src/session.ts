@@ -898,9 +898,13 @@ export async function runAgentSession(
           setQueuePreservedChat(sessionId, preservedChat);
         }
         console.log(`[${ts()}] [QUEUE] Consuming queued message for session ${sessionId}: "${queued.text.slice(0, 50)}"`);
-        setImmediate(() => {
+        // setTimeout 而非 setImmediate：给 display loop 的 setInterval
+        // 足够时间读到 "done" 状态并终结旧卡片，避免新轮更新旧卡片的 bug。
+        // setImmediate 在 check 阶段触发早于下一个 timers 阶段，
+        // display loop (setInterval) 还没机会读到 "done" 就被新 "running" 覆盖。
+        setTimeout(() => {
           consumeQueuedMessage(platform, queued);
-        });
+        }, 200);
       }
     }
 
@@ -1103,10 +1107,43 @@ export function ensureDisplayLoop(sessionId: string): void {
                   cardCreatedAt: Date.now(),
                   lastSentContent: "",
                   streamErrorNotified: false,
+                  lastTurnCount: state.turnCount,
                 });
               }
             } else {
               if (display.cardBusy) return;
+
+              // 检测轮次切换：turnCount 变化说明上一轮已完成、本 tick 是新轮，
+              // 但上一轮的 display 卡片因 setImmediate/setTimeout 时序问题
+              // 还没被终结分支清除。此处主动终结旧卡、创建新卡。
+              if (display.lastTurnCount !== undefined && display.lastTurnCount !== state.turnCount) {
+                display.cardBusy = true;
+                try {
+                  const doneSeq = display.sequence + 1;
+                  const doneCard = buildProgressCard("", { showStop: false, headerTitle: "完成" });
+                  await p.cardUpdate(display.cardId, doneCard, doneSeq).catch(() => {});
+                  displayCards.delete(chatId);
+                } catch (_) { /* ignore */ }
+                display.cardBusy = false;
+                // 新建卡片
+                const cardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
+                if (cardId) {
+                  await p.cardSend(chatId, cardId).catch(() => null);
+                  displayCards.set(chatId, {
+                    cardId,
+                    sequence: 1,
+                    cardBusy: false,
+                    cardCreatedAt: Date.now(),
+                    lastSentContent: "",
+                    streamErrorNotified: false,
+                    lastTurnCount: state.turnCount,
+                  });
+                }
+                return;
+              }
+
+              // 更新当前 turn 的 lastTurnCount
+              display.lastTurnCount = state.turnCount;
 
               // 卡片轮转
               if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {

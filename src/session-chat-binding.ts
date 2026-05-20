@@ -137,6 +137,8 @@ export interface DisplayCardState {
   lastSentAccLen?: number;
   /** WeChat delta: 上次发送时的 finalReply */
   lastSentFinalReply?: string;
+  /** 上次 loop 读取到的 turnCount，用于检测轮次切换 */
+  lastTurnCount?: number;
 }
 
 export const displayCards = new Map<string, DisplayCardState>();
