@@ -861,6 +861,25 @@ export async function runAgentSession(
     const wasStopped = prompt?.stopped ?? false;
     activePrompts.delete(sessionId);
 
+    // 先写最终状态（done/stopped），确保 display loop 在下一轮消费前
+    // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
+    // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
+    // 运行中并更新旧卡片，而不是新建卡片。
+    const finalStatus = wasStopped ? "stopped" : "done";
+    const finalReply = pickFinalReply(state).trim();
+    await writeStreamState({
+      sessionId,
+      status: finalStatus,
+      accumulatedContent: state.accumulatedContent,
+      finalReply,
+      chunkCount: state.chunkCount,
+      turnCount: nextTurnCount,
+      contextTokens: existingInfo?.lastContextTokens ?? 0,
+      updatedAt: Date.now(),
+      cwd,
+      tool,
+    });
+
     // 消费队列中的缓存消息（异步，不阻塞后续清理）
     // 用户 /stop 后应丢弃队列消息，避免用户停止后又自动开始新轮
     if (wasStopped) {
@@ -884,22 +903,6 @@ export async function runAgentSession(
         });
       }
     }
-
-    // 写最终状态
-    const finalStatus = wasStopped ? "stopped" : "done";
-    const finalReply = pickFinalReply(state).trim();
-    await writeStreamState({
-      sessionId,
-      status: finalStatus,
-      accumulatedContent: state.accumulatedContent,
-      finalReply,
-      chunkCount: state.chunkCount,
-      turnCount: nextTurnCount,
-      contextTokens: existingInfo?.lastContextTokens ?? 0,
-      updatedAt: Date.now(),
-      cwd,
-      tool,
-    });
 
     // display loop 下一轮会读到最终状态并发送消息
 
