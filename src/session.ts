@@ -53,6 +53,8 @@ import {
   dequeueMessage,
   consumeQueuedMessage,
   cancelQueuedMessage,
+  setQueuePreservedChat,
+  consumeQueuePreservedChat,
 } from "./session-chat-binding.ts";
 
 // ---------------------------------------------------------------------------
@@ -680,8 +682,9 @@ export async function runAgentSession(
   const tid = traceId ?? "";
 
   // 记录用户最后发送消息的群（display loop 只推送到该群）
+  // 如果是从队列消费且队列消息来自其他群，保留原来的 display chat
   recordChatPlatform(_chatId, platform);
-  recordLastActiveChat(sessionId, _chatId);
+  recordLastActiveChat(sessionId, consumeQueuePreservedChat(sessionId) ?? _chatId);
 
   // 并发检查：同一 session 只能有一个活跃 prompt
   if (activePrompts.has(sessionId)) {
@@ -859,12 +862,27 @@ export async function runAgentSession(
     activePrompts.delete(sessionId);
 
     // 消费队列中的缓存消息（异步，不阻塞后续清理）
-    const queued = dequeueMessage(sessionId);
-    if (queued) {
-      console.log(`[${ts()}] [QUEUE] Consuming queued message for session ${sessionId}: "${queued.text.slice(0, 50)}"`);
-      setImmediate(() => {
-        consumeQueuedMessage(platform, queued);
-      });
+    // 用户 /stop 后应丢弃队列消息，避免用户停止后又自动开始新轮
+    if (wasStopped) {
+      const discarded = dequeueMessage(sessionId);
+      if (discarded) {
+        console.log(`[${ts()}] [QUEUE] Discarding queued message for stopped session ${sessionId}`);
+      }
+    } else {
+      const queued = dequeueMessage(sessionId);
+      if (queued) {
+        // 队列消息可能来自其他群，保存当前 display chat 避免 display loop 被
+        // 错误重定向（runAgentSession 会 consumeQueuePreservedChat 并在存在时
+        // 用保存的 chat 替代 queued.chatId 作为 display 目标）
+        const preservedChat = getLastActiveChat(sessionId);
+        if (preservedChat && preservedChat !== queued.chatId) {
+          setQueuePreservedChat(sessionId, preservedChat);
+        }
+        console.log(`[${ts()}] [QUEUE] Consuming queued message for session ${sessionId}: "${queued.text.slice(0, 50)}"`);
+        setImmediate(() => {
+          consumeQueuedMessage(platform, queued);
+        });
+      }
     }
 
     // 写最终状态
