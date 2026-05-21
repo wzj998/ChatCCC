@@ -289,13 +289,21 @@ async function* readJsonLines(
   signal?: AbortSignal,
 ): AsyncGenerator<CursorMessageLine> {
   const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (signal?.aborted) break;
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      yield JSON.parse(trimmed) as CursorMessageLine;
-    } catch { /* 非 JSON 行静默跳过 */ }
+  // abort 时主动 close readline，避免等待 Windows 管道自然关闭（可能延迟数分钟）
+  const onAbort = () => { rl.close(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    for await (const line of rl) {
+      if (signal?.aborted) break;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        yield JSON.parse(trimmed) as CursorMessageLine;
+      } catch { /* 非 JSON 行静默跳过 */ }
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    rl.close();
   }
 }
 
