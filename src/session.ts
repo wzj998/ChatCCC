@@ -1250,7 +1250,18 @@ export function ensureDisplayLoop(sessionId: string): void {
 // ---------------------------------------------------------------------------
 // stopSession — 停止指定 session 的活跃 prompt
 // ---------------------------------------------------------------------------
-
+//
+// 设计要点：
+// 1) controller.abort() 触发 adapter finally 里的 killProcessTree(proc.pid)，
+//    后者负责把整棵 CLI 进程树（cmd.exe 壳 + node CLI 入口 + 真二进制）一起
+//    收尸；之前用 proc.kill() 在 Windows + shell:true 下只能杀第一层 cmd.exe，
+//    会留下"幽灵 CLI 子进程"继续跑、stream-state 永远停在 running。
+//
+// 2) 立刻 fire-and-forget 把 stream-state 标 stopped，不依赖 runAgentSession
+//    的 finally。原因：generator 自然结束依赖子进程 stdout 关闭，killProcessTree
+//    虽然很快但仍是异步，期间 display loop 可能多读到 1–2 帧 "running"，
+//    用户体验上"按下停止后还要等几秒卡片才变成已停止"。先把状态标好，
+//    finally 后续再写一次也不冲突——status 最终值仍然是 stopped。
 export function stopSession(sessionId: string): boolean {
   const prompt = activePrompts.get(sessionId);
   if (!prompt) return false;
@@ -1258,6 +1269,27 @@ export function stopSession(sessionId: string): boolean {
   cancelQueuedMessage(sessionId);
   prompt.controller.abort();
   console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
+
+  // fire-and-forget：立刻把 stream-state.status 改成 stopped，
+  // 让 display loop 下一次扫到立刻渲染"已停止"卡片，不必再等几秒。
+  void (async () => {
+    try {
+      const current = await readStreamState(sessionId);
+      if (!current) return;
+      // 已经是终态就别再覆盖，避免把 done/error 误改成 stopped
+      if (current.status !== "running") return;
+      await writeStreamState({
+        ...current,
+        status: "stopped",
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.warn(
+        `[${ts()}] [STOP] writeStreamState(stopped) failed for ${sessionId}: ${(err as Error).message}`,
+      );
+    }
+  })();
+
   return true;
 }
 

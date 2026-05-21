@@ -22,6 +22,7 @@ import {
   defaultCodexSessionMetaStore,
   type CodexSessionMetaStore,
 } from "./codex-session-meta-store.ts";
+import { killProcessTree } from "./proc-tree-kill.ts";
 import { config } from "../config.ts";
 
 // ---------------------------------------------------------------------------
@@ -242,14 +243,17 @@ class CodexAdapter implements ToolAdapter {
 
     const proc = spawnCodex(args, cwd, userText);
 
-    const onAbort = () => { proc.kill(); };
+    // 关键：spawn 用了 shell:true，proc.pid 指向的是壳进程（cmd.exe / sh）。
+    // 真正干活的是壳的孙子 codex.exe。普通 proc.kill() 在 Windows 上只杀第一层，
+    // 会留下幽灵 node + codex.exe 继续烧 token、stream-state 永远停在 running。
+    // 因此 abort 与 finally 都必须用 killProcessTree 整棵进程树一起收尸。
+    const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
       for await (const raw of readJsonLines(proc, signal)) {
         if (signal?.aborted) break;
 
-        // 首次 prompt 时从 thread.started 事件学习 threadId
         if (
           isFirstPrompt &&
           raw.type === "thread.started" &&
@@ -265,7 +269,7 @@ class CodexAdapter implements ToolAdapter {
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      proc.kill();
+      await killProcessTree(proc.pid);
     }
   }
 
