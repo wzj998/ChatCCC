@@ -1154,7 +1154,7 @@ export function ensureDisplayLoop(sessionId: string): void {
                   const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
                   const newCardId = await p.cardCreate(buildProgressCard(
-                    truncateContent(state.accumulatedContent) || "处理中...",
+                    "",
                     { showStop: true, headerTitle: "生成中..." },
                   ));
                   if (newCardId) {
@@ -1189,9 +1189,14 @@ export function ensureDisplayLoop(sessionId: string): void {
                   replyDelta = state.finalReply;
                 }
                 const delta = (accDelta + replyDelta).trim();
-                if (!delta || delta === display.lastSentContent) return;
-                display.lastSentContent = delta;
-                const deltaCard = buildProgressCard(truncateContent(delta) || "处理中...", { showStop: true, headerTitle: "生成中..." });
+
+                // 无论有无新内容，都追加点点点动画，避免轮转后卡片静止
+                dotCount = (dotCount % 9) + 1;
+                const displayContent = (delta || "") + "\n" + "。" .repeat(dotCount);
+                if (displayContent === display.lastSentContent) return;
+
+                display.lastSentContent = displayContent;
+                const deltaCard = buildProgressCard(truncateContent(displayContent) || "处理中...", { showStop: true, headerTitle: "生成中..." });
                 display.cardBusy = true;
                 const mySeq = display.sequence + 1;
                 try {
