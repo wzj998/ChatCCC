@@ -89,11 +89,96 @@ Agent 是独立的 Node.js 进程（端口 18081），通过本地 HTTP 调用 C
 
 ### Phase 3: 自迭代 Agent
 
-- 新建 `self-iter-agent/` 目录
-- `index.ts`：入口，启动 Claude SDK 会话 + 决策循环
-- `agent-loop.ts`：规划 → 执行 → 记录 的循环
-- `chatccc-client.ts`：HTTP 客户端封装
-- `memory.ts` + `memory.md`：记忆系统
+#### Agent 持续运行机制 — 方案 B：每轮新会话 + memory.md
+
+Claude SDK 的 `prompt()` 是请求-响应模型，用完即止。要让 Agent 持续运行，
+在外部包一层 `while(true)` 循环，每轮创建独立会话。记忆由 `memory.md` 持久化。
+
+**流程：**
+
+```
+while true:
+  // 1. 读记忆
+  memory = readMemory()
+
+  // 2. 创建新 Claude SDK 会话（独立上下文，成本可控）
+  session = adapter.createSession()
+  result = adapter.prompt(fullPrompt, {
+    systemPrompt: plannerPrompt + memory
+  })
+  adapter.closeSession(session)
+
+  // 3. 解析 Claude 的决策输出
+  plan = parseResult(result)  // { action, platform, messages[], nextCheck? }
+
+  // 4. 执行
+  for msg of plan.messages:
+    client.sendMessage(plan.platform, plan.chatId, userId, msg)
+    reply = client.waitForReply(plan.chatId)
+    记录到 memory
+
+  // 5. 写回记忆
+  appendMemory(plan.summary, plan.nextCheck)
+
+  // 6. 等待下次
+  if plan.nextCheck:
+    sleep until plan.nextCheck
+  else:
+    sleep defaultInterval  // 如 5 分钟
+```
+
+**为什么不用单会话反复 prompt：**
+上下文窗口会无限膨胀，token 成本越来越高，且长上下文容易让模型"飘"。
+
+**间隔策略：**
+- Agent 自己决定何时检查：Claude 在决策输出中指定 `nextCheck`（如 `"1h"` 或 `"明天 9:00"`）
+- 若未指定，默认 5 分钟一轮
+- 如果上一轮没发现任何可做的事，Agent 自己写 memory.md："暂无任务，X 小时后再检查"
+
+#### Agent System Prompt 设计
+
+Agent 的 system prompt（`self-iter-agent/prompts/planner.md`）引导它：
+1. 读取记忆，了解进度和上下文
+2. 决定本次要测试/改进什么
+3. 输出结构化的执行计划（平台、消息序列）
+4. 评估上一轮结果，判断是否解决问题
+5. 指定下次检查时间
+
+#### 记忆文件格式
+
+```markdown
+# Self-Iter Agent Memory
+
+## 当前状态
+- 最后运行: 2026-05-16 10:30
+- 下次检查: 2026-05-16 11:30
+- 活跃会话: (无)
+
+## 已知问题
+- (待发现)
+
+## 任务模板（Agent 定期从中选取）
+1. 飞书: /new claude → 简单对话 → /stop，验证完整流程
+2. 微信: /new claude → 简单对话 → /stop，验证完整流程
+3. 双平台: 同时在飞书和微信各创建一个会话，验证不互相干扰
+
+## 任务历史
+| 时间 | 平台 | 任务 | 结果 |
+|------|------|------|------|
+```
+
+#### Agent 进程结构
+
+```
+self-iter-agent/
+├── index.ts              # 入口，while(true) 主循环
+├── agent-loop.ts         # 决策循环：读记忆 → Claude 规划 → 执行 → 写记忆
+├── chatccc-client.ts     # ChatCCC HTTP 客户端（sendMessage, waitForReply）
+├── memory.ts             # 记忆读写（readMemory, appendMemory）
+├── prompts/
+│   └── planner.md        # Agent 的 system prompt
+└── memory.md             # Agent 运行时记忆（任务历史、已知问题）
+```
 
 ## 文件变更清单
 
