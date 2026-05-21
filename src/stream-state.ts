@@ -14,6 +14,9 @@ export interface StreamState {
   status: "running" | "done" | "stopped" | "error";
   accumulatedContent: string;
   finalReply: string;
+  /** The turn whose terminal text reply has already been delivered to IM. */
+  finalReplySentTurn?: number;
+  finalReplySentAt?: number;
   chunkCount: number;
   turnCount: number;
   contextTokens: number;
@@ -95,6 +98,22 @@ export async function writeStreamState(state: StreamState): Promise<void> {
   } catch (err) {
     console.error(`[${ts()}] Failed to write stream-state for ${state.sessionId}: ${(err as Error).message}`);
   }
+}
+
+export function isFinalReplySentForTurn(state: Pick<StreamState, "turnCount" | "finalReplySentTurn">): boolean {
+  return state.finalReplySentTurn === state.turnCount;
+}
+
+export async function markFinalReplySent(sessionId: string, turnCount: number, sentAt = Date.now()): Promise<void> {
+  const state = await readStreamState(sessionId);
+  if (!state) return;
+  if (state.turnCount !== turnCount) return;
+  if (state.status === "running") return;
+
+  state.finalReplySentTurn = turnCount;
+  state.finalReplySentAt = sentAt;
+  state.updatedAt = Date.now();
+  await writeStreamState(state);
 }
 
 export function createEmptyStreamState(sessionId: string, cwd: string, tool: string, turnCount: number): StreamState {
