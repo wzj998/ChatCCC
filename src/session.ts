@@ -828,6 +828,8 @@ export async function runAgentSession(
         pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
       } else if (oldLoopExisted && pp && prevState.finalReply) {
         // display loop 存在但尚未创建卡片（极快轮次），至少发送 finalReply
+        // 同时持久化终结旧 turn 卡片：旧 loop 的 mismatch 守卫可能已删 display entry
+        finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
         await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
       }
       // else: display loop 已自行终结（displayCards 无记录）→ 无需处理
@@ -1199,6 +1201,9 @@ export function ensureDisplayLoop(sessionId: string): void {
               // 此处仅兜底处理异常情况（如进程重启后 display 残留）。
               if (display.turnCount !== state.turnCount) {
                 console.log(`[${ts()}] [DISPLAY] turn mismatch for ${chatId}: display.turnCount=${display.turnCount} state.turnCount=${state.turnCount}, resetting`);
+                // 兜底：turn mismatch 意味着旧 turn 已结束但卡片未在飞书端终结，
+                // 持久化标记为 done，避免 turn-cards.json 残留 "active"
+                finalizeTurnCards(sessionId, display.turnCount, "done").catch(() => {});
                 displayCards.delete(chatId);
                 return;
               }
