@@ -791,6 +791,44 @@ export async function runAgentSession(
     running: true,
   });
 
+  // 在覆盖 stream state 前，先终结上一轮的展示卡片并发送最终回复。
+  // 竞态根因：上一轮 finally 写入 "done" 状态后，200ms setTimeout 即启动
+  // 新一轮 runAgentSession，立即覆盖为 "running" 状态并 kill 旧 display
+  // loop。旧 loop 的 3s 间隔 tick 只有约 6.7% 概率在 200ms 窗口内命中，
+  // 导致 finalReply 丢失、完成卡片空白。此处主动读取上一轮终端状态完成
+  // 卡片终结和回复发送，不依赖 display loop 时序，保证"先发完上一个回答
+  // 再开始缓存问题对应的任务"。
+  const prevState = await readStreamState(sessionId);
+  if (prevState && prevState.status !== "running") {
+    const displayChatId = pickDisplayChat(sessionId);
+    if (displayChatId) {
+      const pp = platformForChat(displayChatId);
+      const display = displayCards.get(displayChatId);
+      const oldLoopExisted = displayLoops.has(sessionId);
+
+      if (display && pp) {
+        // 旧 display loop 被 kill 前来不及终结卡片 → 现在终结
+        while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
+        const nextSeq = display.sequence + 1;
+        const headerTitle = prevState.status === "stopped" ? "已停止" : "完成";
+        const headerTemplate = prevState.status === "stopped" ? "red" : undefined;
+        const cardContent = prevState.accumulatedContent || " ";
+        const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+        await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+        displayCards.delete(displayChatId);
+
+        if (prevState.finalReply) {
+          await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
+        }
+        pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
+      } else if (oldLoopExisted && pp && prevState.finalReply) {
+        // display loop 存在但尚未创建卡片（极快轮次），至少发送 finalReply
+        await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
+      }
+      // else: display loop 已自行终结（displayCards 无记录）→ 无需处理
+    }
+  }
+
   // 初始化 stream-state.json
   const initialState = createEmptyStreamState(sessionId, cwd, tool, nextTurnCount);
   await writeStreamState(initialState);
