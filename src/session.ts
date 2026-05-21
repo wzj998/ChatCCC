@@ -813,7 +813,7 @@ export async function runAgentSession(
         const nextSeq = display.sequence + 1;
         const headerTitle = prevState.status === "stopped" ? "已停止" : "完成";
         const headerTemplate = prevState.status === "stopped" ? "red" : undefined;
-        const cardContent = prevState.accumulatedContent || " ";
+        const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
         const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
         await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
         displayCards.delete(displayChatId);
@@ -1107,7 +1107,7 @@ export function ensureDisplayLoop(sessionId: string): void {
               const nextSeq = display.sequence + 1;
               const headerTitle = state.status === "stopped" ? "已停止" : "完成";
               const headerTemplate = state.status === "stopped" ? "red" : undefined;
-              const cardContent = state.accumulatedContent || " ";
+              const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
               const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
               await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
               const finalSt = state.status === "stopped" ? "stopped" : "done";
