@@ -4,17 +4,63 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 // mock stream-state 以支持在测试中控制累积长度
-const mockStreamStates = new Map<string, { accumulatedContent: string; finalReply: string; status?: "running" | "done" | "stopped" }>();
+const mockStreamStates = new Map<string, {
+  accumulatedContent: string;
+  finalReply: string;
+  status?: "running" | "done" | "stopped" | "error";
+  turnCount?: number;
+  finalReplySentTurn?: number;
+  finalReplySentAt?: number;
+}>();
 vi.mock("../stream-state.ts", () => ({
   readStreamState: async (sid: string) => {
     const state = mockStreamStates.get(sid);
     if (!state) return null;
-    return { sessionId: sid, accumulatedContent: state.accumulatedContent, finalReply: state.finalReply, status: state.status ?? "running", chunkCount: 0, turnCount: 0, contextTokens: 0, updatedAt: Date.now(), cwd: "", tool: "claude" };
+    return {
+      sessionId: sid,
+      accumulatedContent: state.accumulatedContent,
+      finalReply: state.finalReply,
+      finalReplySentTurn: state.finalReplySentTurn,
+      finalReplySentAt: state.finalReplySentAt,
+      status: state.status ?? "running",
+      chunkCount: 0,
+      turnCount: state.turnCount ?? 0,
+      contextTokens: 0,
+      updatedAt: Date.now(),
+      cwd: "",
+      tool: "claude",
+    };
   },
-  writeStreamState: async () => {},
+  writeStreamState: async (state: {
+    sessionId: string;
+    accumulatedContent: string;
+    finalReply: string;
+    status?: "running" | "done" | "stopped" | "error";
+    turnCount?: number;
+    finalReplySentTurn?: number;
+    finalReplySentAt?: number;
+  }) => {
+    mockStreamStates.set(state.sessionId, {
+      accumulatedContent: state.accumulatedContent,
+      finalReply: state.finalReply,
+      status: state.status,
+      turnCount: state.turnCount,
+      finalReplySentTurn: state.finalReplySentTurn,
+      finalReplySentAt: state.finalReplySentAt,
+    });
+  },
   createEmptyStreamState: (sid: string, cwd: string, tool: string, turnCount: number) => ({
     sessionId: sid, status: "running" as const, accumulatedContent: "", finalReply: "", chunkCount: 0, turnCount, contextTokens: 0, updatedAt: Date.now(), cwd, tool,
   }),
+  isFinalReplySentForTurn: (state: { turnCount: number; finalReplySentTurn?: number }) => state.finalReplySentTurn === state.turnCount,
+  markFinalReplySent: async (sid: string, turnCount: number, sentAt = Date.now()) => {
+    const state = mockStreamStates.get(sid);
+    if (!state) return;
+    if ((state.turnCount ?? 0) !== turnCount) return;
+    if ((state.status ?? "running") === "running") return;
+    state.finalReplySentTurn = turnCount;
+    state.finalReplySentAt = sentAt;
+  },
   fixStaleStreamStates: async () => {},
 }));
 import {
@@ -41,6 +87,7 @@ import {
   setSessionPlatform,
   recordChatPlatform,
   _getPlatformForChatForTest,
+  runAgentSession,
   startUnifiedDisplayLoop,
   stopUnifiedDisplayLoop,
 } from "../session.ts";
@@ -184,6 +231,82 @@ describe("chat platform routing", () => {
 // 关键不变量:重建映射后,原有的 activePrompts、sessionInfoMap、displayCards、
 // processedMessages 全部保留——SDK 重连不应当影响后台 prompt 的执行。
 // ---------------------------------------------------------------------------
+
+describe("runAgentSession previous final delivery guard", () => {
+  let registryFile = "";
+  let toolsFile = "";
+
+  beforeEach(async () => {
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-final-guard-"));
+    registryFile = join(dir, "session-registry.json");
+    toolsFile = join(dir, "session-tools.json");
+    _setSessionRegistryFileForTest(registryFile);
+    _setSessionToolsFileForTest(toolsFile);
+    _setAdapterForToolForTest(
+      "claude",
+      mockAdapter((sid) => ({ sessionId: sid, cwd: "/tmp" })),
+    );
+  });
+
+  afterEach(() => {
+    _resetSessionRegistryFileForTest();
+    _resetSessionToolsFileForTest();
+    _clearAdapterCacheForTest();
+    resetBindingState();
+  });
+
+  it("does not resend the previous terminal final when the same turn is already marked sent", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-final", "chat-final");
+    recordLastActiveChat("sid-final", "chat-final");
+    sessionInfoMap.set("chat-final", {
+      sessionId: "sid-final",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "claude",
+    });
+    mockStreamStates.set("sid-final", {
+      accumulatedContent: "",
+      finalReply: "old final",
+      status: "done",
+      turnCount: 1,
+      finalReplySentTurn: 1,
+    });
+
+    await runAgentSession("sid-final", "next prompt", platform, "chat-final", Date.now(), "claude");
+
+    expect(platform.sendText).not.toHaveBeenCalledWith("chat-final", "old final");
+  });
+
+  it("resends the previous terminal final when there is no delivery marker", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-unsent", "chat-unsent");
+    recordLastActiveChat("sid-unsent", "chat-unsent");
+    sessionInfoMap.set("chat-unsent", {
+      sessionId: "sid-unsent",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "claude",
+    });
+    mockStreamStates.set("sid-unsent", {
+      accumulatedContent: "",
+      finalReply: "old final",
+      status: "done",
+      turnCount: 1,
+    });
+
+    await runAgentSession("sid-unsent", "next prompt", platform, "chat-unsent", Date.now(), "claude");
+
+    expect(platform.sendText).toHaveBeenCalledWith("chat-unsent", "old final");
+  });
+});
 
 describe("unified display loop WeChat delta", () => {
   beforeEach(() => {
@@ -1004,6 +1127,7 @@ describe("switchChatBinding", () => {
     displayCards.set("chat-1", {
       cardId: "c1", sequence: 1, cardBusy: false,
       cardCreatedAt: 0, lastSentContent: "", streamErrorNotified: false,
+      sessionId: "old-sid", turnCount: 5, dotCount: 0,
     });
 
     const result = await switchChatBinding({
@@ -1068,6 +1192,7 @@ describe("switchChatBinding", () => {
     const oldDisplay = {
       cardId: "c1", sequence: 1, cardBusy: false,
       cardCreatedAt: 0, lastSentContent: "", streamErrorNotified: false,
+      sessionId: "old-sid", turnCount: 5, dotCount: 0,
     };
     displayCards.set("chat-1", oldDisplay);
 

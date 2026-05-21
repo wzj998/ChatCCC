@@ -37,7 +37,14 @@ function compressWechatDisplayText(text: string): string {
   if (lines.length <= 10) return text;
   return [...lines.slice(0, 5), "...", ...lines.slice(-5)].join("\n");
 }
-import { readStreamState, writeStreamState, createEmptyStreamState, fixStaleStreamStates } from "./stream-state.ts";
+import {
+  readStreamState,
+  writeStreamState,
+  createEmptyStreamState,
+  fixStaleStreamStates,
+  isFinalReplySentForTurn,
+  markFinalReplySent,
+} from "./stream-state.ts";
 import { addCardToTurn, finalizeTurnCards, markCardDone } from "./turn-cards.ts";
 import {
   bindChatToSession,
@@ -58,6 +65,18 @@ import {
   setQueuePreservedChat,
   consumeQueuePreservedChat,
 } from "./session-chat-binding.ts";
+
+async function sendFinalReplyTextOnce(
+  platform: PlatformAdapter,
+  chatId: string,
+  sessionId: string,
+  turnCount: number,
+  text: string,
+): Promise<boolean> {
+  const sent = await platform.sendText(chatId, text).then((ok) => ok !== false).catch(() => false);
+  if (sent) await markFinalReplySent(sessionId, turnCount);
+  return sent;
+}
 
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
@@ -809,27 +828,39 @@ export async function runAgentSession(
       if (display && pp) {
         // 统一 display loop 被 cardBusy 挡住或尚未 tick → 现在终结卡片
         while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
-        const nextSeq = display.sequence + 1;
-        const headerTitle = prevState.status === "stopped" ? "已停止" : "完成";
-        const headerTemplate = prevState.status === "stopped" ? "red" : undefined;
-        const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
-        const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-        await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
-        displayCards.delete(displayChatId);
 
-        // 持久化：标记上一轮所有卡片为终态
-        const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
-        finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
+        // 竞态防护：等待期间统一 display loop 的 tick 可能也已读到同一个
+        // terminal state，发送了 finalReply 并删除/替换了 displayCards 条目。
+        // 通过引用比较检测——若统一 loop 已处理则只补持久化和头像，不重复发。
+        if (displayCards.get(displayChatId) !== display) {
+          const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
+          finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
+          pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
+        } else {
+          const nextSeq = display.sequence + 1;
+          const headerTitle = prevState.status === "stopped" ? "已停止" : "完成";
+          const headerTemplate = prevState.status === "stopped" ? "red" : undefined;
+          const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
+          const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+          await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+          // cardUpdate IO 期间统一 loop 可能也已处理此 display → 删前检查引用
+          const stillOursAfterUpdate = displayCards.get(displayChatId) === display;
+          displayCards.delete(displayChatId);
 
-        if (prevState.finalReply) {
-          await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
+          // 持久化：标记上一轮所有卡片为终态
+          const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
+          finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
+
+          if (prevState.finalReply && stillOursAfterUpdate && !isFinalReplySentForTurn(prevState)) {
+            await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevState.finalReply);
+          }
+          pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
         }
-        pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
-      } else if (pp && prevState.finalReply) {
+      } else if (pp && prevState.finalReply && !isFinalReplySentForTurn(prevState)) {
         // 无 display 记录但上一轮有 finalReply（极快轮次），至少发送
         const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
         finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
-        await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
+        await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevState.finalReply);
       }
       // else: displayCards 无记录且无 finalReply → 无需处理
     }
@@ -1092,9 +1123,18 @@ export function startUnifiedDisplayLoop(): void {
                 replyDelta = state.finalReply;
               }
               const remaining = (accDelta + replyDelta).trim();
+
+              // 若 session 仍在 activePrompts 中，说明 runAgentSession 的 finally
+              // 还没执行，当前 stream state 可能是 stopSession fire-and-forget
+              // 写入的，finalReply 滞后于内存态。跳过发送，等 finally 落盘后
+              // 下一次 tick 再处理，避免发送过期内容或与后续发送重复。
+              if (activePrompts.has(sessionId)) continue;
+
               const tail = "━━━ 回答结束 ━━━";
               const finalMsg = remaining ? remaining + "\n" + tail : tail;
-              await p.sendText(chatId, finalMsg).catch(() => {});
+              if (!isFinalReplySentForTurn(state)) {
+                await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, finalMsg);
+              }
               displayCards.delete(chatId);
             } else {
               // 发送最终结果（卡片平台）
@@ -1105,11 +1145,24 @@ export function startUnifiedDisplayLoop(): void {
               const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
               const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
               await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+
+              // 若 session 仍在 activePrompts 中，说明 runAgentSession 的 finally
+              // 还没执行，当前 stream state 可能是 stopSession fire-and-forget
+              // 写入的，finalReply 滞后于内存态。卡片已更新为终态外观，但不发送
+              // 文本、不删除 display 条目，留给 finally 落盘后的下一次 tick 处理。
+              if (activePrompts.has(sessionId)) {
+                display.lastSentAccLen = state.accumulatedContent.length;
+                display.lastSentFinalReply = state.finalReply;
+                continue;
+              }
+
               const finalSt = state.status === "stopped" ? "stopped" : "done";
               finalizeTurnCards(sessionId, state.turnCount, finalSt).catch(() => {});
               displayCards.delete(chatId);
               if (state.finalReply) {
-                await p.sendText(chatId, state.finalReply).catch(() => {});
+                if (!isFinalReplySentForTurn(state)) {
+                  await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, state.finalReply);
+                }
               } else if (state.accumulatedContent.trim()) {
                 const short = truncateContent(state.accumulatedContent, 30, 4000);
                 await p.sendText(chatId, `[生成过程]\n${short}`).catch(() => {});
@@ -1165,7 +1218,7 @@ export function startUnifiedDisplayLoop(): void {
                 try {
                   const oldSeqBase = display.sequence;
                   const oldContent = state.accumulatedContent + state.finalReply;
-                  const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "完成" });
+                  const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "生成中（上轮）" });
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
                   markCardDone(sessionId, display.turnCount, display.cardId).catch(() => {});
                   const newCardId = await p.cardCreate(buildProgressCard(

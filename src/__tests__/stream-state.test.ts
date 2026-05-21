@@ -18,6 +18,8 @@ const {
   writeStreamState,
   readStreamState,
   createEmptyStreamState,
+  isFinalReplySentForTurn,
+  markFinalReplySent,
   STREAMS_DIR,
   _setRenameForTest,
   _resetRenameForTest,
@@ -117,6 +119,33 @@ describe("writeStreamState — atomic rename", () => {
     const got = await readStreamState("never-existed");
     expect(got).toBeNull();
   });
+  it("marks final reply delivery for the matching terminal turn only", async () => {
+    const state = createEmptyStreamState("sid-delivered", "/tmp", "claude", 2);
+    state.status = "done";
+    state.finalReply = "done";
+    await writeStreamState(state);
+
+    await markFinalReplySent("sid-delivered", 2, 12345);
+
+    const got = await readStreamState("sid-delivered");
+    expect(got).not.toBeNull();
+    expect(got!.finalReplySentTurn).toBe(2);
+    expect(got!.finalReplySentAt).toBe(12345);
+    expect(isFinalReplySentForTurn(got!)).toBe(true);
+  });
+
+  it("does not mark a running state or a different turn as delivered", async () => {
+    const state = createEmptyStreamState("sid-running", "/tmp", "claude", 3);
+    await writeStreamState(state);
+
+    await markFinalReplySent("sid-running", 2, 12345);
+    await markFinalReplySent("sid-running", 3, 12345);
+
+    const got = await readStreamState("sid-running");
+    expect(got).not.toBeNull();
+    expect(got!.finalReplySentTurn).toBeUndefined();
+    expect(isFinalReplySentForTurn(got!)).toBe(false);
+  });
 });
 
 describe("createEmptyStreamState", () => {
@@ -129,6 +158,7 @@ describe("createEmptyStreamState", () => {
     expect(s.status).toBe("running");
     expect(s.accumulatedContent).toBe("");
     expect(s.finalReply).toBe("");
+    expect(s.finalReplySentTurn).toBeUndefined();
     expect(s.chunkCount).toBe(0);
   });
 });
