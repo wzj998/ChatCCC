@@ -1159,8 +1159,7 @@ export function ensureDisplayLoop(sessionId: string): void {
                 display.cardBusy = true;
                 try {
                   const oldSeqBase = display.sequence;
-                  const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
-                  const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
+                  const oldCard = buildProgressCard("", { showStop: false, headerTitle: "完成" });
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
                   const newCardId = await p.cardCreate(buildProgressCard(
                     "",
