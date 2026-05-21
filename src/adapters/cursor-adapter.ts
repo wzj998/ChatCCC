@@ -20,6 +20,7 @@ import {
   defaultCursorSessionMetaStore,
   type CursorSessionMetaStore,
 } from "./cursor-session-meta-store.ts";
+import { killProcessTree } from "./proc-tree-kill.ts";
 
 // ---------------------------------------------------------------------------
 // 类型：Cursor JSONL 消息行
@@ -319,20 +320,16 @@ class CursorAdapter implements ToolAdapter {
     for await (const msg of readJsonLines(proc)) {
       if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
         const sessionId = msg.session_id;
-        // 持久化 sessionId → { cwd, model }：getSessionInfo 后续依赖此映射，
-        // 否则 Cursor 会话上的 /git、/status、/sessions 等命令将无法显示
-        // 真实工作目录与真实模型。优先用 init 事件自报字段（cursor-agent
-        // 内部权威），cwd 没有时退回调用方传入的 cwd 兜底。
         await this.metaStore
           .set(sessionId, { cwd: msg.cwd ?? cwd, model: msg.model })
           .catch(() => {});
         this.activeProcs.delete(proc);
-        proc.kill();
+        await killProcessTree(proc.pid);
         return { sessionId };
       }
     }
 
-    proc.kill();
+    await killProcessTree(proc.pid);
     this.activeProcs.delete(proc);
     throw new Error("No session ID in Cursor init event");
   }
@@ -346,16 +343,14 @@ class CursorAdapter implements ToolAdapter {
     const proc = spawnAgent(["--resume", sessionId], cwd, userText);
     this.activeProcs.add(proc);
 
-    const onAbort = () => { proc.kill(); };
+    // 见 codex-adapter.ts 同位置注释：spawn 用了 shell:true，必须杀整棵树，
+    // 否则 abort 后真正在跑的孙进程 cursor-agent 还会继续输出 & 占用资源。
+    const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
       for await (const raw of readJsonLines(proc, signal)) {
         if (signal?.aborted) break;
-        // 自动学习：resume 流首条 init 事件若带 cwd / model，更新映射。
-        // 这是为升级前创建的旧会话或映射文件意外丢失的情况兜底——
-        // 用户向旧会话发一次消息后，/git、/status 等即可正常显示。
-        // fire-and-forget：写失败不影响流式输出。
         if (
           raw.type === "system" &&
           raw.subtype === "init" &&
@@ -371,7 +366,7 @@ class CursorAdapter implements ToolAdapter {
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      proc.kill();
+      await killProcessTree(proc.pid);
       this.activeProcs.delete(proc);
     }
   }
