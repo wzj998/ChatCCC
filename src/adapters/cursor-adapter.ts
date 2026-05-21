@@ -268,11 +268,13 @@ function spawnAgent(
     shell: true,
   });
 
+  console.log(`[Cursor debug] spawn: cmd=${CURSOR_AGENT_COMMAND}, args=[${allArgs.join(", ")}], cwd=${cwd ?? "(none)"}, stdinLen=${stdinText?.length ?? 0}, pid=${proc.pid}`);
+
   // 收集 stderr，子进程异常退出时输出到日志，方便排查静默失败
   let stderr = "";
   proc.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   proc.on("close", (code) => {
-    if (code !== 0 && stderr.trim()) {
+    if (stderr.trim()) {
       console.error(`[Cursor stderr] exit=${code}: ${stderr.trim().slice(0, 2000)}`);
     }
   });
@@ -287,14 +289,18 @@ function spawnAgent(
 async function* readJsonLines(
   proc: ChildProcess,
   signal?: AbortSignal,
+  debugTag?: string,
 ): AsyncGenerator<CursorMessageLine> {
+  const tag = debugTag ?? "cursor";
   const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
   // abort 时主动 close readline，避免等待 Windows 管道自然关闭（可能延迟数分钟）
   const onAbort = () => { rl.close(); };
   signal?.addEventListener("abort", onAbort, { once: true });
+  let lineCount = 0;
   try {
     for await (const line of rl) {
       if (signal?.aborted) break;
+      lineCount++;
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
@@ -304,6 +310,7 @@ async function* readJsonLines(
   } finally {
     signal?.removeEventListener("abort", onAbort);
     rl.close();
+    console.log(`[Cursor debug] ${tag} readJsonLines done: ${lineCount} raw lines, signalAborted=${signal?.aborted ?? false}`);
   }
 }
 
@@ -325,7 +332,7 @@ class CursorAdapter implements ToolAdapter {
     const proc = spawnAgent(["ok"], cwd);
     this.activeProcs.add(proc);
 
-    for await (const msg of readJsonLines(proc)) {
+    for await (const msg of readJsonLines(proc, undefined, "createSession")) {
       if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
         const sessionId = msg.session_id;
         await this.metaStore
@@ -348,6 +355,7 @@ class CursorAdapter implements ToolAdapter {
     cwd: string,
     signal?: AbortSignal,
   ): AsyncIterable<UnifiedStreamMessage> {
+    console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
     const proc = spawnAgent(["--resume", sessionId], cwd, userText);
     this.activeProcs.add(proc);
 
@@ -357,7 +365,7 @@ class CursorAdapter implements ToolAdapter {
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      for await (const raw of readJsonLines(proc, signal)) {
+      for await (const raw of readJsonLines(proc, signal, sessionId)) {
         if (signal?.aborted) break;
         if (
           raw.type === "system" &&
@@ -376,6 +384,7 @@ class CursorAdapter implements ToolAdapter {
       signal?.removeEventListener("abort", onAbort);
       await killProcessTree(proc.pid);
       this.activeProcs.delete(proc);
+      console.log(`[Cursor debug] prompt end: sessionId=${sessionId}, signalAborted=${signal?.aborted ?? false}`);
     }
   }
 
