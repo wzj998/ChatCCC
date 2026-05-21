@@ -113,6 +113,18 @@ export interface SessionInfo {
   model?: string;
 }
 
+export interface ToolProcessInfo {
+  /** Root PID returned by child_process.spawn. With shell:true this is the shell wrapper PID. */
+  pid: number;
+}
+
+export interface ToolPromptOptions {
+  /** Called once a CLI-backed prompt process has been spawned. */
+  onProcessStart?: (info: ToolProcessInfo) => void;
+  /** Called when the adapter leaves the prompt process scope normally or by abort. */
+  onProcessExit?: (info: ToolProcessInfo) => void;
+}
+
 // ---------------------------------------------------------------------------
 // ToolAdapter — 统一的 AI 工具适配器接口
 // ---------------------------------------------------------------------------
@@ -139,6 +151,7 @@ export interface ToolAdapter {
     userText: string,
     cwd: string,
     signal?: AbortSignal,
+    options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage>;
 
   /**

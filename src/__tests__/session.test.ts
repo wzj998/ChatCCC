@@ -90,6 +90,10 @@ import {
   runAgentSession,
   startUnifiedDisplayLoop,
   stopUnifiedDisplayLoop,
+  _setProcessAliveForTest,
+  _resetProcessAliveForTest,
+  _setProcessMonitorIntervalForTest,
+  _resetProcessMonitorIntervalForTest,
 } from "../session.ts";
 import {
   activePrompts,
@@ -103,7 +107,7 @@ import {
   displayCards,
 } from "../session-chat-binding.ts";
 import type { AccumulatorState } from "../session.ts";
-import type { ToolAdapter, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
+import type { ToolAdapter, ToolPromptOptions, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
 import type { PlatformAdapter } from "../platform-adapter.ts";
 
 // Helper to create a mock active session entry
@@ -305,6 +309,92 @@ describe("runAgentSession previous final delivery guard", () => {
     await runAgentSession("sid-unsent", "next prompt", platform, "chat-unsent", Date.now(), "claude");
 
     expect(platform.sendText).toHaveBeenCalledWith("chat-unsent", "old final");
+  });
+});
+
+describe("runAgentSession process monitor", () => {
+  let registryFile = "";
+  let toolsFile = "";
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-process-monitor-"));
+    registryFile = join(dir, "session-registry.json");
+    toolsFile = join(dir, "session-tools.json");
+    _setSessionRegistryFileForTest(registryFile);
+    _setSessionToolsFileForTest(toolsFile);
+    _setProcessMonitorIntervalForTest(50);
+  });
+
+  afterEach(() => {
+    _resetSessionRegistryFileForTest();
+    _resetSessionToolsFileForTest();
+    _clearAdapterCacheForTest();
+    _resetProcessAliveForTest();
+    _resetProcessMonitorIntervalForTest();
+    resetBindingState();
+    vi.useRealTimers();
+  });
+
+  it("marks the turn as error and sends a separate notice when the CLI process disappears", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-process", "chat-process");
+    recordLastActiveChat("sid-process", "chat-process");
+    _setProcessAliveForTest(() => false);
+
+    const adapter: ToolAdapter = {
+      displayName: "Cursor",
+      sessionDescPrefix: "Cursor Session:",
+      createSession: async () => ({ sessionId: "sid-process" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "/tmp" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        options?.onProcessStart?.({ pid: 12345 });
+        yield { type: "assistant", blocks: [{ type: "text", text: "partial answer" }] };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    _setAdapterForToolForTest("cursor", adapter);
+
+    const runPromise = runAgentSession(
+      "sid-process",
+      "prompt",
+      platform,
+      "chat-process",
+      Date.now(),
+      "cursor",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-process")?.processPid).toBe(12345);
+    });
+    await vi.advanceTimersByTimeAsync(60);
+    await runPromise;
+
+    const state = mockStreamStates.get("sid-process");
+    expect(state?.status).toBe("error");
+    expect(state?.finalReply).toContain("partial answer");
+    expect(activePrompts.has("sid-process")).toBe(false);
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-process",
+      expect.stringContaining("进程异常结束"),
+    );
   });
 });
 

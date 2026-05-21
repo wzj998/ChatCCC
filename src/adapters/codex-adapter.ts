@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   ToolAdapter,
+  ToolPromptOptions,
   UnifiedBlock,
   UnifiedStreamMessage,
   CreateSessionResult,
@@ -238,6 +239,7 @@ class CodexAdapter implements ToolAdapter {
     userText: string,
     cwd: string,
     signal?: AbortSignal,
+    options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
     let meta = await this.metaStore.get(sessionId);
     const threadId = meta?.threadId;
@@ -250,6 +252,7 @@ class CodexAdapter implements ToolAdapter {
       : [...CODEX_BASE_ARGS, "resume", threadId, "-"];
 
     const proc = spawnCodex(args, cwd, userText);
+    if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     // 关键：spawn 用了 shell:true，proc.pid 指向的是壳进程（cmd.exe / sh）。
     // 真正干活的是壳的孙子 codex.exe。普通 proc.kill() 在 Windows 上只杀第一层，
@@ -278,6 +281,7 @@ class CodexAdapter implements ToolAdapter {
     } finally {
       signal?.removeEventListener("abort", onAbort);
       await killProcessTree(proc.pid);
+      if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
     }
   }
 

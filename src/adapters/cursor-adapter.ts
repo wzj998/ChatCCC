@@ -10,6 +10,7 @@ import { createInterface } from "node:readline";
 
 import type {
   ToolAdapter,
+  ToolPromptOptions,
   UnifiedBlock,
   UnifiedStreamMessage,
   CreateSessionResult,
@@ -354,10 +355,12 @@ class CursorAdapter implements ToolAdapter {
     userText: string,
     cwd: string,
     signal?: AbortSignal,
+    options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
     const proc = spawnAgent(["--resume", sessionId], cwd, userText);
     this.activeProcs.add(proc);
+    if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     // 见 codex-adapter.ts 同位置注释：spawn 用了 shell:true，必须杀整棵树，
     // 否则 abort 后真正在跑的孙进程 cursor-agent 还会继续输出 & 占用资源。
@@ -384,6 +387,7 @@ class CursorAdapter implements ToolAdapter {
       signal?.removeEventListener("abort", onAbort);
       await killProcessTree(proc.pid);
       this.activeProcs.delete(proc);
+      if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
       console.log(`[Cursor debug] prompt end: sessionId=${sessionId}, signalAborted=${signal?.aborted ?? false}`);
     }
   }
