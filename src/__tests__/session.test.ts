@@ -41,7 +41,8 @@ import {
   setSessionPlatform,
   recordChatPlatform,
   _getPlatformForChatForTest,
-  ensureDisplayLoop,
+  startUnifiedDisplayLoop,
+  stopUnifiedDisplayLoop,
 } from "../session.ts";
 import {
   activePrompts,
@@ -184,7 +185,7 @@ describe("chat platform routing", () => {
 // processedMessages 全部保留——SDK 重连不应当影响后台 prompt 的执行。
 // ---------------------------------------------------------------------------
 
-describe("ensureDisplayLoop WeChat delta", () => {
+describe("unified display loop WeChat delta", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetState();
@@ -193,6 +194,7 @@ describe("ensureDisplayLoop WeChat delta", () => {
   });
 
   afterEach(() => {
+    stopUnifiedDisplayLoop();
     resetBindingState();
     vi.useRealTimers();
   });
@@ -212,16 +214,31 @@ describe("ensureDisplayLoop WeChat delta", () => {
       tool: "claude",
     });
 
+    // 模拟 runAgentSession 创建的 WeChat display 条目
+    displayCards.set("chat-wechat", {
+      cardId: "",
+      sequence: 0,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-wechat",
+      turnCount: 1,
+      dotCount: 0,
+    });
+
     mockStreamStates.set("sid-wechat", {
       accumulatedContent: "",
       finalReply: "partial reply",
+      status: "running",
     });
-    ensureDisplayLoop("sid-wechat");
+    startUnifiedDisplayLoop();
     await vi.advanceTimersByTimeAsync(3000);
 
     mockStreamStates.set("sid-wechat", {
       accumulatedContent: "tool output\n",
       finalReply: "partial reply",
+      status: "running",
     });
     await vi.advanceTimersByTimeAsync(3000);
 

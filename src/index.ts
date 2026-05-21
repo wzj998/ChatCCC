@@ -92,6 +92,7 @@ import {
   rebuildBindingsFromRegistry,
   resetState,
   setSessionPlatform,
+  startUnifiedDisplayLoop,
 } from "./session.ts";
 import {
   rebuildSessionChatsFromRegistry,
@@ -595,13 +596,14 @@ async function startBotServiceCore(): Promise<void> {
     // 进程首次启动:此时所有 Map 都是空的,resetState 主要是打个 LOG 标识"开始
     // 干净状态"。修正残留的 running stream-state 并重建 session→chat 映射。
     resetState();
+    startUnifiedDisplayLoop();
     fixStaleStreamStates().then(async () => {
       const registry = await loadSessionRegistryForBinding();
       rebuildSessionChatsFromRegistry(registry);
     }).catch((err) => console.error(`[${ts()}] Init bindings failed: ${(err as Error).message}`));
 
     // ⚠️ 关键设计:onReady / onReconnected 只重建只读映射,**绝不**清空运行时
-    // 状态(activePrompts、displayLoops、sessionInfoMap、processedMessages)。
+    // 状态(activePrompts、sessionInfoMap、processedMessages)。
     // SDK 重连只是底层 WebSocket 抖动,业务层不受影响:
     //   - 后台 generator 仍在跑、stream-state 仍在被写
     //   - display loop 仍在向群推送

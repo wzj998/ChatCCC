@@ -130,6 +130,8 @@ export interface DisplayCardState {
   cardCreatedAt: number;
   lastSentContent: string;
   streamErrorNotified: boolean;
+  /** 所属 session */
+  sessionId: string;
   /** 所属 turn */
   turnCount: number;
   /** 卡片轮转时记录的基线，轮转后只展示增量 */
@@ -139,12 +141,18 @@ export interface DisplayCardState {
   lastSentAccLen?: number;
   /** WeChat delta: 上次发送时的 finalReply */
   lastSentFinalReply?: string;
+  /** 点点点动画计数器（统一 display loop 每个卡片独立计数） */
+  dotCount: number;
 }
 
 export const displayCards = new Map<string, DisplayCardState>();
 
-/** displayLoops: sessionId → 展示循环的 stop 函数 */
-export const displayLoops = new Map<string, () => void>();
+/** 统一 display loop 的 interval handle，由 session.ts 管理 */
+export let unifiedDisplayLoopHandle: ReturnType<typeof setInterval> | null = null;
+
+export function setUnifiedDisplayLoopHandle(h: ReturnType<typeof setInterval> | null): void {
+  unifiedDisplayLoopHandle = h;
+}
 
 // ---------------------------------------------------------------------------
 // queuedMessages: sessionId → 缓存消息（生成中排队，队列最大长度 1）
@@ -201,6 +209,8 @@ export function resetBindingState(): void {
   activePrompts.clear();
   queuedMessages.clear();
   displayCards.clear();
-  for (const stop of displayLoops.values()) stop();
-  displayLoops.clear();
+  if (unifiedDisplayLoopHandle !== null) {
+    clearInterval(unifiedDisplayLoopHandle);
+    unifiedDisplayLoopHandle = null;
+  }
 }
