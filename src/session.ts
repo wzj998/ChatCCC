@@ -955,7 +955,16 @@ export async function runAgentSession(
 const CARD_ROTATE_MS = 9 * 60 * 1000;
 
 export function ensureDisplayLoop(sessionId: string): void {
-  if (displayLoops.has(sessionId)) return;
+  // 杀掉旧 loop（如果存在），避免竞态：旧 loop 正在处理 terminal 分支
+  // （发送完成卡片、清理 display）尚未 delete 自己，新 turn 的
+  // runAgentSession 调用 ensureDisplayLoop 时因 guard 直接返回，
+  // 导致新 turn 没有 display loop → 卡片永久不更新。
+  const oldStop = displayLoops.get(sessionId);
+  if (oldStop) {
+    console.log(`[${ts()}] [DISPLAY] ensureDisplayLoop restarting loop for ${sessionId} (old loop existed)`);
+    oldStop();
+    displayLoops.delete(sessionId);
+  }
 
   let dotCount = 0;
 
@@ -1243,6 +1252,7 @@ export function ensureDisplayLoop(sessionId: string): void {
       }
 
       if (isTerminal) {
+        console.log(`[${ts()}] [DISPLAY] loop stopping for ${sessionId} (terminal state: ${state.status})`);
         clearInterval(interval);
         displayLoops.delete(sessionId);
       }
