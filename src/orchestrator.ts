@@ -740,11 +740,6 @@ export async function handleCommand(
         .setChatAvatar(chatId, descriptionTool, "new")
         .catch(() => {});
 
-      if (isSessionRunning(newSessionId)) {
-        const { ensureDisplayLoop } = await import("./session.ts");
-        ensureDisplayLoop(newSessionId);
-      }
-
       await platform.sendCard(
         chatId,
         `${toolLabel} Session Reset`,
@@ -900,11 +895,6 @@ export async function handleCommand(
       }
 
       platform.setChatAvatar(chatId, target.tool, "new").catch(() => {});
-
-      if (isSessionRunning(target.sessionId)) {
-        const { ensureDisplayLoop } = await import("./session.ts");
-        ensureDisplayLoop(target.sessionId);
-      }
 
       const targetToolLabel = toolDisplayName(target.tool);
       const busyNote = isSessionRunning(target.sessionId)

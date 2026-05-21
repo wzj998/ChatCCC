@@ -46,7 +46,8 @@ import {
   isSessionRunning,
   activePrompts,
   displayCards,
-  displayLoops,
+  unifiedDisplayLoopHandle,
+  setUnifiedDisplayLoopHandle,
   rebuildSessionChatsFromRegistry,
   recordLastActiveChat,
   getLastActiveChat,
@@ -171,8 +172,7 @@ export function resetState(): void {
   chatPlatformMap.clear();
   activePrompts.clear();
   displayCards.clear();
-  for (const stop of displayLoops.values()) stop();
-  displayLoops.clear();
+  stopUnifiedDisplayLoop();
   console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions + bindings)`);
 }
 
@@ -321,7 +321,7 @@ export async function loadSessionRegistryForBinding(): Promise<SessionRegistryDa
  *     否则下条用户消息会绕过 isSessionRunning 检查再开一条 prompt,
  *     导致同一 sessionId 双开 generator
  *   - **不动** sessionInfoMap：内存里的轮数/contextTokens 比 registry 更新
- *   - **不动** displayCards / displayLoops：正在跑的 prompt 还需要它们继续推卡片
+ *   - **不动** displayCards：正在跑的 prompt 还需要它们继续推卡片
  *   - **不动** processedMessages / lastMsgTimestamps：SDK 重连若重推已 ack 消息,
  *     去重 set 还在才能避免同一 prompt 跑两遍
  *
@@ -805,10 +805,9 @@ export async function runAgentSession(
     if (displayChatId) {
       const pp = platformForChat(displayChatId);
       const display = displayCards.get(displayChatId);
-      const oldLoopExisted = displayLoops.has(sessionId);
 
       if (display && pp) {
-        // 旧 display loop 被 kill 前来不及终结卡片 → 现在终结
+        // 统一 display loop 被 cardBusy 挡住或尚未 tick → 现在终结卡片
         while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
         const nextSeq = display.sequence + 1;
         const headerTitle = prevState.status === "stopped" ? "已停止" : "完成";
@@ -826,13 +825,13 @@ export async function runAgentSession(
           await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
         }
         pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
-      } else if (oldLoopExisted && pp && prevState.finalReply) {
-        // display loop 存在但尚未创建卡片（极快轮次），至少发送 finalReply
-        // 同时持久化终结旧 turn 卡片：旧 loop 的 mismatch 守卫可能已删 display entry
+      } else if (pp && prevState.finalReply) {
+        // 无 display 记录但上一轮有 finalReply（极快轮次），至少发送
+        const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
         finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
         await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
       }
-      // else: display loop 已自行终结（displayCards 无记录）→ 无需处理
+      // else: displayCards 无记录且无 finalReply → 无需处理
     }
   }
 
@@ -841,7 +840,7 @@ export async function runAgentSession(
   await writeStreamState(initialState);
 
   // 为新 turn 创建第一张展示卡片，同时注册到 turn-cards 持久化。
-  // 放在 ensureDisplayLoop 之前，确保卡片立即可见（不等 3s 首次 tick）。
+  // 统一 display loop 始终运行，卡片创建后下一个 tick 即自动开始更新。
   const displayChatIdForNew = pickDisplayChat(sessionId);
   if (displayChatIdForNew) {
     const ppNew = platformForChat(displayChatIdForNew);
@@ -858,15 +857,27 @@ export async function runAgentSession(
           cardCreatedAt: Date.now(),
           lastSentContent: "",
           streamErrorNotified: false,
+          sessionId,
           turnCount: nextTurnCount,
+          dotCount: 0,
         });
         addCardToTurn(sessionId, nextTurnCount, cardId).catch(() => {});
       }
+    } else if (ppNew && ppNew.kind === "wechat") {
+      // WeChat: 无卡片，但需要 display entry 追踪已发送内容
+      displayCards.set(displayChatIdForNew, {
+        cardId: "",
+        sequence: 0,
+        cardBusy: false,
+        cardCreatedAt: Date.now(),
+        lastSentContent: "",
+        streamErrorNotified: false,
+        sessionId,
+        turnCount: nextTurnCount,
+        dotCount: 0,
+      });
     }
   }
-
-  // 启动 display loop
-  ensureDisplayLoop(sessionId);
 
   // 设置最后活跃群头像为 busy
   const activeCid = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
@@ -1019,90 +1030,74 @@ export async function runAgentSession(
 }
 
 // ---------------------------------------------------------------------------
-// ensureDisplayLoop — 每个 session 一个 display 循环，读文件更新最后活跃群的卡片
+// startUnifiedDisplayLoop — 全局统一 display 循环，遍历 displayCards 更新卡片
+// ---------------------------------------------------------------------------
+// 替代旧的 per-session ensureDisplayLoop，消除 kill/restart 竞态条件。
+// 单一定时器遍历所有 displayCards 条目，通过条目内的 sessionId 查找 stream state。
 // ---------------------------------------------------------------------------
 
 const CARD_ROTATE_MS = 9 * 60 * 1000;
 
-export function ensureDisplayLoop(sessionId: string): void {
-  // 杀掉旧 loop（如果存在），避免竞态：旧 loop 正在处理 terminal 分支
-  // （发送完成卡片、清理 display）尚未 delete 自己，新 turn 的
-  // runAgentSession 调用 ensureDisplayLoop 时因 guard 直接返回，
-  // 导致新 turn 没有 display loop → 卡片永久不更新。
-  const oldStop = displayLoops.get(sessionId);
-  if (oldStop) {
-    console.log(`[${ts()}] [DISPLAY] ensureDisplayLoop restarting loop for ${sessionId} (old loop existed)`);
-    oldStop();
-    displayLoops.delete(sessionId);
-  }
-
-  let dotCount = 0;
+export function startUnifiedDisplayLoop(): void {
+  if (unifiedDisplayLoopHandle !== null) return;
 
   const interval = setInterval(() => {
     void (async () => {
-      const state = await readStreamState(sessionId);
-      if (!state) return;
+      for (const [chatId, display] of displayCards) {
+        if (display.cardBusy) continue;
 
-      // pickDisplayChat 在 lastActiveChat 已与本 session 解绑时返回 undefined，
-      // 避免 /newh 等改嫁场景下旧 session 仍向已离开群推卡片。
-      const chatId = pickDisplayChat(sessionId);
-      if (!chatId) {
-        // 无活跃群，若 session 已结束则停止 loop
-        if (state.status !== "running") {
-          clearInterval(interval);
-          displayLoops.delete(sessionId);
-          // 兜底：lastActiveChatMap 可能因进程重启丢失，从 registry 映射恢复头像
-          const fallbackChat = getChatsForSession(sessionId)[0];
-          const fallbackPlatform = fallbackChat ? platformForChat(fallbackChat) : null;
-          if (fallbackChat && fallbackPlatform) {
-            fallbackPlatform.setChatAvatar(fallbackChat, state.tool, "idle").catch(() => {});
+        const sessionId = display.sessionId;
+        const state = await readStreamState(sessionId);
+        if (!state) {
+          displayCards.delete(chatId);
+          continue;
+        }
+
+        // 交叉验证：chat 当前绑定的 session 是否仍是 display 记录的 session。
+        // 若 chat 已被切换到其他 session（如 /newh），旧 display 必须停推。
+        const currentSessionForChat = sessionInfoMap.get(chatId)?.sessionId;
+        if (currentSessionForChat && currentSessionForChat !== sessionId) {
+          if (state.status !== "running") {
+            displayCards.delete(chatId);
           }
+          continue;
         }
-        return;
-      }
 
-      // 交叉验证：chat 当前绑定的 session 是否仍是本 display loop 的 session。
-      // 若 chat 已被切换到其他 session（如 /new p2p 未解绑旧 session 的历史遗留
-      // 或任何未来新增的切换路径），旧 loop 必须停推，避免向已离开的 chat 推送内容。
-      const currentSessionForChat = sessionInfoMap.get(chatId)?.sessionId;
-      if (currentSessionForChat && currentSessionForChat !== sessionId) {
-        if (state.status !== "running") {
-          clearInterval(interval);
-          displayLoops.delete(sessionId);
+        // 验证 chat 仍是该 session 的最后活跃群
+        const lastActive = getLastActiveChat(sessionId);
+        if (lastActive !== chatId) {
+          if (state.status !== "running") {
+            displayCards.delete(chatId);
+          }
+          continue;
         }
-        return;
-      }
 
-      const isTerminal = state.status !== "running";
+        const isTerminal = state.status !== "running";
 
-      try {
-        const p = platformForChat(chatId);
-        if (!p) return;
-        const display = displayCards.get(chatId);
+        try {
+          const p = platformForChat(chatId);
+          if (!p) continue;
 
-        const isWechat = p.kind === "wechat";
+          const isWechat = p.kind === "wechat";
 
-        if (isTerminal) {
-          if (isWechat) {
-            // WeChat: 没有卡片需要终结，用 delta 逻辑发剩余内容，避免重发已推送的部分
-            // 分开追踪 accumulatedContent 和 finalReply，而非拼接后对比
-            const prevAccLen = display?.lastSentAccLen ?? 0;
-            const prevFinalReply = display?.lastSentFinalReply ?? "";
-            const accDelta = state.accumulatedContent.slice(prevAccLen);
-            let replyDelta: string;
-            if (prevFinalReply && state.finalReply.startsWith(prevFinalReply)) {
-              replyDelta = state.finalReply.slice(prevFinalReply.length);
+          if (isTerminal) {
+            if (isWechat) {
+              const prevAccLen = display.lastSentAccLen ?? 0;
+              const prevFinalReply = display.lastSentFinalReply ?? "";
+              const accDelta = state.accumulatedContent.slice(prevAccLen);
+              let replyDelta: string;
+              if (prevFinalReply && state.finalReply.startsWith(prevFinalReply)) {
+                replyDelta = state.finalReply.slice(prevFinalReply.length);
+              } else {
+                replyDelta = state.finalReply;
+              }
+              const remaining = (accDelta + replyDelta).trim();
+              const tail = "━━━ 回答结束 ━━━";
+              const finalMsg = remaining ? remaining + "\n" + tail : tail;
+              await p.sendText(chatId, finalMsg).catch(() => {});
+              displayCards.delete(chatId);
             } else {
-              replyDelta = state.finalReply;
-            }
-            const remaining = (accDelta + replyDelta).trim();
-            const tail = "━━━ 回答结束 ━━━";
-            const finalMsg = remaining ? remaining + "\n" + tail : tail;
-            await p.sendText(chatId, finalMsg).catch(() => {});
-            if (display) displayCards.delete(chatId);
-          } else {
-            // 发送最终结果（卡片平台）
-            if (display) {
+              // 发送最终结果（卡片平台）
               while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
               const nextSeq = display.sequence + 1;
               const headerTitle = state.status === "stopped" ? "已停止" : "完成";
@@ -1113,99 +1108,55 @@ export function ensureDisplayLoop(sessionId: string): void {
               const finalSt = state.status === "stopped" ? "stopped" : "done";
               finalizeTurnCards(sessionId, state.turnCount, finalSt).catch(() => {});
               displayCards.delete(chatId);
-            }
-            if (state.finalReply) {
-              await p.sendText(chatId, state.finalReply).catch(() => {});
-            } else if (!display && state.accumulatedContent.trim()) {
-              const short = truncateContent(state.accumulatedContent, 30, 4000);
-              await p.sendText(chatId, `[生成过程]\n${short}`).catch(() => {});
-            }
-          }
-          p.setChatAvatar(chatId, state.tool, "idle").catch(() => {});
-        } else {
-          // running: 创建或更新展示
-          if (isWechat) {
-            // WeChat: 不使用卡片，基于 agent 真实 delta 推送 raw content
-            if (!display) {
-              displayCards.set(chatId, {
-                cardId: "",
-                sequence: 0,
-                cardBusy: false,
-                cardCreatedAt: Date.now(),
-                lastSentContent: "",
-                streamErrorNotified: false,
-              });
-            }
-            const d = displayCards.get(chatId);
-            if (!d || d.cardBusy) return;
-
-            // 分开追踪 accumulatedContent 和 finalReply 的已发送位置。
-            // 如果只用 rawFull.startsWith(prevRaw)，当新的 tool_use/tool_result
-            // 插入到 accumulatedContent 中间时，rawFull 不再以 prevRaw 开头，
-            // 会回退到发送完整内容 → 产生大量重复。
-            const prevAccLen = d.lastSentAccLen ?? 0;
-            const prevFinalReply = d.lastSentFinalReply ?? "";
-            const accDelta = state.accumulatedContent.slice(prevAccLen);
-            let replyDelta: string;
-            if (prevFinalReply && state.finalReply.startsWith(prevFinalReply)) {
-              replyDelta = state.finalReply.slice(prevFinalReply.length);
-            } else {
-              replyDelta = state.finalReply;
-            }
-            const delta = (accDelta + replyDelta).trim();
-            if (!delta) return;
-
-            d.cardBusy = true;
-            try {
-              const ok = await p.sendText(chatId, compressWechatDisplayText(delta));
-              if (ok) {
-                d.lastSentAccLen = state.accumulatedContent.length;
-                d.lastSentFinalReply = state.finalReply;
-                d.lastSentContent = delta;
-              } else {
-                // 发送失败（限流等），不更新光标，下次合并重试
-                return;
+              if (state.finalReply) {
+                await p.sendText(chatId, state.finalReply).catch(() => {});
+              } else if (state.accumulatedContent.trim()) {
+                const short = truncateContent(state.accumulatedContent, 30, 4000);
+                await p.sendText(chatId, `[生成过程]\n${short}`).catch(() => {});
               }
-            } catch (err) {
-              console.error(`[${ts()}] WeChat sendText error: chatId=${chatId} ${(err as Error).message}`);
-              if (!d.streamErrorNotified) {
-                d.streamErrorNotified = true;
-                p.sendText(chatId, "文本发送失败，请稍后查看结果。").catch(() => {});
-              }
-            } finally {
-              d.cardBusy = false;
             }
+            p.setChatAvatar(chatId, state.tool, "idle").catch(() => {});
+            console.log(`[${ts()}] [DISPLAY] unified loop deleted display for ${chatId} (terminal: ${state.status})`);
           } else {
-            // 非 WeChat: 卡片流程
-            if (!display) {
-              // 兜底：runAgentSession 应已创建卡片，若没有则补建
-              const cardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
-              if (cardId) {
-                await p.cardSend(chatId, cardId).catch(() => null);
-                displayCards.set(chatId, {
-                  cardId,
-                  sequence: 1,
-                  cardBusy: false,
-                  cardCreatedAt: Date.now(),
-                  lastSentContent: "",
-                  streamErrorNotified: false,
-                  turnCount: state.turnCount,
-                });
-                addCardToTurn(sessionId, state.turnCount, cardId).catch(() => {});
+            // running: 创建或更新展示
+            if (isWechat) {
+              // WeChat: 不使用卡片，基于 agent 真实 delta 推送 raw content
+              const prevAccLen = display.lastSentAccLen ?? 0;
+              const prevFinalReply = display.lastSentFinalReply ?? "";
+              const accDelta = state.accumulatedContent.slice(prevAccLen);
+              let replyDelta: string;
+              if (prevFinalReply && state.finalReply.startsWith(prevFinalReply)) {
+                replyDelta = state.finalReply.slice(prevFinalReply.length);
+              } else {
+                replyDelta = state.finalReply;
+              }
+              const delta = (accDelta + replyDelta).trim();
+              if (!delta) continue;
+
+              display.cardBusy = true;
+              try {
+                const ok = await p.sendText(chatId, compressWechatDisplayText(delta));
+                if (ok) {
+                  display.lastSentAccLen = state.accumulatedContent.length;
+                  display.lastSentFinalReply = state.finalReply;
+                  display.lastSentContent = delta;
+                }
+              } catch (err) {
+                console.error(`[${ts()}] WeChat sendText error: chatId=${chatId} ${(err as Error).message}`);
+                if (!display.streamErrorNotified) {
+                  display.streamErrorNotified = true;
+                  p.sendText(chatId, "文本发送失败，请稍后查看结果。").catch(() => {});
+                }
+              } finally {
+                display.cardBusy = false;
               }
             } else {
-              if (display.cardBusy) return;
-
-              // 守卫：display 归属的 turn 与当前 stream state 不一致。
-              // 正常流程 runAgentSession 会终结旧 turn 并建新卡，
-              // 此处仅兜底处理异常情况（如进程重启后 display 残留）。
+              // 非 WeChat: 卡片流程
               if (display.turnCount !== state.turnCount) {
                 console.log(`[${ts()}] [DISPLAY] turn mismatch for ${chatId}: display.turnCount=${display.turnCount} state.turnCount=${state.turnCount}, resetting`);
-                // 兜底：turn mismatch 意味着旧 turn 已结束但卡片未在飞书端终结，
-                // 持久化标记为 done，避免 turn-cards.json 残留 "active"
                 finalizeTurnCards(sessionId, display.turnCount, "done").catch(() => {});
                 displayCards.delete(chatId);
-                return;
+                continue;
               }
 
               // 卡片轮转
@@ -1227,8 +1178,6 @@ export function ensureDisplayLoop(sessionId: string): void {
                     display.cardId = newCardId;
                     display.sequence = 1;
                     display.cardCreatedAt = Date.now();
-                    // 记录基线：分开追踪 accumulatedContent 长度和 finalReply，
-                    // 避免 tool 内容中间插入时前缀匹配失败 → 回退发完整内容
                     display.rotationAccLen = state.accumulatedContent.length;
                     display.rotationFinalReply = state.finalReply;
                     display.lastSentContent = "";
@@ -1239,11 +1188,10 @@ export function ensureDisplayLoop(sessionId: string): void {
                 } finally {
                   display.cardBusy = false;
                 }
-                return;
+                continue;
               }
 
-              // 轮转后：分开追踪 accumulatedContent 和 finalReply 增量，
-              // 避免 tool 内容插入中间时前缀匹配失败
+              // 轮转后：分开追踪 accumulatedContent 和 finalReply 增量
               if (display.rotationAccLen !== undefined) {
                 const accDelta = state.accumulatedContent.slice(display.rotationAccLen);
                 const rotReply = display.rotationFinalReply ?? "";
@@ -1255,10 +1203,9 @@ export function ensureDisplayLoop(sessionId: string): void {
                 }
                 const delta = (accDelta + replyDelta).trim();
 
-                // 无论有无新内容，都追加点点点动画，避免轮转后卡片静止
-                dotCount = (dotCount % 9) + 1;
-                const displayContent = (delta || "") + "\n" + "。" .repeat(dotCount);
-                if (displayContent === display.lastSentContent) return;
+                display.dotCount = (display.dotCount % 9) + 1;
+                const displayContent = (delta || "") + "\n" + "。" .repeat(display.dotCount);
+                if (displayContent === display.lastSentContent) continue;
 
                 display.lastSentContent = displayContent;
                 const deltaCard = buildProgressCard(truncateContent(displayContent) || "处理中...", { showStop: true, headerTitle: "生成中..." });
@@ -1276,12 +1223,12 @@ export function ensureDisplayLoop(sessionId: string): void {
                 } finally {
                   display.cardBusy = false;
                 }
-                return;
+                continue;
               }
 
-              dotCount = (dotCount % 9) + 1;
-              const fullContent = state.accumulatedContent + state.finalReply + "\n" + "。".repeat(dotCount);
-              if (fullContent === display.lastSentContent) return;
+              display.dotCount = (display.dotCount % 9) + 1;
+              const fullContent = state.accumulatedContent + state.finalReply + "\n" + "。".repeat(display.dotCount);
+              if (fullContent === display.lastSentContent) continue;
 
               display.lastSentContent = fullContent;
               const cardContent = truncateContent(fullContent);
@@ -1302,23 +1249,26 @@ export function ensureDisplayLoop(sessionId: string): void {
               }
             }
           }
+        } catch (err) {
+          console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
         }
-      } catch (err) {
-        console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
-      }
-
-      if (isTerminal) {
-        console.log(`[${ts()}] [DISPLAY] loop stopping for ${sessionId} (terminal state: ${state.status})`);
-        clearInterval(interval);
-        displayLoops.delete(sessionId);
       }
     })().catch((err: unknown) => {
       const e = err instanceof Error ? err : new Error(String(err));
-      console.error(`[${ts()}] Display loop uncaught for ${sessionId}: ${e.message}`);
+      console.error(`[${ts()}] Unified display loop uncaught: ${e.message}`);
     });
   }, 3000);
 
-  displayLoops.set(sessionId, () => clearInterval(interval));
+  setUnifiedDisplayLoopHandle(interval);
+  console.log(`[${ts()}] [DISPLAY] Unified display loop started`);
+}
+
+export function stopUnifiedDisplayLoop(): void {
+  if (unifiedDisplayLoopHandle !== null) {
+    clearInterval(unifiedDisplayLoopHandle);
+    setUnifiedDisplayLoopHandle(null);
+    console.log(`[${ts()}] [DISPLAY] Unified display loop stopped`);
+  }
 }
 
 // ---------------------------------------------------------------------------
