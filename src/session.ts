@@ -38,6 +38,7 @@ function compressWechatDisplayText(text: string): string {
   return [...lines.slice(0, 5), "...", ...lines.slice(-5)].join("\n");
 }
 import { readStreamState, writeStreamState, createEmptyStreamState, fixStaleStreamStates } from "./stream-state.ts";
+import { addCardToTurn, finalizeTurnCards, markCardDone } from "./turn-cards.ts";
 import {
   bindChatToSession,
   unbindChatFromSession,
@@ -817,6 +818,10 @@ export async function runAgentSession(
         await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
         displayCards.delete(displayChatId);
 
+        // 持久化：标记上一轮所有卡片为终态
+        const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
+        finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
+
         if (prevState.finalReply) {
           await pp.sendText(displayChatId, prevState.finalReply).catch(() => {});
         }
@@ -832,6 +837,31 @@ export async function runAgentSession(
   // 初始化 stream-state.json
   const initialState = createEmptyStreamState(sessionId, cwd, tool, nextTurnCount);
   await writeStreamState(initialState);
+
+  // 为新 turn 创建第一张展示卡片，同时注册到 turn-cards 持久化。
+  // 放在 ensureDisplayLoop 之前，确保卡片立即可见（不等 3s 首次 tick）。
+  const displayChatIdForNew = pickDisplayChat(sessionId);
+  if (displayChatIdForNew) {
+    const ppNew = platformForChat(displayChatIdForNew);
+    if (ppNew && ppNew.kind !== "wechat") {
+      const cardId = await ppNew.cardCreate(
+        buildProgressCard("", { showStop: true, headerTitle: "生成中..." }),
+      ).catch(() => null);
+      if (cardId) {
+        await ppNew.cardSend(displayChatIdForNew, cardId).catch(() => null);
+        displayCards.set(displayChatIdForNew, {
+          cardId,
+          sequence: 1,
+          cardBusy: false,
+          cardCreatedAt: Date.now(),
+          lastSentContent: "",
+          streamErrorNotified: false,
+          turnCount: nextTurnCount,
+        });
+        addCardToTurn(sessionId, nextTurnCount, cardId).catch(() => {});
+      }
+    }
+  }
 
   // 启动 display loop
   ensureDisplayLoop(sessionId);
@@ -1078,6 +1108,8 @@ export function ensureDisplayLoop(sessionId: string): void {
               const cardContent = state.accumulatedContent || " ";
               const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
               await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+              const finalSt = state.status === "stopped" ? "stopped" : "done";
+              finalizeTurnCards(sessionId, state.turnCount, finalSt).catch(() => {});
               displayCards.delete(chatId);
             }
             if (state.finalReply) {
@@ -1144,6 +1176,7 @@ export function ensureDisplayLoop(sessionId: string): void {
           } else {
             // 非 WeChat: 卡片流程
             if (!display) {
+              // 兜底：runAgentSession 应已创建卡片，若没有则补建
               const cardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
               if (cardId) {
                 await p.cardSend(chatId, cardId).catch(() => null);
@@ -1154,57 +1187,38 @@ export function ensureDisplayLoop(sessionId: string): void {
                   cardCreatedAt: Date.now(),
                   lastSentContent: "",
                   streamErrorNotified: false,
-                  lastTurnCount: state.turnCount,
+                  turnCount: state.turnCount,
                 });
+                addCardToTurn(sessionId, state.turnCount, cardId).catch(() => {});
               }
             } else {
               if (display.cardBusy) return;
 
-              // 检测轮次切换：turnCount 变化说明上一轮已完成、本 tick 是新轮，
-              // 但上一轮的 display 卡片因 setImmediate/setTimeout 时序问题
-              // 还没被终结分支清除。此处主动终结旧卡、创建新卡。
-              if (display.lastTurnCount !== undefined && display.lastTurnCount !== state.turnCount) {
-                display.cardBusy = true;
-                try {
-                  const doneSeq = display.sequence + 1;
-                  const doneCard = buildProgressCard("", { showStop: false, headerTitle: "完成" });
-                  await p.cardUpdate(display.cardId, doneCard, doneSeq).catch(() => {});
-                  displayCards.delete(chatId);
-                } catch (_) { /* ignore */ }
-                display.cardBusy = false;
-                // 新建卡片
-                const cardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." })).catch(() => null);
-                if (cardId) {
-                  await p.cardSend(chatId, cardId).catch(() => null);
-                  displayCards.set(chatId, {
-                    cardId,
-                    sequence: 1,
-                    cardBusy: false,
-                    cardCreatedAt: Date.now(),
-                    lastSentContent: "",
-                    streamErrorNotified: false,
-                    lastTurnCount: state.turnCount,
-                  });
-                }
+              // 守卫：display 归属的 turn 与当前 stream state 不一致。
+              // 正常流程 runAgentSession 会终结旧 turn 并建新卡，
+              // 此处仅兜底处理异常情况（如进程重启后 display 残留）。
+              if (display.turnCount !== state.turnCount) {
+                console.log(`[${ts()}] [DISPLAY] turn mismatch for ${chatId}: display.turnCount=${display.turnCount} state.turnCount=${state.turnCount}, resetting`);
+                displayCards.delete(chatId);
                 return;
               }
-
-              // 更新当前 turn 的 lastTurnCount
-              display.lastTurnCount = state.turnCount;
 
               // 卡片轮转
               if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
                 display.cardBusy = true;
                 try {
                   const oldSeqBase = display.sequence;
-                  const oldCard = buildProgressCard("", { showStop: false, headerTitle: "完成" });
+                  const oldContent = state.accumulatedContent + state.finalReply;
+                  const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "完成" });
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
+                  markCardDone(sessionId, display.turnCount, display.cardId).catch(() => {});
                   const newCardId = await p.cardCreate(buildProgressCard(
                     "",
                     { showStop: true, headerTitle: "生成中..." },
                   ));
                   if (newCardId) {
                     await p.cardSend(chatId, newCardId);
+                    addCardToTurn(sessionId, display.turnCount, newCardId).catch(() => {});
                     display.cardId = newCardId;
                     display.sequence = 1;
                     display.cardCreatedAt = Date.now();

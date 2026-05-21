@@ -130,6 +130,8 @@ export interface DisplayCardState {
   cardCreatedAt: number;
   lastSentContent: string;
   streamErrorNotified: boolean;
+  /** 所属 turn */
+  turnCount: number;
   /** 卡片轮转时记录的基线，轮转后只展示增量 */
   rotationAccLen?: number;
   rotationFinalReply?: string;
@@ -137,8 +139,6 @@ export interface DisplayCardState {
   lastSentAccLen?: number;
   /** WeChat delta: 上次发送时的 finalReply */
   lastSentFinalReply?: string;
-  /** 上次 loop 读取到的 turnCount，用于检测轮次切换 */
-  lastTurnCount?: number;
 }
 
 export const displayCards = new Map<string, DisplayCardState>();
