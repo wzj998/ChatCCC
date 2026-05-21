@@ -1153,7 +1153,10 @@ export function ensureDisplayLoop(sessionId: string): void {
                   const oldDisplayContent = truncateContent(state.accumulatedContent + state.finalReply) || "处理中...";
                   const oldCard = buildProgressCard(oldDisplayContent, { showStop: false, headerTitle: "生成中...（上轮）" });
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
-                  const newCardId = await p.cardCreate(buildProgressCard("", { showStop: true, headerTitle: "生成中..." }));
+                  const newCardId = await p.cardCreate(buildProgressCard(
+                    truncateContent(state.accumulatedContent) || "处理中...",
+                    { showStop: true, headerTitle: "生成中..." },
+                  ));
                   if (newCardId) {
                     await p.cardSend(chatId, newCardId);
                     display.cardId = newCardId;
