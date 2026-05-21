@@ -65,6 +65,12 @@ export interface ActivePrompt {
   controller: AbortController;
   stopped: boolean;
   startTime: number;
+  /** Root PID for the CLI process currently serving this prompt, if the adapter exposes one. */
+  processPid?: number;
+  processMonitor?: ReturnType<typeof setInterval>;
+  /** Set when the watchdog detects that the CLI process disappeared before stream finalization. */
+  abnormalExit?: boolean;
+  abnormalExitNotified?: boolean;
 }
 
 export const activePrompts = new Map<string, ActivePrompt>();
@@ -206,6 +212,9 @@ export function consumeQueuedMessage(platform: PlatformAdapter, msg: QueuedMessa
 export function resetBindingState(): void {
   sessionChatsMap.clear();
   lastActiveChatMap.clear();
+  for (const prompt of activePrompts.values()) {
+    if (prompt.processMonitor) clearInterval(prompt.processMonitor);
+  }
   activePrompts.clear();
   queuedMessages.clear();
   displayCards.clear();

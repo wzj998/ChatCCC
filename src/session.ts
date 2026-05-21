@@ -25,6 +25,7 @@ import { simplifyToolUse, simplifyToolResult } from "./simplify.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
+import type { ToolProcessInfo } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
@@ -114,6 +115,110 @@ function platformForChat(chatId: string): PlatformAdapter | null {
   return chatPlatformMap.get(chatId) ?? platformRef;
 }
 
+const DEFAULT_PROCESS_MONITOR_INTERVAL_MS = 5000;
+let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
+let isProcessAliveImpl = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export function _setProcessAliveForTest(impl: (pid: number) => boolean): void {
+  isProcessAliveImpl = impl;
+}
+
+export function _resetProcessAliveForTest(): void {
+  isProcessAliveImpl = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+export function _setProcessMonitorIntervalForTest(ms: number): void {
+  processMonitorIntervalMs = ms;
+}
+
+export function _resetProcessMonitorIntervalForTest(): void {
+  processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
+}
+
+function clearPromptProcessMonitor(sessionId: string): void {
+  const prompt = activePrompts.get(sessionId);
+  if (!prompt?.processMonitor) return;
+  clearInterval(prompt.processMonitor);
+  prompt.processMonitor = undefined;
+}
+
+function formatTerminalHeader(status: "running" | "done" | "stopped" | "error"): {
+  title: string;
+  template?: string;
+} {
+  if (status === "stopped") return { title: "已停止", template: "red" };
+  if (status === "error") return { title: "异常结束", template: "red" };
+  return { title: "完成" };
+}
+
+function turnFinalStatus(status: "running" | "done" | "stopped" | "error"): "done" | "stopped" {
+  return status === "stopped" || status === "error" ? "stopped" : "done";
+}
+
+function startPromptProcessMonitor(sessionId: string, info: ToolProcessInfo): void {
+  const prompt = activePrompts.get(sessionId);
+  if (!prompt) return;
+  prompt.processPid = info.pid;
+  clearPromptProcessMonitor(sessionId);
+
+  const check = async () => {
+    const current = activePrompts.get(sessionId);
+    if (!current || current !== prompt) {
+      clearPromptProcessMonitor(sessionId);
+      return;
+    }
+    if (current.stopped || current.abnormalExit) return;
+    if (isProcessAliveImpl(info.pid)) return;
+
+    current.abnormalExit = true;
+    clearPromptProcessMonitor(sessionId);
+
+    const state = await readStreamState(sessionId);
+    if (state?.status === "running") {
+      await writeStreamState({
+        ...state,
+        status: "error",
+        updatedAt: Date.now(),
+      });
+    }
+
+    const chatId = pickDisplayChat(sessionId) ?? getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+    const p = chatId ? platformForChat(chatId) : null;
+    if (chatId && p && !current.abnormalExitNotified) {
+      current.abnormalExitNotified = true;
+      await p.sendText(
+        chatId,
+        `⚠️ 进程异常结束：session ${sessionId} 对应的 CLI 进程 PID ${info.pid} 已不存在，已按完成处理。若回复不完整，请重新发送上一条指令。`,
+      ).catch(() => {});
+    }
+
+    // 主动关闭 readline，让 runAgentSession 的 finally 落盘 error 终态并清理 activePrompts。
+    current.controller.abort();
+  };
+
+  const handle = setInterval(() => {
+    void check().catch((err) => {
+      console.warn(`[${ts()}] [PROCESS-MONITOR] check failed for ${sessionId}: ${(err as Error).message}`);
+    });
+  }, processMonitorIntervalMs);
+  handle.unref?.();
+  prompt.processMonitor = handle;
+}
+
 export function _getPlatformForChatForTest(chatId: string): PlatformAdapter | null {
   return platformForChat(chatId);
 }
@@ -189,6 +294,9 @@ export function resetState(): void {
   processedMessages.clear();
   lastMsgTimestamps.clear();
   chatPlatformMap.clear();
+  for (const prompt of activePrompts.values()) {
+    if (prompt.processMonitor) clearInterval(prompt.processMonitor);
+  }
   activePrompts.clear();
   displayCards.clear();
   stopUnifiedDisplayLoop();
@@ -833,13 +941,12 @@ export async function runAgentSession(
         // terminal state，发送了 finalReply 并删除/替换了 displayCards 条目。
         // 通过引用比较检测——若统一 loop 已处理则只补持久化和头像，不重复发。
         if (displayCards.get(displayChatId) !== display) {
-          const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
+          const finalStatus = turnFinalStatus(prevState.status);
           finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
           pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
         } else {
           const nextSeq = display.sequence + 1;
-          const headerTitle = prevState.status === "stopped" ? "已停止" : "完成";
-          const headerTemplate = prevState.status === "stopped" ? "red" : undefined;
+          const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status);
           const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
           const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
           await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
@@ -848,7 +955,7 @@ export async function runAgentSession(
           displayCards.delete(displayChatId);
 
           // 持久化：标记上一轮所有卡片为终态
-          const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
+          const finalStatus = turnFinalStatus(prevState.status);
           finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
 
           if (prevState.finalReply && stillOursAfterUpdate && !isFinalReplySentForTurn(prevState)) {
@@ -858,7 +965,7 @@ export async function runAgentSession(
         }
       } else if (pp && prevState.finalReply && !isFinalReplySentForTurn(prevState)) {
         // 无 display 记录但上一轮有 finalReply（极快轮次），至少发送
-        const finalStatus = prevState.status === "stopped" ? "stopped" : "done";
+        const finalStatus = turnFinalStatus(prevState.status);
         finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
         await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevState.finalReply);
       }
@@ -928,7 +1035,14 @@ export async function runAgentSession(
   const toolCallMap = new Map<string, { name: string; input: unknown }>();
 
   try {
-    for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal)) {
+    for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
+      onProcessStart: (processInfo) => {
+        startPromptProcessMonitor(sessionId, processInfo);
+      },
+      onProcessExit: () => {
+        clearPromptProcessMonitor(sessionId);
+      },
+    })) {
       for (const block of unifiedMsg.blocks) {
         accumulateBlockContent(block, state, toolCallMap);
 
@@ -971,13 +1085,15 @@ export async function runAgentSession(
     // 标记 prompt 结束
     const prompt = activePrompts.get(sessionId);
     const wasStopped = prompt?.stopped ?? false;
+    const wasAbnormalExit = prompt?.abnormalExit ?? false;
+    clearPromptProcessMonitor(sessionId);
     activePrompts.delete(sessionId);
 
     // 先写最终状态（done/stopped），确保 display loop 在下一轮消费前
     // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
     // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
     // 运行中并更新旧卡片，而不是新建卡片。
-    const finalStatus = wasStopped ? "stopped" : "done";
+    const finalStatus = wasAbnormalExit ? "error" : wasStopped ? "stopped" : "done";
     const finalReply = pickFinalReply(state).trim();
     await writeStreamState({
       sessionId,
@@ -1039,6 +1155,23 @@ export async function runAgentSession(
       if (active1) platform.setChatAvatar(active1, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
+    } else if (wasAbnormalExit) {
+      for (const cid of getChatsForSession(sessionId)) {
+        const finfo = sessionInfoMap.get(cid);
+        await recordSessionRegistry({
+          chatId: cid,
+          sessionId,
+          tool,
+          turnCount: finfo?.turnCount ?? nextTurnCount,
+          lastContextTokens: finfo?.lastContextTokens ?? nextContextTokens,
+          startTime: finfo?.startTime ?? now,
+          running: false,
+        });
+      }
+      const activeErr = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+      if (activeErr) platform.setChatAvatar(activeErr, tool, "idle").catch(() => {});
+      console.log(`[${ts()}] Session ${sessionId} process exited unexpectedly (content chunks: ${state.chunkCount})`);
+      if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "process_missing", chunks: state.chunkCount });
     } else {
       for (const cid of getChatsForSession(sessionId)) {
         const finfo = sessionInfoMap.get(cid);
@@ -1140,8 +1273,7 @@ export function startUnifiedDisplayLoop(): void {
               // 发送最终结果（卡片平台）
               while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
               const nextSeq = display.sequence + 1;
-              const headerTitle = state.status === "stopped" ? "已停止" : "完成";
-              const headerTemplate = state.status === "stopped" ? "red" : undefined;
+              const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
               const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
               const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
               await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
@@ -1156,7 +1288,7 @@ export function startUnifiedDisplayLoop(): void {
                 continue;
               }
 
-              const finalSt = state.status === "stopped" ? "stopped" : "done";
+              const finalSt = turnFinalStatus(state.status);
               finalizeTurnCards(sessionId, state.turnCount, finalSt).catch(() => {});
               displayCards.delete(chatId);
               if (state.finalReply) {
@@ -1343,6 +1475,7 @@ export function stopSession(sessionId: string): boolean {
   const prompt = activePrompts.get(sessionId);
   if (!prompt) return false;
   prompt.stopped = true;
+  clearPromptProcessMonitor(sessionId);
   cancelQueuedMessage(sessionId);
   prompt.controller.abort();
   console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
@@ -1434,7 +1567,8 @@ export async function getSessionStatus(chatId: string): Promise<SessionStatus | 
   const info = sessionInfoMap.get(chatId);
   if (!info) return null;
 
-  const isActive = activePrompts.has(info.sessionId) && !(activePrompts.get(info.sessionId)?.stopped);
+  const activePrompt = activePrompts.get(info.sessionId);
+  const isActive = !!activePrompt && !activePrompt.stopped && !activePrompt.abnormalExit;
   const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
 
   const registry = await loadSessionRegistry();
@@ -1509,7 +1643,9 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
         chatId: info.chatId,
         sessionId: info.sessionId,
         chatName: info.chatName || "",
-        active: activePrompts.has(info.sessionId) && !(activePrompts.get(info.sessionId)?.stopped),
+        active: !!activePrompts.get(info.sessionId) &&
+          !activePrompts.get(info.sessionId)?.stopped &&
+          !activePrompts.get(info.sessionId)?.abnormalExit,
         turnCount: info.turnCount,
         startTime: info.startTime,
         model,
