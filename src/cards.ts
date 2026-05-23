@@ -407,3 +407,63 @@ export function buildStatusCard(statusText: string, template = "blue"): string {
     ],
   });
 }
+
+export interface ModelSwitchOption {
+  label: string;
+  model: string;
+}
+
+/** 模型切换卡片（/model 命令，飞书专用，含切换按钮） */
+export function buildModelCard(
+  currentModel: string,
+  available: ModelSwitchOption[],
+): string {
+  const currentLine = currentModel
+    ? `**当前模型:** \`${currentModel}\``
+    : "**当前模型:** 未指定";
+  const hasPro = available.some(o => o.label === "pro");
+  const hasFlash = available.some(o => o.label === "flash");
+
+  const lines: string[] = [currentLine];
+  if (available.length > 0) {
+    lines.push("", "**可切换模型:**");
+    for (const opt of available) {
+      lines.push(`- ${opt.label}: \`${opt.model}\``);
+    }
+  } else {
+    lines.push("", "没有可切换的模型。");
+  }
+
+  const buttons: { text: string; value: string; type?: "primary" | "default" | "danger" }[] = [];
+  if (hasPro) {
+    buttons.push({
+      text: "/model pro",
+      value: JSON.stringify({ action: "model_pro" }),
+      type: "primary",
+    });
+  }
+  if (hasFlash) {
+    buttons.push({
+      text: "/model flash",
+      value: JSON.stringify({ action: "model_flash" }),
+      type: "primary",
+    });
+  }
+  if (!hasPro && !hasFlash) {
+    buttons.push({
+      text: "/model clear",
+      value: JSON.stringify({ action: "model_clear" }),
+      type: "default",
+    });
+  }
+
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "blue", title: { content: "模型切换", tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
+      { tag: "hr" },
+      buildButtons(buttons),
+    ],
+  });
+}

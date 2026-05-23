@@ -511,6 +511,11 @@ export let CLAUDE_API_KEY = config.claude.apiKey;
 /** Anthropic 兼容网关的 base URL（仅经 SDK 子进程 env 传递，从不写入主进程 process.env） */
 export let CLAUDE_BASE_URL = config.claude.baseUrl;
 
+/** 返回当前生效的 Claude 模型（per-session 覆盖由 session.ts 管理，此处仅返回全局配置） */
+export function getEffectiveClaudeModel(): string {
+  return CLAUDE_MODEL;
+}
+
 // ---------------------------------------------------------------------------
 // /git 超时配置（实际值来自 config.json，纯函数与常量见 ./config-utils.ts）
 // ---------------------------------------------------------------------------
