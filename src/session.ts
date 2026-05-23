@@ -307,13 +307,39 @@ export function resetState(): void {
 // 是 onReady/onReconnected 取代 resetState 的正确入口。
 
 // ---------------------------------------------------------------------------
-// Adapter: 按 tool 创建并缓存
+// Adapter: 按 tool + effectiveModel 创建并缓存
 // ---------------------------------------------------------------------------
 
 const adapterCache = new Map<string, ToolAdapter>();
 
-export function getAdapterForTool(tool: string): ToolAdapter {
-  const cached = adapterCache.get(tool);
+// Per-session 模型覆盖（/model 命令设置，不持久化）
+const sessionModelOverrides = new Map<string, string>();
+
+/** 返回 session 的生效模型：优先 per-session 覆盖，其次全局配置 */
+function getModelForSession(sessionId?: string): string {
+  if (sessionId) {
+    const override = sessionModelOverrides.get(sessionId);
+    if (override) return override;
+  }
+  return CLAUDE_MODEL;
+}
+
+/** 为指定 session 设置模型覆盖（/model pro、/model flash） */
+export function setSessionModelOverride(sessionId: string, model: string): void {
+  sessionModelOverrides.set(sessionId, model);
+  adapterCache.clear();
+}
+
+/** 清除指定 session 的模型覆盖（/model clear） */
+export function clearSessionModelOverride(sessionId: string): void {
+  sessionModelOverrides.delete(sessionId);
+  adapterCache.clear();
+}
+
+export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter {
+  const effectiveModel = tool === "claude" ? getModelForSession(sessionId) : "";
+  const cacheKey = tool === "claude" ? `${tool}:${effectiveModel}` : tool;
+  const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
   let adapter: ToolAdapter;
@@ -323,7 +349,7 @@ export function getAdapterForTool(tool: string): ToolAdapter {
     adapter = createCodexAdapter();
   } else {
     adapter = createClaudeAdapter({
-      model: CLAUDE_MODEL,
+      model: effectiveModel,
       subagentModel: CLAUDE_SUBAGENT_MODEL,
       effort: CLAUDE_EFFORT,
       isEmpty: isAnthropicConfigEmpty,
@@ -331,7 +357,7 @@ export function getAdapterForTool(tool: string): ToolAdapter {
       baseUrl: CLAUDE_BASE_URL,
     });
   }
-  adapterCache.set(tool, adapter);
+  adapterCache.set(cacheKey, adapter);
   return adapter;
 }
 
@@ -748,7 +774,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
  * Claude 显示 model/effort（来自环境变量）；Cursor 显示 model（运行时由
  * cursor-agent 决定，初次创建时尚未学习到，故显示占位）。
  */
-function formatToolConfigForLog(tool: string, sessionModel?: string): string {
+function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?: string): string {
   if (tool === "cursor") {
     return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
   }
@@ -761,7 +787,7 @@ function formatToolConfigForLog(tool: string, sessionModel?: string): string {
       : "effort=(由 codex config.toml 决定)";
     return `model=${modelStr}, ${effortStr}`;
   }
-  return `model=${anthropicConfigDisplay(CLAUDE_MODEL)}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
+  return `model=${anthropicConfigDisplay(getModelForSession(sessionId))}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
 }
 
 export async function initClaudeSession(tool: string, overrideCwd?: string, chatId?: string): Promise<{ sessionId: string; cwd: string }> {
@@ -841,12 +867,12 @@ export async function runAgentSession(
   let info: Awaited<ReturnType<ToolAdapter["getSessionInfo"]>>;
   let cwd: string;
   try {
-    adapter = getAdapterForTool(tool);
+    adapter = getAdapterForTool(tool, sessionId);
     info = await adapter.getSessionInfo(sessionId);
     cwd = info?.cwd ?? (await getDefaultCwd(_chatId));
     if (tid) logTrace(tid, "SESSION_START", { sessionId, tool, cwd, turn: (sessionInfoMap.get(_chatId)?.turnCount ?? 0) + 1 });
     console.log(
-      `[${ts()}] Running ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model)}, cwd=${cwd})`
+      `[${ts()}] Running ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model, sessionId)}, cwd=${cwd})`
     );
 
     // 构建 IM skills prompt（sessionId 方式，无 token）
@@ -1541,7 +1567,7 @@ async function resolveModelEffort(
   if (tool === "cursor") {
     let model = UNKNOWN_MODEL_PLACEHOLDER;
     try {
-      const adapter = getAdapterForTool(tool);
+      const adapter = getAdapterForTool(tool, sessionId);
       const info = await adapter.getSessionInfo(sessionId);
       if (info?.model) model = info.model;
     } catch {
@@ -1558,7 +1584,7 @@ async function resolveModelEffort(
     };
   }
   return {
-    model: anthropicConfigDisplay(CLAUDE_MODEL),
+    model: anthropicConfigDisplay(getModelForSession(sessionId)),
     effort: anthropicConfigDisplay(CLAUDE_EFFORT),
   };
 }

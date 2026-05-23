@@ -13,6 +13,7 @@ import { makeTraceId, logTrace } from "./trace.ts";
 import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
+  CLAUDE_SUBAGENT_MODEL,
   GIT_TIMEOUT_MS,
   PROJECT_ROOT,
   anthropicConfigDisplay,
@@ -28,6 +29,7 @@ import {
 } from "./config.ts";
 import {
   buildHelpCard,
+  buildModelCard,
   buildStatusCard,
   buildCdContent,
   buildCdCard,
@@ -41,12 +43,14 @@ import {
   runGitCommand,
 } from "./git-command.ts";
 import {
+  clearSessionModelOverride,
   getSessionStatus,
   getAllSessionsStatus,
   initClaudeSession,
   lastMsgTimestamps,
   resumeAndPrompt,
   sessionInfoMap,
+  setSessionModelOverride,
   switchChatBinding,
   recordSessionRegistry,
   getAdapterForTool,
@@ -141,7 +145,7 @@ export async function handleCommand(
         chatInfo.description,
       );
       if (sessionInfoResult) {
-        const adapter = getAdapterForTool(sessionInfoResult.tool);
+        const adapter = getAdapterForTool(sessionInfoResult.tool, sessionInfoResult.sessionId);
         const info = await adapter.getSessionInfo(sessionInfoResult.sessionId);
         sessionCwd = info?.cwd;
       }
@@ -240,6 +244,54 @@ export async function handleCommand(
       await platform.sendCard(chatId, "新会话工作路径", content, "blue");
       logTrace(tid, "DONE", { outcome: "cd_path", targetDir, isUpdate });
     }
+    return;
+  }
+
+  if (textLower === "/model") {
+    logTrace(tid, "BRANCH", { cmd: "/model" });
+
+    const isDeepSeek = CLAUDE_MODEL.toLowerCase().includes("deepseek")
+      || CLAUDE_SUBAGENT_MODEL.toLowerCase().includes("deepseek");
+    if (!isDeepSeek) {
+      const msg = "当前配置不支持模型切换（模型名中未找到 DeepSeek 相关内容）。";
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "模型切换", msg, "red")
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "model_unsupported" });
+      return;
+    }
+
+    const findModel = (keyword: string): string | null => {
+      for (const name of [CLAUDE_MODEL.trim(), CLAUDE_SUBAGENT_MODEL.trim()]) {
+        if (!name) continue;
+        const nl = name.toLowerCase();
+        if (nl.includes("deepseek") && nl.includes(keyword)) return name;
+      }
+      return null;
+    };
+
+    const available: { label: string; model: string }[] = [];
+    const pm = findModel("pro");
+    if (pm) available.push({ label: "pro", model: pm });
+    const fm = findModel("flash");
+    if (fm) available.push({ label: "flash", model: fm });
+
+    if (platform.kind === "wechat") {
+      const lines = [CLAUDE_MODEL ? `当前模型: ${CLAUDE_MODEL}` : "当前模型: 未指定"];
+      if (available.length > 0) {
+        lines.push("", "可切换模型:");
+        for (const o of available) lines.push(`  ${o.label}: ${o.model}`);
+        lines.push("", "输入 /model pro 或 /model flash 切换模型");
+      } else {
+        lines.push("", "没有可切换的模型。请在 config.json 的 claude.model 或 claude.subagentModel 中配置含 pro/flash 与 deepseek 关键字的模型名。");
+      }
+      await platform.sendText(chatId, lines.join("\n")).catch(() => {});
+    } else {
+      const card = buildModelCard(CLAUDE_MODEL, available);
+      await platform.sendRawCard(chatId, card);
+    }
+    logTrace(tid, "DONE", { outcome: "model_query" });
     return;
   }
 
@@ -510,7 +562,7 @@ export async function handleCommand(
     ) {
       const MAX_PREFIX = 10;
       const prefix = text.slice(0, MAX_PREFIX);
-      const adapter = getAdapterForTool(descriptionTool);
+      const adapter = getAdapterForTool(descriptionTool, sessionId);
       const info = await adapter
         .getSessionInfo(sessionId)
         .catch(() => undefined);
@@ -553,7 +605,7 @@ export async function handleCommand(
         ) {
           const MAX_PREFIX = 10;
           const prefix = text.slice(0, MAX_PREFIX);
-          const adapter = getAdapterForTool(descriptionTool!);
+          const adapter = getAdapterForTool(descriptionTool!, sessionId);
           const info = await adapter
             .getSessionInfo(sessionId)
             .catch(() => undefined);
@@ -674,7 +726,7 @@ export async function handleCommand(
 
     if (textLower === "/newh") {
       logTrace(tid, "BRANCH", { cmd: "/newh" });
-      const adapter = getAdapterForTool(descriptionTool);
+      const adapter = getAdapterForTool(descriptionTool, sessionId);
       let cwd: string;
       try {
         const info = await adapter.getSessionInfo(sessionId);
@@ -849,7 +901,7 @@ export async function handleCommand(
         return;
       }
 
-      const targetAdapter = getAdapterForTool(target.tool);
+      const targetAdapter = getAdapterForTool(target.tool, target.sessionId);
       let cwd2: string;
       try {
         const targetInfo = await targetAdapter.getSessionInfo(
@@ -920,6 +972,64 @@ export async function handleCommand(
       return;
     }
 
+    // /model pro、/model flash、/model clear（仅对当前 session 生效）
+    if (textLower === "/model pro" || textLower === "/model flash" || textLower === "/model clear") {
+      const modelArg = textLower === "/model clear" ? "clear" : textLower.slice(7).trim();
+      logTrace(tid, "BRANCH", { cmd: "/model", arg: modelArg, sessionId });
+
+      // 仅 Claude Code 支持模型切换
+      if (descriptionTool !== "claude") {
+        const msg = "模型切换仅支持 Claude Code 会话。";
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "模型切换", msg, "red")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "model_wrong_tool", tool: descriptionTool });
+        return;
+      }
+
+      const findModel = (keyword: string): string | null => {
+        for (const name of [CLAUDE_MODEL.trim(), CLAUDE_SUBAGENT_MODEL.trim()]) {
+          if (!name) continue;
+          const nl = name.toLowerCase();
+          if (nl.includes("deepseek") && nl.includes(keyword)) return name;
+        }
+        return null;
+      };
+
+      if (modelArg === "clear") {
+        clearSessionModelOverride(sessionId);
+        const restored = CLAUDE_MODEL.trim() || "(未指定)";
+        const msg = `已清除当前会话的模型覆盖，恢复使用: \`${restored}\``;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "模型切换", msg, "green")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "model_cleared", sessionId });
+        return;
+      }
+
+      const target = findModel(modelArg);
+      if (!target) {
+        const msg = `未找到同时含 "${modelArg}" 和 "deepseek" 关键字的模型。请在 config.json 的 claude.model 或 claude.subagentModel 中配置。`;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "模型切换", msg, "red")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "model_not_found", arg: modelArg });
+        return;
+      }
+
+      setSessionModelOverride(sessionId, target);
+      const msg = `已切换当前会话模型为 ${modelArg}: \`${target}\``;
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "模型切换", msg, "green")
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "model_switched", arg: modelArg, target, sessionId });
+      return;
+    }
+
     // /git <args>：在「当前会话工作目录」执行 git 命令
     if (textLower.startsWith("/git ") || textLower === "/git") {
       const args = text === "/git" ? "" : text.slice(5).trim();
@@ -935,7 +1045,7 @@ export async function handleCommand(
         return;
       }
 
-      const adapter = getAdapterForTool(descriptionTool);
+      const adapter = getAdapterForTool(descriptionTool, sessionId);
       let cwd: string | undefined;
       try {
         const info = await adapter.getSessionInfo(sessionId);
