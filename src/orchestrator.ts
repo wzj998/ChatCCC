@@ -287,34 +287,6 @@ export async function handleCommand(
     return;
   }
 
-  if (textLower === "/model") {
-    logTrace(tid, "BRANCH", { cmd: "/model" });
-
-    const defaultTool = resolveDefaultAgentTool();
-    const models = getAllModelsForTool(defaultTool);
-    let currentModel = "";
-    if (defaultTool === "cursor") currentModel = config.cursor.model;
-    else if (defaultTool === "codex") currentModel = config.codex.model;
-    else currentModel = CLAUDE_MODEL;
-
-    if (platform.kind === "wechat") {
-      const lines = [currentModel ? `当前模型 (${defaultTool}): ${currentModel}` : `当前模型 (${defaultTool}): 未指定`];
-      if (models.length > 0) {
-        lines.push("", "可切换模型:");
-        for (const m of models) lines.push(`  ${m}`);
-        lines.push("", "在会话中输入 /model <模型名> 切换模型");
-      } else {
-        lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
-      }
-      await platform.sendText(chatId, lines.join("\n")).catch(() => {});
-    } else {
-      const card = buildModelCard(currentModel, models, defaultTool);
-      await platform.sendRawCard(chatId, card);
-    }
-    logTrace(tid, "DONE", { outcome: "model_query", defaultTool });
-    return;
-  }
-
   if (textLower === "/new" || textLower.startsWith("/new ")) {
     const toolArg = text.slice(5).trim().toLowerCase();
     const tool = toolArg || resolveDefaultAgentTool();
@@ -1082,6 +1054,30 @@ export async function handleCommand(
       return;
     }
 
+    // /model — 查看当前会话的可用模型（根据会话 Agent 类型）
+    if (textLower === "/model") {
+      logTrace(tid, "BRANCH", { cmd: "/model", sessionId, tool: descriptionTool });
+      const models = getAllModelsForTool(descriptionTool as AgentTool);
+      const currentModel = getEffectiveModelForTool(descriptionTool, sessionId);
+
+      if (platform.kind === "wechat") {
+        const lines = [currentModel ? `当前模型 (${toolLabel}): ${currentModel}` : `当前模型 (${toolLabel}): 未指定`];
+        if (models.length > 0) {
+          lines.push("", "可切换模型:");
+          for (const m of models) lines.push(`  ${m}`);
+          lines.push("", "输入 /model <模型名> 切换模型");
+        } else {
+          lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
+        }
+        await platform.sendText(chatId, lines.join("\n")).catch(() => {});
+      } else {
+        const card = buildModelCard(currentModel, models, descriptionTool);
+        await platform.sendRawCard(chatId, card);
+      }
+      logTrace(tid, "DONE", { outcome: "model_query", tool: descriptionTool });
+      return;
+    }
+
     // /git <args>：在「当前会话工作目录」执行 git 命令
     if (textLower.startsWith("/git ") || textLower === "/git") {
       const args = text === "/git" ? "" : text.slice(5).trim();
@@ -1210,6 +1206,33 @@ export async function handleCommand(
         "red",
       );
     }
+    return;
+  }
+
+  // 无会话上下文 → 检查是否是 /model 查询
+  if (textLower === "/model") {
+    const defaultTool = resolveDefaultAgentTool();
+    const models = getAllModelsForTool(defaultTool);
+    let currentModel = "";
+    if (defaultTool === "cursor") currentModel = config.cursor.model;
+    else if (defaultTool === "codex") currentModel = config.codex.model;
+    else currentModel = CLAUDE_MODEL;
+
+    if (platform.kind === "wechat") {
+      const lines = [currentModel ? `当前模型 (${defaultTool}): ${currentModel}` : `当前模型 (${defaultTool}): 未指定`];
+      if (models.length > 0) {
+        lines.push("", "可切换模型:");
+        for (const m of models) lines.push(`  ${m}`);
+        lines.push("", "在会话中输入 /model <模型名> 切换模型");
+      } else {
+        lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
+      }
+      await platform.sendText(chatId, lines.join("\n")).catch(() => {});
+    } else {
+      const card = buildModelCard(currentModel, models, defaultTool);
+      await platform.sendRawCard(chatId, card);
+    }
+    logTrace(tid, "DONE", { outcome: "model_query", defaultTool });
     return;
   }
 
