@@ -285,12 +285,14 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", cancel: "/cancel", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", newh: "/newh", model_pro: "/model pro", model_flash: "/model flash", model_clear: "/model clear" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", cancel: "/cancel", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", status: "/status", cd: "/cd", sessions: "/sessions", newh: "/newh" };
   let text = CMD_MAP[cmd] ?? "";
   if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
     const path = (action.value as Record<string, string>).path;
     if (path) text = `/cd ${path}`;
   }
+  // cmd 本身就是以 / 开头的完整指令时，直接使用（如 /model <name> 动态按钮）
+  if (!text && cmd.startsWith("/")) text = cmd;
   if (!text) return null;
 
   const chatId =

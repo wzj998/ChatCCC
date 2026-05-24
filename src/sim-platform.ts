@@ -78,6 +78,12 @@ export const SimulatedPlatform: FeishuPlatform = {
     return true;
   },
 
+  async sendPostMessage(_token, chatId, title, postContent) {
+    console.log(`[${ts()}] [SIM:SEND] post → ${chatId}: title="${title}" paragraphs=${postContent.length}`);
+    simStore.sendReply(chatId, "post", `[${title}] ${postContent.length} paragraphs`);
+    return true;
+  },
+
   // ---- 消息管理 ----
   async addReaction(_token, _messageId, _emojiType) {
     // 模拟模式不需要表情回应

@@ -150,9 +150,10 @@ function spawnCodex(
   args: string[],
   cwd?: string,
   stdinText?: string,
+  modelOverride?: string,
 ): ChildProcess {
   const allArgs = [...args];
-  const model = resolveCodexModel();
+  const model = modelOverride ?? resolveCodexModel();
   if (model) {
     // 把 -m 插在 exec 后面、其他参数前面
     const execIdx = allArgs.indexOf("exec");
@@ -222,9 +223,11 @@ class CodexAdapter implements ToolAdapter {
   readonly displayName = "Codex";
   readonly sessionDescPrefix = "Codex Session:";
   private metaStore: CodexSessionMetaStore;
+  private modelOverride: string | undefined;
 
-  constructor(metaStore: CodexSessionMetaStore) {
+  constructor(metaStore: CodexSessionMetaStore, modelOverride?: string) {
     this.metaStore = metaStore;
+    this.modelOverride = modelOverride;
   }
 
   // createSession: 生成 sessionId，记录 cwd，不创建 Codex 线程（延迟到首次 prompt）
@@ -251,7 +254,7 @@ class CodexAdapter implements ToolAdapter {
       ? [...CODEX_BASE_ARGS, "-C", cwd, "-"]
       : [...CODEX_BASE_ARGS, "resume", threadId, "-"];
 
-    const proc = spawnCodex(args, cwd, userText);
+    const proc = spawnCodex(args, cwd, userText, this.modelOverride);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     // 关键：spawn 用了 shell:true，proc.pid 指向的是壳进程（cmd.exe / sh）。
@@ -304,6 +307,8 @@ class CodexAdapter implements ToolAdapter {
 
 export interface CreateCodexAdapterOptions {
   metaStore?: CodexSessionMetaStore;
+  /** per-session 模型覆盖（/model 命令）；传了就用，不传走全局 codex.model */
+  model?: string;
 }
 
 export function createCodexAdapter(
@@ -311,5 +316,6 @@ export function createCodexAdapter(
 ): ToolAdapter {
   return new CodexAdapter(
     options.metaStore ?? defaultCodexSessionMetaStore,
+    options.model,
   );
 }

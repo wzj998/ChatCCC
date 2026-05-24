@@ -532,15 +532,92 @@ export function formatDelayNotice(createTimeMs: number, messageText?: string, no
   return `> ⚠️ 延迟送达提醒：此消息于 ${sendTimeStr} 发送，因服务离线，延迟约 ${delayStr}后送达${contentLine}`;
 }
 
+/**
+ * 检测文本中的 markdown 表格，用代码块包裹。
+ *
+ * 飞书 markdown 渲染对表格支持不稳定（列对齐易错乱），用代码块包裹可保证
+ * 等宽字体显示、列对齐正确。只处理不在已有代码块内的表格。
+ *
+ * 检测规则：至少两行连续的 "|col|col|" 模式，其中必须包含一行分隔行
+ * （如 |---|----|），避免将单行含 | 的普通文本误判为表格。
+ */
+function wrapMarkdownTables(text: string): string {
+  const lines = text.split("\n");
+  const result: string[] = [];
+  let inCodeBlock = false;
+  let tableRows: string[] = [];
+  let foundSeparator = false;
+
+  const isTableRow = (line: string): boolean =>
+    /^\s*\|.+\|/.test(line);
+
+  const isSeparatorRow = (line: string): boolean =>
+    /^\s*\|[\s\-:]+\|/.test(line) && /-/.test(line);
+
+  const flushTable = (): void => {
+    if (foundSeparator && tableRows.length >= 2) {
+      result.push("```");
+      result.push(...tableRows);
+      result.push("```");
+    } else {
+      result.push(...tableRows);
+    }
+    tableRows = [];
+    foundSeparator = false;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      flushTable();
+      inCodeBlock = !inCodeBlock;
+      result.push(line);
+      continue;
+    }
+
+    if (inCodeBlock) {
+      result.push(line);
+      continue;
+    }
+
+    if (!foundSeparator) {
+      if (isTableRow(line)) {
+        tableRows.push(line);
+      } else if (tableRows.length > 0 && isSeparatorRow(line)) {
+        tableRows.push(line);
+        foundSeparator = true;
+      } else {
+        if (tableRows.length > 0) {
+          result.push(...tableRows);
+          tableRows = [];
+        }
+        result.push(line);
+      }
+    } else {
+      if (isTableRow(line)) {
+        tableRows.push(line);
+      } else {
+        flushTable();
+        result.push(line);
+      }
+    }
+  }
+
+  flushTable();
+  return result.join("\n");
+}
+
 export async function sendTextReply(
   token: string,
   chatId: string,
   text: string
 ): Promise<boolean> {
   const safeText = applyPrivacy(text);
+  const wrappedText = wrapMarkdownTables(safeText);
   const card = JSON.stringify({
     config: { wide_screen_mode: true },
-    elements: [{ tag: "markdown", content: safeText }],
+    elements: [{ tag: "markdown", content: wrappedText }],
   });
   try {
     const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
@@ -914,4 +991,52 @@ export async function updateCardMessage(token: string, messageId: string, conten
     return false;
   }
   return true;
+}
+
+/**
+ * 发送飞书 post 类型消息（非卡片富文本消息）。
+ *
+ * post 消息支持 table、text、a、at、img 等富文本元素，
+ * 与 interactive 卡片消息不同，post 直接在消息流中渲染。
+ *
+ * @param postContent 飞书 post content 格式的二维数组，每个元素是一个 paragraph
+ */
+export async function sendPostMessage(
+  token: string,
+  chatId: string,
+  title: string,
+  postContent: unknown[][],
+): Promise<boolean> {
+  const content = JSON.stringify({
+    post: {
+      zh_cn: {
+        title,
+        content: postContent,
+      },
+    },
+  });
+  try {
+    const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: "post",
+        content,
+      }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
+    if (data.code !== 0) {
+      console.error(`[${ts()}] [SEND] post FAIL: chatId=${chatId} code=${data.code} msg="${data.msg ?? ""}"`);
+      return false;
+    }
+    console.log(`[${ts()}] [SEND] post OK: chatId=${chatId} msgId=${data.data?.message_id ?? "N/A"}`);
+    return true;
+  } catch (err) {
+    console.error(`[${ts()}] [SEND] post FAIL: chatId=${chatId} ${(err as Error).message}`);
+    return false;
+  }
 }

@@ -19,6 +19,7 @@ export interface FeishuPlatform {
   sendTextReply: typeof realApi.sendTextReply;
   sendCardReply: typeof realApi.sendCardReply;
   sendRawCard: typeof realApi.sendRawCard;
+  sendPostMessage: typeof realApi.sendPostMessage;
   sendImageReply: typeof realApi.sendImageReply;
   sendFileReply: typeof realApi.sendFileReply;
   addReaction: typeof realApi.addReaction;
@@ -132,6 +133,10 @@ export function extractSessionId(...args: Parameters<typeof realApi.extractSessi
 
 export function formatDelayNotice(...args: Parameters<typeof realApi.formatDelayNotice>): ReturnType<typeof realApi.formatDelayNotice> {
   return _impl.formatDelayNotice(...args);
+}
+
+export function sendPostMessage(...args: Parameters<typeof realApi.sendPostMessage>): ReturnType<typeof realApi.sendPostMessage> {
+  return _impl.sendPostMessage(...args);
 }
 
 export function sendRestartCard(...args: Parameters<typeof realApi.sendRestartCard>): ReturnType<typeof realApi.sendRestartCard> {

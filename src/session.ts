@@ -315,7 +315,7 @@ const adapterCache = new Map<string, ToolAdapter>();
 // Per-session 模型覆盖（/model 命令设置，不持久化）
 const sessionModelOverrides = new Map<string, string>();
 
-/** 返回 session 的生效模型：优先 per-session 覆盖，其次全局配置 */
+/** 返回 session 的生效模型：优先 per-session 覆盖，其次全局配置（Claude） */
 function getModelForSession(sessionId?: string): string {
   if (sessionId) {
     const override = sessionModelOverrides.get(sessionId);
@@ -324,7 +324,18 @@ function getModelForSession(sessionId?: string): string {
   return CLAUDE_MODEL;
 }
 
-/** 为指定 session 设置模型覆盖（/model pro、/model flash） */
+/** 返回指定 tool 的生效模型：优先 per-session 覆盖，其次 tool 默认配置 */
+export function getEffectiveModelForTool(tool: string, sessionId?: string): string {
+  if (sessionId) {
+    const override = sessionModelOverrides.get(sessionId);
+    if (override) return override;
+  }
+  if (tool === "cursor") return config.cursor.model;
+  if (tool === "codex") return config.codex.model;
+  return CLAUDE_MODEL;
+}
+
+/** 为指定 session 设置模型覆盖（/model <name>） */
 export function setSessionModelOverride(sessionId: string, model: string): void {
   sessionModelOverrides.set(sessionId, model);
   adapterCache.clear();
@@ -337,16 +348,16 @@ export function clearSessionModelOverride(sessionId: string): void {
 }
 
 export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter {
-  const effectiveModel = tool === "claude" ? getModelForSession(sessionId) : "";
-  const cacheKey = tool === "claude" ? `${tool}:${effectiveModel}` : tool;
+  const effectiveModel = getEffectiveModelForTool(tool, sessionId);
+  const cacheKey = effectiveModel ? `${tool}:${effectiveModel}` : tool;
   const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
   let adapter: ToolAdapter;
   if (tool === "cursor") {
-    adapter = createCursorAdapter();
+    adapter = createCursorAdapter({ model: effectiveModel || undefined });
   } else if (tool === "codex") {
-    adapter = createCodexAdapter();
+    adapter = createCodexAdapter({ model: effectiveModel || undefined });
   } else {
     adapter = createClaudeAdapter({
       model: effectiveModel,
@@ -534,9 +545,13 @@ export function _resetSessionRegistryFileForTest(): void {
 // accumulateBlockContent — 将 UnifiedBlock 累积到渲染状态（纯函数，可测试）
 // ---------------------------------------------------------------------------
 
+// 注意：以下字段命名含 "final"，但实际语义是"本轮所有文本的累积"，并非仅
+// "最后一段回复"。历史原因得名——当时以为 finalReply 只包含最后一轮输出，实则
+// 所有 text block（工具调用前、调用间、调用后）都累加在这里。
+// accumulatedContent + finalReply 拼接后才是完整流式输出的全部内容。
 export interface AccumulatorState {
   accumulatedContent: string;
-  /** partial text 块按追加语义累积；适用于 Cursor 的流式增量与 Claude SDK 的 delta */
+  /** 本轮所有 text block 的累加（流式文本 delta），包括工具调用前后的全部文本 */
   finalText: string;
   /**
    * 适配器明确给出的"完整最终文本"（覆盖语义）。
@@ -1691,6 +1706,9 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
 
 export function _setAdapterForToolForTest(tool: string, adapter: ToolAdapter): void {
   adapterCache.set(tool, adapter);
+  // 同时设置当前配置模型对应的 key（getAdapterForTool 会优先 lookup 含 model 的 key）
+  const effective = getEffectiveModelForTool(tool);
+  if (effective) adapterCache.set(`${tool}:${effective}`, adapter);
 }
 
 export function clearAdapterCache(): void {
