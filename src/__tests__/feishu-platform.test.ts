@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, disbandChat, sendRestartCard } from "../feishu-platform.ts";
+import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, sendPostMessage, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, disbandChat, sendRestartCard } from "../feishu-platform.ts";
 import type { FeishuPlatform } from "../feishu-platform.ts";
 
 const realPlatform = getPlatform();
@@ -17,6 +17,7 @@ describe("feishu-platform", () => {
       sendTextReply: async () => true,
       sendCardReply: async () => true,
       sendRawCard: async () => true,
+      sendPostMessage: async () => true,
       sendImageReply: async () => true,
       sendFileReply: async () => true,
       addReaction: async () => {},

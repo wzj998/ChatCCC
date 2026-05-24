@@ -408,58 +408,41 @@ export function buildStatusCard(statusText: string, template = "blue"): string {
   });
 }
 
-export interface ModelSwitchOption {
-  label: string;
-  model: string;
-}
-
 /** 模型切换卡片（/model 命令，飞书专用，含切换按钮） */
 export function buildModelCard(
   currentModel: string,
-  available: ModelSwitchOption[],
+  models: string[],
+  tool?: string,
 ): string {
+  const toolLabel = tool ? ` (${tool})` : "";
   const currentLine = currentModel
     ? `**当前模型:** \`${currentModel}\``
     : "**当前模型:** 未指定";
-  const hasPro = available.some(o => o.label === "pro");
-  const hasFlash = available.some(o => o.label === "flash");
 
   const lines: string[] = [currentLine];
-  if (available.length > 0) {
+  if (models.length > 0) {
     lines.push("", "**可切换模型:**");
-    for (const opt of available) {
-      lines.push(`- ${opt.label}: \`${opt.model}\``);
+    for (const m of models) {
+      lines.push(`- \`${m}\``);
     }
+    lines.push("", "点击按钮切换模型，或输入 `/model clear` 恢复默认");
   } else {
-    lines.push("", "没有可切换的模型。");
+    lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
   }
 
-  const buttons: { text: string; value: string; type?: "primary" | "default" | "danger" }[] = [];
-  if (hasPro) {
+  const buttons: ButtonDef[] = [];
+  for (const m of models.slice(0, 20)) {
+    const shortName = m.includes("/") ? m.slice(m.lastIndexOf("/") + 1) : m;
     buttons.push({
-      text: "/model pro",
-      value: JSON.stringify({ action: "model_pro" }),
+      text: `/model ${shortName}`,
+      value: JSON.stringify({ cmd: `/model ${m}` }),
       type: "primary",
-    });
-  }
-  if (hasFlash) {
-    buttons.push({
-      text: "/model flash",
-      value: JSON.stringify({ action: "model_flash" }),
-      type: "primary",
-    });
-  }
-  if (!hasPro && !hasFlash) {
-    buttons.push({
-      text: "/model clear",
-      value: JSON.stringify({ action: "model_clear" }),
-      type: "default",
     });
   }
 
   return JSON.stringify({
     config: { wide_screen_mode: true },
-    header: { template: "blue", title: { content: "模型切换", tag: "plain_text" } },
+    header: { template: "blue", title: { content: `模型切换${toolLabel}`, tag: "plain_text" } },
     elements: [
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },

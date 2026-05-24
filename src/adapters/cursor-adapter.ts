@@ -260,8 +260,18 @@ function spawnAgent(
   extraArgs: string[],
   cwd?: string,
   stdinText?: string,
+  modelOverride?: string,
 ): ChildProcess {
-  const allArgs = [...CURSOR_AGENT_ARGS, ...extraArgs];
+  let allArgs = [...CURSOR_AGENT_ARGS, ...extraArgs];
+  if (modelOverride) {
+    // 替换全局 --model 为 per-session override
+    const modelIdx = allArgs.findIndex((a, i) => a === "--model" && i + 1 < allArgs.length);
+    if (modelIdx >= 0) {
+      allArgs[modelIdx + 1] = modelOverride;
+    } else {
+      allArgs.push("--model", modelOverride);
+    }
+  }
   const proc = spawn(CURSOR_AGENT_COMMAND, allArgs, {
     cwd,
     stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
@@ -324,13 +334,15 @@ class CursorAdapter implements ToolAdapter {
   readonly sessionDescPrefix = "Cursor Session:";
   private activeProcs = new Set<ChildProcess>();
   private metaStore: CursorSessionMetaStore;
+  private modelOverride: string | undefined;
 
-  constructor(metaStore: CursorSessionMetaStore) {
+  constructor(metaStore: CursorSessionMetaStore, modelOverride?: string) {
     this.metaStore = metaStore;
+    this.modelOverride = modelOverride;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
-    const proc = spawnAgent(["ok"], cwd);
+    const proc = spawnAgent(["ok"], cwd, undefined, this.modelOverride);
     this.activeProcs.add(proc);
 
     for await (const msg of readJsonLines(proc, undefined, "createSession")) {
@@ -358,7 +370,7 @@ class CursorAdapter implements ToolAdapter {
     options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
-    const proc = spawnAgent(["--resume", sessionId], cwd, userText);
+    const proc = spawnAgent(["--resume", sessionId], cwd, userText, this.modelOverride);
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
@@ -414,10 +426,12 @@ class CursorAdapter implements ToolAdapter {
 export interface CreateCursorAdapterOptions {
   /** 注入自定义 meta 持久化 store（测试用）；未提供时使用全局默认实例。 */
   metaStore?: CursorSessionMetaStore;
+  /** per-session 模型覆盖（/model 命令）；传了就用，不传走全局 cursor.model */
+  model?: string;
 }
 
 export function createCursorAdapter(
   options: CreateCursorAdapterOptions = {},
 ): ToolAdapter {
-  return new CursorAdapter(options.metaStore ?? defaultCursorSessionMetaStore);
+  return new CursorAdapter(options.metaStore ?? defaultCursorSessionMetaStore, options.model);
 }

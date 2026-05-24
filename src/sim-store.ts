@@ -30,7 +30,7 @@ export interface SimMessage {
   id: string;               // UUID
   chatId: string;
   senderId: string;         // SimAccount.id
-  type: "text" | "card" | "image" | "file" | "raw_card" | "system";
+  type: "text" | "card" | "image" | "file" | "raw_card" | "post" | "system";
   content: string;          // 文本内容或 JSON 字符串
   timestamp: number;
 }

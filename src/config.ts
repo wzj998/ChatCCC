@@ -120,6 +120,25 @@ export interface AppConfig {
 export type AgentTool = "claude" | "cursor" | "codex";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
 
+/** 获取指定 agent 配置中所有模型相关的值（最多 100 个，去重） */
+export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): string[] {
+  const seen = new Set<string>();
+  const collect = (v: unknown) => {
+    if (typeof v === "string" && v.trim()) seen.add(v.trim());
+  };
+
+  if (tool === "claude") {
+    collect(cfg.claude.model);
+    collect(cfg.claude.subagentModel);
+  } else if (tool === "cursor") {
+    collect(cfg.cursor.model);
+  } else if (tool === "codex") {
+    collect(cfg.codex.model);
+  }
+
+  return Array.from(seen).slice(0, 100);
+}
+
 const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
 
