@@ -549,7 +549,7 @@ function wrapMarkdownTables(text: string): string {
   let foundSeparator = false;
 
   const isTableRow = (line: string): boolean =>
-    /^\s*\|.+\|/.test(line);
+    /^\s*\|.+\|/.test(line) && !isSeparatorRow(line);
 
   const isSeparatorRow = (line: string): boolean =>
     /^\s*\|[\s\-:]+\|/.test(line) && /-/.test(line);
