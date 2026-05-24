@@ -10,6 +10,7 @@ import { readdir, stat } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 
 import { makeTraceId, logTrace } from "./trace.ts";
+import { appendStartupTrace } from "./shared.ts";
 import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
@@ -138,15 +139,34 @@ export async function handleCommand(
     logTrace(tid, "BRANCH", { cmd: "/restart" });
     await platform.sendText(chatId, "重启中...请几秒后发消息唤醒我").catch(() => {});
     logTrace(tid, "DONE", { outcome: "restart" });
-    console.log(`[${ts()}] [RESTART] Spawning new process...`);
+
+    appendStartupTrace("restart: spawn begin", { fromPid: process.pid });
     const child = spawn("npx", ["tsx", "src/index.ts"], {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: "ignore",
       shell: true,
     });
+
+    child.on("error", (err) => {
+      appendStartupTrace("restart: spawn error", { error: err.message });
+    });
+
+    child.on("exit", (code, signal) => {
+      appendStartupTrace("restart: child exit", {
+        childPid: child.pid,
+        code,
+        signal,
+      });
+    });
+
     child.unref();
-    setTimeout(() => process.exit(0), 200);
+
+    // 给子进程 2 秒启动窗口，期间若立即 crash 则 exit handler 已写入 trace
+    setTimeout(() => {
+      appendStartupTrace("restart: parent exit", { childPid: child.pid });
+      process.exit(0);
+    }, 2000);
     return;
   }
 
