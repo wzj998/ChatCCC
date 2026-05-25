@@ -7,6 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 import { makeTraceId, logTrace } from "./trace.ts";
@@ -15,6 +16,10 @@ import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
   CLAUDE_SUBAGENT_MODEL,
+  CLAUDE_API_KEY,
+  CLAUDE_BASE_URL,
+  CLAUDE_USE_THIRD_PARTY_API,
+  CONFIG_FILE,
   GIT_TIMEOUT_MS,
   PROJECT_ROOT,
   anthropicConfigDisplay,
@@ -29,6 +34,7 @@ import {
   sessionPrefixForTool,
   toolDisplayName,
   ts,
+  reloadConfigFromDisk,
   type AgentTool,
 } from "./config.ts";
 import {
@@ -40,6 +46,7 @@ import {
   buildSessionsCard,
   buildQueuedCard,
   buildQueueFullCard,
+  buildClaudeCard,
 } from "./cards.ts";
 import {
   formatGitResult,
@@ -383,6 +390,7 @@ export async function handleCommand(
           `**工作目录:** \`${cwd}\`\n\n` +
           `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
           `发送 **/cd** 切换新建会话的默认目录。\n` +
+          `发送 **/claude** 查看或切换 Claude API 模式（官方/第三方）。\n` +
           `发送 **/model** 查看或切换当前会话的模型。\n` +
           `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
           `发送 **/sessions** 查看所有会话状态。\n` +
@@ -1078,6 +1086,72 @@ export async function handleCommand(
       return;
     }
 
+    // /claude — 查看/切换 Claude API 模式（官方 vs 第三方）
+    if (textLower === "/claude" || textLower === "/claude official" || textLower === "/claude 3rd") {
+      logTrace(tid, "BRANCH", { cmd: "/claude", arg: text.slice(8).trim() || "(none)" });
+
+      if (textLower === "/claude official") {
+        // 切换到官方模式：设置 useThirdPartyApi=false，清空 apiKey 和 baseUrl
+        try {
+          const raw = readFileSync(CONFIG_FILE, "utf-8");
+          const cfg = JSON.parse(raw);
+          cfg.claude = cfg.claude || {};
+          cfg.claude.useThirdPartyApi = false;
+          cfg.claude.apiKey = "";
+          cfg.claude.baseUrl = "";
+          writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+          reloadConfigFromDisk();
+          logTrace(tid, "DONE", { outcome: "claude_official" });
+          const card = buildClaudeCard("official", []);
+          await platform.sendRawCard(chatId, card);
+        } catch (err) {
+          logTrace(tid, "DONE", { outcome: "claude_official_fail", error: (err as Error).message });
+          await platform.sendText(chatId, `切换失败: ${(err as Error).message}`).catch(() => {});
+        }
+        return;
+      }
+
+      if (textLower === "/claude 3rd") {
+        // 切换到第三方模式：检查 apiKey 和 baseUrl 是否已配置
+        const missing: string[] = [];
+        if (!CLAUDE_API_KEY.trim()) missing.push("API Key");
+        if (!CLAUDE_BASE_URL.trim()) missing.push("Base URL");
+
+        if (missing.length > 0) {
+          logTrace(tid, "DONE", { outcome: "claude_3rd_missing", missing });
+          const card = buildClaudeCard(
+            CLAUDE_USE_THIRD_PARTY_API ? "thirdparty" : "official",
+            missing,
+          );
+          await platform.sendRawCard(chatId, card);
+          return;
+        }
+
+        try {
+          const raw = readFileSync(CONFIG_FILE, "utf-8");
+          const cfg = JSON.parse(raw);
+          cfg.claude = cfg.claude || {};
+          cfg.claude.useThirdPartyApi = true;
+          writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+          reloadConfigFromDisk();
+          logTrace(tid, "DONE", { outcome: "claude_3rd" });
+          const card = buildClaudeCard("thirdparty", []);
+          await platform.sendRawCard(chatId, card);
+        } catch (err) {
+          logTrace(tid, "DONE", { outcome: "claude_3rd_fail", error: (err as Error).message });
+          await platform.sendText(chatId, `切换失败: ${(err as Error).message}`).catch(() => {});
+        }
+        return;
+      }
+
+      // /claude — 显示当前模式和切换按钮
+      const currentMode: "official" | "thirdparty" = CLAUDE_USE_THIRD_PARTY_API ? "thirdparty" : "official";
+      const card = buildClaudeCard(currentMode, []);
+      await platform.sendRawCard(chatId, card);
+      logTrace(tid, "DONE", { outcome: "claude_query", mode: currentMode });
+      return;
+    }
+
     // /git <args>：在「当前会话工作目录」执行 git 命令
     if (textLower.startsWith("/git ") || textLower === "/git") {
       const args = text === "/git" ? "" : text.slice(5).trim();
@@ -1206,6 +1280,69 @@ export async function handleCommand(
         "red",
       );
     }
+    return;
+  }
+
+  // 无会话上下文 → 检查是否是 /claude 查询
+  if (textLower === "/claude" || textLower === "/claude official" || textLower === "/claude 3rd") {
+    logTrace(tid, "BRANCH", { cmd: "/claude", arg: text.slice(8).trim() || "(none)", noSession: true });
+
+    if (textLower === "/claude official") {
+      try {
+        const raw = readFileSync(CONFIG_FILE, "utf-8");
+        const cfg = JSON.parse(raw);
+        cfg.claude = cfg.claude || {};
+        cfg.claude.useThirdPartyApi = false;
+        cfg.claude.apiKey = "";
+        cfg.claude.baseUrl = "";
+        writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+        reloadConfigFromDisk();
+        logTrace(tid, "DONE", { outcome: "claude_official" });
+        const card = buildClaudeCard("official", []);
+        await platform.sendRawCard(chatId, card);
+      } catch (err) {
+        logTrace(tid, "DONE", { outcome: "claude_official_fail", error: (err as Error).message });
+        await platform.sendText(chatId, `切换失败: ${(err as Error).message}`).catch(() => {});
+      }
+      return;
+    }
+
+    if (textLower === "/claude 3rd") {
+      const missing: string[] = [];
+      if (!CLAUDE_API_KEY.trim()) missing.push("API Key");
+      if (!CLAUDE_BASE_URL.trim()) missing.push("Base URL");
+
+      if (missing.length > 0) {
+        logTrace(tid, "DONE", { outcome: "claude_3rd_missing", missing });
+        const card = buildClaudeCard(
+          CLAUDE_USE_THIRD_PARTY_API ? "thirdparty" : "official",
+          missing,
+        );
+        await platform.sendRawCard(chatId, card);
+        return;
+      }
+
+      try {
+        const raw = readFileSync(CONFIG_FILE, "utf-8");
+        const cfg = JSON.parse(raw);
+        cfg.claude = cfg.claude || {};
+        cfg.claude.useThirdPartyApi = true;
+        writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+        reloadConfigFromDisk();
+        logTrace(tid, "DONE", { outcome: "claude_3rd" });
+        const card = buildClaudeCard("thirdparty", []);
+        await platform.sendRawCard(chatId, card);
+      } catch (err) {
+        logTrace(tid, "DONE", { outcome: "claude_3rd_fail", error: (err as Error).message });
+        await platform.sendText(chatId, `切换失败: ${(err as Error).message}`).catch(() => {});
+      }
+      return;
+    }
+
+    const currentMode: "official" | "thirdparty" = CLAUDE_USE_THIRD_PARTY_API ? "thirdparty" : "official";
+    const card = buildClaudeCard(currentMode, []);
+    await platform.sendRawCard(chatId, card);
+    logTrace(tid, "DONE", { outcome: "claude_query", mode: currentMode });
     return;
   }
 
