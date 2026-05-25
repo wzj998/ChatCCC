@@ -1,15 +1,13 @@
 // =============================================================================
-// claude-adapter.ts — Claude Agent SDK 适配器
+// claude-adapter.ts — Claude CLI 适配器
 // =============================================================================
-// 实现 ToolAdapter 接口，将 @anthropic-ai/claude-agent-sdk 调用封装在内。
+// 通过直接 spawn claude.exe（不再使用 @anthropic-ai/claude-agent-sdk JS API）
+// 以确保 --mcp-config 参数能正确传递给 CLI 子进程，加载用户 MCP 服务器。
 // =============================================================================
 
-import {
-  unstable_v2_createSession,
-  unstable_v2_resumeSession,
-  getSessionInfo as sdkGetSessionInfo,
-} from "@anthropic-ai/claude-agent-sdk";
-import { readdirSync, existsSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -19,10 +17,29 @@ import type {
   UnifiedStreamMessage,
   CreateSessionResult,
   SessionInfo,
+  ToolPromptOptions,
 } from "./adapter-interface.ts";
+import { PROJECT_ROOT } from "../config.ts";
+import { killProcessTree } from "./proc-tree-kill.ts";
+import {
+  defaultClaudeSessionMetaStore,
+  type ClaudeSessionMetaStore,
+} from "./claude-session-meta-store.ts";
 
 // ---------------------------------------------------------------------------
-// 类型别名：SDK 内部消息的形状（避免导入 sdk.d.ts 的大型联合类型）
+// 常量
+// ---------------------------------------------------------------------------
+
+const CLAUDE_EXE = join(
+  PROJECT_ROOT,
+  "node_modules",
+  "@anthropic-ai",
+  "claude-agent-sdk-win32-x64",
+  "claude.exe",
+);
+
+// ---------------------------------------------------------------------------
+// 类型别名（CLI JSONL 消息格式，与旧 SDK 消息格式兼容）
 // ---------------------------------------------------------------------------
 
 interface SdkContentBlock {
@@ -48,6 +65,8 @@ interface SdkMessageLike {
     post_tokens?: number;
   };
   session_id?: string;
+  model?: string;
+  cwd?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,126 +77,100 @@ export interface ClaudeAdapterOptions {
   model: string;
   subagentModel?: string;
   effort: string;
-  /** 判断字段是否为"不传给 SDK"的占位（项目约定：空字符串/全空白） */
-  isEmpty: (value: string) => boolean;
-  /**
-   * Anthropic 兼容网关的 API key。
-   * 非空（trim 后）时会被注入到 SDK 子进程的 ANTHROPIC_API_KEY 环境变量；
-   * 留空 / 全空白 → 不覆盖，沿用主进程 process.env / 系统环境变量。
-   * 永远不会写入主进程的 process.env，避免污染其他依赖 env 的代码。
-   */
+  /** Anthropic API Key（选填，留空则不注入环境变量） */
   apiKey?: string;
-  /**
-   * Anthropic 兼容网关的 base URL。
-   * 非空（trim 后）时会被注入到 SDK 子进程的 ANTHROPIC_BASE_URL 环境变量；
-   * 留空 / 全空白 → 不覆盖，沿用主进程 process.env / 系统环境变量。
-   */
+  /** Anthropic 兼容 API Base URL（选填，留空则不注入环境变量） */
   baseUrl?: string;
+  /** 判断字段是否为"不传给 CLI"的占位（空字符串/全空白） */
+  isEmpty: (value: string) => boolean;
+  /** 注入自定义 meta 持久化 store（测试用）；未提供时使用全局默认实例。 */
+  metaStore?: ClaudeSessionMetaStore;
 }
 
 // ---------------------------------------------------------------------------
-// buildSdkEnv — 为 SDK 子进程构造 env
+// buildCliEnv — 为 CLI 子进程构造 env（仅子进程级别，不污染主进程）
 // ---------------------------------------------------------------------------
-// 行为契约（详见单测 "createClaudeAdapter — env 注入"）：
-//   - apiKey 与 baseUrl 都为空（trim 后）→ 返回 undefined，让 SDK 走默认行为
-//     （即 process.env），避免无意义的拷贝。
-//   - 任一非空 → 返回 process.env 的浅拷贝，并按需覆盖 ANTHROPIC_API_KEY /
-//     ANTHROPIC_BASE_URL；其余 env 字段保持不变（PATH、HOME 等子进程必需）。
-//   - 主进程 process.env 永不被写入，主进程其他模块对 env 的读取不受影响。
-function buildSdkEnv(
+
+function buildCliEnv(
+  subagentModel: string | undefined,
   apiKey: string | undefined,
   baseUrl: string | undefined,
-  subagentModel: string | undefined,
 ): Record<string, string | undefined> | undefined {
+  const subagentModelTrim = (subagentModel ?? "").trim();
   const apiKeyTrim = (apiKey ?? "").trim();
   const baseUrlTrim = (baseUrl ?? "").trim();
-  const subagentModelTrim = (subagentModel ?? "").trim();
-  const hasApiOverride = Boolean(apiKeyTrim || baseUrlTrim);
-  if (!hasApiOverride) return undefined;
+
+  if (!subagentModelTrim && !apiKeyTrim && !baseUrlTrim) return undefined;
 
   const env: Record<string, string | undefined> = { ...process.env };
-  // ChatCCC's third-party Claude API config is authoritative when present.
-  // Remove Claude Code/user settings env that can silently override gateway/auth/model choice.
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   delete env.ANTHROPIC_MODEL;
   delete env.ANTHROPIC_DEFAULT_OPUS_MODEL;
   delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
   delete env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
-  delete env.CLAUDE_CODE_SUBAGENT_MODEL;
   delete env.CLAUDE_CODE_EFFORT_LEVEL;
 
-  if (apiKeyTrim) env.ANTHROPIC_API_KEY = apiKeyTrim;
-  if (baseUrlTrim) {
-    env.ANTHROPIC_BASE_URL = baseUrlTrim;
-  } else {
-    delete env.ANTHROPIC_BASE_URL;
-  }
   if (subagentModelTrim) env.CLAUDE_CODE_SUBAGENT_MODEL = subagentModelTrim;
+  if (apiKeyTrim) env.ANTHROPIC_API_KEY = apiKeyTrim;
+  if (baseUrlTrim) env.ANTHROPIC_BASE_URL = baseUrlTrim;
+
   return env;
 }
 
-function resolveSettingSources(
-  _apiKey: string | undefined,
-  _baseUrl: string | undefined,
-): Array<"user" | "project" | "local"> {
-  // CLAUDE.md / CLAUDE.local.md 是 Agent 指令文件，与 API 来源无关，
-  // 无论使用官方 Anthropic 还是第三方网关都应加载。
-  // 包含 "user" 以使 ~/.claude/settings.json 中的配置（如 mcpServers）生效；
-  // buildSdkEnv() 会删除可能冲突的 env 变量，确保网关配置不被覆盖。
-  return ["user", "project", "local"];
-}
-
 // ---------------------------------------------------------------------------
-// collectSkillNames — 扫描用户级 skill 目录，返回所有 skill 名
+// MCP 配置读取
 // ---------------------------------------------------------------------------
 
-function collectSkillNames(): string[] {
-  const userSkillsDir = join(homedir(), ".claude", "skills");
-  if (!existsSync(userSkillsDir)) return [];
+function readMcpConfigJson(): string | null {
+  const settingsPath = join(homedir(), ".claude", "settings.json");
   try {
-    return readdirSync(userSkillsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+    if (!existsSync(settingsPath)) return null;
+    const raw = readFileSync(settingsPath, "utf-8");
+    const settings = JSON.parse(raw);
+    const mcpServers = settings?.mcpServers;
+    if (!mcpServers || Object.keys(mcpServers).length === 0) return null;
+    // CLI 期望 {"mcpServers": {...}} 格式，而非裸 mcpServers 值
+    return JSON.stringify({ mcpServers });
   } catch {
-    return [];
+    return null;
   }
 }
 
 // ---------------------------------------------------------------------------
-// buildSessionOptions — 还原 claudeSdkSessionOptions 的精确行为
+// 诊断日志
 // ---------------------------------------------------------------------------
 
-function buildSessionOptions(
-  cwd: string,
-  model: string,
-  effort: string,
-  isEmpty: (value: string) => boolean,
-  apiKey: string | undefined,
-  baseUrl: string | undefined,
-  subagentModel: string | undefined,
-): Record<string, unknown> {
-  const o: Record<string, unknown> = {
-    cwd,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    autoCompactEnabled: true,
-    settingSources: resolveSettingSources(apiKey, baseUrl),
-    skills: collectSkillNames(),
-  };
-  if (!isEmpty(model)) o.model = model;
-  if (!isEmpty(effort)) o.effort = effort;
-  const env = buildSdkEnv(apiKey, baseUrl, subagentModel);
-  if (env) o.env = env;
-  return o;
+function logMcpConfig(): void {
+  const settingsPath = join(homedir(), ".claude", "settings.json");
+  const ts = new Date().toISOString();
+  try {
+    if (!existsSync(settingsPath)) {
+      console.log(`[${ts}] [MCP-DIAG] settings.json not found at ${settingsPath}`);
+      return;
+    }
+    const raw = readFileSync(settingsPath, "utf-8");
+    const settings = JSON.parse(raw);
+    const mcpServers = settings?.mcpServers;
+    if (!mcpServers || Object.keys(mcpServers).length === 0) {
+      console.log(`[${ts}] [MCP-DIAG] No mcpServers configured in settings.json`);
+      return;
+    }
+    console.log(`[${ts}] [MCP-DIAG] mcpServers found: ${JSON.stringify(Object.keys(mcpServers))}`);
+    for (const [name, cfg] of Object.entries(mcpServers) as [string, { type?: string; command?: string; args?: string[] }][]) {
+      console.log(`[${ts}] [MCP-DIAG]   ${name}: type=${cfg.type}, command=${cfg.command}, args=${JSON.stringify(cfg.args)}`);
+    }
+  } catch (err) {
+    console.log(`[${ts}] [MCP-DIAG] Failed to read settings.json: ${(err as Error).message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// normalizeSdkMessage — 关键映射：SDK 消息 → UnifiedStreamMessage | null
+// normalizeSdkMessage — CLI JSONL 消息 → UnifiedStreamMessage | null
+// （CLI 与 SDK 使用相同 JSONL 格式，导出名保留以兼容现有测试）
 // ---------------------------------------------------------------------------
 
 export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage | null {
-  // 1) assistant / user 消息：遍历 content 块
   if (
     (msg.type === "assistant" || msg.type === "user") &&
     msg.message?.content
@@ -208,13 +201,15 @@ export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage |
           query: block.query ?? "",
         });
       } else if (block.type === "text" && block.text) {
+        // 跳过 user 消息中的 text block：--replay-user-messages 会重放
+        // 之前的用户消息（含内嵌的 IM skill prompt），这些不应出现在最终回复中
+        if (msg.type === "user") continue;
         blocks.push({ type: "text", text: block.text });
       }
     }
     return { type: msg.type, blocks };
   }
 
-  // 2) system / compact_boundary 消息：上下文压缩事件
   if (msg.type === "system" && msg.subtype === "compact_boundary") {
     const meta = msg.compact_metadata;
     if (!meta) return null;
@@ -231,12 +226,116 @@ export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage |
     };
   }
 
-  // 3) 其他消息类型：跳过
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// 适配器实现（私有类，仅通过工厂函数暴露）
+// CLI spawn helpers
+// ---------------------------------------------------------------------------
+
+function buildCliArgs(
+  model: string,
+  effort: string,
+  isEmpty: (value: string) => boolean,
+  mcpConfigJson: string | null,
+  extraArgs: string[],
+): string[] {
+  const args = [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--setting-sources", "user,project,local",
+    "--permission-mode", "bypassPermissions",
+    "--dangerously-skip-permissions",
+    "--settings", "{\"maxTurns\":0}",
+  ];
+
+  if (!isEmpty(model)) args.push("--model", model);
+  if (!isEmpty(effort)) args.push("--effort", effort);
+
+  // extraArgs（如 prompt "ok" 或 --resume <id>）必须在 --mcp-config 之前，
+  // 因为 --mcp-config 接受多个空格分隔的值，会把后续非 flag 参数都当作 MCP 配置
+  args.push(...extraArgs);
+
+  if (mcpConfigJson) args.push("--mcp-config", mcpConfigJson);
+
+  const ts = new Date().toISOString();
+  const safeArgs = args.filter(a => a !== mcpConfigJson);
+  console.log(`[${ts}] [CLAUDE-CLI] spawn: ${CLAUDE_EXE} ${safeArgs.join(" ")}`);
+  if (mcpConfigJson) {
+    console.log(`[${ts}] [CLAUDE-CLI] --mcp-config: ${mcpConfigJson}`);
+  }
+
+  return args;
+}
+
+function spawnCli(
+  args: string[],
+  cwd: string,
+  env: Record<string, string | undefined> | undefined,
+  pipeStdin: boolean,
+): ChildProcess {
+  const proc = spawn(CLAUDE_EXE, args, {
+    cwd,
+    stdio: [pipeStdin ? "pipe" : "ignore", "pipe", "pipe"],
+    windowsHide: true,
+    env: env ?? process.env,
+  });
+
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] [CLAUDE-CLI] spawned, pid=${proc.pid}`);
+
+  let stderr = "";
+  proc.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  proc.on("close", (code) => {
+    if (stderr.trim()) {
+      const ts2 = new Date().toISOString();
+      console.log(`[${ts2}] [CLAUDE-STDERR] exit=${code}: ${stderr.trim().slice(0, 2000)}`);
+    }
+  });
+
+  return proc;
+}
+
+async function* readJsonLines(
+  proc: ChildProcess,
+  signal?: AbortSignal,
+): AsyncGenerator<SdkMessageLike> {
+  const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
+  const onAbort = () => { rl.close(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  let lineCount = 0;
+  try {
+    for await (const line of rl) {
+      if (signal?.aborted) break;
+      lineCount++;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        yield JSON.parse(trimmed) as SdkMessageLike;
+      } catch { /* 非 JSON 行静默跳过 */ }
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    rl.close();
+    const ts = new Date().toISOString();
+    console.log(`[${ts}] [CLAUDE-CLI] readJsonLines done: ${lineCount} raw lines`);
+  }
+}
+
+/** 构造 stream-json 格式的 stdin 输入行 */
+function buildStreamJsonInput(text: string): string {
+  return JSON.stringify({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "text", text }],
+    },
+  }) + "\n";
+}
+
+// ---------------------------------------------------------------------------
+// ClaudeAdapter
 // ---------------------------------------------------------------------------
 
 class ClaudeAdapter implements ToolAdapter {
@@ -245,57 +344,45 @@ class ClaudeAdapter implements ToolAdapter {
   private model: string;
   private effort: string;
   private subagentModel: string | undefined;
-  private isEmpty: (value: string) => boolean;
   private apiKey: string | undefined;
   private baseUrl: string | undefined;
+  private isEmpty: (value: string) => boolean;
+  private metaStore: ClaudeSessionMetaStore;
 
   constructor(options: ClaudeAdapterOptions) {
     this.model = options.model;
     this.effort = options.effort;
     this.subagentModel = options.subagentModel;
-    this.isEmpty = options.isEmpty;
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl;
+    this.isEmpty = options.isEmpty;
+    this.metaStore = options.metaStore ?? defaultClaudeSessionMetaStore;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
-    const sessionOpts = buildSessionOptions(
-      cwd,
-      this.model,
-      this.effort,
-      this.isEmpty,
-      this.apiKey,
-      this.baseUrl,
-      this.subagentModel,
+    logMcpConfig();
+    const mcpConfigJson = readMcpConfigJson();
+    const env = buildCliEnv(this.subagentModel, this.apiKey, this.baseUrl);
+    const args = buildCliArgs(
+      this.model, this.effort, this.isEmpty, mcpConfigJson,
+      ["ok"],
     );
-    const session = unstable_v2_createSession(sessionOpts as any);
 
-    await session.send("ok");
+    const proc = spawnCli(args, cwd, env, false);
 
-    const stream = session.stream();
-    const first = await stream.next();
-
-    if (first.done || !(first.value as SdkMessageLike)?.session_id) {
-      session.close();
-      throw new Error("No session ID in Claude init event");
+    for await (const msg of readJsonLines(proc)) {
+      if (msg.session_id) {
+        const sessionId = msg.session_id;
+        await this.metaStore.set(sessionId, { cwd }).catch(() => {});
+        await killProcessTree(proc.pid);
+        const ts = new Date().toISOString();
+        console.log(`[${ts}] [CLAUDE-CLI] createSession: ${sessionId}`);
+        return { sessionId };
+      }
     }
 
-    const sessionId = (first.value as SdkMessageLike).session_id!;
-
-    // 后台消费剩余的 stream（必须：否则 SDK 内部缓冲可能阻塞）
-    (async () => {
-      try {
-        for await (const _msg of stream) {
-          // 静默消费
-        }
-      } catch {
-        // stream 异常不阻塞主流程
-      } finally {
-        session.close();
-      }
-    })();
-
-    return { sessionId };
+    await killProcessTree(proc.pid);
+    throw new Error("No session ID in Claude init event");
   }
 
   async *prompt(
@@ -303,61 +390,57 @@ class ClaudeAdapter implements ToolAdapter {
     userText: string,
     cwd: string,
     signal?: AbortSignal,
+    options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
-    const sessionOpts = buildSessionOptions(
-      cwd,
-      this.model,
-      this.effort,
-      this.isEmpty,
-      this.apiKey,
-      this.baseUrl,
-      this.subagentModel,
-    );
-    const session = unstable_v2_resumeSession(
-      sessionId,
-      sessionOpts as any,
+    const mcpConfigJson = readMcpConfigJson();
+    const env = buildCliEnv(this.subagentModel, this.apiKey, this.baseUrl);
+    const args = buildCliArgs(
+      this.model, this.effort, this.isEmpty, mcpConfigJson,
+      ["--resume", sessionId, "--input-format", "stream-json", "--replay-user-messages"],
     );
 
-    if (signal?.aborted) {
-      session.close();
-      return;
-    }
-    const onAbort = () => { session.close(); };
+    const proc = spawnCli(args, cwd, env, true);
+    if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
+
+    const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    await session.send(userText);
-
-    const stream = session.stream();
+    proc.stdin!.write(buildStreamJsonInput(userText));
+    proc.stdin!.end();
 
     try {
-      for await (const msg of stream) {
+      for await (const raw of readJsonLines(proc, signal)) {
         if (signal?.aborted) break;
-        const normalized = normalizeSdkMessage(
-          msg as unknown as SdkMessageLike,
-        );
+
+        if (raw.type === "system" && raw.subtype === "init" && raw.session_id) {
+          const meta: { cwd?: string; model?: string } = {};
+          if (raw.cwd) meta.cwd = raw.cwd;
+          if (raw.model) meta.model = raw.model;
+          if (Object.keys(meta).length > 0) {
+            this.metaStore.set(raw.session_id, meta).catch(() => {});
+          }
+        }
+
+        const normalized = normalizeSdkMessage(raw);
         if (normalized) yield normalized;
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      session.close();
+      await killProcessTree(proc.pid);
+      if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
     }
   }
 
-  async getSessionInfo(
-    sessionId: string,
-  ): Promise<SessionInfo | undefined> {
-    const info = await sdkGetSessionInfo(sessionId);
-    if (!info) return undefined;
-    return {
-      sessionId: info.sessionId,
-      cwd: info.cwd,
-      summary: info.summary,
-      lastModified: info.lastModified,
-    };
+  async getSessionInfo(sessionId: string): Promise<SessionInfo | undefined> {
+    const meta = await this.metaStore.get(sessionId);
+    if (!meta) return { sessionId };
+    return meta.model
+      ? { sessionId, cwd: meta.cwd, model: meta.model }
+      : { sessionId, cwd: meta.cwd };
   }
 
   async closeSession(_sessionId: string): Promise<void> {
-    // Claude SDK 在 stream 结束后自动关闭 session，此处为 no-op
+    // 子进程由 prompt 的 finally 自动 kill
   }
 }
 

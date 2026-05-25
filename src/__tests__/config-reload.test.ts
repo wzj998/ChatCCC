@@ -48,8 +48,8 @@ const baseAppConfig: AppConfig = {
     model: "initial-model",
     subagentModel: "initial-subagent-model",
     effort: "initial-effort",
-    apiKey: "sk-initial",
-    baseUrl: "https://initial.gw/anthropic",
+    apiKey: "",
+    baseUrl: "",
   },
   cursor: { enabled: true, defaultAgent: false, path: "/initial/cursor", model: "initial-cursor-model" },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", effort: "initial-codex-effort" },
@@ -89,16 +89,16 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
         model: "claude-sonnet-4-6",
         subagentModel: "claude-haiku-4-5-20251001",
         effort: "high",
-        apiKey: "sk-newkey",
-        baseUrl: "https://gw2.example/anthropic",
+        apiKey: "sk-test",
+        baseUrl: "https://api.example.com",
       },
     });
 
     expect(CLAUDE_MODEL).toBe("claude-sonnet-4-6");
     expect(CLAUDE_SUBAGENT_MODEL).toBe("claude-haiku-4-5-20251001");
     expect(CLAUDE_EFFORT).toBe("high");
-    expect(CLAUDE_API_KEY).toBe("sk-newkey");
-    expect(CLAUDE_BASE_URL).toBe("https://gw2.example/anthropic");
+    expect(CLAUDE_API_KEY).toBe("sk-test");
+    expect(CLAUDE_BASE_URL).toBe("https://api.example.com");
   });
 
   it("更新 GIT_TIMEOUT_SECONDS 与 GIT_TIMEOUT_MS（毫秒派生值同步刷新）", () => {

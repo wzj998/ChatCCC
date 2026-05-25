@@ -65,10 +65,10 @@ export interface ClaudeConfig {
   model: string;
   subagentModel: string;
   effort: string;
+  /** Anthropic API Key（选填，留空则使用 Claude CLI 默认认证） */
   apiKey: string;
+  /** Anthropic 兼容 API Base URL（选填，留空则使用默认端点） */
   baseUrl: string;
-  /** 是否使用第三方 API（非 Anthropic 官方）；为 true 时 baseUrl 必须配置 */
-  useThirdPartyApi: boolean;
 }
 
 export interface CursorConfig {
@@ -324,7 +324,7 @@ function loadConfig(): AppConfig {
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
-    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", useThirdPartyApi: false },
+    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "" },
     cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
@@ -466,9 +466,8 @@ function loadConfig(): AppConfig {
       model: normalizeOptionalConfigField(claude.model, { label: "claude.model" }),
       subagentModel: normalizeOptionalConfigField(claude.subagentModel, { label: "claude.subagentModel" }),
       effort: normalizeOptionalConfigField(claude.effort, { label: "claude.effort" }),
-      apiKey: claude.apiKey ?? "",
-      baseUrl: claude.baseUrl ?? "",
-      useThirdPartyApi: typeof claude.useThirdPartyApi === "boolean" ? claude.useThirdPartyApi : false,
+      apiKey: normalizeOptionalConfigField(claude.apiKey, { label: "claude.apiKey" }),
+      baseUrl: normalizeOptionalConfigField(claude.baseUrl, { label: "claude.baseUrl" }),
     },
     cursor: {
       enabled: cursorEnabled,
@@ -496,12 +495,6 @@ function loadConfig(): AppConfig {
  */
 export const config: AppConfig = loadConfig();
 
-// 注：历史上这里曾把 config.claude.apiKey / baseUrl 写入 process.env 以便
-// @anthropic-ai/claude-agent-sdk 子进程读取，但这会污染主进程的环境变量。
-// 现在改为：在 ClaudeAdapter 构造时把这两个值传进去，由 adapter 在调用 SDK
-// 时通过 SDK 的 `Options.env` 字段（仅作用于子进程）传递，主进程 env 保持
-// 干净。详见 src/adapters/claude-adapter.ts buildSdkEnv()。
-
 // ---------------------------------------------------------------------------
 // Re-exported config values
 // ---------------------------------------------------------------------------
@@ -528,12 +521,8 @@ export const LOCAL_RELAY_URL = `ws://127.0.0.1:${CHATCCC_PORT}`;
 export let CLAUDE_MODEL = config.claude.model;
 export let CLAUDE_SUBAGENT_MODEL = config.claude.subagentModel;
 export let CLAUDE_EFFORT = config.claude.effort;
-/** Anthropic 兼容网关的 API key（仅经 SDK 子进程 env 传递，从不写入主进程 process.env） */
 export let CLAUDE_API_KEY = config.claude.apiKey;
-/** Anthropic 兼容网关的 base URL（仅经 SDK 子进程 env 传递，从不写入主进程 process.env） */
 export let CLAUDE_BASE_URL = config.claude.baseUrl;
-/** 是否使用第三方 API（非 Anthropic 官方） */
-export let CLAUDE_USE_THIRD_PARTY_API = config.claude.useThirdPartyApi;
 
 /** 返回当前生效的 Claude 模型（per-session 覆盖由 session.ts 管理，此处仅返回全局配置） */
 export function getEffectiveClaudeModel(): string {
@@ -613,7 +602,6 @@ export function applyLoadedConfig(next: AppConfig): void {
   CLAUDE_EFFORT = next.claude.effort;
   CLAUDE_API_KEY = next.claude.apiKey;
   CLAUDE_BASE_URL = next.claude.baseUrl;
-  CLAUDE_USE_THIRD_PARTY_API = next.claude.useThirdPartyApi;
   GIT_TIMEOUT_SECONDS = next.gitTimeoutSeconds;
   GIT_TIMEOUT_MS = GIT_TIMEOUT_SECONDS * 1000;
   ALLOW_INTERRUPT = next.allowInterrupt;

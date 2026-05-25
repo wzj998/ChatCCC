@@ -1,41 +1,39 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { normalizeSdkMessage, createClaudeAdapter } from "../adapters/claude-adapter.ts";
 import type { UnifiedStreamMessage } from "../adapters/adapter-interface.ts";
+import type {
+  ClaudeSessionMeta,
+  ClaudeSessionMetaStore,
+} from "../adapters/claude-session-meta-store.ts";
 
 // ---------------------------------------------------------------------------
-// Mock Claude SDK
+// 进程内内存版 meta store（测试用，避开磁盘 IO）
 // ---------------------------------------------------------------------------
 
-const mockSend = vi.fn();
-const mockClose = vi.fn();
-const mockStreamNext = vi.fn();
-const mockStreamIterable: AsyncGenerator<any, void> = {
-  next: mockStreamNext,
-  [Symbol.asyncIterator]() { return this; },
-} as any;
-
-function mockSession(overrides: Partial<{ send: any; close: any; streamNext: any }> = {}) {
+function createInMemoryMetaStore(
+  initial: Record<string, ClaudeSessionMeta> = {},
+): ClaudeSessionMetaStore & { snapshot(): Record<string, ClaudeSessionMeta> } {
+  const map = new Map<string, ClaudeSessionMeta>(Object.entries(initial));
   return {
-    send: overrides.send ?? mockSend,
-    close: overrides.close ?? mockClose,
-    stream: () => ({
-      next: overrides.streamNext ?? mockStreamNext,
-      [Symbol.asyncIterator]() { return this; },
-    }),
+    async get(sid) {
+      return map.get(sid);
+    },
+    async set(sid, partial) {
+      const existing = map.get(sid);
+      const merged: { cwd?: string; model?: string } = { ...existing };
+      if (typeof partial.cwd === "string" && partial.cwd.length > 0) merged.cwd = partial.cwd;
+      if (typeof partial.model === "string" && partial.model.length > 0) merged.model = partial.model;
+      if (!merged.cwd) return;
+      map.set(sid, merged.model ? { cwd: merged.cwd, model: merged.model } : { cwd: merged.cwd });
+    },
+    snapshot() {
+      return Object.fromEntries(map);
+    },
   };
 }
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => {
-  // We only mock the full adapter integration tests; normalizeSdkMessage is pure
-  return {
-    unstable_v2_createSession: vi.fn(),
-    unstable_v2_resumeSession: vi.fn(),
-    getSessionInfo: vi.fn(),
-  };
-});
-
 // ---------------------------------------------------------------------------
-// normalizeSdkMessage — 核心映射逻辑测试（纯函数，不需要 mock SDK）
+// normalizeSdkMessage — 核心映射逻辑测试（纯函数，CLI 与 SDK 格式相同）
 // ---------------------------------------------------------------------------
 
 describe("normalizeSdkMessage", () => {
@@ -126,6 +124,39 @@ describe("normalizeSdkMessage", () => {
       tool_use_id: "arr",
     });
     expect((result!.blocks[0] as any).content).toEqual(content);
+  });
+
+  it("skips text blocks in user messages (replayed input from --replay-user-messages)", () => {
+    // user 消息中的 text block 来自 --replay-user-messages 重放的用户输入
+    // （含内嵌的 IM skill prompt），不应出现在最终回复中
+    const result = normalizeSdkMessage({
+      type: "user",
+      message: {
+        content: [
+          { type: "text", text: "[ChatCCC IM skill: feishu-skill]\n...[/ChatCCC IM skill: feishu-skill]" },
+          { type: "tool_result", tool_use_id: "abc", content: "result" },
+        ],
+      },
+    });
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("user");
+    // text block 应被跳过，只保留 tool_result
+    expect(result!.blocks).toHaveLength(1);
+    expect(result!.blocks[0]).toMatchObject({ type: "tool_result", tool_use_id: "abc" });
+  });
+
+  it("returns null for user message with only text blocks (all skipped)", () => {
+    // 纯 user text 消息（无 tool_result）→ 全部跳过，不产生有效 blocks
+    const result = normalizeSdkMessage({
+      type: "user",
+      message: {
+        content: [{ type: "text", text: "some replayed user input" }],
+      },
+    });
+    // 此时 blocks 为空，但消息本身仍有 type，返回非 null 以保持流完整性
+    // 调用方 accumulateBlockContent 对空 blocks 是 no-op
+    expect(result).not.toBeNull();
+    expect(result!.blocks).toEqual([]);
   });
 
   it("normalizes redacted_thinking block", () => {
@@ -292,7 +323,6 @@ describe("normalizeSdkMessage", () => {
       type: "assistant",
       message: { content: [{ type: "thinking", thinking: "" }] },
     });
-    // empty thinking string → falsy check (block.thinking → "") → skipped
     expect(result!.blocks).toEqual([]);
   });
 
@@ -301,7 +331,6 @@ describe("normalizeSdkMessage", () => {
       type: "assistant",
       message: { content: [{ type: "text", text: "" }] },
     });
-    // empty text string → falsy check → skipped
     expect(result!.blocks).toEqual([]);
   });
 
@@ -314,17 +343,10 @@ describe("normalizeSdkMessage", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createClaudeAdapter — 集成测试（mock SDK）
+// createClaudeAdapter — 工厂函数 + getSessionInfo / closeSession 测试
 // ---------------------------------------------------------------------------
 
 describe("createClaudeAdapter", () => {
-  let sdk: any;
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    sdk = await import("@anthropic-ai/claude-agent-sdk");
-  });
-
   it("returns adapter with correct displayName and sessionDescPrefix", () => {
     const adapter = createClaudeAdapter({
       model: "claude-sonnet-4-6",
@@ -335,578 +357,86 @@ describe("createClaudeAdapter", () => {
     expect(adapter.sessionDescPrefix).toBe("Claude Code Session:");
   });
 
-  it("createSession returns sessionId from init event", async () => {
-    const mockSessionObj = mockSession({
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({
-          done: false,
-          value: { session_id: "test-sid-001", type: "system", subtype: "init" },
-        })
-        .mockResolvedValueOnce({ done: true, value: undefined }),
-    });
-    sdk.unstable_v2_createSession.mockReturnValue(mockSessionObj);
-
+  it("closeSession does not throw", async () => {
     const adapter = createClaudeAdapter({
       model: "claude-sonnet-4-6",
       effort: "high",
       isEmpty: () => false,
     });
-
-    const result = await adapter.createSession("/tmp");
-    expect(result.sessionId).toBe("test-sid-001");
-    expect(sdk.unstable_v2_createSession).toHaveBeenCalledTimes(1);
-  });
-
-  it("createSession throws when first event has no session_id", async () => {
-    const mockSessionObj = mockSession({
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({
-          done: false,
-          value: { type: "other", no_session_id: true },
-        }),
-    });
-    sdk.unstable_v2_createSession.mockReturnValue(mockSessionObj);
-
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
-    await expect(adapter.createSession("/tmp")).rejects.toThrow(
-      "No session ID",
-    );
-  });
-
-  it("createSession sends 'ok' to the session", async () => {
-    const sendSpy = vi.fn();
-    const mockSessionObj = mockSession({
-      send: sendSpy,
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({
-          done: false,
-          value: { session_id: "sid", type: "system", subtype: "init" },
-        })
-        .mockResolvedValueOnce({ done: true, value: undefined }),
-    });
-    sdk.unstable_v2_createSession.mockReturnValue(mockSessionObj);
-
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
-    await adapter.createSession("/tmp");
-    expect(sendSpy).toHaveBeenCalledWith("ok");
-  });
-
-  it("prompt yields normalized messages", async () => {
-    const mockSessionObj = mockSession({
-      streamNext: (() => {
-        let callCount = 0;
-        return vi.fn(async () => {
-          callCount++;
-          if (callCount === 1) {
-            return {
-              done: false,
-              value: {
-                type: "assistant",
-                message: { content: [{ type: "text", text: "Hello!" }] },
-              },
-            };
-          }
-          return { done: true, value: undefined };
-        });
-      })(),
-    });
-    sdk.unstable_v2_resumeSession.mockReturnValue(mockSessionObj);
-
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
-    const messages: UnifiedStreamMessage[] = [];
-    for await (const msg of adapter.prompt("sid", "hi", "/tmp")) {
-      messages.push(msg);
-    }
-
-    expect(messages).toHaveLength(1);
-    expect(messages[0].type).toBe("assistant");
-    expect(messages[0].blocks).toEqual([{ type: "text", text: "Hello!" }]);
-    expect(sdk.unstable_v2_resumeSession).toHaveBeenCalledTimes(1);
-  });
-
-  it("prompt handles AbortSignal", async () => {
-    const mockSessionObj = mockSession({
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({
-          done: false,
-          value: {
-            type: "assistant",
-            message: { content: [{ type: "text", text: "msg1" }] },
-          },
-        })
-        .mockResolvedValueOnce({
-          done: false,
-          value: {
-            type: "assistant",
-            message: { content: [{ type: "text", text: "msg2" }] },
-          },
-        })
-        .mockResolvedValue({ done: true, value: undefined }),
-    });
-    sdk.unstable_v2_resumeSession.mockReturnValue(mockSessionObj);
-
-    const controller = new AbortController();
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
-    const messages: UnifiedStreamMessage[] = [];
-    for await (const msg of adapter.prompt("sid", "hi", "/tmp", controller.signal)) {
-      messages.push(msg);
-      if (messages.length === 1) controller.abort();
-    }
-
-    // Should only get the first message before abort stops iteration
-    expect(messages).toHaveLength(1);
-  });
-
-  it("getSessionInfo returns mapped SessionInfo", async () => {
-    sdk.getSessionInfo.mockResolvedValue({
-      sessionId: "sid",
-      cwd: "/home/user",
-      summary: "A test session",
-      lastModified: 1234567890,
-    });
-
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
-    const info = await adapter.getSessionInfo("sid");
-    expect(info).toEqual({
-      sessionId: "sid",
-      cwd: "/home/user",
-      summary: "A test session",
-      lastModified: 1234567890,
-    });
-  });
-
-  it("getSessionInfo returns undefined when SDK returns undefined", async () => {
-    sdk.getSessionInfo.mockResolvedValue(undefined);
-
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
-    const info = await adapter.getSessionInfo("nonexistent");
-    expect(info).toBeUndefined();
-  });
-
-  it("closeSession is no-op (does not throw)", async () => {
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: () => false,
-    });
-
     await expect(adapter.closeSession("any-sid")).resolves.toBeUndefined();
   });
-});
 
-// ---------------------------------------------------------------------------
-// createClaudeAdapter — sessionOpts 形状护栏
-// 这一组测试只断言 "调用 SDK 时传了什么"。任何对 buildSessionOptions / env
-// 注入逻辑的改动都应该让这组测试继续通过；如有意修改默认行为，请同步更新断言。
-// ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // getSessionInfo 行为契约
+  //   - cwd 决定 /git 是否可用
+  //   - model 用于 /status、/sessions 显示
+  // -------------------------------------------------------------------------
 
-describe("createClaudeAdapter — sessionOpts 形状", () => {
-  let sdk: any;
-
-  /** 构造一个完成首次 init 即结束的 mock session，用于让 createSession 走完流程。 */
-  function setupMockCreateSession(): void {
-    const mockSessionObj = mockSession({
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({
-          done: false,
-          value: { session_id: "sid", type: "system", subtype: "init" },
-        })
-        .mockResolvedValueOnce({ done: true, value: undefined }),
-    });
-    sdk.unstable_v2_createSession.mockReturnValue(mockSessionObj);
-  }
-
-  function setupMockResumeSession(): void {
-    const mockSessionObj = mockSession({
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({ done: true, value: undefined }),
-    });
-    sdk.unstable_v2_resumeSession.mockReturnValue(mockSessionObj);
-  }
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    sdk = await import("@anthropic-ai/claude-agent-sdk");
-  });
-
-  it("createSession 把 cwd / 固定权限选项传给 SDK", async () => {
-    setupMockCreateSession();
+  it("getSessionInfo: store 中无该 sessionId 时只返回 sessionId", async () => {
+    const store = createInMemoryMetaStore();
     const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
+      model: "",
+      effort: "",
       isEmpty: () => false,
+      metaStore: store,
     });
-
-    await adapter.createSession("/work/dir");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts).toMatchObject({
-      cwd: "/work/dir",
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      autoCompactEnabled: true,
-      settingSources: ["user", "project", "local"],
-    });
+    const info = await adapter.getSessionInfo("unknown-sid");
+    expect(info).toEqual({ sessionId: "unknown-sid" });
+    expect(info?.cwd).toBeUndefined();
+    expect(info?.model).toBeUndefined();
   });
 
-  it("model / effort 非空时被传给 SDK", async () => {
-    setupMockCreateSession();
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "max",
-      isEmpty: (v) => v.trim() === "",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.model).toBe("claude-sonnet-4-6");
-    expect(opts.effort).toBe("max");
-  });
-
-  it("isEmpty(model) 为 true 时不传 model 字段", async () => {
-    setupMockCreateSession();
-    const adapter = createClaudeAdapter({
-      model: "",
-      effort: "high",
-      isEmpty: (v) => v.trim() === "",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts).not.toHaveProperty("model");
-    expect(opts.effort).toBe("high");
-  });
-
-  it("isEmpty(effort) 为 true 时不传 effort 字段", async () => {
-    setupMockCreateSession();
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "",
-      isEmpty: (v) => v.trim() === "",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.model).toBe("claude-sonnet-4-6");
-    expect(opts).not.toHaveProperty("effort");
-  });
-
-  it("prompt() 也按相同规则构造 sessionOpts（resume 路径）", async () => {
-    setupMockResumeSession();
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "max",
-      isEmpty: (v) => v.trim() === "",
-    });
-
-    const it_ = adapter.prompt("sid", "hi", "/resume/cwd");
-    for await (const _ of it_) { /* drain */ }
-
-    const opts = sdk.unstable_v2_resumeSession.mock.calls[0][1];
-    expect(opts).toMatchObject({
-      cwd: "/resume/cwd",
-      permissionMode: "bypassPermissions",
-      autoCompactEnabled: true,
-      model: "claude-sonnet-4-6",
-      effort: "max",
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createClaudeAdapter — env 注入（apiKey / baseUrl 通过 SDK env 传递）
-// 行为契约：
-//   - apiKey 或 baseUrl 任一非空（trim 后）→ 传 env，且 env 是 process.env
-//     的副本，并按需覆盖 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL；
-//     其余 process.env 字段保持不变。
-//   - 两者都为空 → 完全不传 env 字段，让 SDK 走默认行为（即 process.env）。
-//   - 主进程的 process.env 永不被修改（避免污染其他依赖于 env 的代码）。
-// ---------------------------------------------------------------------------
-
-describe("createClaudeAdapter — env 注入", () => {
-  let sdk: any;
-  const ORIGINAL_ENV = { ...process.env };
-
-  function setupMockCreateSession(): void {
-    const mockSessionObj = mockSession({
-      streamNext: vi
-        .fn()
-        .mockResolvedValueOnce({
-          done: false,
-          value: { session_id: "sid", type: "system", subtype: "init" },
-        })
-        .mockResolvedValueOnce({ done: true, value: undefined }),
-    });
-    sdk.unstable_v2_createSession.mockReturnValue(mockSessionObj);
-  }
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    sdk = await import("@anthropic-ai/claude-agent-sdk");
-    // 确保每个用例从干净的 process.env 起步
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_BASE_URL;
-    delete process.env.ANTHROPIC_AUTH_TOKEN;
-    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    delete process.env.ANTHROPIC_MODEL;
-    delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
-    delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
-    delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
-    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL;
-    delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
-  });
-
-  // 用例之间清掉我们写入的 env，避免互相污染
-  // （afterEach 等价物：vitest 在 beforeEach 里 reset 即可）
-  afterAll(() => {
-    process.env = { ...ORIGINAL_ENV };
-  });
-
-  it("apiKey / baseUrl 都为空时，不向 SDK 传 env 字段", async () => {
-    setupMockCreateSession();
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "",
-      baseUrl: "",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts).not.toHaveProperty("env");
-  });
-
-  it("apiKey / baseUrl 全空白同样视为空", async () => {
-    setupMockCreateSession();
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      effort: "high",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "   ",
-      baseUrl: "\t\n",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts).not.toHaveProperty("env");
-  });
-
-  it("apiKey 非空 → 传 env 且覆盖 ANTHROPIC_API_KEY", async () => {
-    setupMockCreateSession();
-    process.env.SOME_OTHER = "keep-me";
+  it("getSessionInfo: store 仅有 cwd 时返回 cwd，model 仍为 undefined", async () => {
+    const store = createInMemoryMetaStore({ "sid-known": { cwd: "F:/proj/Foo" } });
     const adapter = createClaudeAdapter({
       model: "",
       effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "sk-test-key",
-      baseUrl: "",
+      isEmpty: () => false,
+      metaStore: store,
     });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.env).toBeDefined();
-    expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-test-key");
-    expect(opts.env.SOME_OTHER).toBe("keep-me");
-
-    delete process.env.SOME_OTHER;
+    const info = await adapter.getSessionInfo("sid-known");
+    expect(info).toEqual({ sessionId: "sid-known", cwd: "F:/proj/Foo" });
+    expect(info?.model).toBeUndefined();
   });
 
-  it("baseUrl 非空 → 传 env 且覆盖 ANTHROPIC_BASE_URL", async () => {
-    setupMockCreateSession();
+  it("getSessionInfo: store 同时有 cwd + model 时一并返回", async () => {
+    const store = createInMemoryMetaStore({
+      "sid-known": { cwd: "F:/proj/Foo", model: "claude-sonnet-4-6" },
+    });
     const adapter = createClaudeAdapter({
       model: "",
       effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "",
-      baseUrl: "https://api.deepseek.com/anthropic",
+      isEmpty: () => false,
+      metaStore: store,
     });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.env).toBeDefined();
-    expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
-  });
-
-  it("apiKey + baseUrl 都设置 → 同时覆盖", async () => {
-    setupMockCreateSession();
-    const adapter = createClaudeAdapter({
-      model: "",
-      effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "sk-x",
-      baseUrl: "https://gateway.example/anthropic",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-x");
-    expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://gateway.example/anthropic");
-  });
-
-  it("官方 API 模式下 subagentModel 不注入 env，也不覆盖 Claude 登录环境", async () => {
-    setupMockCreateSession();
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-from-login";
-    const adapter = createClaudeAdapter({
+    const info = await adapter.getSessionInfo("sid-known");
+    expect(info).toEqual({
+      sessionId: "sid-known",
+      cwd: "F:/proj/Foo",
       model: "claude-sonnet-4-6",
-      subagentModel: "claude-haiku-4-5-20251001",
-      effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "",
-      baseUrl: "",
     });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts).not.toHaveProperty("env");
   });
 
-  it("第三方 API 模式下 subagentModel 通过 CLAUDE_CODE_SUBAGENT_MODEL 覆盖 Haiku", async () => {
-    setupMockCreateSession();
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-from-login";
-    const adapter = createClaudeAdapter({
-      model: "claude-sonnet-4-6",
-      subagentModel: "claude-haiku-4-5-20251001",
-      effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "sk-thirdparty",
-      baseUrl: "https://gateway.example/anthropic",
+  it("getSessionInfo: 不同 sessionId 互不影响", async () => {
+    const store = createInMemoryMetaStore({
+      "sid-A": { cwd: "/a", model: "mA" },
+      "sid-B": { cwd: "/b" },
     });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.model).toBe("claude-sonnet-4-6");
-    expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-thirdparty");
-    expect(opts.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe("claude-haiku-4-5-20251001");
-    expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-  });
-
-  it("ChatCCC API config is isolated from Claude settings auth/model env", async () => {
-    setupMockCreateSession();
-    process.env.ANTHROPIC_AUTH_TOKEN = "token-from-claude-settings";
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-from-claude-settings";
-    process.env.ANTHROPIC_MODEL = "model-from-claude-settings";
-    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "sonnet-from-claude-settings";
-    process.env.CLAUDE_CODE_SUBAGENT_MODEL = "subagent-from-claude-settings";
-    process.env.CLAUDE_CODE_EFFORT_LEVEL = "max";
-    const adapter = createClaudeAdapter({
-      model: "chatccc-model",
-      effort: "high",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "sk-chatccc",
-      baseUrl: "https://chatccc-gateway.example/anthropic",
-    });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-chatccc");
-    expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://chatccc-gateway.example/anthropic");
-    expect(opts.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-    expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(opts.env.ANTHROPIC_MODEL).toBeUndefined();
-    expect(opts.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
-    expect(opts.env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined();
-    expect(opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
-  });
-
-  it("第三方 API 配置时仍然加载 CLAUDE.md（settingSources 包含 user+project+local）", async () => {
-    setupMockCreateSession();
     const adapter = createClaudeAdapter({
       model: "",
       effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "sk-chatccc",
-      baseUrl: "https://chatccc-gateway.example/anthropic",
+      isEmpty: () => false,
+      metaStore: store,
     });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    expect(opts.settingSources).toEqual(["user", "project", "local"]);
-  });
-
-  it("不修改主进程 process.env（永不污染）", async () => {
-    setupMockCreateSession();
-    const before = { ...process.env };
-
-    const adapter = createClaudeAdapter({
-      model: "",
-      effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "sk-should-not-leak",
-      baseUrl: "https://should-not-leak/anthropic",
+    expect(await adapter.getSessionInfo("sid-A")).toEqual({
+      sessionId: "sid-A",
+      cwd: "/a",
+      model: "mA",
     });
-
-    await adapter.createSession("/cwd");
-
-    // 调用结束后 process.env 与调用前应保持一致
-    expect(process.env.ANTHROPIC_API_KEY).toBe(before.ANTHROPIC_API_KEY);
-    expect(process.env.ANTHROPIC_BASE_URL).toBe(before.ANTHROPIC_BASE_URL);
-  });
-
-  it("apiKey 留空但 process.env 已有 ANTHROPIC_API_KEY → 不覆盖、不抹掉", async () => {
-    setupMockCreateSession();
-    process.env.ANTHROPIC_API_KEY = "from-system-env";
-    const adapter = createClaudeAdapter({
-      model: "",
-      effort: "",
-      isEmpty: (v) => v.trim() === "",
-      apiKey: "",
-      baseUrl: "https://override.example/anthropic",
+    expect(await adapter.getSessionInfo("sid-B")).toEqual({
+      sessionId: "sid-B",
+      cwd: "/b",
     });
-
-    await adapter.createSession("/cwd");
-
-    const opts = sdk.unstable_v2_createSession.mock.calls[0][0];
-    // baseUrl 触发了 env 注入；apiKey 为空 → 沿用系统 env
-    expect(opts.env.ANTHROPIC_API_KEY).toBe("from-system-env");
-    expect(opts.env.ANTHROPIC_BASE_URL).toBe("https://override.example/anthropic");
+    expect(await adapter.getSessionInfo("sid-C")).toEqual({ sessionId: "sid-C" });
   });
 });
