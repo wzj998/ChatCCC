@@ -892,6 +892,7 @@ export async function sendRawCard(
   chatId: string,
   cardJson: string
 ): Promise<boolean> {
+  const safeJson = applyPrivacy(cardJson);
   try {
     const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
       method: "POST",
@@ -899,7 +900,7 @@ export async function sendRawCard(
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: cardJson }),
+      body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: safeJson }),
     });
     const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
     if (data.code !== 0) {

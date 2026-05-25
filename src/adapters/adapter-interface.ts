@@ -31,6 +31,11 @@ export interface UnifiedTextBlock {
  * 由 pickFinalReply 在两者之间挑选。
  *
  * 对没有 partial/final 双轨的适配器（如 Claude SDK），永远不会 emit 此类型。
+ *
+ * 命名注意：此处的 "final" 指"完整/最终版本"（与 partial delta 相对），
+ * 不等于 stream-state / AccumulatorState 中的 finalReply / finalText。
+ * 后者命名含 "final" 但实际语义是"本轮所有文本的累积"，属历史遗留命名，
+ * 详见 session.ts 的 AccumulatorState 注释和 stream-state.ts 的 StreamState 注释。
  */
 export interface UnifiedTextFinalBlock {
   type: "text_final";

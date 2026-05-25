@@ -13,6 +13,9 @@ export interface StreamState {
   sessionId: string;
   status: "running" | "done" | "stopped" | "error";
   accumulatedContent: string;
+  /** 本轮会话中 LLM 输出的全部文本内容（所有 text block 的累加）。
+   *  命名含 "final" 但实为"全部累积文本"，并非仅"最终一段回复"。
+   *  参见 session.ts 的 AccumulatorState 注释。 */
   finalReply: string;
   /** The turn whose terminal text reply has already been delivered to IM. */
   finalReplySentTurn?: number;
