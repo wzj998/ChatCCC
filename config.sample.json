@@ -17,8 +17,7 @@
     "subagentModel": "",
     "effort": "",
     "apiKey": "",
-    "baseUrl": "",
-    "useThirdPartyApi": false
+    "baseUrl": ""
   },
   "cursor": {
     "enabled": false,

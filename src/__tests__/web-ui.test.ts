@@ -1,134 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  applyClaudeApiMode,
   chooseStartPath,
-  detectClaudeApiMode,
   unflattenConfig,
 } from "../web-ui.ts";
-
-// ---------------------------------------------------------------------------
-// detectClaudeApiMode — 加载已有 config 时如何判定 UI 初始模式
-// 契约：apiKey 或 baseUrl 任一非空（trim 后） → "thirdparty"，否则 "official"。
-// ---------------------------------------------------------------------------
-
-describe("detectClaudeApiMode", () => {
-  it("两者都缺失 → official", () => {
-    expect(detectClaudeApiMode(undefined)).toBe("official");
-    expect(detectClaudeApiMode({})).toBe("official");
-  });
-
-  it("两者都为空字符串 → official", () => {
-    expect(detectClaudeApiMode({ apiKey: "", baseUrl: "" })).toBe("official");
-  });
-
-  it("两者都全空白 → official", () => {
-    expect(detectClaudeApiMode({ apiKey: "  ", baseUrl: "\t\n" })).toBe(
-      "official",
-    );
-  });
-
-  it("apiKey 非空 → thirdparty（即使 baseUrl 为空）", () => {
-    expect(detectClaudeApiMode({ apiKey: "sk-x", baseUrl: "" })).toBe(
-      "thirdparty",
-    );
-  });
-
-  it("baseUrl 非空 → thirdparty（即使 apiKey 为空）", () => {
-    expect(
-      detectClaudeApiMode({ apiKey: "", baseUrl: "https://gw/anthropic" }),
-    ).toBe("thirdparty");
-  });
-
-  it("两者都非空 → thirdparty", () => {
-    expect(
-      detectClaudeApiMode({
-        apiKey: "sk-x",
-        baseUrl: "https://gw/anthropic",
-      }),
-    ).toBe("thirdparty");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// applyClaudeApiMode — 服务端写入前归一化扁平 vars
-// 关键契约：
-//   - mode=official 时即使 vars 不含这两个键，也要写入 ""（覆盖原 config.json）
-//   - mode=thirdparty 时原样保留（包括前端传 ""）
-//   - mode 未传 默认按 official 兌底（不保留可能误填的密钥）
-// ---------------------------------------------------------------------------
-
-describe("applyClaudeApiMode", () => {
-  it("mode=official 时清空 CLAUDE_API_KEY / CLAUDE_BASE_URL（即使 vars 没传）", () => {
-    const out = applyClaudeApiMode({ CHATCCC_APP_ID: "x" }, "official");
-    expect(out).toEqual({
-      CHATCCC_APP_ID: "x",
-      CLAUDE_API_KEY: "",
-      CLAUDE_BASE_URL: "",
-    });
-  });
-
-  it("mode=official 时覆盖前端误传的非空 apiKey / baseUrl", () => {
-    const out = applyClaudeApiMode(
-      {
-        CLAUDE_API_KEY: "sk-leftover",
-        CLAUDE_BASE_URL: "https://leftover/anthropic",
-        CHATCCC_APP_ID: "x",
-      },
-      "official",
-    );
-    expect(out.CLAUDE_API_KEY).toBe("");
-    expect(out.CLAUDE_BASE_URL).toBe("");
-    expect(out.CHATCCC_APP_ID).toBe("x");
-  });
-
-  it("mode=thirdparty 时原样保留前端值", () => {
-    const out = applyClaudeApiMode(
-      {
-        CLAUDE_API_KEY: "sk-test",
-        CLAUDE_BASE_URL: "https://gw/anthropic",
-      },
-      "thirdparty",
-    );
-    expect(out).toEqual({
-      CLAUDE_API_KEY: "sk-test",
-      CLAUDE_BASE_URL: "https://gw/anthropic",
-    });
-  });
-
-  it("mode=thirdparty 时保留前端主动提交的 ''（允许局部清空）", () => {
-    const out = applyClaudeApiMode(
-      { CLAUDE_API_KEY: "", CLAUDE_BASE_URL: "https://gw/anthropic" },
-      "thirdparty",
-    );
-    expect(out.CLAUDE_API_KEY).toBe("");
-    expect(out.CLAUDE_BASE_URL).toBe("https://gw/anthropic");
-  });
-
-  it("mode 未传（undefined） → 按 official 兌底清空", () => {
-    const out = applyClaudeApiMode(
-      { CLAUDE_API_KEY: "sk-x" },
-      undefined,
-    );
-    expect(out.CLAUDE_API_KEY).toBe("");
-    expect(out.CLAUDE_BASE_URL).toBe("");
-  });
-
-  it("mode 是未知字符串 → 按 official 兌底清空", () => {
-    const out = applyClaudeApiMode(
-      { CLAUDE_API_KEY: "sk-x" },
-      "garbage-mode",
-    );
-    expect(out.CLAUDE_API_KEY).toBe("");
-    expect(out.CLAUDE_BASE_URL).toBe("");
-  });
-
-  it("不修改入参对象（返回新对象）", () => {
-    const input = { CLAUDE_API_KEY: "sk-x" };
-    const out = applyClaudeApiMode(input, "official");
-    expect(input).toEqual({ CLAUDE_API_KEY: "sk-x" }); // 原对象未变
-    expect(out).not.toBe(input);
-  });
-});
 
 describe("unflattenConfig", () => {
   it("maps Claude subagent model into claude.subagentModel", () => {
@@ -141,6 +15,20 @@ describe("unflattenConfig", () => {
       claude: {
         model: "claude-sonnet-4-6",
         subagentModel: "claude-haiku-4-5-20251001",
+      },
+    });
+  });
+
+  it("maps Claude apiKey and baseUrl into claude config", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_ANTHROPIC_API_KEY: "sk-test-key",
+        CHATCCC_ANTHROPIC_BASE_URL: "https://api.example.com",
+      }),
+    ).toEqual({
+      claude: {
+        apiKey: "sk-test-key",
+        baseUrl: "https://api.example.com",
       },
     });
   });

@@ -363,9 +363,9 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       model: effectiveModel,
       subagentModel: CLAUDE_SUBAGENT_MODEL,
       effort: CLAUDE_EFFORT,
-      isEmpty: isAnthropicConfigEmpty,
       apiKey: CLAUDE_API_KEY,
       baseUrl: CLAUDE_BASE_URL,
+      isEmpty: isAnthropicConfigEmpty,
     });
   }
   adapterCache.set(cacheKey, adapter);

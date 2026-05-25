@@ -131,7 +131,6 @@ export function buildHelpCard(
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
     "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
-    "发送 **/claude** 查看或切换 Claude API 模式（官方/第三方）",
   ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },
@@ -463,33 +462,3 @@ export function buildModelCard(
   });
 }
 
-/** Claude API 模式切换卡片（/claude 命令） */
-export function buildClaudeCard(
-  currentMode: "official" | "thirdparty",
-  missingFields: string[],
-): string {
-  const modeLabel = currentMode === "thirdparty" ? "第三方 API（自定义网关）" : "官方 API（Anthropic 直连）";
-  const modeDesc = currentMode === "thirdparty"
-    ? "使用第三方兼容网关，需配置 API Key 和 Base URL。"
-    : "直连 Anthropic 官方 API，使用系统环境变量中的 ANTHROPIC_API_KEY。";
-  const lines = [`**当前模式:** ${modeLabel}`, "", modeDesc];
-
-  if (missingFields.length > 0) {
-    lines.push("", `**切换失败:** 以下必填项未配置: ${missingFields.map(f => `\`${f}\``).join(", ")}`);
-  }
-
-  const buttons: ButtonDef[] = [
-    { text: "/claude official", value: JSON.stringify({ cmd: "/claude official" }), type: currentMode === "official" ? "default" : "primary" },
-    { text: "/claude 3rd", value: JSON.stringify({ cmd: "/claude 3rd" }), type: currentMode === "thirdparty" ? "default" : "primary" },
-  ];
-
-  return JSON.stringify({
-    config: { wide_screen_mode: true },
-    header: { template: "blue", title: { content: "Claude API 模式", tag: "plain_text" } },
-    elements: [
-      { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
-      { tag: "hr" },
-      buildButtons(buttons),
-    ],
-  });
-}

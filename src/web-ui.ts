@@ -38,51 +38,6 @@ interface AppConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Claude API 模式（"official" / "thirdparty"）
-// ---------------------------------------------------------------------------
-// 用户在 Wizard / Dashboard 上选择的"官方 API（Anthropic 直连）"或"第三方 API
-// （自定义网关）"模式：
-//   - "official" → 强制把 claude.apiKey / claude.baseUrl 视为空，永远写入 ""
-//     （即使前端漏传也按此处理，作为服务端兌底）；
-//   - "thirdparty" → 保留前端提交的 apiKey / baseUrl 原值，由用户填写。
-//
-// 这两个纯函数被前端 JS 与服务端 handlePostConfig 同时使用，单测在
-// src/__tests__/web-ui.test.ts 里锁定它们的契约。
-
-export type ClaudeApiMode = "official" | "thirdparty";
-
-/**
- * 加载已有 config.json 时，决定 UI 应初始展现哪种模式：
- * 只要 apiKey 或 baseUrl 任一非空（trim 后），即视为第三方模式；否则官方。
- */
-export function detectClaudeApiMode(
-  claude: { apiKey?: string; baseUrl?: string } | undefined,
-): ClaudeApiMode {
-  const apiKey = (claude?.apiKey ?? "").trim();
-  const baseUrl = (claude?.baseUrl ?? "").trim();
-  if (apiKey || baseUrl) return "thirdparty";
-  return "official";
-}
-
-/**
- * 服务端在写入 config.json 前按用户选择的模式归一化扁平 vars：
- *   - mode = "thirdparty"：保留 vars 中的 CLAUDE_API_KEY / CLAUDE_BASE_URL 原值
- *     （包括 ""——用户也可能主动清空一项）。
- *   - mode = "official" 或未传 mode：强制把 CLAUDE_API_KEY / CLAUDE_BASE_URL
- *     设为 ""，即使前端漏传这两个键也要主动加上 ""，覆盖 config.json 里旧值。
- *
- * 这里"未传 mode 默认按 official 处理"是有意为之的兌底：旧版前端可能不传
- * mode 字段，按更安全的方向（不保留可能误填的密钥）落地。
- */
-export function applyClaudeApiMode(
-  vars: Record<string, unknown>,
-  mode: string | undefined,
-): Record<string, unknown> {
-  if (mode === "thirdparty") return vars;
-  return { ...vars, CLAUDE_API_KEY: "", CLAUDE_BASE_URL: "" };
-}
-
-// ---------------------------------------------------------------------------
 // /api/start 路径选择（纯函数，便于单测护栏）
 // ---------------------------------------------------------------------------
 //
@@ -293,24 +248,19 @@ async function handleGetConfig(_req: IncomingMessage, res: ServerResponse): Prom
 async function handlePostConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readRequestBody(req);
   let updates: Record<string, unknown>;
-  let claudeApiMode: string | undefined;
   try {
     const parsed = JSON.parse(body);
     updates = parsed.vars ?? {};
-    // 前端可选传 claudeApiMode："official" / "thirdparty"；未传时 applyClaudeApiMode
-    // 会按 official 兌底清空 apiKey/baseUrl，避免把误填的密钥落到 config.json。
-    claudeApiMode = typeof parsed.claudeApiMode === "string" ? parsed.claudeApiMode : undefined;
   } catch {
     jsonReply(res, 400, { ok: false, error: "Invalid JSON" });
     return;
   }
-  const normalized = applyClaudeApiMode(updates, claudeApiMode);
   const existing = loadConfig();
   // AppConfig 是闭合接口（无 index signature），但运行时本质就是 JSON 对象，
   // 这里通过 unknown 桥接到 Record 让 deepMerge 能复用；写回前断言回 AppConfig。
   const merged = deepMerge(
     existing as unknown as Record<string, unknown>,
-    unflattenConfig(normalized),
+    unflattenConfig(updates),
   ) as AppConfig;
   try {
     saveConfig(merged);
@@ -354,12 +304,6 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
       result.port = parseInt(val as string, 10) || 18080;
     } else if (key === "CHATCCC_GIT_TIMEOUT_SECONDS") {
       result.gitTimeoutSeconds = parseInt(val as string, 10) || 180;
-    } else if (key === "CLAUDE_API_KEY") {
-      result.claude = result.claude || {};
-      (result.claude as Record<string, unknown>).apiKey = val;
-    } else if (key === "CLAUDE_BASE_URL") {
-      result.claude = result.claude || {};
-      (result.claude as Record<string, unknown>).baseUrl = val;
     } else if (key === "CHATCCC_ANTHROPIC_MODEL") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).model = val;
@@ -369,6 +313,12 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_ANTHROPIC_EFFORT") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).effort = val;
+    } else if (key === "CHATCCC_ANTHROPIC_API_KEY") {
+      result.claude = result.claude || {};
+      (result.claude as Record<string, unknown>).apiKey = val;
+    } else if (key === "CHATCCC_ANTHROPIC_BASE_URL") {
+      result.claude = result.claude || {};
+      (result.claude as Record<string, unknown>).baseUrl = val;
     } else if (key === "CHATCCC_CLAUDE_ENABLED") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).enabled = val === true || val === "true";
@@ -671,7 +621,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <input type="checkbox" class="agent-toggle" id="agent-enable-claude" onchange="onAgentToggle('claude', this.checked)">
             <div class="meta">
               <div class="name">Claude Code</div>
-              <div class="desc">Anthropic Claude Agent SDK<br>官方/第三方 API 均可</div>
+              <div class="desc">Anthropic Claude Code CLI<br>模型、effort 均为选填</div>
             </div>
           </div>
           <label class="agent-default-row">
@@ -679,45 +629,25 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             设为默认 Agent
           </label>
           <fieldset class="agent-body" id="agent-body-claude" disabled>
-            <div class="form-group" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px">
-              <label style="margin-bottom:8px;font-weight:600;color:#334155">API 来源</label>
-              <div style="display:flex;flex-direction:column;gap:6px">
-                <label style="display:flex;align-items:center;gap:6px;font-weight:500;cursor:pointer">
-                  <input type="radio" name="claude-api-mode" value="official" id="claude-api-mode-official" checked onchange="onClaudeApiModeChange('official')">
-                  官方 API（Anthropic 直连）
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;font-weight:500;cursor:pointer">
-                  <input type="radio" name="claude-api-mode" value="thirdparty" id="claude-api-mode-thirdparty" onchange="onClaudeApiModeChange('thirdparty')">
-                  第三方 API（自定义网关）
-                </label>
-              </div>
-              <div class="hint" style="margin-top:6px">官方模式不需 API Key / Base URL；第三方模式需填写。<strong>切回官方后保存会清空已填的密钥。</strong></div>
-            </div>
-
-            <div id="claude-thirdparty-fields" class="hidden">
-              <div class="form-group">
-                <label>API Key</label>
-                <input type="password" id="field-CLAUDE_API_KEY" placeholder="sk-...">
-                <div class="hint">第三方网关 API 密钥，对应 <code>claude.apiKey</code></div>
-              </div>
-              <div class="form-group">
-                <label>Base URL</label>
-                <input type="text" id="field-CLAUDE_BASE_URL" placeholder="https://api.deepseek.com/anthropic">
-                <div class="hint">Anthropic 兼容端点，对应 <code>claude.baseUrl</code></div>
-              </div>
-            </div>
-
             <div class="form-group">
-              <label>模型</label>
-              <input type="text" id="field-CHATCCC_ANTHROPIC_MODEL" placeholder="留空表示不向 SDK 传 model">
-            </div>
-            <div class="form-group" id="claude-subagent-model-field">
-              <label>Subagent 模型</label>
-              <input type="text" id="field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL" placeholder="留空表示不向 SDK 传 CLAUDE_CODE_SUBAGENT_MODEL">
+              <label>模型（选填）</label>
+              <input type="text" id="field-CHATCCC_ANTHROPIC_MODEL" placeholder="留空使用默认模型">
             </div>
             <div class="form-group">
-              <label>思考深度 (Effort)</label>
-              <input type="text" id="field-CHATCCC_ANTHROPIC_EFFORT" placeholder="留空表示不向 SDK 传 effort">
+              <label>Subagent 模型（选填）</label>
+              <input type="text" id="field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL" placeholder="留空使用默认 subagent 模型">
+            </div>
+            <div class="form-group">
+              <label>思考深度 Effort（选填）</label>
+              <input type="text" id="field-CHATCCC_ANTHROPIC_EFFORT" placeholder="留空使用默认值">
+            </div>
+            <div class="form-group">
+              <label>API Key（选填）</label>
+              <input type="password" id="field-CHATCCC_ANTHROPIC_API_KEY" placeholder="留空使用 Claude CLI 默认认证">
+            </div>
+            <div class="form-group">
+              <label>Base URL（选填）</label>
+              <input type="text" id="field-CHATCCC_ANTHROPIC_BASE_URL" placeholder="留空使用默认端点">
             </div>
           </fieldset>
         </div>
@@ -850,12 +780,11 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
     <details class="card config-section" id="dash-claude">
       <summary>Claude Agent</summary>
       <div class="section-detail">
-        <div class="config-row"><span class="key">API 来源</span><span class="val" id="cfg-CLAUDE_API_MODE">-</span></div>
-        <div class="config-row" id="cfg-row-CLAUDE_API_KEY"><span class="key">API Key</span><span class="val" id="cfg-CLAUDE_API_KEY">-</span></div>
-        <div class="config-row" id="cfg-row-CLAUDE_BASE_URL"><span class="key">Base URL</span><span class="val" id="cfg-CLAUDE_BASE_URL">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-ANTHROPIC_MODEL">-</span></div>
-        <div class="config-row" id="cfg-row-ANTHROPIC_SUBAGENT_MODEL"><span class="key">Subagent 模型</span><span class="val" id="cfg-ANTHROPIC_SUBAGENT_MODEL">-</span></div>
+        <div class="config-row"><span class="key">Subagent 模型</span><span class="val" id="cfg-ANTHROPIC_SUBAGENT_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-ANTHROPIC_EFFORT">-</span></div>
+        <div class="config-row"><span class="key">API Key</span><span class="val" id="cfg-ANTHROPIC_API_KEY">-</span></div>
+        <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-ANTHROPIC_BASE_URL">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-claude" onchange="setDashboardDefaultAgent('claude', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('claude')">编辑</button>
       </div>
@@ -922,66 +851,11 @@ let state = {
 var step2InputBound = false;
 
 const AGENT_FIELDS = {
-  claude: ['CLAUDE_API_KEY','CLAUDE_BASE_URL','CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT'],
+  claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_EFFORT']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
-
-// 当前选中的 Claude API 模式（"official" / "thirdparty"）
-// Wizard / Dashboard 都通过这个变量驱动 UI 显隐和提交时的 mode 字段
-var claudeApiMode = 'official';
-
-// model / effort 输入框 placeholder：仅第三方模式下举例典型取值（网关五花八门，
-// 示例只是引导）；官方模式不列举任何具体值，避免给出过期/不支持的取值产生误导。
-var CLAUDE_MODEL_PLACEHOLDER = {
-  official: '留空表示不向 SDK 传 model',
-  thirdparty: 'claude-sonnet-4-6'
-};
-var CLAUDE_SUBAGENT_MODEL_PLACEHOLDER = {
-  official: '留空表示不向 SDK 传 CLAUDE_CODE_SUBAGENT_MODEL',
-  thirdparty: 'claude-haiku-4-5-20251001'
-};
-var CLAUDE_EFFORT_PLACEHOLDER = {
-  official: '留空表示不向 SDK 传 effort',
-  thirdparty: 'low / medium / high / max（留空不向 SDK 传 effort）'
-};
-
-function onClaudeApiModeChange(mode) {
-  claudeApiMode = mode;
-  var thirdPartyEl = document.getElementById('claude-thirdparty-fields');
-  if (thirdPartyEl) {
-    thirdPartyEl.classList.toggle('hidden', mode !== 'thirdparty');
-  }
-  // Edit Modal 内的同名容器（如果当前打开的是 Claude 编辑模态框）
-  var editThirdPartyEl = document.getElementById('edit-claude-thirdparty-fields');
-  if (editThirdPartyEl) {
-    editThirdPartyEl.classList.toggle('hidden', mode !== 'thirdparty');
-  }
-  var wizardSubagentField = document.getElementById('claude-subagent-model-field');
-  if (wizardSubagentField) wizardSubagentField.classList.toggle('hidden', mode !== 'thirdparty');
-  document.querySelectorAll('[data-claude-subagent-field]').forEach(function(el){
-    el.classList.toggle('hidden', mode !== 'thirdparty');
-  });
-  // 同步 model / effort 输入框的 placeholder（Wizard + Edit Modal 两处都更新）
-  var modelPlaceholder = CLAUDE_MODEL_PLACEHOLDER[mode] || CLAUDE_MODEL_PLACEHOLDER.official;
-  var subagentModelPlaceholder = CLAUDE_SUBAGENT_MODEL_PLACEHOLDER[mode] || CLAUDE_SUBAGENT_MODEL_PLACEHOLDER.official;
-  var effortPlaceholder = CLAUDE_EFFORT_PLACEHOLDER[mode] || CLAUDE_EFFORT_PLACEHOLDER.official;
-  var wizardModelEl = document.getElementById('field-CHATCCC_ANTHROPIC_MODEL');
-  if (wizardModelEl) wizardModelEl.placeholder = modelPlaceholder;
-  var editModelEl = document.getElementById('edit-CHATCCC_ANTHROPIC_MODEL');
-  if (editModelEl) editModelEl.placeholder = modelPlaceholder;
-  var wizardSubagentModelEl = document.getElementById('field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL');
-  if (wizardSubagentModelEl) wizardSubagentModelEl.placeholder = subagentModelPlaceholder;
-  var editSubagentModelEl = document.getElementById('edit-CHATCCC_ANTHROPIC_SUBAGENT_MODEL');
-  if (editSubagentModelEl) editSubagentModelEl.placeholder = subagentModelPlaceholder;
-  var wizardEffortEl = document.getElementById('field-CHATCCC_ANTHROPIC_EFFORT');
-  if (wizardEffortEl) wizardEffortEl.placeholder = effortPlaceholder;
-  var editEffortEl = document.getElementById('edit-CHATCCC_ANTHROPIC_EFFORT');
-  if (editEffortEl) editEffortEl.placeholder = effortPlaceholder;
-  // Claude 切换 API 模式可能改变"是否填对"的判定（第三方需要 apiKey+baseUrl）
-  updateStep2NextBtn();
-}
 
 function onWizardPlatformToggle(platform, enabled) {
   state.platformsEnabled[platform] = enabled;
@@ -995,7 +869,7 @@ async function onPlatformToggle(platform, enabled) {
   var vars = {};
   if (platform === 'feishu') vars.CHATCCC_FEISHU_ENABLED = enabled;
   else vars.CHATCCC_ILINK_ENABLED = enabled;
-  var result = await api('/api/config', 'POST', { vars: vars, claudeApiMode: detectClaudeApiModeFromConfig(state.config && state.config.claude) });
+  var result = await api('/api/config', 'POST', { vars: vars });
   if (result.ok) {
     state.config.platforms = state.config.platforms || {};
     state.config.platforms[platform] = state.config.platforms[platform] || {};
@@ -1075,24 +949,15 @@ function onDefaultAgentToggle(agent, enabled) {
   updateStep2NextBtn();
 }
 
-/** Claude 启用时"填对"的判定：第三方模式需 apiKey + baseUrl 都非空，其他情况一律算填对 */
-function isClaudeFieldsValid() {
-  if (claudeApiMode !== 'thirdparty') return true;
-  var apiKey = (document.getElementById('field-CLAUDE_API_KEY') || {}).value || '';
-  var baseUrl = (document.getElementById('field-CLAUDE_BASE_URL') || {}).value || '';
-  return Boolean(apiKey.trim() && baseUrl.trim());
-}
-
 /**
- * "下一步"按钮启用条件：至少一个 Agent 开关打开且本身填写满足要求
- * - claude：第三方模式必须 apiKey + baseUrl 都填；官方模式视为已填对
+ * "下一步"按钮启用条件：至少一个 Agent 开关打开
  * - cursor / codex：开关打开即视为填对（path 留空时运行时会自动探测/退回 PATH）
  */
 function updateStep2NextBtn() {
   var btn = document.getElementById('btn-step2-next');
   if (!btn) return;
   var validCount = 0;
-  if (state.agentsEnabled.claude && isClaudeFieldsValid()) validCount++;
+  if (state.agentsEnabled.claude) validCount++;
   if (state.agentsEnabled.cursor) validCount++;
   if (state.agentsEnabled.codex) validCount++;
   if (validCount > 0 && !state.defaultAgent) {
@@ -1100,14 +965,6 @@ function updateStep2NextBtn() {
     updateDefaultAgentToggles();
   }
   btn.disabled = validCount === 0;
-}
-
-/** 加载已有 config 时按 detectClaudeApiMode 契约判定初始模式 */
-function detectClaudeApiModeFromConfig(claude) {
-  if (!claude) return 'official';
-  var apiKey = (claude.apiKey || '').toString().trim();
-  var baseUrl = (claude.baseUrl || '').toString().trim();
-  return (apiKey || baseUrl) ? 'thirdparty' : 'official';
 }
 
 // ---- API helpers ----
@@ -1230,24 +1087,17 @@ function isAgentEnabled(node, keys) {
   return false;
 }
 
-var CLAUDE_FALLBACK_KEYS = ['apiKey','baseUrl','model','subagentModel','effort'];
+var CLAUDE_FALLBACK_KEYS = ['model','subagentModel','effort'];
 var CURSOR_FALLBACK_KEYS = ['path','command','model'];
 var CODEX_FALLBACK_KEYS = ['path','command','model','effort'];
 
 function renderStep2() {
   var c = state.config || {};
   if (c.claude) {
-    prefillNested('field-CLAUDE_API_KEY', c.claude.apiKey);
-    prefillNested('field-CLAUDE_BASE_URL', c.claude.baseUrl);
     prefillNested('field-CHATCCC_ANTHROPIC_MODEL', c.claude.model);
     prefillNested('field-CHATCCC_ANTHROPIC_SUBAGENT_MODEL', c.claude.subagentModel);
     prefillNested('field-CHATCCC_ANTHROPIC_EFFORT', c.claude.effort);
   }
-  // 按已有 apiKey/baseUrl 判定初始 API 模式，并相应显示/隐藏字段
-  var initialMode = detectClaudeApiModeFromConfig(c.claude);
-  var radio = document.getElementById('claude-api-mode-' + initialMode);
-  if (radio) radio.checked = true;
-  onClaudeApiModeChange(initialMode);
   if (c.cursor) {
     prefillNested('field-CHATCCC_CURSOR_PATH', c.cursor.path || c.cursor.command);
     prefillNested('field-CHATCCC_CURSOR_MODEL', c.cursor.model);
@@ -1280,7 +1130,7 @@ function renderStep2() {
     if (hint) hint.textContent = '已自动探测到';
   }
 
-  // 字段输入时实时刷新"下一步"按钮（Claude 第三方模式 apiKey/baseUrl 必填）
+  // 字段输入时实时刷新"下一步"按钮
   if (!step2InputBound) {
     document.getElementById('step-2').addEventListener('input', updateStep2NextBtn);
     step2InputBound = true;
@@ -1295,7 +1145,6 @@ function renderStep2() {
  * - 三个 Agent 的 enabled 状态都显式下发，让 config.json 持久化用户的最新开关偏好
  * - Agent 字段仅在该 Agent 开关启用时收集；未启用的 Agent 不下发其它字段，
  *   服务端 deepMerge 会保留 config.json 中已有值（避免关闭开关时误清空旧配置）
- * - Claude 启用且当前 mode=official 时显式置空 apiKey/baseUrl，覆盖 config.json 旧值
  */
 function collectAllFields() {
   var vars = {};
@@ -1316,14 +1165,9 @@ function collectAllFields() {
   vars.CHATCCC_CODEX_DEFAULT_AGENT = state.defaultAgent === 'codex';
   if (state.agentsEnabled.claude) {
     AGENT_FIELDS.claude.forEach(function(key){
-      if (claudeApiMode !== 'thirdparty' && key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') return;
       var el = document.getElementById('field-' + key);
       if (el && el.value.trim()) vars[key] = el.value.trim();
     });
-    if (claudeApiMode !== 'thirdparty') {
-      vars.CLAUDE_API_KEY = '';
-      vars.CLAUDE_BASE_URL = '';
-    }
   }
   if (state.agentsEnabled.cursor) {
     AGENT_FIELDS.cursor.forEach(function(key){
@@ -1372,15 +1216,11 @@ function renderStep3() {
   enabledList.forEach(function(t){
     if (t === 'claude') {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Claude Code</h4>');
-      var modeLabel = claudeApiMode === 'thirdparty' ? '第三方 API（自定义网关）' : '官方 API（Anthropic 直连）';
-      lines.push('<div class="config-row"><span class="key">API 来源</span><span class="val">' + modeLabel + '</span></div>');
-      if (claudeApiMode === 'thirdparty') {
-        lines.push('<div class="config-row"><span class="key">API Key</span><span class="val">' + (vars.CLAUDE_API_KEY ? '***已设置***' : '(未设置)') + '</span></div>');
-        if (vars.CLAUDE_BASE_URL) lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + vars.CLAUDE_BASE_URL + '</span></div>');
-        lines.push('<div class="config-row"><span class="key">Subagent 模型</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_SUBAGENT_MODEL || '(留空)') + '</span></div>');
-      }
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_MODEL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">Subagent 模型</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_SUBAGENT_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_EFFORT || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">API Key</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_API_KEY ? '***已设置***' : '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + (vars.CHATCCC_ANTHROPIC_BASE_URL || '(留空)') + '</span></div>');
     } else if (t === 'cursor') {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Cursor</h4>');
       if (vars.CHATCCC_CURSOR_PATH) lines.push('<div class="config-row"><span class="key">CLI 路径</span><span class="val">' + vars.CHATCCC_CURSOR_PATH + '</span></div>');
@@ -1396,17 +1236,7 @@ function renderStep3() {
 }
 
 async function saveConfig(vars) {
-  // 同时把当前 claudeApiMode 传给服务端：服务端 applyClaudeApiMode() 会按
-  // mode 强制清空 apiKey/baseUrl（即使前端 vars 没传也会兌底，详见 web-ui.test.ts）。
-  //
-  // 当 wizard 中 claude 开关未启用时，前端不打算修改 claude 的任何字段——但服务端
-  // 默认按 official 兌底会清空 apiKey/baseUrl。这里按"当前 config 的模式"上送，
-  // 让已存在的 thirdparty 凭证保留不被清空。
-  var modeToSend = claudeApiMode;
-  if (state.view === 'wizard' && state.agentsEnabled && state.agentsEnabled.claude === false) {
-    modeToSend = detectClaudeApiModeFromConfig(state.config && state.config.claude);
-  }
-  var result = await api('/api/config', 'POST', { vars: vars, claudeApiMode: modeToSend });
+  var result = await api('/api/config', 'POST', { vars: vars });
   if (result.ok) {
     state.config = Object.assign({}, state.config, vars);
     toast('配置已保存');
@@ -1427,7 +1257,7 @@ async function setDashboardDefaultAgent(agent, enabled) {
     CHATCCC_CURSOR_DEFAULT_AGENT: agent === 'cursor',
     CHATCCC_CODEX_DEFAULT_AGENT: agent === 'codex'
   };
-  var result = await api('/api/config', 'POST', { vars: vars, claudeApiMode: detectClaudeApiModeFromConfig(state.config && state.config.claude) });
+  var result = await api('/api/config', 'POST', { vars: vars });
   if (result.ok) {
     state.config.claude = state.config.claude || {};
     state.config.cursor = state.config.cursor || {};
@@ -1564,20 +1394,11 @@ function updateDashboardUI() {
   var emptyHint = document.getElementById('dash-no-agent-hint');
   if (emptyHint) emptyHint.style.display = (!claudeOn && !cursorOn && !codexOn) ? '' : 'none';
 
-  // 按 detectClaudeApiMode 的契约判定 API 来源（apiKey/baseUrl 任一非空 → 第三方）
-  var claudeApiKey = (c.claude && c.claude.apiKey ? String(c.claude.apiKey) : '').trim();
-  var claudeBaseUrl = (c.claude && c.claude.baseUrl ? String(c.claude.baseUrl) : '').trim();
-  var isThirdPartyClaude = !!(claudeApiKey || claudeBaseUrl);
-  document.getElementById('cfg-CLAUDE_API_MODE').textContent = isThirdPartyClaude ? '第三方 API（自定义网关）' : '官方 API（Anthropic 直连）';
-  // 官方模式下 API Key / Base URL 行整体隐藏，避免显示无意义的 "-"
-  document.getElementById('cfg-row-CLAUDE_API_KEY').style.display = isThirdPartyClaude ? '' : 'none';
-  document.getElementById('cfg-row-CLAUDE_BASE_URL').style.display = isThirdPartyClaude ? '' : 'none';
-  document.getElementById('cfg-CLAUDE_API_KEY').textContent = claudeApiKey ? '***已设置***' : '-';
-  document.getElementById('cfg-CLAUDE_BASE_URL').textContent = claudeBaseUrl || '-';
   document.getElementById('cfg-ANTHROPIC_MODEL').textContent = (c.claude && c.claude.model) || '(留空)';
-  document.getElementById('cfg-row-ANTHROPIC_SUBAGENT_MODEL').style.display = isThirdPartyClaude ? '' : 'none';
   document.getElementById('cfg-ANTHROPIC_SUBAGENT_MODEL').textContent = (c.claude && c.claude.subagentModel) || '(留空)';
   document.getElementById('cfg-ANTHROPIC_EFFORT').textContent = (c.claude && c.claude.effort) || '(留空)';
+  document.getElementById('cfg-ANTHROPIC_API_KEY').textContent = (c.claude && c.claude.apiKey) ? '***已设置***' : '(留空)';
+  document.getElementById('cfg-ANTHROPIC_BASE_URL').textContent = (c.claude && c.claude.baseUrl) || '(留空)';
   document.getElementById('cfg-CURSOR_PATH').textContent = (c.cursor && (c.cursor.path || c.cursor.command)) || '-';
   document.getElementById('cfg-CURSOR_MODEL').textContent = (c.cursor && c.cursor.model) || '(留空)';
   document.getElementById('cfg-CODEX_PATH').textContent = (c.codex && (c.codex.path || c.codex.command)) || 'codex';
@@ -1637,35 +1458,12 @@ function editSection(section) {
   var html = '';
   var labelMap = {
     'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
-    'CLAUDE_API_KEY': 'API Key', 'CLAUDE_BASE_URL': 'Base URL',
     'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
+    'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
 
-  // Claude Agent 编辑：先按当前 config 决定初始 mode，并在 modal 顶部插入切换器；
-  // 把 API Key / Base URL 的输入框装进同一个 .hidden 容器，按 mode 显隐与 Wizard 一致。
-  if (section === 'claude') {
-    var initialMode = detectClaudeApiModeFromConfig(state.config && state.config.claude);
-    claudeApiMode = initialMode;
-    html += '<div class="form-group" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px">';
-    html += '  <label style="margin-bottom:8px;font-weight:600;color:#334155">API 来源</label>';
-    html += '  <div style="display:flex;gap:18px;flex-wrap:wrap">';
-    html += '    <label style="display:flex;align-items:center;gap:6px;font-weight:500;cursor:pointer">';
-    html += '      <input type="radio" name="edit-claude-api-mode" value="official"' + (initialMode === 'official' ? ' checked' : '') + ' onchange="onClaudeApiModeChange(\\'official\\')">';
-    html += '      官方 API（Anthropic 直连）';
-    html += '    </label>';
-    html += '    <label style="display:flex;align-items:center;gap:6px;font-weight:500;cursor:pointer">';
-    html += '      <input type="radio" name="edit-claude-api-mode" value="thirdparty"' + (initialMode === 'thirdparty' ? ' checked' : '') + ' onchange="onClaudeApiModeChange(\\'thirdparty\\')">';
-    html += '      第三方 API（自定义网关）';
-    html += '    </label>';
-    html += '  </div>';
-    html += '  <div class="hint" style="margin-top:6px">切回官方模式后保存，已填的密钥会被清空。</div>';
-    html += '</div>';
-  }
-
-  var thirdPartyOpened = false;
-  var thirdPartyClosed = false;
   fields.forEach(function(key){
     var val = state.config[key] || '';
     // Also check nested config
@@ -1674,11 +1472,11 @@ function editSection(section) {
         if (key === 'CHATCCC_APP_ID' && state.config.feishu) val = state.config.feishu.appId || '';
         else if (key === 'CHATCCC_APP_SECRET' && state.config.feishu) val = state.config.feishu.appSecret || '';
       } else if (section === 'claude' && state.config.claude) {
-        if (key === 'CLAUDE_API_KEY') val = state.config.claude.apiKey || '';
-        else if (key === 'CLAUDE_BASE_URL') val = state.config.claude.baseUrl || '';
-        else if (key === 'CHATCCC_ANTHROPIC_MODEL') val = state.config.claude.model || '';
+        if (key === 'CHATCCC_ANTHROPIC_MODEL') val = state.config.claude.model || '';
         else if (key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') val = state.config.claude.subagentModel || '';
         else if (key === 'CHATCCC_ANTHROPIC_EFFORT') val = state.config.claude.effort || '';
+        else if (key === 'CHATCCC_ANTHROPIC_API_KEY') val = state.config.claude.apiKey || '';
+        else if (key === 'CHATCCC_ANTHROPIC_BASE_URL') val = state.config.claude.baseUrl || '';
       } else if (section === 'cursor' && state.config.cursor) {
         if (key === 'CHATCCC_CURSOR_PATH') val = state.config.cursor.path || state.config.cursor.command || '';
         else if (key === 'CHATCCC_CURSOR_MODEL') val = state.config.cursor.model || '';
@@ -1689,37 +1487,10 @@ function editSection(section) {
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
-    var isClaudeThirdPartyField = section === 'claude' && (key === 'CLAUDE_API_KEY' || key === 'CLAUDE_BASE_URL');
-    var isClaudeSubagentField = section === 'claude' && key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL';
-
-    if (isClaudeThirdPartyField && !thirdPartyOpened) {
-      html += '<div id="edit-claude-thirdparty-fields"' + (claudeApiMode === 'thirdparty' ? '' : ' class="hidden"') + '>';
-      thirdPartyOpened = true;
-    }
-
-    // 在第三方字段之后、第一个通用字段之前闭合 wrapper，
-    // 避免 model / subagentModel / effort 被包裹在 hidden div 中。
-    if (thirdPartyOpened && !thirdPartyClosed && !isClaudeThirdPartyField) {
-      html += '</div>';
-      thirdPartyClosed = true;
-    }
-
-    var groupClass = 'form-group' + (isClaudeSubagentField && claudeApiMode !== 'thirdparty' ? ' hidden' : '');
-    var subagentAttr = isClaudeSubagentField ? ' data-claude-subagent-field="1"' : '';
-    html += '<div class="' + groupClass + '"' + subagentAttr + '><label>' + (labelMap[key] || key) + '</label>';
+    html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
     html += '<input type="' + (isSecret ? 'password' : 'text') + '" id="edit-' + key + '" value="' + String(val).replace(/"/g,'&quot;') + '">';
     html += '</div>';
   });
-
-  if (thirdPartyOpened && !thirdPartyClosed) html += '</div>';
-
-  document.getElementById('edit-modal-fields').innerHTML = html;
-  document.getElementById('edit-modal').classList.remove('hidden');
-  document.getElementById('edit-overlay').classList.remove('hidden');
-
-  // Edit Modal 的 input 是 innerHTML 现写入的，需要在 DOM 就绪后再触发一次同步：
-  // 让 model 输入框的 placeholder / 第三方字段容器的显隐状态，跟当前 claudeApiMode 对齐。
-  if (section === 'claude') onClaudeApiModeChange(claudeApiMode);
 }
 
 function closeEditModal() {
@@ -1735,24 +1506,11 @@ async function saveEdit() {
 
   var vars = {};
   fields.forEach(function(key){
-    if (editSectionType === 'claude' && claudeApiMode !== 'thirdparty' && key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') return;
     var el = document.getElementById('edit-' + key);
     if (el) vars[key] = el.value.trim();
   });
-  // 编辑 Claude 时按当前 mode 强制清空 apiKey/baseUrl（与 collectAllFields 保持一致）；
-  // 服务端 applyClaudeApiMode 也会兌底，但这里前端先做能让 state.config 立即同步。
-  if (editSectionType === 'claude' && claudeApiMode !== 'thirdparty') {
-    vars.CLAUDE_API_KEY = '';
-    vars.CLAUDE_BASE_URL = '';
-  }
   await saveConfig(vars);
   closeEditModal();
-  // 本地 state.config.claude 也按 mode 同步清空，避免 dashboard UI 残留旧值
-  if (editSectionType === 'claude' && claudeApiMode !== 'thirdparty') {
-    state.config.claude = state.config.claude || {};
-    state.config.claude.apiKey = '';
-    state.config.claude.baseUrl = '';
-  }
   updateDashboardUI();
   toast('修改已保存。若服务正在运行，需重启生效。');
 }
@@ -1762,7 +1520,7 @@ function reconfigure() {
   if (!confirm('这将重新打开配置向导。现有配置不会丢失。')) return;
   state.view = 'wizard';
   state.wizardStep = 1;
-  // agentsEnabled / claudeApiMode 都留给 renderStep2() 按已有 config 重新判定
+  // agentsEnabled 留给 renderStep2() 按已有 config 重新判定
   showWizard().catch(function(){});
 }
 
