@@ -9,6 +9,9 @@ import {
   unstable_v2_resumeSession,
   getSessionInfo as sdkGetSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
+import { readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 import type {
   ToolAdapter,
@@ -126,6 +129,22 @@ function resolveSettingSources(
 }
 
 // ---------------------------------------------------------------------------
+// collectSkillNames — 扫描用户级 skill 目录，返回所有 skill 名
+// ---------------------------------------------------------------------------
+
+function collectSkillNames(): string[] {
+  const userSkillsDir = join(homedir(), ".claude", "skills");
+  if (!existsSync(userSkillsDir)) return [];
+  try {
+    return readdirSync(userSkillsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // buildSessionOptions — 还原 claudeSdkSessionOptions 的精确行为
 // ---------------------------------------------------------------------------
 
@@ -144,6 +163,7 @@ function buildSessionOptions(
     allowDangerouslySkipPermissions: true,
     autoCompactEnabled: true,
     settingSources: resolveSettingSources(apiKey, baseUrl),
+    skills: collectSkillNames(),
   };
   if (!isEmpty(model)) o.model = model;
   if (!isEmpty(effort)) o.effort = effort;
