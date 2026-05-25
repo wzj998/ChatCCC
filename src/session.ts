@@ -20,7 +20,7 @@ import {
   toolDisplayName,
   ts,
 } from "./config.ts";
-import { buildProgressCard, getToolEmoji, truncateContent } from "./cards.ts";
+import { buildProgressCard, getToolEmoji, isCodeBlockOpen, truncateContent } from "./cards.ts";
 import { simplifyToolUse, simplifyToolResult } from "./simplify.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
@@ -1430,7 +1430,9 @@ export function startUnifiedDisplayLoop(): void {
                 const delta = (accDelta + replyDelta).trim();
 
                 display.dotCount = (display.dotCount % 9) + 1;
-                const displayContent = (delta || "") + "\n" + "。" .repeat(display.dotCount);
+                let deltaBase = (delta || "");
+                if (isCodeBlockOpen(deltaBase)) deltaBase += "\n```";
+                const displayContent = deltaBase + "\n" + "。" .repeat(display.dotCount);
                 if (displayContent === display.lastSentContent) continue;
 
                 display.lastSentContent = displayContent;
@@ -1453,7 +1455,9 @@ export function startUnifiedDisplayLoop(): void {
               }
 
               display.dotCount = (display.dotCount % 9) + 1;
-              const fullContent = state.accumulatedContent + state.finalReply + "\n" + "。".repeat(display.dotCount);
+              let contentBase = state.accumulatedContent + state.finalReply;
+              if (isCodeBlockOpen(contentBase)) contentBase += "\n```";
+              const fullContent = contentBase + "\n" + "。".repeat(display.dotCount);
               if (fullContent === display.lastSentContent) continue;
 
               display.lastSentContent = fullContent;
