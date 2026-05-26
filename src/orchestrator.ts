@@ -286,6 +286,12 @@ export async function handleCommand(
       const content = buildCdContent(targetDir, withStats, isUpdate, sessionCwd);
       await platform.sendCard(chatId, "新会话工作路径", content, "blue");
       logTrace(tid, "DONE", { outcome: "cd_path", targetDir, isUpdate });
+
+      // 微信模式下，若用户没有活跃会话，自动创建新会话
+      if (platform.kind === "wechat" && !sessionInfoMap.has(chatId)) {
+        logTrace(tid, "BRANCH", { cmd: "/new", trigger: "auto_after_cd" });
+        await handleCommand(platform, "/new", chatId, openId, msgTimestamp, chatType, traceId);
+      }
     }
     return;
   }
