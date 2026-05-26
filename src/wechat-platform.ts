@@ -429,23 +429,34 @@ export async function startWechatPlatform(
     }
   }
 
-  // 请求新 QR
-  platformLog("启动微信 iLink QR 登录...");
+  // 请求新 QR（5 分钟内未扫码则放弃本轮，由 supervisor 稍后重试）
+  const QR_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+  platformLog("启动微信 iLink QR 登录（5 分钟内未扫码将自动重试）...");
   ilinkWire = new OpenIlinkWire("", {
     base_url: saved.baseUrl,
   });
 
-  const loginResult = await ilinkWire.loginWithQr({
-    on_qrcode: (content) => {
-      printScanMaterial(content);
-    },
-    on_scanned: () => {
-      platformLog("QR 已扫描，请在微信中确认登录。");
-    },
-    on_expired: (attempt, maxAttempts) => {
-      platformLog(`QR 已过期，正在刷新 (${attempt}/${maxAttempts})。`);
-    },
-  });
+  let qrExpiredCount = 0;
+  const loginResult = await Promise.race([
+    ilinkWire.loginWithQr({
+      on_qrcode: (content) => {
+        printScanMaterial(content);
+      },
+      on_scanned: () => {
+        platformLog("QR 已扫描，请在微信中确认登录。");
+      },
+      on_expired: (attempt, maxAttempts) => {
+        qrExpiredCount++;
+        platformLog(`QR 已过期，正在刷新 (${attempt}/${maxAttempts})。`);
+      },
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`QR 登录超时（${QR_LOGIN_TIMEOUT_MS / 60000} 分钟内未扫码，已刷新 ${qrExpiredCount} 次）`)),
+        QR_LOGIN_TIMEOUT_MS,
+      ),
+    ),
+  ]);
 
   if (!loginResult.connected) {
     throw new Error(`微信 iLink QR 登录失败: ${loginResult.message}`);
