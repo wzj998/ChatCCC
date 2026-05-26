@@ -660,8 +660,11 @@ async function startWechatSupervisor(): Promise<void> {
   console.log("\n[WX] 启动微信 iLink 平台...");
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const MAX_QR_RETRIES = 3;
+  let qrTimeoutCount = 0;
 
   while (!wechatSignal.stopped) {
+    let isQrTimeout = false;
     try {
       await startWechatPlatform(
         (text, chatId, openId, msgTimestamp, chatType, traceId) =>
@@ -669,14 +672,31 @@ async function startWechatSupervisor(): Promise<void> {
         wechatSignal,
         ILINK_REUSE_TOKEN_ON_START,
       );
+      // 登录成功后重置计数
+      qrTimeoutCount = 0;
     } catch (err) {
-      console.error(
-        `[WX] 微信 iLink 崩溃: ${(err as Error).message}`,
-      );
+      const msg = (err as Error).message ?? "";
+      isQrTimeout = msg.includes("QR 登录超时");
+      if (isQrTimeout) {
+        qrTimeoutCount++;
+        console.error(
+          `[WX] QR 登录超时 (${qrTimeoutCount}/${MAX_QR_RETRIES}): ${msg}`,
+        );
+        if (qrTimeoutCount >= MAX_QR_RETRIES) {
+          console.error(
+            `[WX] 已连续 ${MAX_QR_RETRIES} 次 QR 登录超时，放弃重试。如需重新尝试请重启 ChatCCC。`,
+          );
+          break;
+        }
+      } else {
+        console.error(`[WX] 微信 iLink 崩溃: ${msg}`);
+      }
     }
     if (wechatSignal.stopped) break;
-    console.log("[WX] 5 秒后重试...");
-    await sleep(5000);
+    const delaySeconds = isQrTimeout ? 300 : 30;
+    const delayDesc = isQrTimeout ? "5 分钟" : "30 秒";
+    console.log(`[WX] ${delayDesc}后重试...`);
+    await sleep(delaySeconds * 1000);
   }
   console.log("[WX] 微信 iLink 平台已停止。");
 }
