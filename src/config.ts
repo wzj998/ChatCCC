@@ -555,7 +555,7 @@ function detectCursorAgent(): string {
 export let CURSOR_AGENT_COMMAND = detectCursorAgent();
 
 function resolveCursorAgentArgs(): string[] {
-  let args = "-p --force --output-format stream-json --stream-partial-output";
+  let args = "-p --force --approve-mcps --output-format stream-json --stream-partial-output";
   const model = config.cursor.model;
   if (model.trim() !== "") {
     args += ` --model ${model}`;
@@ -563,7 +563,7 @@ function resolveCursorAgentArgs(): string[] {
   return args.split(/\s+/).filter(Boolean);
 }
 
-/** Cursor agent 参数：-p 非交互模式，--force 强制允许命令（yolo），stream-json 流式 JSONL 输出 */
+/** Cursor agent 参数：-p 非交互模式，--force 强制允许命令，--approve-mcps 自动批准 MCP，stream-json 流式 JSONL 输出 */
 export let CURSOR_AGENT_ARGS = resolveCursorAgentArgs();
 
 // ---------------------------------------------------------------------------
