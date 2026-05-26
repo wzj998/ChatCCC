@@ -131,7 +131,8 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
       cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "claude-3.7-sonnet" },
     });
 
-    // CURSOR_AGENT_ARGS 是 ['-p', '--force', ..., '--model', 'claude-3.7-sonnet']
+    // CURSOR_AGENT_ARGS 是 ['-p', '--force', '--approve-mcps', ..., '--model', 'claude-3.7-sonnet']
+    expect(CURSOR_AGENT_ARGS).toContain("--approve-mcps");
     expect(CURSOR_AGENT_ARGS).toContain("--model");
     expect(CURSOR_AGENT_ARGS).toContain("claude-3.7-sonnet");
   });
