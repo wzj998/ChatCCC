@@ -14,6 +14,8 @@ import {
   CURSOR_SESSION_PREFIX,
   CODEX_SESSION_PREFIX,
   ts,
+  resolveDefaultAgentTool,
+  toolDisplayName,
 } from "./config.ts";
 import { applyPrivacy } from "./privacy.ts";
 import { buildHelpCard } from "./cards.ts";
@@ -950,7 +952,10 @@ export async function sendRestartCard(token: string): Promise<void> {
 
     console.log(`[${ts()}] [RESTART] Latest active chat: ${latestChatId} (mtime=${new Date(latestTime).toISOString()})`);
 
-    const restartCard = buildHelpCard("", { greeting: "Bot 已启动完成，可以继续使用。" });
+    const restartCard = buildHelpCard("", {
+      greeting: "Bot 已启动完成，可以继续使用。",
+      defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()),
+    });
     await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
       method: "POST",
       headers: {
