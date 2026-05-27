@@ -8,8 +8,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { createRequire } from "node:module";
 
 import type {
   ToolAdapter,
@@ -19,7 +20,6 @@ import type {
   SessionInfo,
   ToolPromptOptions,
 } from "./adapter-interface.ts";
-import { PROJECT_ROOT } from "../config.ts";
 import { killProcessTree } from "./proc-tree-kill.ts";
 import {
   defaultClaudeSessionMetaStore,
@@ -30,13 +30,48 @@ import {
 // 常量
 // ---------------------------------------------------------------------------
 
-const CLAUDE_EXE = join(
-  PROJECT_ROOT,
-  "node_modules",
-  "@anthropic-ai",
-  "claude-agent-sdk-win32-x64",
-  "claude.exe",
-);
+/** 根据当前平台动态解析 claude-agent-sdk 二进制路径 */
+function resolveClaudeBinary(): string {
+  const platform = process.platform; // 'win32', 'linux', 'darwin'
+  const arch = process.arch;         // 'x64', 'arm64'
+
+  // 通过 Node 模块解析找到 SDK 主包目录，确保测试和生产环境一致
+  const _require = createRequire(import.meta.url);
+  const sdkMainDir = dirname(_require.resolve("@anthropic-ai/claude-agent-sdk"));
+
+  // 读取 manifest.json 获取各平台二进制文件名
+  let platforms: Record<string, { binary: string }> | null = null;
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(sdkMainDir, "manifest.json"), "utf-8"),
+    ) as { platforms?: Record<string, { binary: string }> };
+    platforms = manifest.platforms ?? null;
+  } catch { /* manifest 缺失时用默认规则推断 */ }
+
+  // Linux 上需区分 musl / glibc，先检测 musl 变体
+  const candidates: string[] = [];
+  if (platform === "linux") {
+    candidates.push(`${platform}-${arch}-musl`, `${platform}-${arch}`);
+  } else {
+    candidates.push(`${platform}-${arch}`);
+  }
+
+  for (const triple of candidates) {
+    const binaryName = platforms?.[triple]?.binary
+      ?? (platform === "win32" ? "claude.exe" : "claude");
+    const pkgDir = join(sdkMainDir, "..", `claude-agent-sdk-${triple}`);
+    if (!existsSync(pkgDir)) continue;
+    const exePath = join(pkgDir, binaryName);
+    if (existsSync(exePath)) return exePath;
+  }
+
+  throw new Error(
+    `No Claude CLI binary found for platform ${platform}-${arch}. ` +
+    `Tried: ${candidates.map((c) => `@anthropic-ai/claude-agent-sdk-${c}`).join(", ")}`,
+  );
+}
+
+const CLAUDE_EXE = resolveClaudeBinary();
 
 // ---------------------------------------------------------------------------
 // 类型别名（CLI JSONL 消息格式，与旧 SDK 消息格式兼容）
