@@ -3,7 +3,7 @@ import { extname, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 
 import { getTenantAccessToken, sendImageReply, sendTextReply } from "./feishu-platform.ts";
-import { ts } from "./config.ts";
+import { ts, resolveDefaultAgentTool } from "./config.ts";
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
 import { getAdapterForTool } from "./session.ts";
 import { getChatsForSession } from "./session-chat-binding.ts";
@@ -73,7 +73,7 @@ export async function handleAgentImageRequest(
   try {
     const { getSessionTool } = await import("./session.ts");
     const tool = await getSessionTool(sessionId);
-    const adapter = getAdapterForTool(tool ?? "claude");
+    const adapter = getAdapterForTool(tool ?? resolveDefaultAgentTool());
     const info = await adapter.getSessionInfo(sessionId);
     if (!info?.cwd) {
       jsonReply(res, 400, { ok: false, error: "Cannot determine cwd for session" });
