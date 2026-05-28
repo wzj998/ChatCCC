@@ -75,7 +75,7 @@ one ChatCCC Node.js process
 | `/new` | 创建新群聊 | 重置当前会话 |
 | `/sessions` | 卡片列表 | 文本列表 |
 | `/restart` | 重启会话 | 同 |
-| `/status` | 卡片展示 | 文本展示 |
+| `/state` | 卡片展示 | 文本展示 |
 | `/cd` | 卡片展示 | 文本展示 |
 | `/stop` | 更新卡片为停止状态 | 文本回复已停止 |
 

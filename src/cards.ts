@@ -89,7 +89,7 @@ export function buildProgressCard(
     elements.push({ tag: "hr" });
     elements.push({
       tag: "button",
-      text: { tag: "plain_text", content: "查看状态（/status）" },
+      text: { tag: "plain_text", content: "查看状态（/state）" },
       type: "default",
       value: { action: "status" },
       element_id: "action_status",

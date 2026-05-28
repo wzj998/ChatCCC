@@ -1549,7 +1549,7 @@ export function stopSession(sessionId: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Session status query (供 /status、/sessions 命令使用)
+// Session status query (供 /state、/sessions 命令使用)
 // ---------------------------------------------------------------------------
 //
 // model / effort 的来源策略（按 tool 区分，避免硬塞 ChatCCC 全局配置导致显示
@@ -1590,7 +1590,7 @@ async function resolveModelEffort(
       const info = await adapter.getSessionInfo(sessionId);
       if (info?.model) model = info.model;
     } catch {
-      // adapter 异常时降级为占位符（不阻塞 /status 卡片）
+      // adapter 异常时降级为占位符（不阻塞 /state 卡片）
     }
     return { model, effort: null };
   }

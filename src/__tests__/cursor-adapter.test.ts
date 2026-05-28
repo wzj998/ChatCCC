@@ -296,7 +296,7 @@ describe("createCursorAdapter", () => {
   // -------------------------------------------------------------------------
   // getSessionInfo 行为契约
   //   - cwd 决定 /git 是否可用
-  //   - model 决定 /status、/sessions 显示的是否是 Cursor 真实模型
+  //   - model 决定 /state、/sessions 显示的是否是 Cursor 真实模型
   // -------------------------------------------------------------------------
 
   it("getSessionInfo: store 中无该 sessionId 时只返回 sessionId（cwd / model 都 undefined，让上层走错误分支）", async () => {
@@ -316,7 +316,7 @@ describe("createCursorAdapter", () => {
     expect(info?.model).toBeUndefined();
   });
 
-  it("getSessionInfo: store 同时有 cwd + model 时一并返回（这是 /status 显示真实模型的关键）", async () => {
+  it("getSessionInfo: store 同时有 cwd + model 时一并返回（这是 /state 显示真实模型的关键）", async () => {
     const store = createInMemoryMetaStore({
       "sid-known": { cwd: "F:/proj/Foo", model: "Composer 2 Fast" },
     });

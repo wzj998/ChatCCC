@@ -1,7 +1,7 @@
 // =============================================================================
 // cursor-session-meta-store.test.ts — sessionId→{cwd,model} 持久化的护栏单测
 // =============================================================================
-// 行为契约（与 cursor-adapter.getSessionInfo 配合，决定 /git、/status、/sessions
+// 行为契约（与 cursor-adapter.getSessionInfo 配合，决定 /git、/state、/sessions
 // 在 Cursor 会话上是否显示正确）：
 //   - 文件不存在 / 损坏 / 非法 schema 时 get 返回 undefined，不抛异常
 //   - set 部分合并：只覆盖非空字段，已有字段保持不变
