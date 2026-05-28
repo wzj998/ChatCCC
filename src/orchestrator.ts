@@ -121,6 +121,43 @@ function shouldSendWechatProcessingAck(
   return platform.kind === "wechat" && chatType === "p2p" && !textLower.startsWith("/");
 }
 
+function isNonWechatP2p(platform: PlatformAdapter, chatType: string): boolean {
+  return chatType === "p2p" && platform.kind !== "wechat";
+}
+
+async function cleanupNonWechatP2pBinding(
+  platform: PlatformAdapter,
+  chatId: string,
+  chatType: string,
+  tid: string,
+): Promise<void> {
+  if (!isNonWechatP2p(platform, chatType)) return;
+
+  try {
+    const registry = await loadSessionRegistryForBinding();
+    const record = registry[chatId];
+    if (!record?.sessionId) return;
+
+    unbindChatFromSession(record.sessionId, chatId);
+    displayCards.delete(chatId);
+    cancelQueuedMessage(record.sessionId);
+    sessionInfoMap.delete(chatId);
+    await removeSessionRegistryRecord(chatId);
+    logTrace(tid, "BRANCH", {
+      reason: "cleanup_non_wechat_p2p_binding",
+      chatId,
+      oldSessionId: record.sessionId,
+    });
+    console.log(
+      `[${ts()}] [P2P] Removed non-WeChat p2p binding: chat=${chatId} session=${record.sessionId}`,
+    );
+  } catch (err) {
+    console.log(
+      `[${ts()}] [INFO] Cannot cleanup p2p registry for ${chatId}: ${(err as Error).message}`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // handleCommand — 平台无关的命令分发
 // ---------------------------------------------------------------------------
@@ -137,6 +174,7 @@ export async function handleCommand(
   const tid = traceId ?? makeTraceId();
   const textLower = text.toLowerCase();
   recordChatPlatform(chatId, platform);
+  await cleanupNonWechatP2pBinding(platform, chatId, chatType, tid);
 
   if (textLower === "/restart") {
     logTrace(tid, "BRANCH", { cmd: "/restart" });
@@ -523,8 +561,9 @@ export async function handleCommand(
         `[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`,
       );
     }
-  } else {
-    // 私聊：从 session-registry.json 获取绑定的 session
+  } else if (platform.kind === "wechat") {
+    // 微信私聊：从 session-registry.json 获取绑定的 session。
+    // 飞书私聊不再作为持久会话入口，避免历史 registry 残留误路由到旧 session。
     try {
       const registry = await loadSessionRegistryForBinding();
       const record = registry[chatId];
@@ -1242,6 +1281,177 @@ export async function handleCommand(
       await platform.sendRawCard(chatId, card);
     }
     logTrace(tid, "DONE", { outcome: "model_query", defaultTool });
+    return;
+  }
+
+  // 无会话上下文 → /sessions 仍是有效指令，不触发飞书私聊自动建群。
+  if (textLower === "/sessions") {
+    logTrace(tid, "BRANCH", { cmd: "/sessions", scope: "global" });
+    const allSessions = await getAllSessionsStatus();
+    const now = Date.now();
+    const cardData = allSessions.map((s) => ({
+      sessionId: s.sessionId,
+      chatName: s.chatName,
+      chatId: s.chatId,
+      active: s.active,
+      turnCount: s.turnCount,
+      elapsedSeconds: s.active
+        ? Math.floor((now - s.startTime) / 1000)
+        : null,
+      model: s.model,
+      tool: s.tool,
+    }));
+    const card = buildSessionsCard(cardData, { defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()) });
+    const ok = await platform.sendRawCard(chatId, card);
+    console.log(
+      `[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${cardData.length}`,
+    );
+    logTrace(tid, "DONE", { outcome: "sessions", ok, count: cardData.length });
+    return;
+  }
+
+  // 飞书私聊普通消息：不再绑定私聊本身，而是自动创建会话群并把私聊内容作为首轮 prompt。
+  if (isNonWechatP2p(platform, chatType) && !textLower.startsWith("/")) {
+    const tool = resolveDefaultAgentTool();
+    const toolLabel = toolDisplayName(tool);
+    logTrace(tid, "BRANCH", { cmd: "auto_new_from_p2p", tool });
+
+    if (!openId) {
+      logTrace(tid, "DONE", { outcome: "auto_new_p2p_no_openid" });
+      await platform.sendCard(
+        chatId,
+        "Error",
+        "Cannot identify sender.",
+        "red",
+      );
+      return;
+    }
+
+    let sessionId: string;
+    let sessionCwd: string;
+    try {
+      const init = await initClaudeSession(tool, undefined, chatId);
+      sessionId = init.sessionId;
+      sessionCwd = init.cwd;
+      console.log(
+        `[${ts()}] [AUTO-P2P 1/5] ${toolLabel} session created: ${sessionId} → OK`,
+      );
+    } catch (err) {
+      console.error(`[${ts()}] [AUTO-P2P 1/5] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", {
+        outcome: "auto_new_p2p_session_fail",
+        error: (err as Error).message,
+      });
+      await platform.sendCard(
+        chatId,
+        "Error",
+        `Failed to initialize ${toolLabel} session:\n${(err as Error).message}`,
+        "red",
+      );
+      return;
+    }
+
+    const cwd = sessionCwd;
+    const initialName = sessionChatName(text.slice(0, 10) || "新会话", cwd);
+    let newChatId: string;
+    try {
+      newChatId = await platform.createGroup(initialName, [openId]);
+      console.log(
+        `[${ts()}] [AUTO-P2P 2/5] Created Feishu group: ${newChatId} → OK`,
+      );
+    } catch (err) {
+      console.error(`[${ts()}] [AUTO-P2P 2/5] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", {
+        outcome: "auto_new_p2p_group_fail",
+        error: (err as Error).message,
+      });
+      await platform.sendCard(
+        chatId,
+        "Error",
+        `Failed to create group:\n${(err as Error).message}`,
+        "red",
+      );
+      return;
+    }
+
+    try {
+      const descPrefix = sessionPrefixForTool(tool);
+      await platform.updateChatInfo(
+        newChatId,
+        initialName,
+        `${descPrefix} ${sessionId}`,
+      );
+      console.log(
+        `[${ts()}] [AUTO-P2P 3/5] Renamed group → name="${initialName}" (${toolLabel}) → OK`,
+      );
+    } catch (err) {
+      console.error(`[${ts()}] [AUTO-P2P 3/5] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", {
+        outcome: "auto_new_p2p_rename_fail",
+        error: (err as Error).message,
+      });
+      await platform.sendCard(
+        chatId,
+        "Error",
+        `Group created but rename failed:\n${(err as Error).message}`,
+        "yellow",
+      );
+      return;
+    }
+
+    await setDefaultCwd(cwd, newChatId);
+    bindChatToSession(sessionId, newChatId);
+    await recordSessionRegistry({
+      chatId: newChatId,
+      sessionId,
+      tool,
+      chatName: initialName,
+      turnCount: 0,
+      startTime: Date.now(),
+      running: false,
+    });
+    await saveSessionTool(sessionId, tool, initialName);
+
+    await platform.sendCard(
+      newChatId,
+      `${toolLabel} Session Ready`,
+      `已根据私聊消息创建 **${toolLabel}** 会话群。\n\n` +
+        `**Session ID:** ${sessionId}\n` +
+        `**工作目录:** \`${cwd}\`\n\n` +
+        `下面会自动把你的私聊消息作为第一句话发送给 ${toolLabel}。\n\n` +
+        `发送 **/model** 查看或切换当前会话的模型。\n` +
+        `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。`,
+      "green",
+    );
+    platform.setChatAvatar(newChatId, tool, "new").catch(() => {});
+    console.log(`[${ts()}] [AUTO-P2P 4/5] Replied to new group → OK`);
+
+    try {
+      logTrace(tid, "RESUME", { sessionId, tool, trigger: "auto_new_from_p2p" });
+      await resumeAndPrompt(
+        sessionId,
+        text,
+        platform,
+        newChatId,
+        msgTimestamp,
+        tool,
+        tid,
+      );
+      console.log(`[${ts()}] [AUTO-P2P 5/5] First prompt sent → OK`);
+      logTrace(tid, "DONE", { outcome: "auto_new_p2p_prompt_done", newChatId, sessionId, tool });
+    } catch (err) {
+      console.error(`[${ts()}] [AUTO-P2P 5/5] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", {
+        outcome: "auto_new_p2p_prompt_fail",
+        error: (err as Error).message,
+      });
+      await platform.sendCard(
+        newChatId,
+        "Error",
+        `Failed to send first prompt:\n${(err as Error).message}`,
+        "red",
+      );
+    }
     return;
   }
 

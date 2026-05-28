@@ -109,6 +109,8 @@ import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
 function createFeishuAdapter(): PlatformAdapter {
   const auth = () => getTenantAccessToken();
   return {
+    kind: "feishu",
+
     // ---- 基础消息 ----
     async sendText(chatId, text) {
       return sendTextReply(await auth(), chatId, text);
