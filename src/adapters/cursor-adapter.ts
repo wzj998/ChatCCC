@@ -394,6 +394,12 @@ class CursorAdapter implements ToolAdapter {
         }
         const normalized = normalizeCursorMessage(raw);
         if (normalized) yield normalized;
+
+        // result 是流末事件，收到后立即结束进程，防止 CLI 僵死导致 readline 挂起。
+        if (raw.type === "result") {
+          void killProcessTree(proc.pid);
+          break;
+        }
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);

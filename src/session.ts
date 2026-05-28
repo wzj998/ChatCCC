@@ -29,6 +29,7 @@ import type { ToolProcessInfo } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
+import { resourceMonitor, registerProcess, unregisterProcess } from "./adapters/resource-monitor.ts";
 import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 
@@ -181,7 +182,7 @@ function startPromptProcessMonitor(sessionId: string, info: ToolProcessInfo): vo
       clearPromptProcessMonitor(sessionId);
       return;
     }
-    if (current.stopped || current.abnormalExit) return;
+    if (current.stopped || current.abnormalExit || current.resourceStuck) return;
     if (isProcessAliveImpl(info.pid)) return;
 
     current.abnormalExit = true;
@@ -877,6 +878,26 @@ export async function runAgentSession(
     startTime: now,
   });
 
+  // 资源监控僵死检测：CPU + 内存连续 3 分钟无变化 → 强制停止
+  const onResourceStuck = (data: { pid: number; sessionId: string; idleMinutes: number }) => {
+    if (data.sessionId !== sessionId) return;
+    const prompt = activePrompts.get(sessionId);
+    if (!prompt || prompt.stopped || prompt.abnormalExit || prompt.resourceStuck) return;
+    prompt.resourceStuck = true;
+
+    const chatId = pickDisplayChat(sessionId) ?? getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+    const p = chatId ? platformForChat(chatId) : null;
+    if (chatId && p) {
+      p.sendText(
+        chatId,
+        `⚠️ 会话僵死：session ${sessionId.slice(0, 8)} 对应的 CLI 进程 PID ${data.pid} CPU 和内存连续 ${data.idleMinutes} 分钟无变化，已强制停止。若回复不完整，请重新发送上一条指令。`,
+      ).catch(() => {});
+    }
+
+    controller.abort();
+  };
+  resourceMonitor.on("stuck", onResourceStuck);
+
   // 异步准备工作（session info、IM skills prompt 等）
   let adapter: ToolAdapter;
   let info: Awaited<ReturnType<ToolAdapter["getSessionInfo"]>>;
@@ -1079,9 +1100,11 @@ export async function runAgentSession(
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
       onProcessStart: (processInfo) => {
         startPromptProcessMonitor(sessionId, processInfo);
+        if (processInfo.pid !== undefined) registerProcess(processInfo.pid, sessionId);
       },
-      onProcessExit: () => {
+      onProcessExit: (exitInfo) => {
         clearPromptProcessMonitor(sessionId);
+        if (exitInfo.pid !== undefined) unregisterProcess(exitInfo.pid);
       },
     })) {
       for (const block of unifiedMsg.blocks) {
@@ -1124,9 +1147,11 @@ export async function runAgentSession(
     console.error(`[${ts()}] [STREAM] Error in stream loop for ${sessionId}: ${(streamErr as Error).message}`);
   } finally {
     // 标记 prompt 结束
+    resourceMonitor.off("stuck", onResourceStuck);
     const prompt = activePrompts.get(sessionId);
     const wasStopped = prompt?.stopped ?? false;
     const wasAbnormalExit = prompt?.abnormalExit ?? false;
+    const wasResourceStuck = prompt?.resourceStuck ?? false;
     clearPromptProcessMonitor(sessionId);
     activePrompts.delete(sessionId);
 
@@ -1134,7 +1159,7 @@ export async function runAgentSession(
     // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
     // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
     // 运行中并更新旧卡片，而不是新建卡片。
-    const finalStatus = wasAbnormalExit ? "error" : wasStopped ? "stopped" : "done";
+    const finalStatus = (wasAbnormalExit || wasResourceStuck) ? "error" : wasStopped ? "stopped" : "done";
     const finalReply = pickFinalReply(state).trim();
     await writeStreamState({
       sessionId,

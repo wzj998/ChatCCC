@@ -71,6 +71,8 @@ export interface ActivePrompt {
   /** Set when the watchdog detects that the CLI process disappeared before stream finalization. */
   abnormalExit?: boolean;
   abnormalExitNotified?: boolean;
+  /** Set when the resource monitor detects CPU + memory unchanged for 3 minutes. */
+  resourceStuck?: boolean;
 }
 
 export const activePrompts = new Map<string, ActivePrompt>();
