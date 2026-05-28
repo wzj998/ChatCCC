@@ -160,7 +160,7 @@ function mockSessionInfo(chatId: string, overrides: Partial<{
 
 /**
  * 简易 mock adapter：getSessionInfo 返回固定 SessionInfo，其他方法不实现
- * （仅 /status、/sessions 路径会触发 getSessionInfo，无需完整接口）。
+ * （仅 /state、/sessions 路径会触发 getSessionInfo，无需完整接口）。
  */
 function mockAdapter(getInfo: (sid: string) => SessionInfo | undefined): ToolAdapter {
   return {
@@ -597,7 +597,7 @@ describe("getSessionStatus", () => {
   });
 
   // -------------------------------------------------------------------------
-  // model/effort 来源：按 tool 分支（核心契约——决定 /status 显示是否真实）
+  // model/effort 来源：按 tool 分支（核心契约——决定 /state 显示是否真实）
   // -------------------------------------------------------------------------
 
   it("Claude 会话：effort 非 null（始终显示该行）；model 来自全局配置", async () => {
@@ -643,7 +643,7 @@ describe("getSessionStatus", () => {
     expect(status!.model).toBe(UNKNOWN_MODEL_PLACEHOLDER);
   });
 
-  it("Cursor 会话：adapter.getSessionInfo 抛错时降级为占位符（不阻塞 /status）", async () => {
+  it("Cursor 会话：adapter.getSessionInfo 抛错时降级为占位符（不阻塞 /state）", async () => {
     mockSessionInfo("chat-cursor", { sessionId: "sid-cur", tool: "cursor" });
     _setAdapterForToolForTest(
       "cursor",

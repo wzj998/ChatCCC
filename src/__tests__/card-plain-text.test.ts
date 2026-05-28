@@ -32,7 +32,7 @@ describe("cardJsonToPlainText", () => {
 
     expect(text).toContain("# 生成中...");
     expect(text).toContain("stream body");
-    expect(text).toContain("/status");
+    expect(text).toContain("/state");
     expect(text).toContain("/stop");
   });
 

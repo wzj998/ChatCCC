@@ -101,7 +101,7 @@ export interface CreateSessionResult {
 }
 
 // ---------------------------------------------------------------------------
-// SessionInfo — 会话元数据（/status、/cd 等命令使用）
+// SessionInfo — 会话元数据（/state、/cd 等命令使用）
 // ---------------------------------------------------------------------------
 
 export interface SessionInfo {
@@ -113,7 +113,7 @@ export interface SessionInfo {
    * 会话实际使用的模型展示名（如 Cursor 的 `Composer 2 Fast`）。
    * - Cursor adapter：从 cursor-agent system/init 事件学习并持久化到 store
    * - Claude adapter：留空（model 由 ChatCCC 配置 `CLAUDE_MODEL` 决定，不从 SDK 取）
-   * 上层 /status、/sessions 渲染时按 tool 决定显示哪一来源。
+   * 上层 /state、/sessions 渲染时按 tool 决定显示哪一来源。
    */
   model?: string;
 }

@@ -5,7 +5,7 @@
 // 内部已持久化）。Cursor CLI 没有等价机制，因此 ChatCCC 必须自己维护一份
 // sessionId → { cwd, model } 映射，否则：
 //   1. /git、/cd 等需要"会话真实工作目录"的命令将在 Cursor 会话上 100% 失败
-//   2. /status、/sessions 显示的"模型"只能硬塞 ChatCCC 的 ANTHROPIC 环境变量，
+//   2. /state、/sessions 显示的"模型"只能硬塞 ChatCCC 的 ANTHROPIC 环境变量，
 //      与 Cursor 实际跑的 Composer 2 Fast 等真实模型无关
 //
 // 存储：

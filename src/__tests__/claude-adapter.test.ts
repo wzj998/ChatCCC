@@ -369,7 +369,7 @@ describe("createClaudeAdapter", () => {
   // -------------------------------------------------------------------------
   // getSessionInfo 行为契约
   //   - cwd 决定 /git 是否可用
-  //   - model 用于 /status、/sessions 显示
+  //   - model 用于 /state、/sessions 显示
   // -------------------------------------------------------------------------
 
   it("getSessionInfo: store 中无该 sessionId 时只返回 sessionId", async () => {

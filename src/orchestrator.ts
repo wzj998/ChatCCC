@@ -739,8 +739,8 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/status") {
-      logTrace(tid, "BRANCH", { cmd: "/status" });
+    if (textLower === "/state") {
+      logTrace(tid, "BRANCH", { cmd: "/state" });
       const status = await getSessionStatus(chatId);
       const isActive = isSessionRunning(sessionId);
       const statusText = [
