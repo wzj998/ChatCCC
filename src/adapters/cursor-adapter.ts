@@ -261,8 +261,18 @@ function spawnAgent(
   cwd?: string,
   stdinText?: string,
   modelOverride?: string,
+  permissionMode?: "plan" | "ask",
 ): ChildProcess {
   let allArgs = [...CURSOR_AGENT_ARGS, ...extraArgs];
+  if (permissionMode === "ask") {
+    // 替换已有的 --mode 或追加
+    const modeIdx = allArgs.findIndex((a, i) => a === "--mode" && i + 1 < allArgs.length);
+    if (modeIdx >= 0) {
+      allArgs[modeIdx + 1] = "ask";
+    } else {
+      allArgs.push("--mode", "ask");
+    }
+  }
   if (modelOverride) {
     // 替换全局 --model 为 per-session override
     const modelIdx = allArgs.findIndex((a, i) => a === "--model" && i + 1 < allArgs.length);
@@ -370,7 +380,7 @@ class CursorAdapter implements ToolAdapter {
     options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
-    const proc = spawnAgent(["--resume", sessionId], cwd, userText, this.modelOverride);
+    const proc = spawnAgent(["--resume", sessionId], cwd, userText, this.modelOverride, options?.permissionMode);
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 

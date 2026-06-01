@@ -177,7 +177,7 @@ describe("handleCommand WeChat processing ack", () => {
         blocks: [{ type: "text" as const, text: `收到: ${userText}` }],
       };
     });
-    _setAdapterForToolForTest("cursor", {
+    _setAdapterForToolForTest("claude", {
       displayName: "Claude",
       sessionDescPrefix: "Claude Session:",
       createSession: vi.fn(async () => ({ sessionId: "sid-feishu-new" })),
