@@ -128,6 +128,13 @@ export interface ToolPromptOptions {
   onProcessStart?: (info: ToolProcessInfo) => void;
   /** Called when the adapter leaves the prompt process scope normally or by abort. */
   onProcessExit?: (info: ToolProcessInfo) => void;
+  /**
+   * 权限模式覆盖：
+   * - "plan": Claude Code --permission-mode plan（只读/规划）
+   * - "ask":  Cursor Agent --mode ask（只读/问答）
+   * 不传或为 undefined 时使用适配器默认行为（正常编辑模式）。
+   */
+  permissionMode?: "plan" | "ask";
 }
 
 // ---------------------------------------------------------------------------
