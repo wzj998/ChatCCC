@@ -151,8 +151,6 @@ export interface DisplayCardState {
   lastSentFinalReply?: string;
   /** 点点点动画计数器（统一 display loop 每个卡片独立计数） */
   dotCount: number;
-  /** stream-state 连续读取失败次数，超过阈值才删除 display entry */
-  readFailCount?: number;
 }
 
 export const displayCards = new Map<string, DisplayCardState>();
