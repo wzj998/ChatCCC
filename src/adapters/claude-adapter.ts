@@ -285,7 +285,7 @@ function buildCliArgs(
     "--setting-sources", "user,project,local",
     "--permission-mode", permMode,
     ...(skipPermissions ? ["--dangerously-skip-permissions"] : []),
-    "--settings", "{\"maxTurns\":0}",
+    "--settings", "{\"maxTurns\":0,\"autoCompact\":{\"enabled\":true}}",
   ];
 
   if (!isEmpty(model)) args.push("--model", model);
