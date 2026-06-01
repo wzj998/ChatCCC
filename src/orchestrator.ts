@@ -19,6 +19,8 @@ import {
   CONFIG_FILE,
   GIT_TIMEOUT_MS,
   PROJECT_ROOT,
+  AGENT_MODE_COMMANDS,
+  AGENT_TOOLS,
   anthropicConfigDisplay,
   config,
   fileLog,
@@ -123,6 +125,37 @@ function shouldSendWechatProcessingAck(
 
 function isNonWechatP2p(platform: PlatformAdapter, chatType: string): boolean {
   return chatType === "p2p" && platform.kind !== "wechat";
+}
+
+/** 根据 Agent 类型构建欢迎卡片中的指令说明 */
+function buildWelcomeCommands(tool: string): string {
+  const lines = [
+    "发送 **/cd** 切换新建会话的默认目录。",
+    "发送 **/model** 查看或切换当前会话的模型。",
+    "发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。",
+    "发送 **/sessions** 查看所有会话状态。",
+  ];
+  const modeCmds = AGENT_MODE_COMMANDS[tool as AgentTool] ?? [];
+  for (const mc of modeCmds) {
+    lines.push(`发送 **${mc.command} <消息>** ${mc.description}。`);
+  }
+  return lines.join("\n");
+}
+
+/** 根据指令名从 AGENT_MODE_COMMANDS 查找对应的 mode 和支持的 agent 列表 */
+function resolveModeCommand(cmd: string): { mode: "plan" | "ask"; supportedTools: string[] } | null {
+  const supportedTools: string[] = [];
+  let mode: "plan" | "ask" | null = null;
+  for (const tool of AGENT_TOOLS) {
+    for (const mc of AGENT_MODE_COMMANDS[tool]) {
+      if (mc.command === cmd) {
+        supportedTools.push(tool);
+        mode = mc.mode;
+        break;
+      }
+    }
+  }
+  return mode ? { mode, supportedTools } : null;
 }
 
 async function cleanupNonWechatP2pBinding(
@@ -429,11 +462,7 @@ export async function handleCommand(
           `**Session ID:** ${sessionId}\n` +
           `**工作目录:** \`${cwd}\`\n\n` +
           `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
-          `发送 **/cd** 切换新建会话的默认目录。\n` +
-          `发送 **/model** 查看或切换当前会话的模型。\n` +
-          `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
-          `发送 **/sessions** 查看所有会话状态。\n` +
-          `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
+          buildWelcomeCommands(tool),
         "green",
       );
       console.log(
@@ -515,11 +544,7 @@ export async function handleCommand(
         `**Session ID:** ${sessionId}\n` +
         `**工作目录:** \`${cwd}\`\n\n` +
         `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
-        `发送 **/cd** 切换新建会话的默认目录。\n` +
-        `发送 **/model** 查看或切换当前会话的模型。\n` +
-        `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
-        `发送 **/sessions** 查看所有会话状态。\n` +
-        `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
+        buildWelcomeCommands(tool),
       "green",
     );
 
@@ -877,9 +902,8 @@ export async function handleCommand(
         `会话已重置为新的 **${toolLabel}** 会话。\n\n` +
           `**Session ID:** ${newSessionId}\n` +
           `**工作目录:** \`${cwd}\`（沿用当前会话目录）\n\n` +
-          `直接在这里发消息即可继续对话。\n` +
-          `发送 **/cd** 可切换新建会话的默认目录。\n` +
-          `发送 **/model** 查看或切换当前会话的模型。`,
+          `直接在这里发消息即可继续对话。\n\n` +
+          buildWelcomeCommands(descriptionTool),
         "green",
       );
 
@@ -1181,6 +1205,128 @@ export async function handleCommand(
       return;
     }
 
+    // /plan <message> — 只读/规划模式
+    if (textLower.startsWith("/plan ")) {
+      const planText = text.slice(6).trim();
+      const resolved = resolveModeCommand("/plan");
+      if (!planText) {
+        await platform.sendText(chatId, "用法：`/plan <消息>` — 在只读/规划模式下提问。").catch(() => {});
+        logTrace(tid, "DONE", { outcome: "plan_no_message" });
+        return;
+      }
+      if (!resolved || !resolved.supportedTools.includes(descriptionTool)) {
+        const supported = resolved?.supportedTools.map(t => toolDisplayName(t)).join("、") ?? "(无)";
+        await platform.sendText(chatId, `/plan 仅在以下 Agent 会话中可用：${supported}。`).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "plan_wrong_tool", tool: descriptionTool });
+        return;
+      }
+      logTrace(tid, "BRANCH", { cmd: "/plan", sessionId, tool: descriptionTool });
+
+      if (isSessionRunning(sessionId)) {
+        const queued = enqueueMessage(sessionId, {
+          text, chatId, openId, msgTimestamp, chatType, traceId: tid,
+        });
+        if (queued) {
+          logTrace(tid, "QUEUED", { sessionId, mode: "plan" });
+          if (platform.kind === "wechat") {
+            await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildQueuedCard(planText)).catch(() => {});
+          }
+        } else {
+          logTrace(tid, "QUEUE_FULL", { sessionId });
+          if (platform.kind === "wechat") {
+            await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
+          }
+        }
+        return;
+      }
+
+      if (shouldSendWechatProcessingAck(platform, planText.toLowerCase(), chatType)) {
+        await platform.sendText(chatId, "生成中...").catch(() => {});
+      }
+
+      try {
+        logTrace(tid, "RESUME", { sessionId, tool: descriptionTool, mode: "plan" });
+        await resumeAndPrompt(
+          sessionId, planText, platform, chatId, msgTimestamp,
+          descriptionTool, tid, "plan",
+        );
+        logTrace(tid, "DONE", { outcome: "plan_done", sessionId });
+      } catch (err) {
+        logTrace(tid, "DONE", { outcome: "plan_fail", error: (err as Error).message });
+        await platform.sendCard(
+          chatId, "Error",
+          `Failed to run plan mode:\n${(err as Error).message}`,
+          "red",
+        );
+      }
+      return;
+    }
+
+    // /ask <message> — 只读/问答模式
+    if (textLower.startsWith("/ask ")) {
+      const askText = text.slice(5).trim();
+      const resolved = resolveModeCommand("/ask");
+      if (!askText) {
+        await platform.sendText(chatId, "用法：`/ask <消息>` — 在只读/问答模式下提问。").catch(() => {});
+        logTrace(tid, "DONE", { outcome: "ask_no_message" });
+        return;
+      }
+      if (!resolved || !resolved.supportedTools.includes(descriptionTool)) {
+        const supported = resolved?.supportedTools.map(t => toolDisplayName(t)).join("、") ?? "(无)";
+        await platform.sendText(chatId, `/ask 仅在以下 Agent 会话中可用：${supported}。`).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "ask_wrong_tool", tool: descriptionTool });
+        return;
+      }
+      logTrace(tid, "BRANCH", { cmd: "/ask", sessionId, tool: descriptionTool });
+
+      if (isSessionRunning(sessionId)) {
+        const queued = enqueueMessage(sessionId, {
+          text, chatId, openId, msgTimestamp, chatType, traceId: tid,
+        });
+        if (queued) {
+          logTrace(tid, "QUEUED", { sessionId, mode: "ask" });
+          if (platform.kind === "wechat") {
+            await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildQueuedCard(askText)).catch(() => {});
+          }
+        } else {
+          logTrace(tid, "QUEUE_FULL", { sessionId });
+          if (platform.kind === "wechat") {
+            await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
+          }
+        }
+        return;
+      }
+
+      if (shouldSendWechatProcessingAck(platform, askText.toLowerCase(), chatType)) {
+        await platform.sendText(chatId, "生成中...").catch(() => {});
+      }
+
+      try {
+        logTrace(tid, "RESUME", { sessionId, tool: descriptionTool, mode: "ask" });
+        await resumeAndPrompt(
+          sessionId, askText, platform, chatId, msgTimestamp,
+          descriptionTool, tid, "ask",
+        );
+        logTrace(tid, "DONE", { outcome: "ask_done", sessionId });
+      } catch (err) {
+        logTrace(tid, "DONE", { outcome: "ask_fail", error: (err as Error).message });
+        await platform.sendCard(
+          chatId, "Error",
+          `Failed to run ask mode:\n${(err as Error).message}`,
+          "red",
+        );
+      }
+      return;
+    }
+
     const lastTs = lastMsgTimestamps.get(chatId);
     if (lastTs !== undefined && msgTimestamp <= lastTs) {
       logTrace(tid, "DONE", {
@@ -1419,8 +1565,7 @@ export async function handleCommand(
         `**Session ID:** ${sessionId}\n` +
         `**工作目录:** \`${cwd}\`\n\n` +
         `下面会自动把你的私聊消息作为第一句话发送给 ${toolLabel}。\n\n` +
-        `发送 **/model** 查看或切换当前会话的模型。\n` +
-        `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。`,
+        buildWelcomeCommands(tool),
       "green",
     );
     platform.setChatAvatar(newChatId, tool, "new").catch(() => {});

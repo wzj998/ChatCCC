@@ -122,6 +122,24 @@ export interface AppConfig {
 export type AgentTool = "claude" | "cursor" | "codex";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
 
+/**
+ * Agent 专属模式指令（内部配置，非用户可配）。
+ * 映射每个 Agent 支持的特殊指令及其对应的 CLI 权限模式。
+ *
+ * - claude: /plan → --permission-mode plan（只读/规划）
+ * - cursor: /ask  → --mode ask（只读/问答）
+ * - codex:  暂无原生只读模式，不注册任何模式指令
+ */
+export const AGENT_MODE_COMMANDS: Record<AgentTool, { command: string; mode: "plan" | "ask"; description: string }[]> = {
+  claude: [
+    { command: "/plan", mode: "plan", description: "以只读规划模式提问（Claude 专属）" },
+  ],
+  cursor: [
+    { command: "/ask", mode: "ask", description: "以只读问答模式提问（Cursor 专属）" },
+  ],
+  codex: [],
+};
+
 /** 获取指定 agent 配置中所有模型相关的值（最多 100 个，去重） */
 export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): string[] {
   const seen = new Set<string>();
