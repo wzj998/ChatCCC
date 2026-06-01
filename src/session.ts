@@ -1279,21 +1279,15 @@ export function startUnifiedDisplayLoop(): void {
         const sessionId = display.sessionId;
         const state = await readStreamState(sessionId);
         if (!state) {
-          display.readFailCount = (display.readFailCount ?? 0) + 1;
-          if (display.readFailCount >= 3) {
-            console.log(`[${ts()}] [DISPLAY] readStreamState ${display.readFailCount} consecutive failures for ${sessionId}, removing display entry for chat ${chatId}`);
-            displayCards.delete(chatId);
-          }
+          displayCards.delete(chatId);
           continue;
         }
-        display.readFailCount = 0;
 
         // 交叉验证：chat 当前绑定的 session 是否仍是 display 记录的 session。
         // 若 chat 已被切换到其他 session（如 /newh），旧 display 必须停推。
         const currentSessionForChat = sessionInfoMap.get(chatId)?.sessionId;
         if (currentSessionForChat && currentSessionForChat !== sessionId) {
           if (state.status !== "running") {
-            console.log(`[${ts()}] [DISPLAY] chat ${chatId} now bound to ${currentSessionForChat}, removing stale display for ${sessionId} (terminal: ${state.status})`);
             displayCards.delete(chatId);
           }
           continue;
@@ -1303,7 +1297,6 @@ export function startUnifiedDisplayLoop(): void {
         const lastActive = getLastActiveChat(sessionId);
         if (lastActive !== chatId) {
           if (state.status !== "running") {
-            console.log(`[${ts()}] [DISPLAY] lastActive mismatch for ${sessionId}: display chat=${chatId} lastActive=${lastActive ?? "undefined"}, removing display entry (terminal: ${state.status})`);
             displayCards.delete(chatId);
           }
           continue;
