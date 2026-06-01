@@ -274,17 +274,14 @@ function buildCliArgs(
   isEmpty: (value: string) => boolean,
   mcpConfigJson: string | null,
   extraArgs: string[],
-  permissionMode?: "plan" | "ask",
 ): string[] {
-  const permMode = permissionMode === "plan" ? "plan" : permissionMode === "ask" ? "default" : "bypassPermissions";
-  const skipPermissions = permissionMode !== "plan" && permissionMode !== "ask";
   const args = [
     "-p",
     "--output-format", "stream-json",
     "--verbose",
     "--setting-sources", "user,project,local",
-    "--permission-mode", permMode,
-    ...(skipPermissions ? ["--dangerously-skip-permissions"] : []),
+    "--permission-mode", "bypassPermissions",
+    "--dangerously-skip-permissions",
     "--settings", "{\"maxTurns\":0}",
   ];
 
@@ -435,7 +432,6 @@ class ClaudeAdapter implements ToolAdapter {
     const args = buildCliArgs(
       this.model, this.effort, this.isEmpty, mcpConfigJson,
       ["--resume", sessionId, "--input-format", "stream-json", "--replay-user-messages"],
-      options?.permissionMode,
     );
 
     const proc = spawnCli(args, cwd, env, true);
