@@ -158,6 +158,54 @@ function resolveModeCommand(cmd: string): { mode: "plan" | "ask"; supportedTools
   return mode ? { mode, supportedTools } : null;
 }
 
+/** 如果当前群名是未命名会话（"新会话" 或 "新会话-xxx"），用消息内容前缀重命名 */
+async function renameUntitledSession(
+  platform: PlatformAdapter,
+  chatId: string,
+  chatType: string,
+  sessionId: string,
+  tool: string,
+  namePrefix: string,
+  description: string | undefined,
+  chatInfo: { name: string } | undefined,
+): Promise<void> {
+  const MAX_PREFIX = 10;
+  const prefix = namePrefix.slice(0, MAX_PREFIX);
+
+  if (chatType !== "p2p" && chatInfo && isUntitledSessionChatName(chatInfo.name)) {
+    const adapter = getAdapterForTool(tool, sessionId);
+    const info = await adapter.getSessionInfo(sessionId).catch(() => undefined);
+    const sessionCwd = info?.cwd ?? (await getDefaultCwd(chatId));
+    const newName = sessionChatName(prefix, sessionCwd);
+    try {
+      await platform.updateChatInfo(chatId, newName, description!);
+      console.log(`[${ts()}] [RENAME] First message → group renamed to "${newName}"`);
+      await recordSessionRegistry({ chatId, sessionId, tool, chatName: newName }).catch(() => {});
+      await saveSessionTool(sessionId, tool, newName).catch(() => {});
+    } catch (err) {
+      console.error(`[${ts()}] [RENAME] Failed: ${(err as Error).message}`);
+    }
+  }
+
+  if (chatType === "p2p" && platform.kind === "wechat") {
+    try {
+      const reg = await loadSessionRegistryForBinding();
+      const rec = reg[chatId];
+      if (rec && rec.sessionId === sessionId && isUntitledSessionChatName(rec.chatName ?? "")) {
+        const adapter = getAdapterForTool(tool, sessionId);
+        const info = await adapter.getSessionInfo(sessionId).catch(() => undefined);
+        const sessionCwd = info?.cwd ?? (await getDefaultCwd(chatId));
+        const newName2 = sessionChatName(prefix, sessionCwd);
+        await recordSessionRegistry({ chatId, sessionId, tool, chatName: newName2 }).catch(() => {});
+        await saveSessionTool(sessionId, tool, newName2).catch(() => {});
+        console.log(`[${ts()}] [RENAME] WeChat P2P → "${newName2}"`);
+      }
+    } catch (err) {
+      console.error(`[${ts()}] [RENAME] WeChat P2P failed: ${(err as Error).message}`);
+    }
+  }
+}
+
 async function cleanupNonWechatP2pBinding(
   platform: PlatformAdapter,
   chatId: string,
@@ -1214,56 +1262,59 @@ export async function handleCommand(
         logTrace(tid, "DONE", { outcome: "plan_no_message" });
         return;
       }
-      if (!resolved || !resolved.supportedTools.includes(descriptionTool)) {
-        const supported = resolved?.supportedTools.map(t => toolDisplayName(t)).join("、") ?? "(无)";
-        await platform.sendText(chatId, `/plan 仅在以下 Agent 会话中可用：${supported}。`).catch(() => {});
-        logTrace(tid, "DONE", { outcome: "plan_wrong_tool", tool: descriptionTool });
-        return;
-      }
-      logTrace(tid, "BRANCH", { cmd: "/plan", sessionId, tool: descriptionTool });
+      if (resolved?.supportedTools.includes(descriptionTool) === true) {
+        logTrace(tid, "BRANCH", { cmd: "/plan", sessionId, tool: descriptionTool });
 
-      if (isSessionRunning(sessionId)) {
-        const queued = enqueueMessage(sessionId, {
-          text, chatId, openId, msgTimestamp, chatType, traceId: tid,
-        });
-        if (queued) {
-          logTrace(tid, "QUEUED", { sessionId, mode: "plan" });
-          if (platform.kind === "wechat") {
-            await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+        await renameUntitledSession(
+          platform, chatId, chatType, sessionId, descriptionTool,
+          planText, description, chatInfo,
+        );
+
+        if (isSessionRunning(sessionId)) {
+          const queued = enqueueMessage(sessionId, {
+            text, chatId, openId, msgTimestamp, chatType, traceId: tid,
+          });
+          if (queued) {
+            logTrace(tid, "QUEUED", { sessionId, mode: "plan" });
+            if (platform.kind === "wechat") {
+              await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+            } else {
+              await platform.sendRawCard(chatId, buildQueuedCard(planText)).catch(() => {});
+            }
           } else {
-            await platform.sendRawCard(chatId, buildQueuedCard(planText)).catch(() => {});
+            logTrace(tid, "QUEUE_FULL", { sessionId });
+            if (platform.kind === "wechat") {
+              await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
+            } else {
+              await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
+            }
           }
-        } else {
-          logTrace(tid, "QUEUE_FULL", { sessionId });
-          if (platform.kind === "wechat") {
-            await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
-          } else {
-            await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
-          }
+          return;
+        }
+
+        if (shouldSendWechatProcessingAck(platform, planText.toLowerCase(), chatType)) {
+          await platform.sendText(chatId, "生成中...").catch(() => {});
+        }
+
+        try {
+          logTrace(tid, "RESUME", { sessionId, tool: descriptionTool, mode: "plan" });
+          await resumeAndPrompt(
+            sessionId, planText, platform, chatId, msgTimestamp,
+            descriptionTool, tid, "plan",
+          );
+          logTrace(tid, "DONE", { outcome: "plan_done", sessionId });
+        } catch (err) {
+          logTrace(tid, "DONE", { outcome: "plan_fail", error: (err as Error).message });
+          await platform.sendCard(
+            chatId, "Error",
+            `Failed to run plan mode:\n${(err as Error).message}`,
+            "red",
+          );
         }
         return;
       }
 
-      if (shouldSendWechatProcessingAck(platform, planText.toLowerCase(), chatType)) {
-        await platform.sendText(chatId, "生成中...").catch(() => {});
-      }
-
-      try {
-        logTrace(tid, "RESUME", { sessionId, tool: descriptionTool, mode: "plan" });
-        await resumeAndPrompt(
-          sessionId, planText, platform, chatId, msgTimestamp,
-          descriptionTool, tid, "plan",
-        );
-        logTrace(tid, "DONE", { outcome: "plan_done", sessionId });
-      } catch (err) {
-        logTrace(tid, "DONE", { outcome: "plan_fail", error: (err as Error).message });
-        await platform.sendCard(
-          chatId, "Error",
-          `Failed to run plan mode:\n${(err as Error).message}`,
-          "red",
-        );
-      }
-      return;
+      logTrace(tid, "BRANCH", { cmd: "/plan", sessionId, tool: descriptionTool, fallback: "raw_message" });
     }
 
     // /ask <message> — 只读/问答模式
@@ -1275,56 +1326,59 @@ export async function handleCommand(
         logTrace(tid, "DONE", { outcome: "ask_no_message" });
         return;
       }
-      if (!resolved || !resolved.supportedTools.includes(descriptionTool)) {
-        const supported = resolved?.supportedTools.map(t => toolDisplayName(t)).join("、") ?? "(无)";
-        await platform.sendText(chatId, `/ask 仅在以下 Agent 会话中可用：${supported}。`).catch(() => {});
-        logTrace(tid, "DONE", { outcome: "ask_wrong_tool", tool: descriptionTool });
-        return;
-      }
-      logTrace(tid, "BRANCH", { cmd: "/ask", sessionId, tool: descriptionTool });
+      if (resolved?.supportedTools.includes(descriptionTool) === true) {
+        logTrace(tid, "BRANCH", { cmd: "/ask", sessionId, tool: descriptionTool });
 
-      if (isSessionRunning(sessionId)) {
-        const queued = enqueueMessage(sessionId, {
-          text, chatId, openId, msgTimestamp, chatType, traceId: tid,
-        });
-        if (queued) {
-          logTrace(tid, "QUEUED", { sessionId, mode: "ask" });
-          if (platform.kind === "wechat") {
-            await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+        await renameUntitledSession(
+          platform, chatId, chatType, sessionId, descriptionTool,
+          askText, description, chatInfo,
+        );
+
+        if (isSessionRunning(sessionId)) {
+          const queued = enqueueMessage(sessionId, {
+            text, chatId, openId, msgTimestamp, chatType, traceId: tid,
+          });
+          if (queued) {
+            logTrace(tid, "QUEUED", { sessionId, mode: "ask" });
+            if (platform.kind === "wechat") {
+              await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
+            } else {
+              await platform.sendRawCard(chatId, buildQueuedCard(askText)).catch(() => {});
+            }
           } else {
-            await platform.sendRawCard(chatId, buildQueuedCard(askText)).catch(() => {});
+            logTrace(tid, "QUEUE_FULL", { sessionId });
+            if (platform.kind === "wechat") {
+              await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
+            } else {
+              await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
+            }
           }
-        } else {
-          logTrace(tid, "QUEUE_FULL", { sessionId });
-          if (platform.kind === "wechat") {
-            await platform.sendText(chatId, "当前缓存队列中已有消息等待处理，请等待或发送 /stop（停止生成）或 /cancel（取消缓存）。").catch(() => {});
-          } else {
-            await platform.sendRawCard(chatId, buildQueueFullCard()).catch(() => {});
-          }
+          return;
+        }
+
+        if (shouldSendWechatProcessingAck(platform, askText.toLowerCase(), chatType)) {
+          await platform.sendText(chatId, "生成中...").catch(() => {});
+        }
+
+        try {
+          logTrace(tid, "RESUME", { sessionId, tool: descriptionTool, mode: "ask" });
+          await resumeAndPrompt(
+            sessionId, askText, platform, chatId, msgTimestamp,
+            descriptionTool, tid, "ask",
+          );
+          logTrace(tid, "DONE", { outcome: "ask_done", sessionId });
+        } catch (err) {
+          logTrace(tid, "DONE", { outcome: "ask_fail", error: (err as Error).message });
+          await platform.sendCard(
+            chatId, "Error",
+            `Failed to run ask mode:\n${(err as Error).message}`,
+            "red",
+          );
         }
         return;
       }
 
-      if (shouldSendWechatProcessingAck(platform, askText.toLowerCase(), chatType)) {
-        await platform.sendText(chatId, "生成中...").catch(() => {});
-      }
-
-      try {
-        logTrace(tid, "RESUME", { sessionId, tool: descriptionTool, mode: "ask" });
-        await resumeAndPrompt(
-          sessionId, askText, platform, chatId, msgTimestamp,
-          descriptionTool, tid, "ask",
-        );
-        logTrace(tid, "DONE", { outcome: "ask_done", sessionId });
-      } catch (err) {
-        logTrace(tid, "DONE", { outcome: "ask_fail", error: (err as Error).message });
-        await platform.sendCard(
-          chatId, "Error",
-          `Failed to run ask mode:\n${(err as Error).message}`,
-          "red",
-        );
-      }
-      return;
+      logTrace(tid, "BRANCH", { cmd: "/ask", sessionId, tool: descriptionTool, fallback: "raw_message" });
     }
 
     const lastTs = lastMsgTimestamps.get(chatId);
