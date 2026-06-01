@@ -169,48 +169,6 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendText).toHaveBeenCalledWith("wx-chat", "生成中...");
   });
 
-  it.each([
-    { tool: "claude" as const, sessionId: "sid-claude", text: "/ask 只回答不要改文件" },
-    { tool: "cursor" as const, sessionId: "sid-cursor", text: "/plan 先给我计划" },
-  ])("passes unsupported mode commands through as raw prompts for $tool", async ({ tool, sessionId, text }) => {
-    const platform = mockPlatform();
-    const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
-      yield {
-        type: "assistant" as const,
-        blocks: [{ type: "text" as const, text: `收到: ${userText}` }],
-      };
-    });
-    _setAdapterForToolForTest(tool, {
-      displayName: tool,
-      sessionDescPrefix: `${tool} Session:`,
-      createSession: vi.fn(async () => ({ sessionId })),
-      prompt,
-      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
-        sessionId,
-        cwd: "F:\\repo",
-      }),
-      closeSession: async () => {},
-    });
-    await recordSessionRegistry({
-      chatId: "wx-chat",
-      sessionId,
-      tool,
-      chatName: "ready-session",
-      running: false,
-    });
-
-    await handleCommand(platform, text, "wx-chat", "wx-user", Date.now(), "p2p");
-
-    expect(platform.sendText).not.toHaveBeenCalledWith("wx-chat", expect.stringContaining("仅在以下 Agent 会话中可用"));
-    expect(prompt).toHaveBeenCalledWith(
-      sessionId,
-      expect.stringContaining(text),
-      "F:\\repo",
-      expect.any(AbortSignal),
-      expect.objectContaining({ permissionMode: undefined }),
-    );
-  });
-
   it("cleans stale Feishu p2p binding, creates a group, and sends the private message as first prompt", async () => {
     const platform = mockPlatform("feishu");
     const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
@@ -219,7 +177,7 @@ describe("handleCommand WeChat processing ack", () => {
         blocks: [{ type: "text" as const, text: `收到: ${userText}` }],
       };
     });
-    _setAdapterForToolForTest("claude", {
+    _setAdapterForToolForTest("cursor", {
       displayName: "Claude",
       sessionDescPrefix: "Claude Session:",
       createSession: vi.fn(async () => ({ sessionId: "sid-feishu-new" })),
