@@ -276,14 +276,15 @@ function buildCliArgs(
   extraArgs: string[],
   permissionMode?: "plan" | "ask",
 ): string[] {
-  const permMode = permissionMode === "plan" ? "plan" : "bypassPermissions";
+  const permMode = permissionMode === "plan" ? "plan" : permissionMode === "ask" ? "default" : "bypassPermissions";
+  const skipPermissions = permissionMode !== "plan" && permissionMode !== "ask";
   const args = [
     "-p",
     "--output-format", "stream-json",
     "--verbose",
     "--setting-sources", "user,project,local",
     "--permission-mode", permMode,
-    "--dangerously-skip-permissions",
+    ...(skipPermissions ? ["--dangerously-skip-permissions"] : []),
     "--settings", "{\"maxTurns\":0}",
   ];
 
