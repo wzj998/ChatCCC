@@ -65,11 +65,11 @@ export interface ClaudeConfig {
   model: string;
   subagentModel: string;
   effort: string;
-  /** Anthropic API Key（选填，留空则使用 Claude CLI 默认认证） */
+  /** Anthropic API Key（选填，留空则使用 Claude Code 默认认证） */
   apiKey: string;
   /** Anthropic 兼容 API Base URL（选填，留空则使用默认端点） */
   baseUrl: string;
-  /** Claude CLI maxTurns 设置，默认 25 */
+  /** Claude Agent SDK maxTurns 设置，默认 25 */
   maxTurn: number;
 }
 

@@ -1,8 +1,8 @@
 // =============================================================================
 // claude-session-meta-store.ts — Claude 会话 sessionId → meta 持久化映射
 // =============================================================================
-// 背景：切换到直接调用 Claude CLI 后，不再有 SDK 的 getSessionInfo 可用。
-// ChatCCC 必须自己维护 sessionId → { cwd, model } 映射。
+// 背景：Claude Agent SDK 的 getSessionInfo 可能因 cwd / 本地记录缺失而查不到。
+// ChatCCC 额外维护 sessionId → { cwd, model } 映射作为展示与恢复兜底。
 //
 // 存储：
 //   文件 state/claude-session-meta.json，结构：

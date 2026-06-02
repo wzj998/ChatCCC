@@ -1,5 +1,5 @@
 /**
- * 命令行对 Claude CLI 说「你好」，并把流式正文打印到 stdout。
+ * 命令行通过 Claude Agent SDK 说「你好」，并把流式正文打印到 stdout。
  *
  *   .\node_modules\.bin\tsx.cmd demo/claude_say_hi.ts
  *   npm run demo:claude-hi
