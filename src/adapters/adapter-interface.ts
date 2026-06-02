@@ -128,6 +128,8 @@ export interface ToolPromptOptions {
   onProcessStart?: (info: ToolProcessInfo) => void;
   /** Called when the adapter leaves the prompt process scope normally or by abort. */
   onProcessExit?: (info: ToolProcessInfo) => void;
+  /** 是否为 /plan 或 /ask 模式：不开启 dangerous skip permissions */
+  planMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------

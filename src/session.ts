@@ -832,8 +832,9 @@ export async function resumeAndPrompt(
   msgTimestamp: number,
   tool: string,
   traceId?: string,
+  planMode?: boolean,
 ): Promise<void> {
-  return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId);
+  return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId, planMode);
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +849,7 @@ export async function runAgentSession(
   msgTimestamp: number,
   tool: string,
   traceId?: string,
+  planMode?: boolean,
 ): Promise<void> {
   const tid = traceId ?? "";
 
@@ -1106,6 +1108,7 @@ export async function runAgentSession(
         clearPromptProcessMonitor(sessionId);
         if (exitInfo.pid !== undefined) unregisterProcess(exitInfo.pid);
       },
+      planMode,
     })) {
       for (const block of unifiedMsg.blocks) {
         accumulateBlockContent(block, state, toolCallMap);

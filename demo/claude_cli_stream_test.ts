@@ -45,6 +45,7 @@ interface ContentBlockStart {
   type: "stream_event";
   event: { type: "content_block_start"; content_block: { type: string; [k: string]: unknown }; index: number };
   session_id: string;
+  ttft_ms?: number;
 }
 
 interface ContentBlockDelta {
@@ -55,12 +56,14 @@ interface ContentBlockDelta {
     index: number;
   };
   session_id: string;
+  ttft_ms?: number;
 }
 
 interface ContentBlockStop {
   type: "stream_event";
   event: { type: "content_block_stop"; index: number };
   session_id: string;
+  ttft_ms?: number;
 }
 
 interface MessageDelta {
@@ -71,12 +74,14 @@ interface MessageDelta {
     usage: { output_tokens: number; input_tokens: number };
   };
   session_id: string;
+  ttft_ms?: number;
 }
 
 interface MessageStop {
   type: "stream_event";
   event: { type: "message_stop" };
   session_id: string;
+  ttft_ms?: number;
 }
 
 interface AssistantMessage {
