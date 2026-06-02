@@ -127,6 +127,8 @@ export interface ClaudeAdapterOptions {
   isEmpty: (value: string) => boolean;
   /** 注入自定义 meta 持久化 store（测试用）；未提供时使用全局默认实例。 */
   metaStore?: ClaudeSessionMetaStore;
+  /** Claude CLI maxTurns 设置，默认 25 */
+  maxTurn?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +283,7 @@ function buildCliArgs(
   isEmpty: (value: string) => boolean,
   mcpConfigJson: string | null,
   extraArgs: string[],
+  maxTurn: number,
   planMode?: boolean,
 ): string[] {
   const args = [
@@ -289,7 +292,7 @@ function buildCliArgs(
     "--verbose",
     "--setting-sources", "user,project,local",
     "--permission-mode", planMode ? "plan" : "bypassPermissions",
-    "--settings", "{\"maxTurns\":999999999,\"maxBudget\":999999999}",
+    "--settings", `{"maxTurns":${maxTurn},"maxBudget":999999999}`,
   ];
   if (!planMode) args.push("--dangerously-skip-permissions");
 
@@ -417,6 +420,7 @@ class ClaudeAdapter implements ToolAdapter {
   private baseUrl: string | undefined;
   private isEmpty: (value: string) => boolean;
   private metaStore: ClaudeSessionMetaStore;
+  private maxTurn: number;
 
   constructor(options: ClaudeAdapterOptions) {
     this.model = options.model;
@@ -426,6 +430,7 @@ class ClaudeAdapter implements ToolAdapter {
     this.baseUrl = options.baseUrl;
     this.isEmpty = options.isEmpty;
     this.metaStore = options.metaStore ?? defaultClaudeSessionMetaStore;
+    this.maxTurn = options.maxTurn ?? 25;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
@@ -435,6 +440,7 @@ class ClaudeAdapter implements ToolAdapter {
     const args = buildCliArgs(
       this.model, this.effort, this.isEmpty, mcpConfigJson,
       ["ok"],
+      this.maxTurn,
     );
 
     const proc = spawnCli(args, cwd, env, false);
@@ -466,6 +472,7 @@ class ClaudeAdapter implements ToolAdapter {
     const args = buildCliArgs(
       this.model, this.effort, this.isEmpty, mcpConfigJson,
       ["--resume", sessionId, "--input-format", "stream-json", "--replay-user-messages"],
+      this.maxTurn,
       options?.planMode,
     );
 

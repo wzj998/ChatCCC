@@ -69,6 +69,8 @@ export interface ClaudeConfig {
   apiKey: string;
   /** Anthropic 兼容 API Base URL（选填，留空则使用默认端点） */
   baseUrl: string;
+  /** Claude CLI maxTurns 设置，默认 25 */
+  maxTurn: number;
 }
 
 export interface CursorConfig {
@@ -324,7 +326,7 @@ function loadConfig(): AppConfig {
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
-    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "" },
+    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 25 },
     cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
@@ -468,6 +470,9 @@ function loadConfig(): AppConfig {
       effort: normalizeOptionalConfigField(claude.effort, { label: "claude.effort" }),
       apiKey: normalizeOptionalConfigField(claude.apiKey, { label: "claude.apiKey" }),
       baseUrl: normalizeOptionalConfigField(claude.baseUrl, { label: "claude.baseUrl" }),
+      maxTurn: typeof (claude as Record<string, unknown>).maxTurn === "number"
+        ? (claude as Record<string, unknown>).maxTurn as number
+        : 25,
     },
     cursor: {
       enabled: cursorEnabled,
@@ -521,6 +526,7 @@ export const LOCAL_RELAY_URL = `ws://127.0.0.1:${CHATCCC_PORT}`;
 export let CLAUDE_MODEL = config.claude.model;
 export let CLAUDE_SUBAGENT_MODEL = config.claude.subagentModel;
 export let CLAUDE_EFFORT = config.claude.effort;
+export let CLAUDE_MAX_TURN = config.claude.maxTurn;
 export let CLAUDE_API_KEY = config.claude.apiKey;
 export let CLAUDE_BASE_URL = config.claude.baseUrl;
 

@@ -5,6 +5,7 @@ import {
   CLAUDE_API_KEY,
   CLAUDE_BASE_URL,
   CLAUDE_EFFORT,
+  CLAUDE_MAX_TURN,
   CLAUDE_MODEL,
   CLAUDE_SUBAGENT_MODEL,
   CHATCCC_PORT,
@@ -367,6 +368,7 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       apiKey: CLAUDE_API_KEY,
       baseUrl: CLAUDE_BASE_URL,
       isEmpty: isAnthropicConfigEmpty,
+      maxTurn: CLAUDE_MAX_TURN,
     });
   }
   adapterCache.set(cacheKey, adapter);

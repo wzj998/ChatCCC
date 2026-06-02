@@ -17,7 +17,8 @@
     "subagentModel": "",
     "effort": "",
     "apiKey": "",
-    "baseUrl": ""
+    "baseUrl": "",
+    "maxTurn": 25
   },
   "cursor": {
     "enabled": false,
