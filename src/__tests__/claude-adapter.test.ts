@@ -130,9 +130,9 @@ describe("normalizeSdkMessage", () => {
     expect((result!.blocks[0] as any).content).toEqual(content);
   });
 
-  it("skips text blocks in user messages (replayed input from --replay-user-messages)", () => {
-    // user 消息中的 text block 来自 --replay-user-messages 重放的用户输入
-    // （含内嵌的 IM skill prompt），不应出现在最终回复中
+  it("skips text blocks in user messages", () => {
+    // user text is host input, not assistant output. If the CLI emits it for
+    // any reason, it should not appear in the final reply.
     const result = normalizeSdkMessage({
       type: "user",
       message: {

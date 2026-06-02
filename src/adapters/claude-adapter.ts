@@ -245,8 +245,8 @@ export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage |
           query: block.query ?? "",
         });
       } else if (block.type === "text" && block.text) {
-        // 跳过 user 消息中的 text block：--replay-user-messages 会重放
-        // 之前的用户消息（含内嵌的 IM skill prompt），这些不应出现在最终回复中
+        // user text is host input, not assistant output. Keep it out of the
+        // final reply if the CLI ever emits it.
         if (msg.type === "user") continue;
         blocks.push({ type: "text", text: block.text });
       }
@@ -471,7 +471,7 @@ class ClaudeAdapter implements ToolAdapter {
     const env = buildCliEnv(this.subagentModel, this.apiKey, this.baseUrl);
     const args = buildCliArgs(
       this.model, this.effort, this.isEmpty, mcpConfigJson,
-      ["--resume", sessionId, "--input-format", "stream-json", "--replay-user-messages"],
+      ["--resume", sessionId, "--input-format", "stream-json"],
       this.maxTurn,
       options?.planMode,
     );
