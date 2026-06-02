@@ -333,6 +333,7 @@ class ClaudeAdapter implements ToolAdapter {
   async createSession(cwd: string): Promise<CreateSessionResult> {
     logMcpConfig();
     const abortController = new AbortController();
+    let sessionId: string | undefined;
     const stream = query({
       prompt: "ok",
       options: buildSdkOptions({
@@ -351,22 +352,21 @@ class ClaudeAdapter implements ToolAdapter {
     try {
       for await (const raw of stream) {
         const msg = toMessageLike(raw);
-        if (msg.session_id) {
-          const sessionId = msg.session_id;
+        if (msg.session_id && !sessionId) {
+          sessionId = msg.session_id;
           await this.metaStore.set(sessionId, {
             cwd: msg.cwd ?? cwd,
             model: msg.model,
           }).catch(() => {});
           const ts = new Date().toISOString();
           console.log(`[${ts}] [CLAUDE-SDK] createSession: ${sessionId}`);
-          return { sessionId };
         }
       }
     } finally {
-      abortController.abort();
       stream.close();
     }
 
+    if (sessionId) return { sessionId };
     throw new Error("No session ID in Claude init event");
   }
 
@@ -380,6 +380,7 @@ class ClaudeAdapter implements ToolAdapter {
     const abortController = new AbortController();
     const removeAbortListener = bridgeAbortSignal(signal, abortController);
     if (abortController.signal.aborted) return;
+    let aborted = false;
 
     const stream = query({
       prompt: buildClaudePromptText(userText),
@@ -400,7 +401,10 @@ class ClaudeAdapter implements ToolAdapter {
 
     try {
       for await (const raw of stream) {
-        if (abortController.signal.aborted) break;
+        if (abortController.signal.aborted) {
+          aborted = true;
+          break;
+        }
 
         const msg = toMessageLike(raw);
         if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
@@ -414,15 +418,13 @@ class ClaudeAdapter implements ToolAdapter {
 
         const normalized = normalizeSdkMessage(msg);
         if (normalized) yield normalized;
-
-        if (msg.type === "result") {
-          break;
-        }
       }
     } finally {
       removeAbortListener?.();
-      abortController.abort();
-      stream.close();
+      if (aborted || abortController.signal.aborted) {
+        abortController.abort();
+        stream.close();
+      }
     }
   }
 
