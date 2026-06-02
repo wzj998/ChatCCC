@@ -289,7 +289,7 @@ function buildCliArgs(
     "--setting-sources", "user,project,local",
     "--permission-mode", "bypassPermissions",
     "--dangerously-skip-permissions",
-    "--settings", "{\"maxTurns\":0}",
+    "--settings", "{\"maxTurns\":999999999,\"maxBudget\":999999999}",
   ];
 
   if (!isEmpty(model)) args.push("--model", model);
