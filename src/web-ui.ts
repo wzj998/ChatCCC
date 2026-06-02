@@ -646,7 +646,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             </div>
             <div class="form-group">
               <label>API Key（选填）</label>
-              <input type="password" id="field-CHATCCC_ANTHROPIC_API_KEY" placeholder="留空使用 Claude CLI 默认认证">
+              <input type="password" id="field-CHATCCC_ANTHROPIC_API_KEY" placeholder="留空使用 Claude Code 默认认证">
             </div>
             <div class="form-group">
               <label>Base URL（选填）</label>

@@ -3,6 +3,7 @@ import {
   normalizeSdkMessage,
   createClaudeAdapter,
   buildClaudePromptText,
+  buildSdkEnv,
 } from "../adapters/claude-adapter.ts";
 import type { UnifiedStreamMessage } from "../adapters/adapter-interface.ts";
 import type {
@@ -461,5 +462,52 @@ describe("buildClaudePromptText", () => {
   it("leaves user text unchanged when the injection prompt is empty", () => {
     expect(buildClaudePromptText("hello", "   ")).toBe("hello");
     expect(buildClaudePromptText("hello", null)).toBe("hello");
+  });
+});
+
+describe("buildSdkEnv", () => {
+  it("returns undefined when no SDK env override is configured", () => {
+    expect(buildSdkEnv("", "  ", undefined)).toBeUndefined();
+  });
+
+  it("sets requested SDK env overrides and removes conflicting Claude auth/model vars", () => {
+    const original = {
+      ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
+      CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+      ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+      CLAUDE_CODE_EFFORT_LEVEL: process.env.CLAUDE_CODE_EFFORT_LEVEL,
+      CLAUDE_CODE_SUBAGENT_MODEL: process.env.CLAUDE_CODE_SUBAGENT_MODEL,
+    };
+
+    process.env.ANTHROPIC_AUTH_TOKEN = "token";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth";
+    process.env.ANTHROPIC_MODEL = "old-model";
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = "old-effort";
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = "old-subagent";
+
+    try {
+      const env = buildSdkEnv(
+        " claude-haiku-4-5-20251001 ",
+        " sk-test ",
+        " https://api.example.com ",
+      );
+
+      expect(env).toBeDefined();
+      expect(env!.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(env!.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(env!.ANTHROPIC_MODEL).toBeUndefined();
+      expect(env!.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+      expect(env!.CLAUDE_CODE_SUBAGENT_MODEL).toBe("claude-haiku-4-5-20251001");
+      expect(env!.ANTHROPIC_API_KEY).toBe("sk-test");
+      expect(env!.ANTHROPIC_BASE_URL).toBe("https://api.example.com");
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 });
