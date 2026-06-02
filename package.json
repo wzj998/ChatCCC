@@ -13,6 +13,7 @@
     "bin/",
     "scripts/postinstall-sharp-check.mjs",
     "demo/ilink_echo_probe.ts",
+    "agent-prompts/",
     "im-skills/",
     "images/img_readme_*.jpg",
     "images/img_readme_*.png",

@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 import type {
   ToolAdapter,
@@ -72,6 +73,12 @@ function resolveClaudeBinary(): string {
 }
 
 const CLAUDE_EXE = resolveClaudeBinary();
+const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const CLAUDE_SPECIFIC_PROMPT_PATH = join(
+  PROJECT_ROOT,
+  "agent-prompts",
+  "claude_specific.md",
+);
 
 // ---------------------------------------------------------------------------
 // 类型别名（CLI JSONL 消息格式，与旧 SDK 消息格式兼容）
@@ -369,6 +376,32 @@ function buildStreamJsonInput(text: string): string {
   }) + "\n";
 }
 
+export function readClaudeSpecificInjectionPrompt(): string | null {
+  try {
+    if (!existsSync(CLAUDE_SPECIFIC_PROMPT_PATH)) return null;
+    const prompt = readFileSync(CLAUDE_SPECIFIC_PROMPT_PATH, "utf-8").trim();
+    return prompt.length > 0 ? prompt : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildClaudePromptText(
+  userText: string,
+  injectionPrompt: string | null = readClaudeSpecificInjectionPrompt(),
+): string {
+  const prompt = injectionPrompt?.trim();
+  if (!prompt) return userText;
+
+  return [
+    "[ChatCCC Claude-specific injection prompt]",
+    prompt,
+    "[/ChatCCC Claude-specific injection prompt]",
+    "",
+    userText,
+  ].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // ClaudeAdapter
 // ---------------------------------------------------------------------------
@@ -440,7 +473,7 @@ class ClaudeAdapter implements ToolAdapter {
     const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    proc.stdin!.write(buildStreamJsonInput(userText));
+    proc.stdin!.write(buildStreamJsonInput(buildClaudePromptText(userText)));
     proc.stdin!.end();
 
     try {
