@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { normalizeSdkMessage, createClaudeAdapter } from "../adapters/claude-adapter.ts";
+import {
+  normalizeSdkMessage,
+  createClaudeAdapter,
+  buildClaudePromptText,
+} from "../adapters/claude-adapter.ts";
 import type { UnifiedStreamMessage } from "../adapters/adapter-interface.ts";
 import type {
   ClaudeSessionMeta,
@@ -438,5 +442,24 @@ describe("createClaudeAdapter", () => {
       cwd: "/b",
     });
     expect(await adapter.getSessionInfo("sid-C")).toEqual({ sessionId: "sid-C" });
+  });
+});
+
+describe("buildClaudePromptText", () => {
+  it("prepends the Claude-specific injection prompt when present", () => {
+    const result = buildClaudePromptText(
+      "[User message]\nhello\n[/User message]",
+      "Never repeat successful commands.",
+    );
+
+    expect(result).toContain("[ChatCCC Claude-specific injection prompt]");
+    expect(result).toContain("Never repeat successful commands.");
+    expect(result).toContain("[/ChatCCC Claude-specific injection prompt]");
+    expect(result.endsWith("[User message]\nhello\n[/User message]")).toBe(true);
+  });
+
+  it("leaves user text unchanged when the injection prompt is empty", () => {
+    expect(buildClaudePromptText("hello", "   ")).toBe("hello");
+    expect(buildClaudePromptText("hello", null)).toBe("hello");
   });
 });
