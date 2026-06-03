@@ -21,6 +21,7 @@ import type {
   UnifiedBlock,
   UnifiedStreamMessage,
 } from "./adapter-interface.ts";
+import { CHATCCC_PORT } from "../config.ts";
 import {
   defaultClaudeSessionMetaStore,
   type ClaudeSessionMetaStore,
@@ -260,9 +261,17 @@ export function readClaudeSpecificInjectionPrompt(): string | null {
 export function buildClaudePromptText(
   userText: string,
   injectionPrompt: string | null = readClaudeSpecificInjectionPrompt(),
+  sessionId?: string,
 ): string {
-  const prompt = injectionPrompt?.trim();
+  let prompt = injectionPrompt?.trim();
   if (!prompt) return userText;
+
+  // 动态替换注入提示词中的占位符（端口、session_id 等）
+  if (sessionId) {
+    prompt = prompt
+      .replace(/\{\{stop_stuck_url\}\}/g, `http://127.0.0.1:${CHATCCC_PORT}/api/agent/stop-stuck-loop`)
+      .replace(/\{\{session_id\}\}/g, sessionId);
+  }
 
   return [
     "[ChatCCC Claude-specific injection prompt]",
@@ -461,7 +470,7 @@ class ClaudeAdapter implements ToolAdapter {
     );
 
     try {
-      await session.send(buildClaudePromptText(userText));
+      await session.send(buildClaudePromptText(userText, undefined, sessionId));
       for await (const raw of session.stream()) {
         if (abortController.signal.aborted) {
           aborted = true;

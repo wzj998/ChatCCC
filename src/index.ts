@@ -78,6 +78,7 @@ import { SimulatedPlatform, SIM_DEFAULT_CHAT_ID } from "./sim-platform.ts";
 import { setMessageHandler } from "./sim-store.ts";
 import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
+import { handleAgentStopStuckRequest } from "./agent-stop-stuck.ts";
 import {
   createCardKitCard,
   sendCardKitMessage,
@@ -689,7 +690,7 @@ async function main(): Promise<void> {
     setExtraApiHandler(async (req, res) => {
       const injected = await handleSimInjectMessage(req, res);
       if (injected) return true;
-      return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+      return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res)) || (await handleAgentStopStuckRequest(req, res));
     });
 
     const simServer = createServer(createUiRouter());
@@ -748,7 +749,7 @@ async function main(): Promise<void> {
     });
   });
   setExtraApiHandler(async (req, res) => {
-    return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res));
+    return (await handleAgentImageRequest(req, res)) || (await handleAgentFileRequest(req, res)) || (await handleAgentStopStuckRequest(req, res));
   });
 
   console.log(`[启动 2/7] 环境与凭证检查`);

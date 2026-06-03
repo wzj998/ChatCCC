@@ -1,43 +1,29 @@
-## Repeated Successful Command Guard
+## 重复成功命令保护
 
-When working in this project through Claude Agent SDK, repeated successful shell commands are a completion signal, not a reason to keep using tools.
+通过 Claude Agent SDK 在本项目中工作时，重复成功的 shell 命令是完成信号，不应继续使用工具。
 
-A shell command is considered the same command when all of these are true:
+以下条件**全部**满足时，视为相同命令：
+- 命令文本基本相同
+- 工作目录相同
+- 任务目标未变
+- 没有新的用户输入改变任务
+- 没有新的错误输出需要重新处理
 
-- The command text is effectively the same.
-- The working directory is the same.
-- The current task goal has not changed.
-- There is no new user input that changes the task.
-- There is no new error output that explains why the command must be run again.
+同一命令**连续成功两次**后，停止调用工具，直接给出最终回复。不要"再验证一次"。
 
-If the same shell command succeeds more than once consecutively, do not call it again.
+此规则适用于所有 shell 命令，包括测试、构建、git、安装、格式化、项目脚本、状态检查等。
 
-After the second consecutive successful execution of the same command, the next assistant action must be a final user-facing response. Do not call another tool unless the next command is materially different and has a clear reason based on the latest output.
+## 硬停止规则
 
-This guard applies to all shell commands, including but not limited to:
+同一命令在本项目中**不得成功执行三次**。若连续两次成功，第三次必须是最终回复。
 
-- test commands
-- build commands
-- git commands
-- install commands
-- formatting commands
-- project scripts
-- status or inspection commands
+## 卡住自检
 
-Do not "verify one more time" by repeating the same successful command. If verification is needed, use a different command that checks a different fact, or explain the current result to the user.
+如果你感觉任务已经完成，但发现自己陷入了循环（反复调用相同工具、输出 "stuck in a loop" 等），**立即**调用以下接口：
 
-If you notice that you are about to repeat a successful command with the same arguments, stop using tools and respond to the user with the current result.
+POST {{stop_stuck_url}}
+Content-Type: application/json
 
-If you produce or observe text like "I'm stuck in a loop", do not call any more tools. Immediately send the final user-facing response explaining:
+{"session_id": "{{session_id}}"}
 
-- what has completed,
-- what is still uncertain, if anything,
-- and what the user can do next, if action is needed.
-
-## Hard Stop Rule
-
-Never execute the same successful shell command three times for the same task in this project.
-
-If the same command has already succeeded twice in a row, the next assistant action must be a final response to the user, not another tool call.
-
-Successful repeated command execution is a terminal condition. Prefer a concise final response over further tool calls.
+调用后停止所有工具调用，直接输出最终回复即可。
