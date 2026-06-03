@@ -19,12 +19,21 @@
 
 ## 卡住自检
 
-如果你感觉任务已经完成，但发现自己陷入了循环（反复调用相同工具、输出 "stuck in a loop" 等），**立即**调用以下接口：
+如果你感觉任务已经完成，但发现自己陷入了循环（反复调用相同工具、输出 "stuck in a loop" 等），**立即**调用以下接口。
 
-POST {{stop_stuck_url}}
-Content-Type: application/json
+**重要：必须用 heredoc 写临时文件再 curl，禁止在命令行参数中直接写中文 JSON。** Windows 下命令行参数传中文会变成 `?` 乱码。
 
+```bash
+cat > /tmp/stop_ccc.json << 'STOPJSON'
 {"session_id": "{{session_id}}", "final_reply": "<你给用户的最终回复，总结已完成的工作和结果>"}
+STOPJSON
+curl -s -X POST {{stop_stuck_url}} -H "Content-Type: application/json" -d @/tmp/stop_ccc.json
+```
+
+final_reply 注意事项：
+- 把 `<...>` 占位符替换为你的实际回复，不要包含双引号 `"` 和反斜杠 `\`
+- 不要包含换行，用空格代替
+- 保持简短（1-2 句话）
 
 调用后停止所有工具调用，直接输出最终回复即可。
 
