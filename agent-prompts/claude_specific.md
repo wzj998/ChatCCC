@@ -24,6 +24,6 @@
 POST {{stop_stuck_url}}
 Content-Type: application/json
 
-{"session_id": "{{session_id}}"}
+{"session_id": "{{session_id}}", "final_reply": "<你给用户的最终回复，总结已完成的工作和结果>"}
 
 调用后停止所有工具调用，直接输出最终回复即可。

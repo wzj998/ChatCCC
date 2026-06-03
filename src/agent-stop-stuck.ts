@@ -27,9 +27,9 @@ export async function handleAgentStopStuckRequest(
     return true;
   }
 
-  let body: { session_id?: string };
+  let body: { session_id?: string; final_reply?: string };
   try {
-    body = await readUtf8JsonBody<{ session_id?: string }>(req, MAX_REQUEST_BYTES);
+    body = await readUtf8JsonBody<{ session_id?: string; final_reply?: string }>(req, MAX_REQUEST_BYTES);
   } catch (err) {
     jsonReply(res, 400, { error: `Invalid request body: ${(err as Error).message}` });
     return true;
@@ -59,6 +59,8 @@ export async function handleAgentStopStuckRequest(
   // 丢弃缓存队列中的消息
   cancelQueuedMessage(sessionId);
 
+  const finalReply = typeof body?.final_reply === "string" ? body.final_reply.trim() : "";
+
   // fire-and-forget：立即把 stream-state 标为 done（而非 stopped），
   // 让 display loop 以"正常完成"而非"已停止"来渲染卡片和最终回复。
   // 不设 prompt.stopped = true，这样 runAgentSession 的 finally 也会写 "done"。
@@ -70,6 +72,7 @@ export async function handleAgentStopStuckRequest(
       await writeStreamState({
         ...current,
         status: "done",
+        finalReply: finalReply ? current.finalReply + "\n\n" + finalReply : current.finalReply,
         updatedAt: Date.now(),
       });
     } catch (err) {
@@ -82,7 +85,7 @@ export async function handleAgentStopStuckRequest(
   // 不设 stopped 标记 → finally block 写 "done" → 卡片正常结束
   prompt.controller.abort();
 
-  console.log(`[${ts()}] [STUCK-LOOP] Session ${sessionId} aborted as done (agent detected stuck loop)`);
+  console.log(`[${ts()}] [STUCK-LOOP] Session ${sessionId} aborted as done (agent detected stuck loop, final_reply=${finalReply ? "yes" : "no"})`);
 
   jsonReply(res, 200, { ok: true });
   return true;
