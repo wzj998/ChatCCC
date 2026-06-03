@@ -69,7 +69,7 @@ export interface ClaudeConfig {
   apiKey: string;
   /** Anthropic 兼容 API Base URL（选填，留空则使用默认端点） */
   baseUrl: string;
-  /** Claude Agent SDK maxTurns 设置，默认 25 */
+  /** Claude Agent SDK maxTurns 设置，默认 0（无限制） */
   maxTurn: number;
 }
 
@@ -326,7 +326,7 @@ function loadConfig(): AppConfig {
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
-    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 25 },
+    claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 0 },
     cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
@@ -472,7 +472,7 @@ function loadConfig(): AppConfig {
       baseUrl: normalizeOptionalConfigField(claude.baseUrl, { label: "claude.baseUrl" }),
       maxTurn: typeof (claude as Record<string, unknown>).maxTurn === "number"
         ? (claude as Record<string, unknown>).maxTurn as number
-        : 25,
+        : 0,
     },
     cursor: {
       enabled: cursorEnabled,

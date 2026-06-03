@@ -18,6 +18,19 @@ import {
   toolDisplayName,
 } from "./config.ts";
 import { applyPrivacy } from "./privacy.ts";
+
+// ---------------------------------------------------------------------------
+// 合并转发消息类型
+// ---------------------------------------------------------------------------
+
+export interface FeishuMessageItem {
+  message_id?: string;
+  msg_type?: string;
+  body?: { content?: string };
+  sender?: { id?: string; id_type?: string };
+  create_time?: string;
+  upper_message_id?: string;
+}
 import { buildHelpCard } from "./cards.ts";
 
 // ---------------------------------------------------------------------------
@@ -96,6 +109,12 @@ const REQUIRED_PERMISSIONS: PermissionDef[] = [
       header: { template: "blue", title: { tag: "plain_text", content: "permcheck" } },
       body: { direction: "vertical", elements: [{ tag: "markdown", content: " " }] },
     }),
+  },
+  {
+    scope: "im:message:read",
+    description: "读取合并转发消息中的子消息列表",
+    method: "GET",
+    path: "/im/v1/messages/om_000000000000000000000000000000",
   },
 ];
 
@@ -1045,4 +1064,35 @@ export async function sendPostMessage(
     console.error(`[${ts()}] [SEND] post FAIL: chatId=${chatId} ${(err as Error).message}`);
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 合并转发消息
+// ---------------------------------------------------------------------------
+
+/**
+ * 获取合并转发消息中的子消息列表。
+ *
+ * 对合并转发消息调用 GET /im/v1/messages/{messageId} 时，
+ * 返回 data.items[] 扁平的子消息列表，通过 upper_message_id 构建层级。
+ * 第一个 item（无 upper_message_id）是合并转发消息自身。
+ *
+ * 权限要求: im:message:read
+ */
+export async function getMergeForwardMessages(
+  token: string,
+  messageId: string,
+): Promise<FeishuMessageItem[]> {
+  const resp = await fetch(`${BASE_URL}/im/v1/messages/${messageId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const json = (await resp.json()) as {
+    code: number;
+    msg?: string;
+    data?: { items?: FeishuMessageItem[] };
+  };
+  if (json.code !== 0) {
+    throw new Error(`getMergeForwardMessages [${json.code}] ${json.msg ?? ""}`);
+  }
+  return json.data?.items ?? [];
 }

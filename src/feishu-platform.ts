@@ -37,6 +37,7 @@ export interface FeishuPlatform {
   extractSessionId: typeof realApi.extractSessionId;
   formatDelayNotice: typeof realApi.formatDelayNotice;
   sendRestartCard: typeof realApi.sendRestartCard;
+  getMergeForwardMessages: typeof realApi.getMergeForwardMessages;
 }
 
 let _impl: FeishuPlatform = realApi;
@@ -141,4 +142,8 @@ export function sendPostMessage(...args: Parameters<typeof realApi.sendPostMessa
 
 export function sendRestartCard(...args: Parameters<typeof realApi.sendRestartCard>): ReturnType<typeof realApi.sendRestartCard> {
   return _impl.sendRestartCard(...args);
+}
+
+export function getMergeForwardMessages(...args: Parameters<typeof realApi.getMergeForwardMessages>): ReturnType<typeof realApi.getMergeForwardMessages> {
+  return _impl.getMergeForwardMessages(...args);
 }

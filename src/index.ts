@@ -69,7 +69,6 @@ import {
   updateCardMessage,
   updateChatInfo,
   disbandChat,
-  getOrDownloadImage,
   sendRestartCard,
   verifyAllPermissions,
   reportPermissionResults,
@@ -182,83 +181,7 @@ function getInnerEvent(data: Evt): InnerEvent {
   return (data.event ?? data) as InnerEvent;
 }
 
-/**
- * 将飞书消息的原始 content JSON 结构转成可读文本，保留代码块等结构信息。
- * 未知类型直接返回 JSON 原文，让 AI 自行理解。
- */
-async function formatMessageContent(message: { message_id?: string; message_type?: string; content?: string }): Promise<string> {
-  const contentStr = message.content ?? "{}";
-  let content: Record<string, unknown>;
-  try { content = JSON.parse(contentStr); } catch { return ""; }
-
-  if (message.message_type === "text") {
-    let text = (content.text ?? "") as string;
-    text = text.replace(/<\/?p[^>]*>/gi, "");
-    text = text.replace(/<br\s*\/?>/gi, "\n");
-    text = text.replace(/&nbsp;/gi, " ");
-    return text.trim();
-  }
-
-  if (message.message_type === "post") {
-    return formatPostContent(content);
-  }
-
-  if (message.message_type === "image") {
-    const imageKey = content.image_key as string | undefined;
-    const messageId = message.message_id;
-    if (!imageKey || !messageId) return contentStr;
-    try {
-      const token = await getTenantAccessToken();
-      const localPath = await getOrDownloadImage(token, messageId, imageKey);
-      return `[图片] ${localPath}`;
-    } catch (err) {
-      console.error(`[${ts()}] [IMAGE] download failed for ${imageKey}: ${(err as Error).message}`);
-      return `[图片: ${imageKey}]`;
-    }
-  }
-
-  if (message.message_type === "media") {
-    const fileKey = content.file_key as string | undefined;
-    const fileName = (content.file_name as string) || "video.mp4";
-    const messageId = message.message_id;
-    if (!fileKey || !messageId) return contentStr;
-    return `[视频] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
-  }
-
-  if (message.message_type === "file") {
-    const fileKey = content.file_key as string | undefined;
-    const fileName = (content.file_name as string) || "download.bin";
-    const messageId = message.message_id;
-    if (!fileKey || !messageId) return contentStr;
-    return `[文件] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
-  }
-
-  // 其他类型（audio, sticker 等）直接给原始 JSON
-  return contentStr;
-}
-
-function formatPostContent(content: Record<string, unknown>): string {
-  const paragraphs = content.content as unknown[][];
-  if (!Array.isArray(paragraphs)) return "";
-
-  const parts: string[] = [];
-  for (const line of paragraphs) {
-    if (!Array.isArray(line)) continue;
-    for (const elem of line) {
-      const el = elem as Record<string, unknown>;
-      if (!el || typeof el !== "object") continue;
-      const t = typeof el.text === "string" ? el.text : "";
-
-      if (el.tag === "code_block") {
-        const lang = typeof el.language === "string" ? el.language : "";
-        parts.push("```" + lang + "\n" + t + "\n```");
-      } else if (el.tag === "p" || el.tag === "text") {
-        if (t) parts.push(t);
-      }
-    }
-  }
-  return parts.join("\n").trim();
-}
+import { formatMessageContent } from "./format-message.ts";
 
 // ---------------------------------------------------------------------------
 // Card action helper: parse button click into text command
