@@ -18,7 +18,7 @@
     "effort": "",
     "apiKey": "",
     "baseUrl": "",
-    "maxTurn": 0
+    "maxTurn": 20
   },
   "cursor": {
     "enabled": false,
