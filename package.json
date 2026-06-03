@@ -19,6 +19,7 @@
     "images/img_readme_*.png",
     "images/avatars/status_*.png",
     "images/avatars/badges/",
+    "images/avatars/combinations/",
     "package.json",
     "README.md",
     "config.sample.json"
