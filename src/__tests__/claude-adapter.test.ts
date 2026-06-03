@@ -463,6 +463,30 @@ describe("buildClaudePromptText", () => {
     expect(buildClaudePromptText("hello", "   ")).toBe("hello");
     expect(buildClaudePromptText("hello", null)).toBe("hello");
   });
+
+  it("replaces {{stop_stuck_url}} and {{session_id}} placeholders when sessionId is provided", () => {
+    const result = buildClaudePromptText(
+      "[User message]\nhello\n[/User message]",
+      "Call POST {{stop_stuck_url}} with {\"session_id\": \"{{session_id}}\"}",
+      "test-sid-123",
+    );
+
+    expect(result).toContain("http://127.0.0.1:");
+    expect(result).toContain("/api/agent/stop-stuck-loop");
+    expect(result).toContain("\"session_id\": \"test-sid-123\"");
+    expect(result).not.toContain("{{stop_stuck_url}}");
+    expect(result).not.toContain("{{session_id}}");
+  });
+
+  it("does not replace placeholders when sessionId is not provided", () => {
+    const result = buildClaudePromptText(
+      "hello",
+      "Call POST {{stop_stuck_url}} with {\"session_id\": \"{{session_id}}\"}",
+    );
+
+    expect(result).toContain("{{stop_stuck_url}}");
+    expect(result).toContain("{{session_id}}");
+  });
 });
 
 describe("buildSdkEnv", () => {
