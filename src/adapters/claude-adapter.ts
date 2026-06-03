@@ -243,7 +243,6 @@ function buildSdkOptions(args: {
   apiKey?: string;
   baseUrl?: string;
   maxTurn: number;
-  planMode?: boolean;
   abortController?: AbortController;
 }): ClaudeSdkSessionOptions {
   const {
@@ -255,7 +254,6 @@ function buildSdkOptions(args: {
     apiKey,
     baseUrl,
     maxTurn,
-    planMode,
     abortController,
   } = args;
 
@@ -263,7 +261,7 @@ function buildSdkOptions(args: {
     cwd,
     abortController,
     settingSources: ["user", "project", "local"] as SettingSource[],
-    permissionMode: planMode ? "plan" : "bypassPermissions",
+    permissionMode: "bypassPermissions",
     autoCompactEnabled: true,
     maxTurns: maxTurn,
     skills: "all",
@@ -275,9 +273,7 @@ function buildSdkOptions(args: {
     },
   };
 
-  if (!planMode) {
-    options.allowDangerouslySkipPermissions = true;
-  }
+  options.allowDangerouslySkipPermissions = true;
   if (!isEmpty(model)) {
     options.model = model;
   }
@@ -410,7 +406,6 @@ class ClaudeAdapter implements ToolAdapter {
         apiKey: this.apiKey,
         baseUrl: this.baseUrl,
         maxTurn: this.maxTurn,
-        planMode: options?.planMode,
         abortController,
       })),
     );

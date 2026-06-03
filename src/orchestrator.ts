@@ -94,21 +94,6 @@ export function sessionChatName(left: string, cwd: string): string {
   return `${left}-${cwdDisplayName(cwd)}`;
 }
 
-/** 判断用户消息是否以 /plan 或 /ask 开头（忽略大小写和尾部空格） */
-function isPlanOrAsk(text: string): boolean {
-  const t = text.toLowerCase().trim();
-  return t === "/plan" || t.startsWith("/plan ") || t === "/ask" || t.startsWith("/ask ");
-}
-
-/** 剥离 /plan 或 /ask 前缀，用于群名等展示场景 */
-function stripPlanOrAskPrefix(text: string): string {
-  if (isPlanOrAsk(text)) {
-    const match = text.match(/^\/(?:plan|ask)\s*(.*)/i);
-    return (match?.[1] ?? "").trim() || text.trim();
-  }
-  return text;
-}
-
 /** 模型模糊匹配：精确匹配优先，否则找子串匹配（模型名越短越优先） */
 function findModelMatch(input: string, models: string[]): string | null {
   if (models.length === 0) return null;
@@ -134,7 +119,7 @@ function shouldSendWechatProcessingAck(
   chatType: string,
   text: string,
 ): boolean {
-  return platform.kind === "wechat" && chatType === "p2p" && (!textLower.startsWith("/") || isPlanOrAsk(text));
+  return platform.kind === "wechat" && chatType === "p2p" && !textLower.startsWith("/");
 }
 
 function isNonWechatP2p(platform: PlatformAdapter, chatType: string): boolean {
@@ -616,10 +601,10 @@ export async function handleCommand(
     if (
       chatType !== "p2p" &&
       isUntitledSessionChatName(chatInfo!.name) &&
-      (!textLower.startsWith("/") || isPlanOrAsk(text))
+      !textLower.startsWith("/")
     ) {
       const MAX_PREFIX = 10;
-      const prefix = stripPlanOrAskPrefix(text).slice(0, MAX_PREFIX);
+      const prefix = text.slice(0, MAX_PREFIX);
       const adapter = getAdapterForTool(descriptionTool, sessionId);
       const info = await adapter
         .getSessionInfo(sessionId)
@@ -651,7 +636,7 @@ export async function handleCommand(
     if (
       chatType === "p2p" &&
       platform.kind === "wechat" &&
-      (!textLower.startsWith("/") || isPlanOrAsk(text))
+      !textLower.startsWith("/")
     ) {
       try {
         const reg = await loadSessionRegistryForBinding();
@@ -1253,7 +1238,7 @@ export async function handleCommand(
         msgTimestamp,
         descriptionTool,
         tid,
-        isPlanOrAsk(text),
+        false,
       );
       logTrace(tid, "DONE", { outcome: "resume_done", sessionId });
       console.log(`[${ts()}] [RESUME] Session ${sessionId} done`);
@@ -1328,7 +1313,7 @@ export async function handleCommand(
   }
 
   // 飞书私聊普通消息：不再绑定私聊本身，而是自动创建会话群并把私聊内容作为首轮 prompt。
-  if (isNonWechatP2p(platform, chatType) && (!textLower.startsWith("/") || isPlanOrAsk(text))) {
+  if (isNonWechatP2p(platform, chatType) && !textLower.startsWith("/")) {
     const tool = resolveDefaultAgentTool();
     const toolLabel = toolDisplayName(tool);
     logTrace(tid, "BRANCH", { cmd: "auto_new_from_p2p", tool });
@@ -1369,7 +1354,7 @@ export async function handleCommand(
     }
 
     const cwd = sessionCwd;
-    const initialName = sessionChatName(stripPlanOrAskPrefix(text).slice(0, 10) || "新会话", cwd);
+    const initialName = sessionChatName(text.slice(0, 10) || "新会话", cwd);
     let newChatId: string;
     try {
       newChatId = await platform.createGroup(initialName, [openId]);
@@ -1453,7 +1438,7 @@ export async function handleCommand(
         msgTimestamp,
         tool,
         tid,
-        isPlanOrAsk(text),
+        false,
       );
       console.log(`[${ts()}] [AUTO-P2P 5/5] First prompt sent → OK`);
       logTrace(tid, "DONE", { outcome: "auto_new_p2p_prompt_done", newChatId, sessionId, tool });

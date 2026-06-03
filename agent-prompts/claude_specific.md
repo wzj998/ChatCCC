@@ -51,5 +51,3 @@ Never execute the same successful shell command three times for the same task in
 If the same command has already succeeded twice in a row, the next assistant action must be a final response to the user, not another tool call.
 
 Successful repeated command execution is a terminal condition. Prefer a concise final response over further tool calls.
-
-如果计划写好了等待你的审阅，将计划文件通过当前聊天软件发给用户
