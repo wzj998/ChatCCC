@@ -170,3 +170,24 @@ export interface ToolAdapter {
    */
   closeSession(sessionId: string): Promise<void>;
 }
+
+// ---------------------------------------------------------------------------
+// parseUserCommand — 从包装后的 userText 中提取原始用户消息并判断模式
+// ---------------------------------------------------------------------------
+
+export interface UserCommand {
+  /** 原始用户消息（去除包装） */
+  original: string;
+  /** 检测到的模式：plan / ask / null（普通消息） */
+  mode: "plan" | "ask" | null;
+}
+
+/** 从 [User message]...[/User message] 包装中提取原始消息并识别 /plan /ask 前缀 */
+export function parseUserCommand(userText: string): UserCommand {
+  const match = userText.match(/\[User message\]\n(.*?)\n\[\/User message\]/s);
+  if (!match) return { original: "", mode: null };
+  const original = match[1].trimStart();
+  if (original.startsWith("/plan")) return { original, mode: "plan" };
+  if (original.startsWith("/ask")) return { original, mode: "ask" };
+  return { original, mode: null };
+}

@@ -19,6 +19,7 @@ import type {
   CreateSessionResult,
   SessionInfo,
 } from "./adapter-interface.ts";
+import { parseUserCommand } from "./adapter-interface.ts";
 import { CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS } from "../config.ts";
 import {
   defaultCursorSessionMetaStore,
@@ -298,8 +299,17 @@ function spawnAgent(
   cwd?: string,
   stdinText?: string,
   modelOverride?: string,
+  mode?: "plan" | "ask",
 ): ChildProcess {
-  let allArgs = [...CURSOR_AGENT_ARGS, ...extraArgs];
+  let allArgs: string[];
+  if (mode) {
+    // plan/ask 模式：移除 --force/--yolo，添加 --mode plan/ask
+    allArgs = CURSOR_AGENT_ARGS.filter(a => a !== "--force" && a !== "--yolo");
+    allArgs.push("--mode", mode);
+    allArgs.push(...extraArgs);
+  } else {
+    allArgs = [...CURSOR_AGENT_ARGS, ...extraArgs];
+  }
   if (modelOverride) {
     // 替换全局 --model 为 per-session override
     const modelIdx = allArgs.findIndex((a, i) => a === "--model" && i + 1 < allArgs.length);
@@ -407,7 +417,14 @@ class CursorAdapter implements ToolAdapter {
     options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
-    const proc = spawnAgent(["--resume", sessionId], cwd, buildCursorPromptText(userText), this.modelOverride);
+    const cmd = parseUserCommand(userText);
+    const proc = spawnAgent(
+      ["--resume", sessionId],
+      cwd,
+      buildCursorPromptText(userText),
+      this.modelOverride,
+      cmd.mode ?? undefined,
+    );
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 

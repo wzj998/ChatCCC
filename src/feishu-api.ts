@@ -737,7 +737,6 @@ export async function sendImageReply(
 function feishuFileType(ext: string): string {
   const map: Record<string, string> = {
     ".mp4": "mp4",
-    ".mp3": "opus", ".wav": "opus", ".ogg": "opus", ".aac": "opus", ".m4a": "opus",
     ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
     ".xls": "xls", ".xlsx": "xls", ".csv": "xls",
     ".ppt": "ppt", ".pptx": "ppt",
@@ -825,10 +824,6 @@ export async function sendFileReply(
   try {
     const fileKey = await uploadMessageFile(token, filePath);
     const fileName = filePath.split(/[\\/]/).pop() || "file";
-    const ext = extname(filePath).toLowerCase();
-    // 视频/音频用 msg_type: "media"，文档用 "file"
-    const isMedia = [".mp3", ".wav", ".ogg", ".aac", ".m4a"].includes(ext);
-    const msgType = isMedia ? "media" : "file";
     const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
       method: "POST",
       headers: {
@@ -837,16 +832,16 @@ export async function sendFileReply(
       },
       body: JSON.stringify({
         receive_id: chatId,
-        msg_type: msgType,
+        msg_type: "file",
         content: JSON.stringify({ file_key: fileKey }),
       }),
     });
     const data = (await resp.json().catch(() => ({}))) as { code?: number; msg?: string; data?: { message_id?: string } };
     if (data.code !== 0) {
-      console.error(`[${ts()}] [SEND] ${msgType} FAIL: chatId=${chatId} path=${filePath} code=${data.code} msg="${data.msg ?? ""}"`);
+      console.error(`[${ts()}] [SEND] file FAIL: chatId=${chatId} path=${filePath} code=${data.code} msg="${data.msg ?? ""}"`);
       throw new Error(`[${data.code}] ${data.msg ?? "send file failed"}`);
     }
-    console.log(`[${ts()}] [SEND] ${msgType} OK: chatId=${chatId} name=${fileName} msgId=${data.data?.message_id ?? "N/A"}`);
+    console.log(`[${ts()}] [SEND] file OK: chatId=${chatId} name=${fileName} msgId=${data.data?.message_id ?? "N/A"}`);
     return true;
   } catch (err) {
     if (!(err instanceof Error && err.message.startsWith("["))) {
