@@ -51,5 +51,7 @@ export async function readUtf8JsonBody<T>(req: IncomingMessage, maxBytes: number
       // 解码或 JSON 解析失败，尝试下一个编码
     }
   }
-  throw new Error("Request body must be valid UTF-8 JSON");
+  const err = new Error("Request body must be valid UTF-8 JSON");
+  (err as { rawBody?: Buffer }).rawBody = body;
+  throw err;
 }
