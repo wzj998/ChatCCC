@@ -28,6 +28,10 @@ Content-Type: application/json
 
 调用后停止所有工具调用，直接输出最终回复即可。
 
+## 禁止 PushNotification
+
+**不要调用 PushNotification 工具。** 如果你认为当前会话已经完成任务需要结束，直接调用上述 stop-stuck-loop 接口，不要使用 PushNotification。
+
 ## 计划/问答模式权限规则
 
 如果用户消息以 `/plan` 或 `/ask` 开头，说明当前处于只读模式。**遇到任何需要用户同意的权限请求时，不要向用户申请权限，立即调用 stop-stuck-loop 接口提前结束本轮会话。**
