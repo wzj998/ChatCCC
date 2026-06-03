@@ -1487,8 +1487,11 @@ export function startUnifiedDisplayLoop(): void {
                   await p.cardUpdate(display.cardId, deltaCard, mySeq);
                   display.sequence = mySeq;
                 } catch (err) {
-                  console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
-                  if (!display.streamErrorNotified) {
+                  const errMsg = (err as Error).message;
+                  console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${errMsg}`);
+                  if (errMsg.includes("300317")) {
+                    display.sequence = mySeq;
+                  } else if (!display.streamErrorNotified) {
                     display.streamErrorNotified = true;
                     p.sendText(chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
                   }
@@ -1513,8 +1516,11 @@ export function startUnifiedDisplayLoop(): void {
                 await p.cardUpdate(display.cardId, card, mySeq);
                 display.sequence = mySeq;
               } catch (err) {
-                console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${(err as Error).message}`);
-                if (!display.streamErrorNotified) {
+                const errMsg = (err as Error).message;
+                console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${errMsg}`);
+                if (errMsg.includes("300317")) {
+                  display.sequence = mySeq;
+                } else if (!display.streamErrorNotified) {
                   display.streamErrorNotified = true;
                   p.sendText(chatId, "卡片更新失败，结果将以文本形式发送。").catch(() => {});
                 }
