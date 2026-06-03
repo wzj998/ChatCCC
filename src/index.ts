@@ -79,6 +79,7 @@ import { setMessageHandler } from "./sim-store.ts";
 import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { handleAgentStopStuckRequest } from "./agent-stop-stuck.ts";
+import { applyPrivacy } from "./privacy.ts";
 import {
   createCardKitCard,
   sendCardKitMessage,
@@ -145,13 +146,13 @@ function createFeishuAdapter(): PlatformAdapter {
 
     // ---- 进度展示（CardKit 委托） ----
     async cardCreate(cardJson) {
-      return createCardKitCard(await auth(), cardJson);
+      return createCardKitCard(await auth(), applyPrivacy(cardJson));
     },
     async cardSend(chatId, cardId) {
       return sendCardKitMessage(await auth(), chatId, cardId);
     },
     async cardUpdate(cardId, cardJson, sequence) {
-      return updateCardKitCard(await auth(), cardId, cardJson, sequence);
+      return updateCardKitCard(await auth(), cardId, applyPrivacy(cardJson), sequence);
     },
   };
 }
