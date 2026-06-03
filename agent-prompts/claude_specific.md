@@ -1,13 +1,3 @@
-# Claude-Specific Injection Prompt
-
-Use this prompt as the Claude Agent SDK injection prompt for this project.
-
-Project workspace:
-
-```text
-f:\users\weizhangjian\feishuclauderprivate
-```
-
 ## Repeated Successful Command Guard
 
 When working in this project through Claude Agent SDK, repeated successful shell commands are a completion signal, not a reason to keep using tools.

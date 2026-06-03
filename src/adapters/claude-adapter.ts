@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -82,23 +82,73 @@ export function buildSdkEnv(
   const apiKeyTrim = (apiKey ?? "").trim();
   const baseUrlTrim = (baseUrl ?? "").trim();
 
-  if (!subagentModelTrim && !apiKeyTrim && !baseUrlTrim) return undefined;
-
   const env: Record<string, string | undefined> = { ...process.env };
-  delete env.ANTHROPIC_AUTH_TOKEN;
-  delete env.CLAUDE_CODE_OAUTH_TOKEN;
-  delete env.ANTHROPIC_MODEL;
-  delete env.ANTHROPIC_DEFAULT_OPUS_MODEL;
-  delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
-  delete env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
-  delete env.CLAUDE_CODE_EFFORT_LEVEL;
-  delete env.CLAUDE_CODE_SUBAGENT_MODEL;
+  let mutated = preferGitBashOnWindows(env);
+
+  if (subagentModelTrim || apiKeyTrim || baseUrlTrim) {
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete env.ANTHROPIC_MODEL;
+    delete env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+    delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+    delete env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+    delete env.CLAUDE_CODE_EFFORT_LEVEL;
+    delete env.CLAUDE_CODE_SUBAGENT_MODEL;
+    mutated = true;
+  }
 
   if (subagentModelTrim) env.CLAUDE_CODE_SUBAGENT_MODEL = subagentModelTrim;
   if (apiKeyTrim) env.ANTHROPIC_API_KEY = apiKeyTrim;
   if (baseUrlTrim) env.ANTHROPIC_BASE_URL = baseUrlTrim;
 
-  return env;
+  return mutated ? env : undefined;
+}
+
+function preferGitBashOnWindows(env: Record<string, string | undefined>): boolean {
+  if (process.platform !== "win32") return false;
+
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const rawPath = env[pathKey];
+  if (!rawPath) return false;
+
+  const parts = rawPath.split(delimiter).filter((part) => part && part !== "%PATH%");
+  const preferred = findPreferredGitBashPath(parts);
+  if (!preferred) {
+    const nextPath = parts.join(delimiter);
+    if (nextPath !== rawPath) {
+      env[pathKey] = nextPath;
+      return true;
+    }
+    return false;
+  }
+
+  const preferredLower = preferred.toLowerCase();
+  const reordered = [
+    preferred,
+    ...parts.filter((part) => part.toLowerCase() !== preferredLower),
+  ];
+  const nextPath = reordered.join(delimiter);
+  if (nextPath === rawPath) return false;
+  env[pathKey] = nextPath;
+  return true;
+}
+
+function findPreferredGitBashPath(pathParts: string[]): string | undefined {
+  const programFilesGit = join(
+    process.env.ProgramFiles ?? "C:\\Program Files",
+    "Git",
+    "usr",
+    "bin",
+  );
+  if (existsSync(join(programFilesGit, "bash.exe"))) return programFilesGit;
+
+  return pathParts.find((part) => {
+    if (!/(\\|\/)(Git)(\\|\/)usr(\\|\/)bin$/i.test(part) &&
+        !/(\\|\/)Fork(\\|\/)gitInstance(\\|\/)[^\\/]+(\\|\/)bin$/i.test(part)) {
+      return false;
+    }
+    return existsSync(join(part, "bash.exe"));
+  });
 }
 
 function readMcpServersConfig(): Record<string, unknown> | undefined {

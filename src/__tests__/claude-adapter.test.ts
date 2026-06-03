@@ -467,7 +467,37 @@ describe("buildClaudePromptText", () => {
 
 describe("buildSdkEnv", () => {
   it("returns undefined when no SDK env override is configured", () => {
-    expect(buildSdkEnv("", "  ", undefined)).toBeUndefined();
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = process.platform === "win32"
+        ? "C:\\Program Files\\Git\\usr\\bin;C:\\Windows\\System32"
+        : "/usr/bin:/bin";
+      expect(buildSdkEnv("", "  ", undefined)).toBeUndefined();
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("prefers Git Bash before WindowsApps for Claude SDK subprocesses on Windows", () => {
+    if (process.platform !== "win32") return;
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = [
+        "C:\\Users\\weizhangjian\\AppData\\Local\\Microsoft\\WindowsApps",
+        "C:\\Program Files\\Git\\usr\\bin",
+        "%PATH%",
+        "C:\\Windows\\System32",
+      ].join(";");
+
+      const env = buildSdkEnv("", "", "");
+
+      expect(env).toBeDefined();
+      const parts = env!.PATH!.split(";");
+      expect(parts[0]).toBe("C:\\Program Files\\Git\\usr\\bin");
+      expect(parts).not.toContain("%PATH%");
+    } finally {
+      process.env.PATH = originalPath;
+    }
   });
 
   it("sets requested SDK env overrides and removes conflicting Claude auth/model vars", () => {
