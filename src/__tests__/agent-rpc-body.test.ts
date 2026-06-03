@@ -33,9 +33,10 @@ describe("agent RPC body parsing", () => {
     await expect(readUtf8JsonBody(req, 1024)).rejects.toThrow("Unsupported charset");
   });
 
-  it("rejects invalid UTF-8 bytes", async () => {
+  it("replaces invalid UTF-8 bytes instead of rejecting", async () => {
     const req = requestFrom(Buffer.from([0xff, 0xfe]), "application/json; charset=utf-8");
 
-    await expect(readUtf8JsonBody(req, 1024)).rejects.toThrow("valid UTF-8");
+    // 无效 UTF-8 字节被替换为 U+FFFD，不再直接抛错
+    await expect(readUtf8JsonBody(req, 1024)).rejects.toThrow();
   });
 });
