@@ -131,6 +131,8 @@ export function buildHelpCard(
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
     "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
+    "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
+    "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
   ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },

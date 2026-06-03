@@ -50,7 +50,7 @@ const baseAppConfig: AppConfig = {
     effort: "initial-effort",
     apiKey: "",
     baseUrl: "",
-    maxTurn: 25,
+    maxTurn: 0,
   },
   cursor: { enabled: true, defaultAgent: false, path: "/initial/cursor", model: "initial-cursor-model" },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", effort: "initial-codex-effort" },
@@ -92,7 +92,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
         effort: "high",
         apiKey: "sk-test",
         baseUrl: "https://api.example.com",
-        maxTurn: 25,
+        maxTurn: 0,
       },
     });
 

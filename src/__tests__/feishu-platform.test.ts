@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, sendPostMessage, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, disbandChat, sendRestartCard } from "../feishu-platform.ts";
+import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, sendPostMessage, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, disbandChat, sendRestartCard, getMergeForwardMessages } from "../feishu-platform.ts";
 import type { FeishuPlatform } from "../feishu-platform.ts";
 
 const realPlatform = getPlatform();
@@ -35,6 +35,7 @@ describe("feishu-platform", () => {
       extractSessionId: realPlatform.extractSessionId,
       formatDelayNotice: realPlatform.formatDelayNotice,
       sendRestartCard: async () => {},
+      getMergeForwardMessages: async () => [],
     };
 
     setPlatform(mock);
@@ -45,6 +46,8 @@ describe("feishu-platform", () => {
       expect(await getChatInfo("t", "mock_chat")).toEqual({ name: "x", description: "y" });
       const perms = await verifyAllPermissions("t");
       expect(perms).toEqual([]);
+      const mergeMsgs = await getMergeForwardMessages("t", "om_test");
+      expect(mergeMsgs).toEqual([]);
     } finally {
       // 恢复到真实实现，避免影响后续测试
       setPlatform(realPlatform);

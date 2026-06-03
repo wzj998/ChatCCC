@@ -8,8 +8,11 @@
 // =============================================================================
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import type {
   ToolAdapter,
@@ -25,6 +28,40 @@ import {
 } from "./codex-session-meta-store.ts";
 import { killProcessTree } from "./proc-tree-kill.ts";
 import { config } from "../config.ts";
+
+// ---------------------------------------------------------------------------
+// 特殊注入提示
+// ---------------------------------------------------------------------------
+
+const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const CODEX_SPECIFIC_PROMPT_PATH = join(
+  PROJECT_ROOT,
+  "agent-prompts",
+  "codex_specific.md",
+);
+
+function readCodexSpecificInjectionPrompt(): string | null {
+  try {
+    if (!existsSync(CODEX_SPECIFIC_PROMPT_PATH)) return null;
+    const prompt = readFileSync(CODEX_SPECIFIC_PROMPT_PATH, "utf-8").trim();
+    return prompt.length > 0 ? prompt : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildCodexPromptText(userText: string): string {
+  const prompt = readCodexSpecificInjectionPrompt();
+  if (!prompt) return userText;
+
+  return [
+    "[ChatCCC Codex-specific injection prompt]",
+    prompt,
+    "[/ChatCCC Codex-specific injection prompt]",
+    "",
+    userText,
+  ].join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // 命令与参数
@@ -254,7 +291,7 @@ class CodexAdapter implements ToolAdapter {
       ? [...CODEX_BASE_ARGS, "-C", cwd, "-"]
       : [...CODEX_BASE_ARGS, "resume", threadId, "-"];
 
-    const proc = spawnCodex(args, cwd, userText, this.modelOverride);
+    const proc = spawnCodex(args, cwd, buildCodexPromptText(userText), this.modelOverride);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     // 关键：spawn 用了 shell:true，proc.pid 指向的是壳进程（cmd.exe / sh）。

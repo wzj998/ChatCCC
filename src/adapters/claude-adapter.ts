@@ -327,7 +327,7 @@ class ClaudeAdapter implements ToolAdapter {
     this.baseUrl = options.baseUrl;
     this.isEmpty = options.isEmpty;
     this.metaStore = options.metaStore ?? defaultClaudeSessionMetaStore;
-    this.maxTurn = options.maxTurn ?? 25;
+    this.maxTurn = options.maxTurn ?? 0;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {

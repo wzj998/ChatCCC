@@ -321,7 +321,7 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
       (result.claude as Record<string, unknown>).baseUrl = val;
     } else if (key === "CHATCCC_ANTHROPIC_MAX_TURN") {
       result.claude = result.claude || {};
-      (result.claude as Record<string, unknown>).maxTurn = parseInt(val as string, 10) || 25;
+      (result.claude as Record<string, unknown>).maxTurn = (function(v){ var n = parseInt(v, 10); return isNaN(n) ? 0 : n; })(val as string);
     } else if (key === "CHATCCC_CLAUDE_ENABLED") {
       result.claude = result.claude || {};
       (result.claude as Record<string, unknown>).enabled = val === true || val === "true";
@@ -788,7 +788,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-ANTHROPIC_EFFORT">-</span></div>
         <div class="config-row"><span class="key">API Key</span><span class="val" id="cfg-ANTHROPIC_API_KEY">-</span></div>
         <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-ANTHROPIC_BASE_URL">-</span></div>
-        <div class="config-row"><span class="key">Max Turns</span><span class="val" id="cfg-ANTHROPIC_MAX_TURN">-</span></div>
+        <div class="config-row"><span class="key">Max Turns</span><span class="val" id="cfg-ANTHROPIC_MAX_TURN">-</span><span class="hint">(0=无限制)</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-claude" onchange="setDashboardDefaultAgent('claude', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('claude')">编辑</button>
       </div>
@@ -1403,7 +1403,7 @@ function updateDashboardUI() {
   document.getElementById('cfg-ANTHROPIC_EFFORT').textContent = (c.claude && c.claude.effort) || '(留空)';
   document.getElementById('cfg-ANTHROPIC_API_KEY').textContent = (c.claude && c.claude.apiKey) ? '***已设置***' : '(留空)';
   document.getElementById('cfg-ANTHROPIC_BASE_URL').textContent = (c.claude && c.claude.baseUrl) || '(留空)';
-  document.getElementById('cfg-ANTHROPIC_MAX_TURN').textContent = (c.claude && c.claude.maxTurn != null) ? String(c.claude.maxTurn) : '25';
+  document.getElementById('cfg-ANTHROPIC_MAX_TURN').textContent = (c.claude && c.claude.maxTurn != null) ? String(c.claude.maxTurn) : '0';
   document.getElementById('cfg-CURSOR_PATH').textContent = (c.cursor && (c.cursor.path || c.cursor.command)) || '-';
   document.getElementById('cfg-CURSOR_MODEL').textContent = (c.cursor && c.cursor.model) || '(留空)';
   document.getElementById('cfg-CODEX_PATH').textContent = (c.codex && (c.codex.path || c.codex.command)) || 'codex';
@@ -1464,7 +1464,7 @@ function editSection(section) {
   var labelMap = {
     'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
     'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
-    'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL', 'CHATCCC_ANTHROPIC_MAX_TURN': 'Max Turns',
+    'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL', 'CHATCCC_ANTHROPIC_MAX_TURN': 'Max Turns (0=无限制)',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
@@ -1482,7 +1482,7 @@ function editSection(section) {
         else if (key === 'CHATCCC_ANTHROPIC_EFFORT') val = state.config.claude.effort || '';
         else if (key === 'CHATCCC_ANTHROPIC_API_KEY') val = state.config.claude.apiKey || '';
         else if (key === 'CHATCCC_ANTHROPIC_BASE_URL') val = state.config.claude.baseUrl || '';
-        else if (key === 'CHATCCC_ANTHROPIC_MAX_TURN') val = (state.config.claude.maxTurn != null) ? String(state.config.claude.maxTurn) : '25';
+        else if (key === 'CHATCCC_ANTHROPIC_MAX_TURN') val = (state.config.claude.maxTurn != null) ? String(state.config.claude.maxTurn) : '0';
       } else if (section === 'cursor' && state.config.cursor) {
         if (key === 'CHATCCC_CURSOR_PATH') val = state.config.cursor.path || state.config.cursor.command || '';
         else if (key === 'CHATCCC_CURSOR_MODEL') val = state.config.cursor.model || '';

@@ -6,7 +6,10 @@
 // =============================================================================
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import type {
   ToolAdapter,
@@ -22,6 +25,40 @@ import {
   type CursorSessionMetaStore,
 } from "./cursor-session-meta-store.ts";
 import { killProcessTree } from "./proc-tree-kill.ts";
+
+// ---------------------------------------------------------------------------
+// 特殊注入提示
+// ---------------------------------------------------------------------------
+
+const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const CURSOR_SPECIFIC_PROMPT_PATH = join(
+  PROJECT_ROOT,
+  "agent-prompts",
+  "cursor_specific.md",
+);
+
+function readCursorSpecificInjectionPrompt(): string | null {
+  try {
+    if (!existsSync(CURSOR_SPECIFIC_PROMPT_PATH)) return null;
+    const prompt = readFileSync(CURSOR_SPECIFIC_PROMPT_PATH, "utf-8").trim();
+    return prompt.length > 0 ? prompt : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildCursorPromptText(userText: string): string {
+  const prompt = readCursorSpecificInjectionPrompt();
+  if (!prompt) return userText;
+
+  return [
+    "[ChatCCC Cursor-specific injection prompt]",
+    prompt,
+    "[/ChatCCC Cursor-specific injection prompt]",
+    "",
+    userText,
+  ].join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // 类型：Cursor JSONL 消息行
@@ -370,7 +407,7 @@ class CursorAdapter implements ToolAdapter {
     options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
-    const proc = spawnAgent(["--resume", sessionId], cwd, userText, this.modelOverride);
+    const proc = spawnAgent(["--resume", sessionId], cwd, buildCursorPromptText(userText), this.modelOverride);
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 

@@ -153,6 +153,11 @@ export const SimulatedPlatform: FeishuPlatform = {
   async sendRestartCard(_token) {
     // 模拟模式不需要重启通知
   },
+
+  async getMergeForwardMessages(_token, _messageId) {
+    // 模拟模式没有真实 API，返回空数组让调用方降级到 preview
+    return [];
+  },
 };
 
 /** 模拟模式下的默认 chat_id（重新导出以保持向后兼容） */
