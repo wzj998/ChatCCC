@@ -606,6 +606,7 @@ export function applyLoadedConfig(next: AppConfig): void {
   CLAUDE_MODEL = next.claude.model;
   CLAUDE_SUBAGENT_MODEL = next.claude.subagentModel;
   CLAUDE_EFFORT = next.claude.effort;
+  CLAUDE_MAX_TURN = next.claude.maxTurn;
   CLAUDE_API_KEY = next.claude.apiKey;
   CLAUDE_BASE_URL = next.claude.baseUrl;
   GIT_TIMEOUT_SECONDS = next.gitTimeoutSeconds;

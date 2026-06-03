@@ -1,4 +1,13 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  unstable_v2_createSession,
+  type SDKSessionOptions,
+} from "@anthropic-ai/claude-agent-sdk";
+
+type ClaudeSdkSessionOptions = Omit<SDKSessionOptions, "model"> & {
+  model?: string;
+  autoCompactEnabled?: boolean;
+  maxTurns?: number;
+};
 
 type SdkMessageLike = {
   type?: string;
@@ -45,43 +54,48 @@ async function main(): Promise<void> {
   console.error(colorize(`Prompt: ${prompt}`, 36));
   console.error("");
 
-  const stream = query({
-    prompt,
-    options: {
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      settingSources: ["user", "project", "local"],
-      maxBudgetUsd: process.env.MAX_BUDGET_USD
-        ? Number(process.env.MAX_BUDGET_USD)
-        : undefined,
-    },
-  });
+  const options: ClaudeSdkSessionOptions = {
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    settingSources: ["user", "project", "local"],
+    autoCompactEnabled: true,
+    maxTurns: 0,
+  };
+  if (process.env.CLAUDE_MODEL?.trim()) {
+    options.model = process.env.CLAUDE_MODEL.trim();
+  }
+  const session = unstable_v2_createSession(options as SDKSessionOptions);
 
-  for await (const raw of stream) {
-    const parsed = raw as unknown as SdkMessageLike;
-    if (parsed.session_id) sessionId = parsed.session_id;
+  try {
+    await session.send(prompt);
+    for await (const raw of session.stream()) {
+      const parsed = raw as unknown as SdkMessageLike;
+      if (parsed.session_id) sessionId = parsed.session_id;
 
-    if (parsed.type === "system" && parsed.subtype === "init") {
-      console.error(colorize(`[init] session=${sessionId}`, 90));
-    }
+      if (parsed.type === "system" && parsed.subtype === "init") {
+        console.error(colorize(`[init] session=${sessionId}`, 90));
+      }
 
-    if (parsed.type === "assistant") {
-      for (const block of parsed.message?.content ?? []) {
-        if (block.type === "thinking" && block.thinking) {
-          totalThinkingChars += block.thinking.length;
-          console.error(colorize(block.thinking, 90));
-        }
-        if (block.type === "text" && block.text) {
-          totalTextChars += block.text.length;
-          process.stdout.write(block.text);
+      if (parsed.type === "assistant") {
+        for (const block of parsed.message?.content ?? []) {
+          if (block.type === "thinking" && block.thinking) {
+            totalThinkingChars += block.thinking.length;
+            console.error(colorize(block.thinking, 90));
+          }
+          if (block.type === "text" && block.text) {
+            totalTextChars += block.text.length;
+            process.stdout.write(block.text);
+          }
         }
       }
-    }
 
-    if (parsed.type === "result") {
-      finalResult = parsed;
-      break;
+      if (parsed.type === "result") {
+        finalResult = parsed;
+        break;
+      }
     }
+  } finally {
+    session.close();
   }
 
   const elapsed = Date.now() - startTime;

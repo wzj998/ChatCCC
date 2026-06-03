@@ -5,9 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   getSessionInfo as sdkGetSessionInfo,
-  query,
-  type Options as ClaudeSdkOptions,
+  unstable_v2_createSession,
+  unstable_v2_resumeSession,
   type SDKMessage,
+  type SDKSession,
+  type SDKSessionOptions,
+  type EffortLevel,
 } from "@anthropic-ai/claude-agent-sdk";
 
 import type {
@@ -220,6 +223,17 @@ export function buildClaudePromptText(
   ].join("\n");
 }
 
+type ClaudeSdkSessionOptions = Omit<SDKSessionOptions, "model"> & {
+  model?: string;
+  abortController?: AbortController;
+  autoCompactEnabled?: boolean;
+  effort?: EffortLevel | number;
+  maxTurns?: number;
+  mcpServers?: Record<string, unknown>;
+  skills?: "all";
+  stderr?: (data: string) => void;
+};
+
 function buildSdkOptions(args: {
   cwd: string;
   model: string;
@@ -230,9 +244,8 @@ function buildSdkOptions(args: {
   baseUrl?: string;
   maxTurn: number;
   planMode?: boolean;
-  resume?: string;
   abortController?: AbortController;
-}): ClaudeSdkOptions {
+}): ClaudeSdkSessionOptions {
   const {
     cwd,
     model,
@@ -243,17 +256,16 @@ function buildSdkOptions(args: {
     baseUrl,
     maxTurn,
     planMode,
-    resume,
     abortController,
   } = args;
 
-  const options: ClaudeSdkOptions = {
+  const options: ClaudeSdkSessionOptions = {
     cwd,
     abortController,
     settingSources: ["user", "project", "local"] as SettingSource[],
     permissionMode: planMode ? "plan" : "bypassPermissions",
+    autoCompactEnabled: true,
     maxTurns: maxTurn,
-    maxBudgetUsd: 999999999,
     skills: "all",
     stderr: (data) => {
       const trimmed = data.trim();
@@ -270,10 +282,7 @@ function buildSdkOptions(args: {
     options.model = model;
   }
   if (!isEmpty(effort)) {
-    options.effort = effort as ClaudeSdkOptions["effort"];
-  }
-  if (resume) {
-    options.resume = resume;
+    options.effort = effort as ClaudeSdkSessionOptions["effort"];
   }
 
   const env = buildSdkEnv(subagentModel, apiKey, baseUrl);
@@ -283,7 +292,7 @@ function buildSdkOptions(args: {
 
   const mcpServers = readMcpServersConfig();
   if (mcpServers) {
-    options.mcpServers = mcpServers as ClaudeSdkOptions["mcpServers"];
+    options.mcpServers = mcpServers;
   }
 
   return options;
@@ -305,6 +314,14 @@ function bridgeAbortSignal(
   }
   signal.addEventListener("abort", onAbort, { once: true });
   return () => signal.removeEventListener("abort", onAbort);
+}
+
+function closeSdkSession(session: SDKSession): void {
+  session.close();
+}
+
+function toSdkSessionOptions(options: ClaudeSdkSessionOptions): SDKSessionOptions {
+  return options as SDKSessionOptions;
 }
 
 class ClaudeAdapter implements ToolAdapter {
@@ -334,9 +351,8 @@ class ClaudeAdapter implements ToolAdapter {
     logMcpConfig();
     const abortController = new AbortController();
     let sessionId: string | undefined;
-    const stream = query({
-      prompt: "ok",
-      options: buildSdkOptions({
+    const session = unstable_v2_createSession(
+      toSdkSessionOptions(buildSdkOptions({
         cwd,
         model: this.model,
         effort: this.effort,
@@ -346,11 +362,12 @@ class ClaudeAdapter implements ToolAdapter {
         baseUrl: this.baseUrl,
         maxTurn: this.maxTurn,
         abortController,
-      }),
-    });
+      })),
+    );
 
     try {
-      for await (const raw of stream) {
+      await session.send("ok");
+      for await (const raw of session.stream()) {
         const msg = toMessageLike(raw);
         if (msg.session_id && !sessionId) {
           sessionId = msg.session_id;
@@ -363,7 +380,7 @@ class ClaudeAdapter implements ToolAdapter {
         }
       }
     } finally {
-      stream.close();
+      closeSdkSession(session);
     }
 
     if (sessionId) return { sessionId };
@@ -382,9 +399,9 @@ class ClaudeAdapter implements ToolAdapter {
     if (abortController.signal.aborted) return;
     let aborted = false;
 
-    const stream = query({
-      prompt: buildClaudePromptText(userText),
-      options: buildSdkOptions({
+    const session = unstable_v2_resumeSession(
+      sessionId,
+      toSdkSessionOptions(buildSdkOptions({
         cwd,
         model: this.model,
         effort: this.effort,
@@ -394,13 +411,13 @@ class ClaudeAdapter implements ToolAdapter {
         baseUrl: this.baseUrl,
         maxTurn: this.maxTurn,
         planMode: options?.planMode,
-        resume: sessionId,
         abortController,
-      }),
-    });
+      })),
+    );
 
     try {
-      for await (const raw of stream) {
+      await session.send(buildClaudePromptText(userText));
+      for await (const raw of session.stream()) {
         if (abortController.signal.aborted) {
           aborted = true;
           break;
@@ -423,8 +440,8 @@ class ClaudeAdapter implements ToolAdapter {
       removeAbortListener?.();
       if (aborted || abortController.signal.aborted) {
         abortController.abort();
-        stream.close();
       }
+      closeSdkSession(session);
     }
   }
 
