@@ -1238,7 +1238,6 @@ export async function handleCommand(
         msgTimestamp,
         descriptionTool,
         tid,
-        false,
       );
       logTrace(tid, "DONE", { outcome: "resume_done", sessionId });
       console.log(`[${ts()}] [RESUME] Session ${sessionId} done`);
@@ -1438,7 +1437,6 @@ export async function handleCommand(
         msgTimestamp,
         tool,
         tid,
-        false,
       );
       console.log(`[${ts()}] [AUTO-P2P 5/5] First prompt sent → OK`);
       logTrace(tid, "DONE", { outcome: "auto_new_p2p_prompt_done", newChatId, sessionId, tool });

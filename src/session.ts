@@ -1013,7 +1013,9 @@ export async function runAgentSession(
           const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status);
           const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
           const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-          await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+          await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(err => {
+            console.error(`[${ts()}] [DISPLAY] prevState final cardUpdate failed: ${(err as Error).message}`);
+          });
           // cardUpdate IO 期间统一 loop 可能也已处理此 display → 删前检查引用
           const stillOursAfterUpdate = displayCards.get(displayChatId) === display;
           displayCards.delete(displayChatId);
@@ -1344,7 +1346,9 @@ export function startUnifiedDisplayLoop(): void {
               const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
               const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
               const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-              await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(() => {});
+              await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(err => {
+                console.error(`[${ts()}] [DISPLAY] terminal cardUpdate failed: ${(err as Error).message}`);
+              });
 
               // 若 session 仍在 activePrompts 中，说明 runAgentSession 的 finally
               // 还没执行，当前 stream state 可能是 stopSession fire-and-forget
@@ -1419,7 +1423,9 @@ export function startUnifiedDisplayLoop(): void {
                   const oldSeqBase = display.sequence;
                   const oldContent = state.accumulatedContent + state.finalReply;
                   const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "生成中（上轮）" });
-                  await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(() => {});
+                  await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(err => {
+                    console.error(`[${ts()}] [DISPLAY] rotation old cardUpdate failed: ${(err as Error).message}`);
+                  });
                   markCardDone(sessionId, display.turnCount, display.cardId).catch(() => {});
                   const newCardId = await p.cardCreate(buildProgressCard(
                     "",
