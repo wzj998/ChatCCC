@@ -18,6 +18,16 @@ function jsonReply(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
+/**
+ * 从原始 body 字节中用正则尽力提取 session_id。
+ * 兼容 JSON 编码异常（如 GBK 中文导致 JSON.parse 失败）的场景。
+ */
+function extractSessionIdFromRaw(buf: Buffer): string | null {
+  // 匹配 "session_id":"<uuid>" 或 "session_id": "<uuid>"
+  const match = buf.toString("latin1").match(/"session_id"\s*:\s*"([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
 export async function handleAgentStopStuckRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -31,11 +41,23 @@ export async function handleAgentStopStuckRequest(
   }
 
   let body: { session_id?: string; final_reply?: string };
+  let rawBody: Buffer | null = null;
   try {
     body = await readUtf8JsonBody<{ session_id?: string; final_reply?: string }>(req, MAX_REQUEST_BYTES);
   } catch (err) {
-    jsonReply(res, 400, { error: `Invalid request body: ${(err as Error).message}` });
-    return true;
+    // JSON 解析失败时仍尝试从原始字节中提取 session_id 并强行停止
+    // 宁可输出乱码，也不能让 agent 持续循环
+    rawBody = (err as { rawBody?: Buffer }).rawBody as Buffer | undefined ?? null;
+    if (!rawBody) {
+      jsonReply(res, 400, { error: `Invalid request body: ${(err as Error).message}` });
+      return true;
+    }
+    const fallbackId = extractSessionIdFromRaw(rawBody);
+    if (!fallbackId) {
+      jsonReply(res, 400, { error: `Invalid request body: ${(err as Error).message}` });
+      return true;
+    }
+    body = { session_id: fallbackId };
   }
 
   const sessionId = typeof body?.session_id === "string" ? body.session_id.trim() : "";
