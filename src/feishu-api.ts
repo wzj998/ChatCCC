@@ -1,4 +1,5 @@
 import { readdir, stat, readFile, mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { extname, resolve as resolvePath } from "node:path";
 import { dirname, join } from "node:path";
 import sharp from "sharp";
@@ -297,7 +298,10 @@ export function extractSessionId(description: string): string | null {
 
 const AVATAR_DIR = resolvePath(PROJECT_ROOT, "images", "avatars");
 const AVATAR_BADGE_DIR = resolvePath(AVATAR_DIR, "badges");
+const AVATAR_COMBINATIONS_DIR = resolvePath(AVATAR_DIR, "combinations");
 const AVATAR_KEY_CACHE_FILE = resolvePath(USER_DATA_DIR, "state", "avatar-image-keys.json");
+const CODEX_AUTH_FILE = resolvePath(homedir(), ".codex", "auth.json");
+const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const AVATAR_SOURCES: Record<string, string> = {
   new: resolvePath(AVATAR_DIR, "status_new.png"),
   busy: resolvePath(AVATAR_DIR, "status_busy.png"),
@@ -309,8 +313,11 @@ const AVATAR_BADGES: Record<string, string> = {
   codex: resolvePath(AVATAR_BADGE_DIR, "badge_codex.png"),
 };
 const AVATAR_SIZE = 256;
-const BADGE_SIZE = 92;
-const BADGE_MARGIN = 10;
+
+interface CodexUsageBalance {
+  usedPercent: number;
+  remainingPercent: number;
+}
 
 const avatarKeyCache = new Map<string, string>();
 let avatarKeyCacheLoaded = false;
@@ -323,8 +330,19 @@ function normalizeAvatarStatus(status: string): string {
   return AVATAR_SOURCES[status] ? status : "idle";
 }
 
-function avatarCacheKey(tool: string, status: string): string {
-  return `${normalizeAvatarTool(tool)}:${normalizeAvatarStatus(status)}`;
+function avatarCombinationPath(tool: string, status: string): string {
+  return resolvePath(AVATAR_COMBINATIONS_DIR, `avatar_${normalizeAvatarTool(tool)}_${normalizeAvatarStatus(status)}.png`);
+}
+
+function avatarCacheKey(tool: string, status: string, codexUsage: CodexUsageBalance | null = null): string {
+  const normalizedTool = normalizeAvatarTool(tool);
+  const normalizedStatus = normalizeAvatarStatus(status);
+  if (normalizedTool === "codex") {
+    return codexUsage
+      ? `${normalizedTool}:${normalizedStatus}:battery:${codexUsage.remainingPercent}`
+      : `${normalizedTool}:${normalizedStatus}:plain`;
+  }
+  return `${normalizedTool}:${normalizedStatus}`;
 }
 
 async function loadAvatarKeyCache(): Promise<void> {
@@ -350,25 +368,119 @@ async function persistAvatarKeyCache(): Promise<void> {
   );
 }
 
-async function renderAvatar(tool: string, status: string): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+async function getCodexAccessToken(): Promise<string | null> {
+  try {
+    const raw = await readFile(CODEX_AUTH_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown } };
+    const token = parsed.tokens?.access_token;
+    return typeof token === "string" && token.trim() ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCodexUsageBalance(): Promise<CodexUsageBalance | null> {
+  try {
+    const token = await getCodexAccessToken();
+    if (!token) throw new Error("missing ~/.codex/auth.json access token");
+
+    const resp = await fetch(CODEX_USAGE_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
+
+    const data = JSON.parse(text) as {
+      rate_limit?: { primary_window?: { used_percent?: unknown } };
+    };
+    const usedPercent = Number(data.rate_limit?.primary_window?.used_percent);
+    if (!Number.isFinite(usedPercent)) throw new Error("missing rate_limit.primary_window.used_percent");
+
+    const used = clampPercent(usedPercent);
+    return {
+      usedPercent: used,
+      remainingPercent: clampPercent(100 - used),
+    };
+  } catch (err) {
+    console.warn(`[${ts()}] [AVATAR] Codex usage unavailable, using plain avatar: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+function codexUsagePalette(remainingPercent: number): { start: string; end: string; glow: string } {
+  if (remainingPercent <= 25) return { start: "#ef4444", end: "#fb923c", glow: "#fed7aa" };
+  if (remainingPercent <= 60) return { start: "#eab308", end: "#facc15", glow: "#fef3c7" };
+  return { start: "#16a34a", end: "#34d399", glow: "#bbf7d0" };
+}
+
+function buildCodexUsageBatterySvg(remainingPercent: number): Buffer {
+  const remaining = clampPercent(remainingPercent);
+  const label = `${remaining}%`;
+  const palette = codexUsagePalette(remaining);
+
+  const bodyX = 28;
+  const bodyY = 38;
+  const bodyW = 91;
+  const bodyH = 47;
+  const capW = 10;
+  const capH = 18;
+  const capX = bodyX + bodyW;
+  const capY = bodyY + Math.round((bodyH - capH) / 2);
+  const pad = 5;
+  const fillMaxW = bodyW - pad * 2;
+  const fillWidth = Math.round((fillMaxW * remaining) / 100);
+
+  return Buffer.from(`
+<svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="shadow" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#4a2712" flood-opacity="0.30"/>
+    </filter>
+    <linearGradient id="fill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="${palette.start}"/>
+      <stop offset="1" stop-color="${palette.end}"/>
+    </linearGradient>
+    <linearGradient id="well" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#334155"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <clipPath id="batteryInnerClip">
+      <rect x="${bodyX + pad}" y="${bodyY + pad}" width="${fillMaxW}" height="${bodyH - pad * 2}" rx="10"/>
+    </clipPath>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="15" fill="#0f172a"/>
+    <rect x="${bodyX + pad}" y="${bodyY + pad}" width="${fillMaxW}" height="${bodyH - pad * 2}" rx="10" fill="url(#well)"/>
+    <rect x="${bodyX + pad}" y="${bodyY + pad}" width="${fillWidth}" height="${bodyH - pad * 2}" fill="url(#fill)" clip-path="url(#batteryInnerClip)"/>
+    <rect x="${bodyX + pad + 3}" y="${bodyY + pad + 4}" width="${Math.max(0, fillWidth - 6)}" height="7" rx="3.5" fill="${palette.glow}" fill-opacity="0.42" clip-path="url(#batteryInnerClip)"/>
+    <rect x="${capX}" y="${capY}" width="${capW}" height="${capH}" rx="5" fill="#0f172a"/>
+    <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="15" fill="none" stroke="#f8fafc" stroke-opacity="0.82" stroke-width="3.2"/>
+    <text x="${bodyX + bodyW / 2}" y="${bodyY + 32}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900" letter-spacing="0" stroke="#0b1220" stroke-width="5" paint-order="stroke" stroke-linejoin="round" fill="#ffffff">${label}</text>
+  </g>
+</svg>`);
+}
+
+async function renderAvatar(tool: string, status: string, codexUsage: CodexUsageBalance | null = null): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
-  const badge = await sharp(await readFile(AVATAR_BADGES[normalizedTool]))
-    .resize(BADGE_SIZE, BADGE_SIZE, {
-      fit: "contain",
-      kernel: sharp.kernel.lanczos3,
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .png()
-    .toBuffer();
+  const composites: sharp.OverlayOptions[] = [];
 
-  const jpeg = await sharp(await readFile(AVATAR_SOURCES[normalizedStatus]))
-    .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "center" })
-    .composite([{
-      input: badge,
-      left: AVATAR_SIZE - BADGE_SIZE - BADGE_MARGIN,
-      top: AVATAR_SIZE - BADGE_SIZE - BADGE_MARGIN,
-    }])
+  if (normalizedTool === "codex" && codexUsage) {
+    composites.push({ input: buildCodexUsageBatterySvg(codexUsage.remainingPercent), left: 0, top: 0 });
+  }
+
+  let pipeline = sharp(await readFile(avatarCombinationPath(normalizedTool, normalizedStatus)))
+    .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "center" });
+  if (composites.length > 0) {
+    pipeline = pipeline.composite(composites);
+  }
+
+  const jpeg = await pipeline
     .flatten({ background: "#ffffff" })
     .removeAlpha()
     .jpeg({ quality: 95, progressive: false })
@@ -377,12 +489,14 @@ async function renderAvatar(tool: string, status: string): Promise<{ buffer: Buf
   return {
     buffer: jpeg,
     contentType: "image/jpeg",
-    filename: `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
+    filename: codexUsage
+      ? `avatar_${normalizedTool}_${normalizedStatus}_usage_${codexUsage.remainingPercent}.jpg`
+      : `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
   };
 }
 
-async function uploadImage(token: string, tool: string, status: string): Promise<string> {
-  const image = await renderAvatar(tool, status);
+async function uploadImage(token: string, tool: string, status: string, codexUsage: CodexUsageBalance | null = null): Promise<string> {
+  const image = await renderAvatar(tool, status, codexUsage);
   const blob = new Blob([new Uint8Array(image.buffer)], { type: image.contentType });
   const form = new FormData();
   form.append("image_type", "avatar");
@@ -405,15 +519,18 @@ async function uploadImage(token: string, tool: string, status: string): Promise
 
 async function getOrUploadAvatarKey(token: string, tool: string, status: string): Promise<string> {
   await loadAvatarKeyCache();
-  const keyName = avatarCacheKey(tool, status);
+  const normalizedTool = normalizeAvatarTool(tool);
+  const normalizedStatus = normalizeAvatarStatus(status);
+  const codexUsage = normalizedTool === "codex" ? await fetchCodexUsageBalance() : null;
+  const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage);
   const cached = avatarKeyCache.get(keyName);
   if (cached) return cached;
-  const key = await uploadImage(token, tool, status);
+  const key = await uploadImage(token, normalizedTool, normalizedStatus, codexUsage);
   avatarKeyCache.set(keyName, key);
   await persistAvatarKeyCache().catch((err) => {
     console.error(`[${ts()}] [AVATAR] persist cache FAIL: ${(err as Error).message}`);
   });
-  console.log(`[${ts()}] [AVATAR] Uploaded "${status}" → image_key=${key}`);
+  console.log(`[${ts()}] [AVATAR] Uploaded "${keyName}" → image_key=${key}`);
   return key;
 }
 
