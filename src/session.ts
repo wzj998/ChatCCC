@@ -1165,11 +1165,22 @@ export async function runAgentSession(
     // 运行中并更新旧卡片，而不是新建卡片。
     const finalStatus = (wasAbnormalExit || wasResourceStuck) ? "error" : wasStopped ? "stopped" : "done";
     const finalReply = pickFinalReply(state).trim();
+
+    // stop-stuck-loop 接口可能在 fire-and-forget 中已写入带 final_reply 的
+    // stream state，finally 不应覆盖它。
+    let finalReplyToWrite = finalReply;
+    try {
+      const existing = await readStreamState(sessionId);
+      if (existing && existing.finalReply.length > finalReply.length) {
+        finalReplyToWrite = existing.finalReply;
+      }
+    } catch {}
+
     await writeStreamState({
       sessionId,
       status: finalStatus,
       accumulatedContent: state.accumulatedContent,
-      finalReply,
+      finalReply: finalReplyToWrite,
       chunkCount: state.chunkCount,
       turnCount: nextTurnCount,
       contextTokens: existingInfo?.lastContextTokens ?? 0,

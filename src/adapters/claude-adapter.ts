@@ -21,6 +21,7 @@ import type {
   UnifiedBlock,
   UnifiedStreamMessage,
 } from "./adapter-interface.ts";
+import { parseUserCommand } from "./adapter-interface.ts";
 import { CHATCCC_PORT } from "../config.ts";
 import {
   defaultClaudeSessionMetaStore,
@@ -303,6 +304,7 @@ function buildSdkOptions(args: {
   baseUrl?: string;
   maxTurn: number;
   abortController?: AbortController;
+  userText: string;
 }): ClaudeSdkSessionOptions {
   const {
     cwd,
@@ -314,16 +316,30 @@ function buildSdkOptions(args: {
     baseUrl,
     maxTurn,
     abortController,
+    userText,
   } = args;
+
+  const cmd = parseUserCommand(userText);
+  const limited = cmd.mode !== null;
 
   const options: ClaudeSdkSessionOptions = {
     cwd,
     abortController,
     settingSources: ["user", "project", "local"] as SettingSource[],
-    permissionMode: "bypassPermissions",
+    permissionMode: limited ? "default" : "bypassPermissions",
     autoCompactEnabled: true,
     maxTurns: maxTurn,
     skills: "all",
+    ...(limited ? {
+      settings: {
+        permissions: {
+          allow: [
+            "Read",
+            `Bash(curl -s -X POST http://127.0.0.1:${CHATCCC_PORT}/api/agent/stop-stuck-loop *)`,
+          ],
+        },
+      },
+    } : {}),
     stderr: (data) => {
       const trimmed = data.trim();
       if (!trimmed) return;
@@ -332,7 +348,10 @@ function buildSdkOptions(args: {
     },
   };
 
-  options.allowDangerouslySkipPermissions = true;
+  if (!limited) {
+    options.allowDangerouslySkipPermissions = true;
+  }
+
   if (!isEmpty(model)) {
     options.model = model;
   }
@@ -417,6 +436,7 @@ class ClaudeAdapter implements ToolAdapter {
         baseUrl: this.baseUrl,
         maxTurn: this.maxTurn,
         abortController,
+        userText: "",
       })),
     );
 
@@ -466,6 +486,7 @@ class ClaudeAdapter implements ToolAdapter {
         baseUrl: this.baseUrl,
         maxTurn: this.maxTurn,
         abortController,
+        userText,
       })),
     );
 

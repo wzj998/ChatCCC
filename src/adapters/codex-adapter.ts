@@ -22,6 +22,7 @@ import type {
   CreateSessionResult,
   SessionInfo,
 } from "./adapter-interface.ts";
+import { parseUserCommand } from "./adapter-interface.ts";
 import {
   defaultCodexSessionMetaStore,
   type CodexSessionMetaStore,
@@ -287,9 +288,13 @@ class CodexAdapter implements ToolAdapter {
 
     // 首次 prompt: codex exec 创建新线程
     // 后续 prompt: codex exec resume 恢复已有线程（resume 不接受 -C，cwd 继承自原线程）
+    const cmd = parseUserCommand(userText);
+    const baseArgs = cmd.mode
+      ? ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check"]
+      : CODEX_BASE_ARGS;
     const args = isFirstPrompt
-      ? [...CODEX_BASE_ARGS, "-C", cwd, "-"]
-      : [...CODEX_BASE_ARGS, "resume", threadId, "-"];
+      ? [...baseArgs, "-C", cwd, "-"]
+      : [...baseArgs, "resume", threadId, "-"];
 
     const proc = spawnCodex(args, cwd, buildCodexPromptText(userText), this.modelOverride);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
