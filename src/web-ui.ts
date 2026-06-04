@@ -296,6 +296,10 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
       result.platforms = result.platforms || {};
       (result.platforms as Record<string, unknown>).feishu = (result.platforms as Record<string, unknown>).feishu || {};
       ((result.platforms as Record<string, unknown>).feishu as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_FEISHU_PLATFORM_TYPE") {
+      result.platforms = result.platforms || {};
+      (result.platforms as Record<string, unknown>).feishu = (result.platforms as Record<string, unknown>).feishu || {};
+      ((result.platforms as Record<string, unknown>).feishu as Record<string, unknown>).platformType = val;
     } else if (key === "CHATCCC_ILINK_ENABLED") {
       result.platforms = result.platforms || {};
       (result.platforms as Record<string, unknown>).ilink = (result.platforms as Record<string, unknown>).ilink || {};
@@ -583,6 +587,14 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         </div>
         <div id="feishu-cred-fields" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
           <div class="form-group" style="margin-bottom:10px">
+            <label>平台类型</label>
+            <select id="field-CHATCCC_FEISHU_PLATFORM_TYPE" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">
+              <option value="feishu">飞书 (open.feishu.cn)</option>
+              <option value="lark">Lark (open.larksuite.com)</option>
+            </select>
+            <div class="hint">飞书或 Lark 国际版，决定 API 服务器地址</div>
+          </div>
+          <div class="form-group" style="margin-bottom:10px">
             <label>CHATCCC_APP_ID *</label>
             <input type="text" id="field-CHATCCC_APP_ID" placeholder="cli_xxxxxxxxxxxx">
             <div class="hint">飞书开放平台「凭证与基础信息」→ App ID</div>
@@ -759,6 +771,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         </div>
         <div class="config-row"><span class="key">App ID</span><span class="val" id="cfg-APP_ID">-</span></div>
         <div class="config-row"><span class="key">App Secret</span><span class="val" id="cfg-APP_SECRET">-</span></div>
+        <div class="config-row"><span class="key">平台类型</span><span class="val" id="cfg-FEISHU_PLATFORM_TYPE">-</span></div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('feishu')">编辑</button>
       </div>
     </details>
@@ -1058,6 +1071,8 @@ function renderStep1() {
   var f = c.feishu || {};
   prefillNested('field-CHATCCC_APP_ID', f.appId);
   prefillNested('field-CHATCCC_APP_SECRET', f.appSecret);
+  var pf = (c.platforms && c.platforms.feishu) || {};
+  prefillNested('field-CHATCCC_FEISHU_PLATFORM_TYPE', pf.platformType || 'feishu');
   // 平台开关：按已有 config 回填；首次配置（无飞书凭证）时默认关闭飞书、开启微信
   var hasExistingCreds = Boolean(c.feishu?.appId?.trim() && c.feishu?.appSecret?.trim());
   var feishuEnabled = hasExistingCreds
@@ -1156,6 +1171,9 @@ function collectAllFields() {
     var el = document.getElementById('field-' + key);
     if (el && el.value.trim()) vars[key] = el.value.trim();
   });
+  // 平台类型（下拉选择框，始终发送以保持与服务端同步）
+  var ptEl = document.getElementById('field-CHATCCC_FEISHU_PLATFORM_TYPE');
+  if (ptEl && ptEl.value.trim()) vars['CHATCCC_FEISHU_PLATFORM_TYPE'] = ptEl.value.trim();
   vars.CHATCCC_FEISHU_ENABLED = !!state.platformsEnabled.feishu;
   vars.CHATCCC_ILINK_ENABLED = !!state.platformsEnabled.ilink;
   vars.CHATCCC_CLAUDE_ENABLED = !!state.agentsEnabled.claude;
@@ -1197,6 +1215,8 @@ function renderStep3() {
   if (state.platformsEnabled.feishu) {
     lines.push('<div class="config-row"><span class="key">CHATCCC_APP_ID</span><span class="val">' + (vars.CHATCCC_APP_ID || '<span style="color:#ef4444">未填写</span>') + '</span></div>');
     lines.push('<div class="config-row"><span class="key">CHATCCC_APP_SECRET</span><span class="val">' + (vars.CHATCCC_APP_SECRET ? '***已设置***' : '<span style="color:#ef4444">未填写</span>') + '</span></div>');
+    var ptLabel = vars.CHATCCC_FEISHU_PLATFORM_TYPE === 'lark' ? 'Lark (open.larksuite.com)' : '飞书 (open.feishu.cn)';
+    lines.push('<div class="config-row"><span class="key">平台类型</span><span class="val">' + ptLabel + '</span></div>');
   }
 
   lines.push('<h3 style="margin:16px 0 8px">微信 iLink</h3>');
@@ -1368,6 +1388,8 @@ function updateDashboardUI() {
   state.platformsEnabled.feishu = feishuEnabled;
   document.getElementById('cfg-APP_ID').textContent = c.feishu && c.feishu.appId ? c.feishu.appId.slice(0,8) + '...' + c.feishu.appId.slice(-4) : '-';
   document.getElementById('cfg-APP_SECRET').textContent = c.feishu && c.feishu.appSecret ? '***已设置***' : '-';
+  var pt = (c.platforms && c.platforms.feishu && c.platforms.feishu.platformType === 'lark') ? 'Lark (open.larksuite.com)' : '飞书 (open.feishu.cn)';
+  document.getElementById('cfg-FEISHU_PLATFORM_TYPE').textContent = pt;
 
   // 只显示已启用的 Agent 卡片（按 enabled 字段；缺省时退回到"任一字段非空"兼容旧 config）
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
@@ -1497,6 +1519,16 @@ function editSection(section) {
     html += '<input type="' + (isSecret ? 'password' : 'text') + '" id="edit-' + key + '" value="' + String(val).replace(/"/g,'&quot;') + '">';
     html += '</div>';
   });
+  // 平台类型：feishu 编辑时额外渲染下拉选择框
+  if (section === 'feishu') {
+    var ptVal = (state.config.platforms && state.config.platforms.feishu && state.config.platforms.feishu.platformType) || 'feishu';
+    html += '<div class="form-group"><label>平台类型</label>';
+    html += '<select id="edit-CHATCCC_FEISHU_PLATFORM_TYPE" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
+    html += '<option value="feishu"' + (ptVal === 'feishu' ? ' selected' : '') + '>飞书 (open.feishu.cn)</option>';
+    html += '<option value="lark"' + (ptVal === 'lark' ? ' selected' : '') + '>Lark (open.larksuite.com)</option>';
+    html += '</select></div>';
+  }
+  document.getElementById('edit-modal-fields').innerHTML = html;
 }
 
 function closeEditModal() {
@@ -1515,6 +1547,11 @@ async function saveEdit() {
     var el = document.getElementById('edit-' + key);
     if (el) vars[key] = el.value.trim();
   });
+  // 平台类型：feishu 编辑时额外采集下拉选择框的值
+  if (editSectionType === 'feishu') {
+    var ptEl = document.getElementById('edit-CHATCCC_FEISHU_PLATFORM_TYPE');
+    if (ptEl && ptEl.value.trim()) vars['CHATCCC_FEISHU_PLATFORM_TYPE'] = ptEl.value.trim();
+  }
   await saveConfig(vars);
   closeEditModal();
   updateDashboardUI();
