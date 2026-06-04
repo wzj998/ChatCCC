@@ -102,6 +102,8 @@ export interface FeishuConfig {
 export interface PlatformConfig {
   enabled: boolean;
   reuseTokenOnStart?: boolean;
+  /** 飞书平台类型：feishu（国内飞书）或 lark（国际版）；缺省按 feishu */
+  platformType?: "feishu" | "lark";
 }
 
 export interface PlatformsConfig {
@@ -319,6 +321,11 @@ function autofillToolPathsAfterSampleCopy(configFile: string): void {
   }
 }
 
+function normalizePlatformType(raw: string): "feishu" | "lark" {
+  if (raw === "lark") return "lark";
+  return "feishu";
+}
+
 function loadConfig(): AppConfig {
   const defaults: AppConfig = {
     feishu: { appId: "", appSecret: "" },
@@ -449,6 +456,11 @@ function loadConfig(): AppConfig {
         enabled: typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.feishu === "object"
           ? Boolean(((parsed.platforms as unknown as Record<string, unknown>).feishu as Record<string, unknown>).enabled ?? true)
           : true,
+        platformType: normalizePlatformType(
+          typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.feishu === "object"
+            ? String(((parsed.platforms as unknown as Record<string, unknown>).feishu as Record<string, unknown>).platformType ?? "feishu")
+            : "feishu",
+        ),
       },
       ilink: {
         enabled: typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.ilink === "object"
@@ -517,7 +529,14 @@ export let APP_SECRET = config.feishu.appSecret;
 export let FEISHU_ENABLED = config.platforms.feishu.enabled;
 export let ILINK_ENABLED = config.platforms.ilink.enabled;
 export let ILINK_REUSE_TOKEN_ON_START = config.platforms.ilink.reuseTokenOnStart ?? true;
-export const BASE_URL = "https://open.feishu.cn/open-apis";
+
+function computeBaseUrl(platformType?: string): string {
+  if (platformType === "lark") return "https://open.larksuite.com/open-apis";
+  return "https://open.feishu.cn/open-apis";
+}
+
+export let BASE_URL = computeBaseUrl(config.platforms.feishu.platformType);
+export let FEISHU_PLATFORM_TYPE: "feishu" | "lark" = config.platforms.feishu.platformType === "lark" ? "lark" : "feishu";
 export const CHATCCC_PORT = config.port;
 
 /** 与 CHATCCC_PORT 一致，供 --local 连接本机中继 */
@@ -603,6 +622,8 @@ export function applyLoadedConfig(next: AppConfig): void {
   FEISHU_ENABLED = next.platforms.feishu.enabled;
   ILINK_ENABLED = next.platforms.ilink.enabled;
   ILINK_REUSE_TOKEN_ON_START = next.platforms.ilink.reuseTokenOnStart ?? true;
+  FEISHU_PLATFORM_TYPE = next.platforms.feishu.platformType === "lark" ? "lark" : "feishu";
+  BASE_URL = computeBaseUrl(FEISHU_PLATFORM_TYPE);
   CLAUDE_MODEL = next.claude.model;
   CLAUDE_SUBAGENT_MODEL = next.claude.subagentModel;
   CLAUDE_EFFORT = next.claude.effort;
@@ -737,6 +758,9 @@ export function reportEnvironmentVariableReadout(): void {
     Boolean(APP_SECRET.trim()),
     APP_SECRET.trim() ? "已读入（内容不在日志中显示）" : "未读入或为空"
   );
+
+  console.log(`  [默认] [可选] platforms.feishu.platformType`);
+  console.log(`         平台类型: ${FEISHU_PLATFORM_TYPE === "lark" ? "Lark (open.larksuite.com)" : "飞书 (open.feishu.cn)"}`);
 
   console.log(`  [默认] [可选] port`);
   console.log(`         监听端口: ${CHATCCC_PORT}`);

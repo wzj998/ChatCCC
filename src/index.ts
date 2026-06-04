@@ -24,7 +24,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { WSClient, EventDispatcher } from "@larksuiteoapi/node-sdk";
+import { WSClient, EventDispatcher, Domain } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, waitForPortFree } from "./shared.ts";
@@ -36,6 +36,7 @@ import {
   APP_ID,
   APP_SECRET,
   FEISHU_ENABLED,
+  FEISHU_PLATFORM_TYPE,
   ILINK_ENABLED,
   ILINK_REUSE_TOKEN_ON_START,
   BASE_URL,
@@ -348,9 +349,10 @@ async function startBotServiceCore(): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("  失败：无法获取 tenant_access_token。");
     console.error(`  接口: POST ${BASE_URL}/auth/v3/tenant_access_token/internal`);
+    const apiHost = BASE_URL.replace("https://", "").replace("/open-apis", "");
     console.error("  常见原因:");
     console.error(
-      "    - 本机网络无法访问 open.feishu.cn（可尝试：关闭系统/终端代理、检查防火墙；Windows 可管理员运行 netsh winsock reset 后重启）",
+      `    - 本机网络无法访问 ${apiHost}（可尝试：关闭系统/终端代理、检查防火墙；Windows 可管理员运行 netsh winsock reset 后重启）`,
     );
     console.error("    - App ID / App Secret 与开放平台「凭证与基础信息」不一致");
     console.error("    - 自建应用尚未创建/发布可用版本");
@@ -542,6 +544,7 @@ async function startBotServiceCore(): Promise<void> {
     const wsClient = new WSClient({
       appId: APP_ID,
       appSecret: APP_SECRET,
+      domain: FEISHU_PLATFORM_TYPE === "lark" ? Domain.Lark : Domain.Feishu,
       onReady: async () => {
         await rebuildBindingsFromRegistry().catch((err) =>
           console.error(`[${ts()}] [SDK READY] rebuild bindings failed: ${(err as Error).message}`)

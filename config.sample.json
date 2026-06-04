@@ -4,7 +4,7 @@
     "appSecret": ""
   },
   "platforms": {
-    "feishu": { "enabled": true },
+    "feishu": { "enabled": true, "platformType": "feishu" },
     "ilink": { "enabled": true, "reuseTokenOnStart": true }
   },
   "port": 18080,
