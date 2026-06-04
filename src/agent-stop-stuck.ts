@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
-import { activePrompts, getChatsForSession, cancelQueuedMessage } from "./session-chat-binding.ts";
+import { activePrompts, getChatsForSession } from "./session-chat-binding.ts";
 import { getPlatformForChat } from "./session.ts";
 import { readStreamState, writeStreamState } from "./stream-state.ts";
 import { ts } from "./config.ts";
@@ -78,8 +78,8 @@ export async function handleAgentStopStuckRequest(
     }
   }
 
-  // 丢弃缓存队列中的消息
-  cancelQueuedMessage(sessionId);
+  // 不丢弃缓存队列中的消息，让 runAgentSession 的 finally 块正常消费，
+  // 确保 stop-stuck-loop 结束后排队的消息仍能被正常处理。
 
   const finalReply = typeof body?.final_reply === "string" ? body.final_reply.trim() : "";
 
