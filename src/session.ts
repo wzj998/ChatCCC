@@ -1175,12 +1175,17 @@ export async function runAgentSession(
     const finalReply = pickFinalReply(state).trim();
 
     // stop-stuck-loop 接口可能在 fire-and-forget 中已写入带 final_reply 的
-    // stream state，finally 不应覆盖它。
+    // stream state，finally 不应覆盖它。同时保留 stuckAt 标记，防止
+    // stop-stuck-loop 结束后 session 被错误恢复。
     let finalReplyToWrite = finalReply;
+    let preserveStuckAt: number | undefined;
     try {
       const existing = await readStreamState(sessionId);
-      if (existing && existing.finalReply.length > finalReply.length) {
-        finalReplyToWrite = existing.finalReply;
+      if (existing) {
+        if (existing.finalReply.length > finalReply.length) {
+          finalReplyToWrite = existing.finalReply;
+        }
+        preserveStuckAt = existing.stuckAt;
       }
     } catch {}
 
@@ -1195,6 +1200,7 @@ export async function runAgentSession(
       updatedAt: Date.now(),
       cwd,
       tool,
+      ...(preserveStuckAt ? { stuckAt: preserveStuckAt } : {}),
     });
 
     // 消费队列中的缓存消息（异步，不阻塞后续清理）
