@@ -158,6 +158,30 @@ function spawnService(): { ok: boolean; pid?: number; error?: string } {
   }
 }
 
+/**
+ * 安排一次真正的进程重启：先回复 HTTP 请求，再 spawn 一个延迟启动的子进程，
+ * 然后退出当前进程。延迟是为了让当前进程完全退出并释放端口。
+ */
+function scheduleRestart(): void {
+  const indexPath = join(PROJECT_ROOT, "src", "index.ts");
+  if (!existsSync(indexPath)) return;
+  if (process.platform === "win32") {
+    // Windows: ping 作为 sleep（ping 自己 3 次 ≈ 2 秒延迟）
+    spawn("cmd.exe", ["/c", "ping -n 3 127.0.0.1 > nul && npx tsx src/index.ts"], {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    }).unref();
+  } else {
+    spawn("bash", ["-c", "sleep 2 && npx tsx src/index.ts"], {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+  }
+}
+
 function stopService(): { ok: boolean; error?: string } {
   const pid = getServicePid();
   if (!pid) return { ok: false, error: "No PID file found" };
@@ -396,23 +420,10 @@ async function handleStartService(_req: IncomingMessage, res: ServerResponse): P
   }
 
   if (path === "reload") {
-    // service 已经在跑（通常就是当前进程自己）。仅把磁盘上刚保存的 config.json
-    // 刷进进程内的 export let 常量，不走真重启。下次创建会话时新值即生效。
-    if (!reloadConfigHook) {
-      // 没注册 reload hook 视为编程错误：index.ts 必须在 main() 里调用
-      // setReloadConfigHook()；返回 500 让前端有提示，避免静默"看似生效但没生效"。
-      jsonReply(res, 500, {
-        ok: false,
-        error: "reload hook 未注册（应在 main() 调用 setReloadConfigHook）",
-      });
-      return;
-    }
-    try {
-      await reloadConfigHook();
-      jsonReply(res, 200, { ok: true, pid: process.pid, mode: "reload" });
-    } catch (err) {
-      jsonReply(res, 500, { ok: false, error: (err as Error).message });
-    }
+    // service 已经在跑，执行真正的进程重启让所有配置（含 WSClient domain）生效
+    jsonReply(res, 200, { ok: true, pid: process.pid, mode: "restart" });
+    scheduleRestart();
+    process.exit(0);
     return;
   }
 
@@ -437,14 +448,10 @@ async function handleStopService(req: IncomingMessage, res: ServerResponse): Pro
   });
 }
 
-async function handleRestartService(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleRestartService(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   jsonReply(res, 200, { ok: true, message: "Restarting..." });
-  setImmediate(() => {
-    stopService();
-    setTimeout(() => {
-      spawnService();
-    }, 1000);
-  });
+  scheduleRestart();
+  process.exit(0);
 }
 
 async function handleValidate(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1309,20 +1316,20 @@ async function saveAndStart() {
   document.getElementById('btn-save-start').innerHTML = '<span class="spinner"></span> 应用中...';
   var result = await api('/api/start', 'POST');
   if (result.ok) {
-    // 后端按 mode 区分场景，前端给出更贴切的 toast：
-    //   - inplace：setup → service 首次激活，进程内启动飞书 service
-    //   - reload ：service 已经在跑，仅刷新进程内 config（不真重启）
-    //   - spawn  ：旧 service 已退出，spawn 新子进程
     var msg;
-    if (result.mode === 'reload') {
-      msg = '配置已保存并生效（无须重启）';
+    if (result.mode === 'restart') {
+      msg = '配置已保存，服务正在重启…';
     } else if (result.mode === 'inplace') {
       msg = '服务已启动! PID: ' + result.pid;
     } else {
       msg = '服务已启动! PID: ' + (result.pid || '?');
     }
     toast(msg);
-    setTimeout(function(){ location.reload(); }, 1500);
+    if (result.mode === 'restart') {
+      pollUntilRunning();
+    } else {
+      setTimeout(function(){ location.reload(); }, 1500);
+    }
   } else {
     toast('保存失败: ' + (result.error || '未知错误'), 'error');
     document.getElementById('btn-save-start').disabled = false;
@@ -1458,16 +1465,21 @@ async function restartService() {
   if (!confirm('确定要重启服务吗？')) return;
   document.getElementById('btn-restart').disabled = true;
   document.getElementById('btn-restart').textContent = '重启中...';
-  await api('/api/start', 'POST');
-  // Wait and refresh
-  setTimeout(async function(){
-    var s = await api('/api/status');
-    state.running = s.running;
-    state.pid = s.pid;
-    updateDashboardUI();
-    document.getElementById('btn-restart').disabled = false;
-    document.getElementById('btn-restart').textContent = '重启';
-  }, 2000);
+  await api('/api/restart', 'POST');
+  pollUntilRunning();
+}
+
+async function pollUntilRunning() {
+  for (var i = 0; i < 30; i++) {
+    await new Promise(function(r) { setTimeout(r, 1000); });
+    try {
+      var s = await api('/api/status');
+      if (s.running) { location.reload(); return; }
+    } catch(e) {}
+  }
+  toast('重启超时，请在终端手动运行 chatccc', 'error');
+  document.getElementById('btn-restart').disabled = false;
+  document.getElementById('btn-restart').textContent = '重启';
 }
 
 // ---- Edit Modal ----
@@ -1602,6 +1614,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/status" && method === "GET") return handleGetStatus(req, res);
   if (url === "/api/start" && method === "POST") return handleStartService(req, res);
   if (url === "/api/stop" && method === "POST") return handleStopService(req, res);
+  if (url === "/api/restart" && method === "POST") return handleRestartService(req, res);
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);
   if (url === "/api/ilink/forget" && method === "POST") return handleForgetIlink(req, res);
 
