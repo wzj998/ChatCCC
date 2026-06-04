@@ -26,6 +26,9 @@ export interface StreamState {
   updatedAt: number;
   cwd: string;
   tool: string;
+  /** Set by stop-stuck-loop to prevent the session from being resumed.
+   *  The orchestrator checks this before resuming and creates a new session instead. */
+  stuckAt?: number;
 }
 
 function getStreamStatePath(sessionId: string): string {
