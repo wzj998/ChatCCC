@@ -73,6 +73,10 @@ export interface ActivePrompt {
   abnormalExitNotified?: boolean;
   /** Set when the resource monitor detects CPU + memory unchanged for 3 minutes. */
   resourceStuck?: boolean;
+  /** Adapter-provided callback to close the underlying SDK session / subprocess.
+   *  Called by stop-stuck-loop before controller.abort() to terminate the CLI
+   *  process immediately, rather than waiting for the async generator to unblock. */
+  closeSession?: () => void;
 }
 
 export const activePrompts = new Map<string, ActivePrompt>();

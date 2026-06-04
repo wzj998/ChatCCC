@@ -116,6 +116,8 @@ export async function handleAgentStopStuckRequest(
     }
   })();
 
+  // 先关闭底层 SDK session，终止 CLI 子进程，然后再 abort 清理 adapter 层
+  prompt.closeSession?.();
   // 不设 stopped 标记 → finally block 写 "done" → 卡片正常结束
   prompt.controller.abort();
 

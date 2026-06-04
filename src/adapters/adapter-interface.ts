@@ -128,6 +128,10 @@ export interface ToolPromptOptions {
   onProcessStart?: (info: ToolProcessInfo) => void;
   /** Called when the adapter leaves the prompt process scope normally or by abort. */
   onProcessExit?: (info: ToolProcessInfo) => void;
+  /** Called when the adapter creates an SDK session internally.
+   *  The callback receives a close function that terminates the underlying
+   *  subprocess. Used by stop-stuck-loop to kill the CLI process immediately. */
+  onSessionCreated?: (closeSession: () => void) => void;
 }
 
 // ---------------------------------------------------------------------------

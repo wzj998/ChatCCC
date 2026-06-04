@@ -490,6 +490,8 @@ class ClaudeAdapter implements ToolAdapter {
       })),
     );
 
+    options?.onSessionCreated?.(() => session.close());
+
     try {
       await session.send(buildClaudePromptText(userText, undefined, sessionId));
       for await (const raw of session.stream()) {

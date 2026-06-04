@@ -1110,6 +1110,10 @@ export async function runAgentSession(
         clearPromptProcessMonitor(sessionId);
         if (exitInfo.pid !== undefined) unregisterProcess(exitInfo.pid);
       },
+      onSessionCreated: (closeSession) => {
+        const prompt = activePrompts.get(sessionId);
+        if (prompt) prompt.closeSession = closeSession;
+      },
     })) {
       for (const block of unifiedMsg.blocks) {
         accumulateBlockContent(block, state, toolCallMap);
