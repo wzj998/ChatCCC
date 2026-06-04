@@ -10,9 +10,6 @@ export const AGENT_STOP_STUCK_PATH = "/api/agent/stop-stuck-loop";
 
 const MAX_REQUEST_BYTES = 8 * 1024;
 
-/** 已处理过 stop-stuck-loop 的 session，防止 agent 循环中反复调用 */
-const processedSessions = new Set<string>();
-
 function jsonReply(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
@@ -68,18 +65,9 @@ export async function handleAgentStopStuckRequest(
 
   const prompt = activePrompts.get(sessionId);
   if (!prompt) {
-    // session 可能已被清理，清理去重记录
-    processedSessions.delete(sessionId);
     jsonReply(res, 404, { error: "Session not found or not running" });
     return true;
   }
-
-  // 去重：同一 session 只处理一次，防止 agent 循环中反复调用
-  if (processedSessions.has(sessionId)) {
-    jsonReply(res, 200, { ok: true, deduplicated: true });
-    return true;
-  }
-  processedSessions.add(sessionId);
 
   // 先发"卡住"提示消息给所有绑定的群聊
   const chats = getChatsForSession(sessionId);
