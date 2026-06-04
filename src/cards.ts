@@ -91,8 +91,8 @@ export function buildProgressCard(
       tag: "button",
       text: { tag: "plain_text", content: "查看状态（/state）" },
       type: "default",
-      value: { action: "status" },
-      element_id: "action_status",
+      value: { action: "state" },
+      element_id: "action_state",
     });
     elements.push({
       tag: "button",

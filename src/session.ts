@@ -171,6 +171,10 @@ function turnFinalStatus(status: "running" | "done" | "stopped" | "error"): "don
   return status === "stopped" || status === "error" ? "stopped" : "done";
 }
 
+function isCardKitSequenceConflict(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("300317");
+}
+
 function startPromptProcessMonitor(sessionId: string, info: ToolProcessInfo): void {
   const prompt = activePrompts.get(sessionId);
   if (!prompt) return;
@@ -1357,21 +1361,39 @@ export function startUnifiedDisplayLoop(): void {
             } else {
               // 发送最终结果（卡片平台）
               while (display.cardBusy) await new Promise(r => setTimeout(r, 20));
+              const promptStillActive = activePrompts.has(sessionId);
+              if (
+                promptStillActive &&
+                display.lastSentAccLen === state.accumulatedContent.length &&
+                display.lastSentFinalReply === state.finalReply
+              ) {
+                continue;
+              }
               const nextSeq = display.sequence + 1;
               const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
               const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
               const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-              await p.cardUpdate(display.cardId, doneCard, nextSeq).catch(err => {
+              let terminalCardUpdateAccepted = false;
+              await p.cardUpdate(display.cardId, doneCard, nextSeq).then(() => {
+                display.sequence = nextSeq;
+                terminalCardUpdateAccepted = true;
+              }).catch(err => {
                 console.error(`[${ts()}] [DISPLAY] terminal cardUpdate failed: ${(err as Error).message}`);
+                if (isCardKitSequenceConflict(err)) {
+                  display.sequence = nextSeq;
+                  terminalCardUpdateAccepted = true;
+                }
               });
 
               // 若 session 仍在 activePrompts 中，说明 runAgentSession 的 finally
               // 还没执行，当前 stream state 可能是 stopSession fire-and-forget
               // 写入的，finalReply 滞后于内存态。卡片已更新为终态外观，但不发送
               // 文本、不删除 display 条目，留给 finally 落盘后的下一次 tick 处理。
-              if (activePrompts.has(sessionId)) {
-                display.lastSentAccLen = state.accumulatedContent.length;
-                display.lastSentFinalReply = state.finalReply;
+              if (promptStillActive) {
+                if (terminalCardUpdateAccepted) {
+                  display.lastSentAccLen = state.accumulatedContent.length;
+                  display.lastSentFinalReply = state.finalReply;
+                }
                 continue;
               }
 
