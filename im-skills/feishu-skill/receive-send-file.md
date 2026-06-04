@@ -4,26 +4,23 @@
 
 Videos are sent as regular files (not media), which looks cleaner in Feishu.
 
-### Script (recommended)
+**Use the node script below. Do NOT use curl or raw HTTP — the script correctly handles errors and exits non-zero on failure.**
+
+### Script
+
 ```bash
 node "{{send_file_script}}" --url "{{send_file_url}}" --session-id "{{session_id}}" --path "<absolute file path>" --caption "<optional caption>"
 ```
 
-### Direct HTTP
-```http
-POST {{send_file_url}}
-Content-Type: application/json; charset=utf-8
-
-{"session_id":"{{session_id}}","path":"<absolute file path>","caption":"<optional caption>"}
-```
-
 ### Rules
 
+- Use the node script above — never curl or raw HTTP.
 - Save or choose a local file first.
 - Use an absolute local path.
 - Max file size: 30MB.
 - Supported formats: .mp4 .mov .avi .mkv .webm .flv .mp3 .wav .ogg .aac .m4a .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .zip .tar .gz.
 - Only send a file/video when the user asked for one or when it materially helps the answer.
+- **If the script fails (non-zero exit), read stderr for the error. Do NOT retry with the same path. Either fix the problem (wrong extension, missing file, etc.) or tell the user what the error was. Never retry more than once.**
 
 ### Video Compression (when file > 30MB)
 
