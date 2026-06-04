@@ -108,6 +108,8 @@ describe("buildProgressCard", () => {
     const buttons = parsed.body.elements.filter((e: any) => e.tag === "button");
     expect(buttons).toHaveLength(2);
     expect(buttons[0].text.content).toBe("查看状态（/state）");
+    expect(buttons[0].value).toEqual({ action: "state" });
+    expect(buttons[0].element_id).toBe("action_state");
     expect(buttons[1].text.content).toBe("停止生成（/stop）");
   });
 

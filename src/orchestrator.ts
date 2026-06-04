@@ -595,8 +595,10 @@ export async function handleCommand(
   if (sessionId && descriptionTool && toolLabel) {
     // 有会话上下文 — 路由到命令处理或 prompt
     logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
+    const routeKind = textLower.startsWith("/") ? "command" : "prompt";
+    const chatKind = chatType === "p2p" ? "p2p chat" : "session group";
     console.log(
-      `[${ts()}] [RESUME] ${toolLabel} session group detected, session=${sessionId} tool=${descriptionTool}`,
+      `[${ts()}] [ROUTE] ${toolLabel} ${chatKind} ${routeKind} detected, session=${sessionId} tool=${descriptionTool}`,
     );
 
     if (

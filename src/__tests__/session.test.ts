@@ -468,6 +468,73 @@ describe("unified display loop WeChat delta", () => {
   });
 });
 
+describe("unified display loop terminal card update", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+  });
+
+  afterEach(() => {
+    stopUnifiedDisplayLoop();
+    resetBindingState();
+    vi.useRealTimers();
+  });
+
+  it("does not repeat the same terminal CardKit sequence while the prompt is still active", async () => {
+    const platform = mockPlatform("feishu");
+    platform.cardUpdate = vi.fn(async () => {
+      throw new Error("CardKit update: [300317] ErrMsg: sequence number compare failed; ");
+    });
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-terminal", "chat-terminal");
+    recordLastActiveChat("sid-terminal", "chat-terminal");
+    sessionInfoMap.set("chat-terminal", {
+      sessionId: "sid-terminal",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "claude",
+    });
+    activePrompts.set("sid-terminal", {
+      controller: new AbortController(),
+      stopped: false,
+      startTime: Date.now(),
+    });
+    displayCards.set("chat-terminal", {
+      cardId: "card-terminal",
+      sequence: 109,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-terminal",
+      turnCount: 1,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-terminal", {
+      accumulatedContent: "partial tool output",
+      finalReply: "",
+      status: "stopped",
+      turnCount: 1,
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(platform.cardUpdate).toHaveBeenCalledTimes(1);
+    expect(platform.cardUpdate).toHaveBeenCalledWith(
+      "card-terminal",
+      expect.any(String),
+      110,
+    );
+    expect(displayCards.get("chat-terminal")?.sequence).toBe(110);
+  });
+});
+
 describe("rebuildBindingsFromRegistry", () => {
   let registryFile = "";
 
