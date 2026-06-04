@@ -78,7 +78,6 @@ import {
   cancelQueuedMessage,
 } from "./session-chat-binding.ts";
 import { getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
-import { readStreamState } from "./stream-state.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 
@@ -1229,27 +1228,6 @@ export async function handleCommand(
 
     if (shouldSendWechatProcessingAck(platform, textLower, chatType, text)) {
       await platform.sendText(chatId, "生成中...").catch(() => {});
-    }
-
-    // 检查 session 是否被 stop-stuck-loop 标记为卡住，是则创建新 session
-    const stuckState = await readStreamState(sessionId);
-    if (stuckState?.stuckAt) {
-      try {
-        const init = await initClaudeSession(descriptionTool, undefined, chatId);
-        const newSessionId = init.sessionId;
-        unbindChatFromSession(sessionId, chatId);
-        bindChatToSession(newSessionId, chatId);
-        await recordSessionRegistry({
-          chatId,
-          sessionId: newSessionId,
-          tool: descriptionTool,
-          chatName: sessionChatName(text.slice(0, 10), init.cwd),
-        }).catch(() => {});
-        console.log(`[${ts()}] [STUCK-REDIRECT] Session ${sessionId} was stuck, created new session ${newSessionId}`);
-        sessionId = newSessionId;
-      } catch (err) {
-        console.warn(`[${ts()}] [STUCK-REDIRECT] Failed to create new session: ${(err as Error).message}`);
-      }
     }
 
     try {
