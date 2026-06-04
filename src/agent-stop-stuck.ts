@@ -94,6 +94,7 @@ export async function handleAgentStopStuckRequest(
       await writeStreamState({
         ...current,
         status: "done",
+        stuckAt: Date.now(),
         finalReply: finalReply ? current.finalReply + "\n\n" + finalReply : current.finalReply,
         updatedAt: Date.now(),
       });
