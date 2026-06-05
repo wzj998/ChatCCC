@@ -46,6 +46,16 @@ describe("truncateContent", () => {
     expect(resultLines[resultLines.length - 1]).toBe("line 10");
     expect(resultLines.length).toBe(6); // 1 first + "..." + 4 last
   });
+
+  it("skips leading empty lines, preserves first non-empty line", () => {
+    const lines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`);
+    const text = "\n\n\n" + lines.join("\n");
+    const result = truncateContent(text);
+    const resultLines = result.split("\n");
+    expect(resultLines[0]).toBe("line 1");
+    expect(resultLines[1]).toBe("...");
+    expect(resultLines.length).toBe(21); // 1 first + "..." + 19 last
+  });
 });
 
 // ---------------------------------------------------------------------------
