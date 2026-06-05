@@ -32,10 +32,16 @@ export function isCodeBlockOpen(text: string): boolean {
 
 export function truncateContent(text: string, maxLines = 20, maxChars = 8000): string {
   const lines = text.split("\n");
+  // 跳过开头空行
+  let startIdx = 0;
+  while (startIdx < lines.length && lines[startIdx].trim() === "") {
+    startIdx++;
+  }
+  const effectiveLines = lines.slice(startIdx);
   let displayText: string;
-  if (lines.length > maxLines) {
-    const firstLine = lines[0];
-    const lastLines = lines.slice(-(maxLines - 1)).join("\n");
+  if (effectiveLines.length > maxLines) {
+    const firstLine = effectiveLines[0];
+    const lastLines = effectiveLines.slice(-(maxLines - 1)).join("\n");
     displayText = firstLine + "\n...\n" + lastLines;
   } else {
     displayText = text;
