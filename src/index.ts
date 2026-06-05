@@ -213,7 +213,7 @@ function parseCardAction(data: unknown): CardActionResult | null {
   }
   if (!cmd) return null;
 
-  const CMD_MAP: Record<string, string> = { stop: "/stop", cancel: "/cancel", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", state: "/state", cd: "/cd", sessions: "/sessions", newh: "/newh" };
+  const CMD_MAP: Record<string, string> = { stop: "/stop", cancel: "/cancel", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", updateg: "/updateg", state: "/state", cd: "/cd", sessions: "/sessions", newh: "/newh" };
   let text = CMD_MAP[cmd] ?? "";
   if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
     const path = (action.value as Record<string, string>).path;

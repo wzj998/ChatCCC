@@ -135,6 +135,8 @@ export function buildHelpCard(
     "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
+  "发送 **/restart** 重启 ChatCCC 进程",
+    "发送 **/updateg** 更新并重启（仅 npm 全局安装可用）",
   ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },
@@ -148,6 +150,7 @@ export function buildHelpCard(
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
         { text: "新建 Codex 会话（/new codex）", value: JSON.stringify({ cmd: "new codex" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
+        { text: "更新并重启（/updateg）", value: JSON.stringify({ cmd: "updateg" }), type: "danger" },
         { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
       ]),
     ],

@@ -156,7 +156,7 @@ describe("buildHelpCard", () => {
     const parsed = JSON.parse(card);
     const action = parsed.elements[2];
     expect(action.tag).toBe("action");
-    expect(action.actions).toHaveLength(6);
+    expect(action.actions).toHaveLength(7);
   });
 });
 
