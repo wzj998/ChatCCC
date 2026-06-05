@@ -41,10 +41,6 @@ export function truncateContent(text: string, maxLines = 20, maxChars = 8000): s
     displayText = text;
   }
 
-  if (displayText.length > maxChars) {
-    displayText = "..." + displayText.slice(-maxChars);
-  }
-
   // 截断后如果代码块未闭合，补上闭合标记，避免后续追加内容时误入代码块
   if (isCodeBlockOpen(displayText)) {
     displayText += "\n```";
