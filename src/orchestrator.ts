@@ -177,7 +177,7 @@ function updLog(msg: string): void {
   try { appendFileSync(UPDATEG_LOG, `${ts} [UPG-SYNC] ${msg}\n`, "utf-8"); } catch {}
 }
 
-/** 同步更新 npm 全局包。不自行 spawn 新进程，而是 exit(1) 让 systemd Restart=on-failure 拉起新版本。 */
+/** 同步更新 npm 全局包并 spawn 新进程重启。不依赖 systemd 或任何服务管理器。 */
 function syncUpdateAndRestart(): void {
   updLog(`sync update start, pid=${process.pid}`);
   appendStartupTrace("updateg: sync update start", { pid: process.pid });
@@ -216,8 +216,27 @@ function syncUpdateAndRestart(): void {
     }
   }
 
-  updLog("sync update done, exiting with code 1 to trigger systemd restart");
-  appendStartupTrace("updateg: sync update done, will exit(1) for systemd restart", { pid: process.pid });
+  // 2. resolve bin path
+  const npmPrefix = process.env.NPM_PREFIX || "";
+  const binName = process.platform === "win32" ? "chatccc.cmd" : "chatccc";
+  const binPath = npmPrefix ? join(npmPrefix, binName) : "chatccc";
+  updLog(`bin path: npmPrefix=${npmPrefix || "(empty)"}, binPath=${binPath}`);
+  appendStartupTrace("updateg: spawn begin", { npmPrefix: npmPrefix || "(empty)", binPath });
+
+  // 3. spawn new chatccc
+  try {
+    const child = spawn(binPath, [], { detached: true, stdio: "ignore", shell: true });
+    child.unref();
+    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${binPath}`);
+    appendStartupTrace("updateg: spawn OK", { childPid: child.pid, binPath });
+  } catch (e) {
+    const errMsg = (e as Error).message;
+    updLog(`spawn new chatccc failed: ${errMsg}`);
+    appendStartupTrace("updateg: spawn failed", { error: errMsg });
+  }
+
+  updLog("sync update done, parent exiting in 2s");
+  appendStartupTrace("updateg: sync update done, exiting", { pid: process.pid });
 }
 
 // ---------------------------------------------------------------------------
@@ -286,11 +305,7 @@ export async function handleCommand(
     logTrace(tid, "DONE", { outcome: "updateg" });
     appendStartupTrace("updateg: sync update begin", { fromPid: process.pid });
     syncUpdateAndRestart();
-    // exit(1) 而非 exit(0)：systemd KillMode=control-group 下，exit(0) 会让
-    // systemd 判定服务正常结束并清理整个 cgroup（杀死刚 spawn 的子进程）。
-    // exit(1) 触发 Restart=on-failure，由 systemd 重新拉起 ExecStart，此时
-    // npm 已更新到新版本，服务正常重启。
-    setTimeout(() => process.exit(1), 2000);
+    setTimeout(() => process.exit(0), 2000);
     return;
   }
 
