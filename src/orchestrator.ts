@@ -5,9 +5,9 @@
  * 所有 IM 平台操作通过 PlatformAdapter 接口注入，不直接依赖 feishu-platform.ts。
  */
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 import { makeTraceId, logTrace } from "./trace.ts";
@@ -159,6 +159,45 @@ async function cleanupNonWechatP2pBinding(
   }
 }
 
+/** 检测当前进程是否从 npm 全局安装启动 */
+function isRunningFromGlobalNpm(): boolean {
+  try {
+    const globalRoot = execSync("npm root -g", { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
+    return resolve(PROJECT_ROOT).startsWith(resolve(globalRoot));
+  } catch {
+    return false;
+  }
+}
+
+/** 更新并重启：spawn detached Node.js 中间脚本，轮询父进程退出后执行 npm update + chatccc */
+function scheduleUpdateRestart(): void {
+  const parentPid = process.pid;
+  const watcherScript = `
+    var spawn = require('child_process').spawn;
+    var execSync = require('child_process').execSync;
+    var parentPid = ${parentPid};
+    (function wait() {
+      try { process.kill(parentPid, 0); setTimeout(wait, 300); } catch (_) {
+        try {
+          var npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+          execSync(npmCmd + ' update -g chatccc', { stdio: 'inherit' });
+        } catch (e) {
+          console.error('npm update failed:', e.message);
+        }
+        var c = spawn('chatccc', [], { detached: true, stdio: 'ignore', shell: true });
+        c.unref();
+        process.exit(0);
+      }
+    })();
+  `;
+  const child = spawn("node", ["-e", watcherScript], {
+    detached: true,
+    stdio: "ignore",
+    shell: true,
+  });
+  child.unref();
+}
+
 // ---------------------------------------------------------------------------
 // handleCommand — 平台无关的命令分发
 // ---------------------------------------------------------------------------
@@ -209,6 +248,22 @@ export async function handleCommand(
       appendStartupTrace("restart: parent exit", { childPid: child.pid });
       process.exit(0);
     }, 2000);
+    return;
+  }
+
+  if (textLower === "/updateg") {
+    logTrace(tid, "BRANCH", { cmd: "/updateg" });
+    if (!isRunningFromGlobalNpm()) {
+      await platform.sendText(chatId, "当前进程非 npm 全局安装，无法使用 /updateg 更新。请通过 npm install -g chatccc 安装后使用。").catch(() => {});
+      logTrace(tid, "DONE", { outcome: "updateg_not_global" });
+      return;
+    }
+    await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
+    logTrace(tid, "DONE", { outcome: "updateg" });
+    appendStartupTrace("updateg: spawn watcher begin", { fromPid: process.pid });
+    scheduleUpdateRestart();
+    // 短暂延迟确保消息发送后再退出
+    setTimeout(() => process.exit(0), 500);
     return;
   }
 
