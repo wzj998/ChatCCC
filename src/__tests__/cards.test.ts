@@ -32,21 +32,14 @@ describe("truncateContent", () => {
     expect(resultLines[20]).toBe("line 25");
   });
 
-  it("truncates chars when exceeding maxChars", () => {
-    const long = "x".repeat(9000);
-    const result = truncateContent(long, 100, 500);
-    expect(result.length).toBeLessThanOrEqual(503); // "..." + 500 chars
-    expect(result.startsWith("...")).toBe(true);
-  });
-
   it("returns empty string for empty input", () => {
     expect(truncateContent("")).toBe("");
   });
 
-  it("respects custom maxLines and maxChars", () => {
+  it("respects custom maxLines", () => {
     const lines = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
     const text = lines.join("\n");
-    const result = truncateContent(text, 5, 1000);
+    const result = truncateContent(text, 5);
     const resultLines = result.split("\n");
     expect(resultLines[0]).toBe("line 1");
     expect(resultLines[1]).toBe("...");
