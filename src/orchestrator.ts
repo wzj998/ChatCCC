@@ -7,8 +7,9 @@
 
 import { execSync, spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { homedir } from "node:os";
 
 import { makeTraceId, logTrace } from "./trace.ts";
 import { appendStartupTrace } from "./shared.ts";
@@ -169,33 +170,73 @@ function isRunningFromGlobalNpm(): boolean {
   }
 }
 
-/** 更新并重启：spawn detached Node.js 中间脚本，轮询父进程退出后执行 npm update + chatccc */
-function scheduleUpdateRestart(): void {
-  const parentPid = process.pid;
-  const watcherScript = `
-    var spawn = require('child_process').spawn;
-    var execSync = require('child_process').execSync;
-    var parentPid = ${parentPid};
-    (function wait() {
-      try { process.kill(parentPid, 0); setTimeout(wait, 300); } catch (_) {
-        try {
-          var npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-          execSync(npmCmd + ' update -g chatccc', { stdio: 'inherit' });
-        } catch (e) {
-          console.error('npm update failed:', e.message);
-        }
-        var c = spawn('chatccc', [], { detached: true, stdio: 'ignore', shell: true });
-        c.unref();
-        process.exit(0);
-      }
-    })();
-  `;
-  const child = spawn("node", ["-e", watcherScript], {
-    detached: true,
-    stdio: "ignore",
-    shell: true,
-  });
-  child.unref();
+const UPDATEG_LOG = join(homedir(), ".chatccc", "logs", "updateg-watcher.log");
+
+function updLog(msg: string): void {
+  const ts = new Date().toISOString();
+  try { appendFileSync(UPDATEG_LOG, `${ts} [UPG-SYNC] ${msg}\n`, "utf-8"); } catch {}
+}
+
+/** 同步更新 npm 全局包并重启（父进程存活等待，避免 systemd KillMode=control-group 杀 watcher） */
+function syncUpdateAndRestart(): void {
+  updLog(`sync update start, pid=${process.pid}`);
+  appendStartupTrace("updateg: sync update start", { pid: process.pid });
+
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+
+  // 1. npm update
+  updLog(`running: ${npmCmd} update -g chatccc`);
+  appendStartupTrace("updateg: npm update begin", { npmCmd });
+  const t0 = Date.now();
+  try {
+    const out = execSync(`${npmCmd} update -g chatccc 2>&1`, { encoding: "utf8", timeout: 120000, windowsHide: true });
+    const elapsed = Date.now() - t0;
+    updLog(`npm update OK (${elapsed}ms): ${out.slice(0, 500)}`);
+    appendStartupTrace("updateg: npm update OK", { elapsedMs: elapsed, outputLen: out.length });
+  } catch (e) {
+    const elapsed = Date.now() - t0;
+    const err = e as Error & { stderr?: string; stdout?: string; status?: number };
+    updLog(`npm update failed (${elapsed}ms): message=${err.message}, stderr=${(err.stderr || "").slice(0, 500)}, stdout=${(err.stdout || "").slice(0, 200)}`);
+    appendStartupTrace("updateg: npm update failed", { elapsedMs: elapsed, message: err.message, stderrLen: (err.stderr || "").length });
+
+    // fallback
+    updLog(`fallback: ${npmCmd} install -g chatccc@latest`);
+    appendStartupTrace("updateg: npm install fallback begin", { npmCmd });
+    const t1 = Date.now();
+    try {
+      const out2 = execSync(`${npmCmd} install -g chatccc@latest 2>&1`, { encoding: "utf8", timeout: 120000, windowsHide: true });
+      const elapsed2 = Date.now() - t1;
+      updLog(`npm install fallback OK (${elapsed2}ms): ${out2.slice(0, 500)}`);
+      appendStartupTrace("updateg: npm install fallback OK", { elapsedMs: elapsed2, outputLen: out2.length });
+    } catch (e2) {
+      const elapsed2 = Date.now() - t1;
+      const err2 = e2 as Error & { stderr?: string; stdout?: string };
+      updLog(`npm install fallback also failed (${elapsed2}ms): message=${err2.message}, stderr=${(err2.stderr || "").slice(0, 500)}`);
+      appendStartupTrace("updateg: npm install fallback failed", { elapsedMs: elapsed2, message: err2.message });
+    }
+  }
+
+  // 2. resolve bin path
+  const npmPrefix = process.env.NPM_PREFIX || "";
+  const binName = process.platform === "win32" ? "chatccc.cmd" : "chatccc";
+  const binPath = npmPrefix ? join(npmPrefix, binName) : "chatccc";
+  updLog(`bin path: npmPrefix=${npmPrefix || "(empty)"}, binPath=${binPath}`);
+  appendStartupTrace("updateg: spawn begin", { npmPrefix: npmPrefix || "(empty)", binPath });
+
+  // 3. spawn new chatccc
+  try {
+    const child = spawn(binPath, [], { detached: true, stdio: "ignore", shell: true });
+    child.unref();
+    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${binPath}`);
+    appendStartupTrace("updateg: spawn OK", { childPid: child.pid, binPath });
+  } catch (e) {
+    const errMsg = (e as Error).message;
+    updLog(`spawn new chatccc failed: ${errMsg}`);
+    appendStartupTrace("updateg: spawn failed", { error: errMsg });
+  }
+
+  updLog("sync update done, parent exiting in 2s");
+  appendStartupTrace("updateg: sync update done, exiting in 2s", { pid: process.pid });
 }
 
 // ---------------------------------------------------------------------------
@@ -253,17 +294,18 @@ export async function handleCommand(
 
   if (textLower === "/updateg") {
     logTrace(tid, "BRANCH", { cmd: "/updateg" });
-    if (!isRunningFromGlobalNpm()) {
+    const isGlobal = isRunningFromGlobalNpm();
+    appendStartupTrace("updateg: command received", { isGlobal, chatId });
+    if (!isGlobal) {
       await platform.sendText(chatId, "当前进程非 npm 全局安装，无法使用 /updateg 更新。请通过 npm install -g chatccc 安装后使用。").catch(() => {});
       logTrace(tid, "DONE", { outcome: "updateg_not_global" });
       return;
     }
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
     logTrace(tid, "DONE", { outcome: "updateg" });
-    appendStartupTrace("updateg: spawn watcher begin", { fromPid: process.pid });
-    scheduleUpdateRestart();
-    // 短暂延迟确保消息发送后再退出
-    setTimeout(() => process.exit(0), 500);
+    appendStartupTrace("updateg: sync update begin", { fromPid: process.pid });
+    syncUpdateAndRestart();
+    setTimeout(() => process.exit(0), 2000);
     return;
   }
 
