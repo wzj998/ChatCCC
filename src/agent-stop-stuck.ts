@@ -107,6 +107,18 @@ export async function handleAgentStopStuckRequest(
 
   // 先关闭底层 SDK session，终止 CLI 子进程，然后再 abort 清理 adapter 层
   prompt.closeSession?.();
+
+  // 强制杀死 CLI 子进程。controller.abort() 只在 for-await 收到下一条
+  // stream 消息时才被检测到——如果 agent 陷入无输出的计算循环，abort 信号
+  // 永远不会生效；SDK 的 session.close() 也不保证立即终止子进程。
+  if (prompt.processPid !== undefined) {
+    try {
+      process.kill(prompt.processPid);
+    } catch {
+      // 进程可能已退出，忽略错误
+    }
+  }
+
   // 不设 stopped 标记 → finally block 写 "done" → 卡片正常结束
   prompt.controller.abort();
 
