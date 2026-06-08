@@ -1605,6 +1605,13 @@ export function stopSession(sessionId: string): boolean {
   clearPromptProcessMonitor(sessionId);
   cancelQueuedMessage(sessionId);
   prompt.controller.abort();
+
+  // 强制杀死 CLI 子进程。controller.abort() 只在 for-await 收到下一条
+  // stream 消息时才被检测到——如果 agent 陷入无输出的计算循环，abort 信号
+  // 永远不会生效。直接 process.kill 让 stdout/stderr 管道关闭，stream 立即结束。
+  if (prompt.processPid !== undefined) {
+    try { process.kill(prompt.processPid); } catch { /* 进程可能已退出 */ }
+  }
   console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
 
   // fire-and-forget：立刻把 stream-state.status 改成 stopped，
