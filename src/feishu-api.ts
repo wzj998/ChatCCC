@@ -757,6 +757,9 @@ export async function sendTextReply(
     config: { wide_screen_mode: true },
     elements: [{ tag: "markdown", content: wrappedText }],
   });
+  const timeoutMs = 15_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
       method: "POST",
@@ -769,8 +772,16 @@ export async function sendTextReply(
         msg_type: "interactive",
         content: card,
       }),
+      signal: controller.signal,
     });
-    const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
+    const respText = await resp.text();
+    let data: { code: number; msg?: string; data?: { message_id?: string } };
+    try {
+      data = JSON.parse(respText);
+    } catch {
+      console.error(`[${ts()}] [SEND] text FAIL: chatId=${chatId} invalid JSON status=${resp.status}`);
+      return false;
+    }
     if (data.code !== 0) {
       console.error(`[${ts()}] [SEND] text FAIL: chatId=${chatId} code=${data.code} msg="${data.msg ?? ""}"`);
       return false;
@@ -778,8 +789,14 @@ export async function sendTextReply(
     console.log(`[${ts()}] [SEND] text OK: chatId=${chatId} msgId=${data.data?.message_id ?? "N/A"}`);
     return true;
   } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      console.error(`[${ts()}] [SEND] text TIMEOUT after ${timeoutMs}ms: chatId=${chatId}`);
+      return false;
+    }
     console.error(`[${ts()}] [SEND] text FAIL: chatId=${chatId} ${(err as Error).message}`);
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
