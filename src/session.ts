@@ -1300,17 +1300,21 @@ const CARD_ROTATE_MS = 9 * 60 * 1000;
 export function startUnifiedDisplayLoop(): void {
   if (unifiedDisplayLoopHandle !== null) return;
 
+  let tickRunning = false;
   const interval = setInterval(() => {
     void (async () => {
-      for (const [chatId, display] of displayCards) {
-        if (display.cardBusy) continue;
+      if (tickRunning) return;
+      tickRunning = true;
+      try {
+        for (const [chatId, display] of displayCards) {
+          if (display.cardBusy) continue;
 
-        const sessionId = display.sessionId;
-        const state = await readStreamState(sessionId);
-        if (!state) {
-          displayCards.delete(chatId);
-          continue;
-        }
+          const sessionId = display.sessionId;
+          const state = await readStreamState(sessionId);
+          if (!state) {
+            displayCards.delete(chatId);
+            continue;
+          }
 
         // 交叉验证：chat 当前绑定的 session 是否仍是 display 记录的 session。
         // 若 chat 已被切换到其他 session（如 /newh），旧 display 必须停推。
@@ -1375,45 +1379,57 @@ export function startUnifiedDisplayLoop(): void {
               ) {
                 continue;
               }
-              const nextSeq = display.sequence + 1;
-              const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
-              const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
-              const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
-              let terminalCardUpdateAccepted = false;
-              await p.cardUpdate(display.cardId, doneCard, nextSeq).then(() => {
-                display.sequence = nextSeq;
-                terminalCardUpdateAccepted = true;
-              }).catch(err => {
-                console.error(`[${ts()}] [DISPLAY] terminal cardUpdate failed: ${(err as Error).message}`);
-                if (isCardKitSequenceConflict(err)) {
+              const terminalCardAlreadyUpdated =
+                display.lastSentAccLen === state.accumulatedContent.length &&
+                display.lastSentFinalReply === state.finalReply;
+              let terminalCardUpdateAccepted = terminalCardAlreadyUpdated;
+              if (!terminalCardAlreadyUpdated) {
+                const nextSeq = display.sequence + 1;
+                const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
+                const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
+                const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+                await p.cardUpdate(display.cardId, doneCard, nextSeq).then(() => {
                   display.sequence = nextSeq;
                   terminalCardUpdateAccepted = true;
+                }).catch(err => {
+                  console.error(`[${ts()}] [DISPLAY] terminal cardUpdate failed: ${(err as Error).message}`);
+                  if (isCardKitSequenceConflict(err)) {
+                    display.sequence = nextSeq;
+                    terminalCardUpdateAccepted = true;
+                  }
+                });
+                if (terminalCardUpdateAccepted) {
+                  display.lastSentAccLen = state.accumulatedContent.length;
+                  display.lastSentFinalReply = state.finalReply;
                 }
-              });
+              }
 
               // 若 session 仍在 activePrompts 中，说明 runAgentSession 的 finally
               // 还没执行，当前 stream state 可能是 stopSession fire-and-forget
               // 写入的，finalReply 滞后于内存态。卡片已更新为终态外观，但不发送
               // 文本、不删除 display 条目，留给 finally 落盘后的下一次 tick 处理。
               if (promptStillActive) {
-                if (terminalCardUpdateAccepted) {
-                  display.lastSentAccLen = state.accumulatedContent.length;
-                  display.lastSentFinalReply = state.finalReply;
+                continue;
+              }
+
+              let terminalTextDelivered = true;
+              if (state.finalReply) {
+                if (!isFinalReplySentForTurn(state)) {
+                  terminalTextDelivered = await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, state.finalReply);
                 }
+              } else if (state.accumulatedContent.trim()) {
+                const short = truncateContent(state.accumulatedContent, 30, 4000);
+                terminalTextDelivered = await p.sendText(chatId, `[生成过程]\n${short}`).then((ok) => ok !== false).catch(() => false);
+              }
+
+              if (!terminalTextDelivered) {
+                console.error(`[${ts()}] [DISPLAY] terminal text send failed, keep display for retry: chatId=${chatId} session=${sessionId} turn=${state.turnCount}`);
                 continue;
               }
 
               const finalSt = turnFinalStatus(state.status);
               finalizeTurnCards(sessionId, state.turnCount, finalSt).catch(() => {});
               displayCards.delete(chatId);
-              if (state.finalReply) {
-                if (!isFinalReplySentForTurn(state)) {
-                  await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, state.finalReply);
-                }
-              } else if (state.accumulatedContent.trim()) {
-                const short = truncateContent(state.accumulatedContent, 30, 4000);
-                await p.sendText(chatId, `[生成过程]\n${short}`).catch(() => {});
-              }
             }
             p.setChatAvatar(chatId, state.tool, "idle").catch(() => {});
             console.log(`[${ts()}] [DISPLAY] unified loop deleted display for ${chatId} (terminal: ${state.status})`);
@@ -1561,9 +1577,12 @@ export function startUnifiedDisplayLoop(): void {
               }
             }
           }
-        } catch (err) {
-          console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
+          } catch (err) {
+            console.error(`[${ts()}] Display loop error for ${chatId}: ${(err as Error).message}`);
+          }
         }
+      } finally {
+        tickRunning = false;
       }
     })().catch((err: unknown) => {
       const e = err instanceof Error ? err : new Error(String(err));

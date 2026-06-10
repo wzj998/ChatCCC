@@ -396,6 +396,42 @@ describe("runAgentSession process monitor", () => {
       expect.stringContaining("进程异常结束"),
     );
   });
+  it("re-injects IM skill capabilities for each resumed Claude prompt", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-resume", "chat-resume");
+    recordLastActiveChat("sid-resume", "chat-resume");
+
+    const sentTexts: string[] = [];
+    const adapter: ToolAdapter = {
+      displayName: "Claude Code",
+      sessionDescPrefix: "Claude Code Session:",
+      createSession: async () => ({ sessionId: "sid-resume" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (_sid: string, text: string) {
+        sentTexts.push(text);
+        yield { type: "assistant", blocks: [{ type: "text", text: "done" }] };
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    await runAgentSession("sid-resume", "first prompt", platform, "chat-resume", Date.now(), "claude");
+    await runAgentSession("sid-resume", "second prompt", platform, "chat-resume", Date.now(), "claude");
+
+    expect(sentTexts).toHaveLength(2);
+    for (const text of sentTexts) {
+      expect(text).toContain("[ChatCCC IM skill: feishu-skill]");
+      expect(text).toContain("[/ChatCCC IM skill: feishu-skill]");
+      expect(text).toContain('"session_id":"sid-resume"');
+      expect(text).toContain("http://127.0.0.1:");
+      expect(text).toContain("/api/agent/send-image");
+      expect(text).toContain("[User message]");
+      expect(text).toContain("[/User message]");
+    }
+    expect(sentTexts[0]).toContain("first prompt");
+    expect(sentTexts[1]).toContain("second prompt");
+  });
 });
 
 describe("unified display loop WeChat delta", () => {
@@ -532,6 +568,58 @@ describe("unified display loop terminal card update", () => {
       110,
     );
     expect(displayCards.get("chat-terminal")?.sequence).toBe(110);
+  });
+
+  it("keeps terminal display and retries final text when sending fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const platform = mockPlatform("feishu");
+    platform.cardUpdate = vi.fn(async () => {});
+    platform.sendText = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-terminal-retry", "chat-terminal-retry");
+    recordLastActiveChat("sid-terminal-retry", "chat-terminal-retry");
+    sessionInfoMap.set("chat-terminal-retry", {
+      sessionId: "sid-terminal-retry",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "claude",
+    });
+    displayCards.set("chat-terminal-retry", {
+      cardId: "card-terminal-retry",
+      sequence: 4,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-terminal-retry",
+      turnCount: 1,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-terminal-retry", {
+      accumulatedContent: "work log",
+      finalReply: "final answer",
+      status: "done",
+      turnCount: 1,
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(platform.cardUpdate).toHaveBeenCalledTimes(1);
+    expect(platform.sendText).toHaveBeenCalledTimes(1);
+    expect(displayCards.has("chat-terminal-retry")).toBe(true);
+    expect(mockStreamStates.get("sid-terminal-retry")?.finalReplySentTurn).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(platform.cardUpdate).toHaveBeenCalledTimes(1);
+    expect(platform.sendText).toHaveBeenCalledTimes(2);
+    expect(displayCards.has("chat-terminal-retry")).toBe(false);
+    expect(mockStreamStates.get("sid-terminal-retry")?.finalReplySentTurn).toBe(1);
   });
 });
 
