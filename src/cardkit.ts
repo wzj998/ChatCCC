@@ -6,17 +6,41 @@ import { BASE_URL, fileLog, ts } from "./config.ts";
 // 由飞书客户端自行渲染增量文本，用户看到的是逐字出现的效果。
 // 参考: https://open.feishu.cn/document/uYjLw4iNukDO6YDN4ITM4MjM
 
+const CARDKIT_REQUEST_TIMEOUT_MS = 15_000;
+
+async function fetchCardKit(
+  url: string,
+  init: Parameters<typeof fetch>[1],
+  operation: string,
+): Promise<{ resp: Response; respText: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CARDKIT_REQUEST_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    const respText = await resp.text();
+    return { resp, respText };
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      console.error(`[${ts()}] [CARDIKT] ${operation} TIMEOUT after ${CARDKIT_REQUEST_TIMEOUT_MS}ms`);
+      fileLog.flush();
+      throw new Error(`${operation} timeout after ${CARDKIT_REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function createCardKitCard(token: string, cardJson: string): Promise<string> {
   const body = JSON.stringify({ type: "card_json", data: cardJson });
-  const resp = await fetch(`${BASE_URL}/cardkit/v1/cards`, {
+  const { resp, respText } = await fetchCardKit(`${BASE_URL}/cardkit/v1/cards`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body,
-  });
-  const respText = await resp.text();
+  }, "createCard");
   let data: { code: number; msg?: string; data?: { card_id?: string } };
   try {
     data = JSON.parse(respText);
@@ -40,15 +64,14 @@ export async function setCardKitSettings(
   settings: Record<string, unknown>,
   sequence: number
 ): Promise<void> {
-  const resp = await fetch(`${BASE_URL}/cardkit/v1/cards/${cardId}/settings`, {
+  const { resp, respText } = await fetchCardKit(`${BASE_URL}/cardkit/v1/cards/${cardId}/settings`, {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ settings: JSON.stringify(settings), sequence }),
-  });
-  const respText = await resp.text();
+  }, `settings cardId=${cardId} seq=${sequence}`);
   let data: { code: number; msg?: string };
   try { data = JSON.parse(respText); } catch {
     console.error(`[${ts()}] [CARDIKT] settings FAIL: invalid JSON cardId=${cardId} seq=${sequence} status=${resp.status}`);
@@ -70,7 +93,7 @@ export async function streamCardKitElement(
   content: string,
   sequence: number
 ): Promise<void> {
-  const resp = await fetch(
+  const { resp, respText } = await fetchCardKit(
     `${BASE_URL}/cardkit/v1/cards/${cardId}/elements/${elementId}/content`,
     {
       method: "PUT",
@@ -79,9 +102,9 @@ export async function streamCardKitElement(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ content, sequence }),
-    }
+    },
+    `streamElement cardId=${cardId} element=${elementId} seq=${sequence}`,
   );
-  const respText = await resp.text();
   let data: { code: number; msg?: string };
   try { data = JSON.parse(respText); } catch {
     console.error(`[${ts()}] [CARDIKT] streamElement FAIL: invalid JSON cardId=${cardId} element=${elementId} seq=${sequence} status=${resp.status}`);
@@ -103,15 +126,14 @@ export async function updateCardKitCard(
   cardJson: string,
   sequence: number
 ): Promise<void> {
-  const resp = await fetch(`${BASE_URL}/cardkit/v1/cards/${cardId}`, {
+  const { resp, respText } = await fetchCardKit(`${BASE_URL}/cardkit/v1/cards/${cardId}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ card: { type: "card_json", data: cardJson }, sequence }),
-  });
-  const respText = await resp.text();
+  }, `updateCard cardId=${cardId} seq=${sequence}`);
   let data: { code: number; msg?: string };
   try { data = JSON.parse(respText); } catch {
     console.error(`[${ts()}] [CARDIKT] updateCard FAIL: invalid JSON cardId=${cardId} seq=${sequence} status=${resp.status}`);
@@ -133,15 +155,14 @@ export async function sendCardKitMessage(
 ): Promise<string> {
   const payload = { receive_id: chatId, msg_type: "interactive", content: JSON.stringify({ type: "card", data: { card_id: cardId } }) };
   const url = `${BASE_URL}/im/v1/messages?receive_id_type=chat_id`;
-  const resp = await fetch(url, {
+  const { resp, respText } = await fetchCardKit(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
-  });
-  const respText = await resp.text();
+  }, `sendMessage cardId=${cardId} chatId=${chatId}`);
   let data: { code: number; msg?: string; data?: { message_id?: string } };
   try { data = JSON.parse(respText); } catch {
     console.error(`[${ts()}] [CARDIKT] sendMessage FAIL: invalid JSON cardId=${cardId} chatId=${chatId} status=${resp.status}`);
