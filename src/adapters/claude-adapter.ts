@@ -87,6 +87,11 @@ export function buildSdkEnv(
   const env: Record<string, string | undefined> = { ...process.env };
   let mutated = preferGitBashOnWindows(env);
 
+  // Claude Code 2.1.136+ 会在每次请求中注入 x-anthropic-billing-header，
+  // 导致 prompt 前缀变化、缓存命中率急剧下降。设为 0 关闭。
+  env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";
+  mutated = true;
+
   if (subagentModelTrim || apiKeyTrim || baseUrlTrim) {
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.CLAUDE_CODE_OAUTH_TOKEN;

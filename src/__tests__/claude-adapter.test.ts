@@ -459,6 +459,29 @@ describe("buildClaudePromptText", () => {
     expect(result.endsWith("[User message]\nhello\n[/User message]")).toBe(true);
   });
 
+  it("prepends the Claude-specific injection prompt on every resumed prompt", () => {
+    const first = buildClaudePromptText(
+      "[ChatCCC IM skill: feishu-skill]\ncapabilities\n[/ChatCCC IM skill: feishu-skill]\n\n[User message]\nfirst\n[/User message]",
+      "Never repeat successful commands for {{session_id}}.",
+      "sid-resume",
+    );
+    const second = buildClaudePromptText(
+      "[ChatCCC IM skill: feishu-skill]\ncapabilities\n[/ChatCCC IM skill: feishu-skill]\n\n[User message]\nsecond\n[/User message]",
+      "Never repeat successful commands for {{session_id}}.",
+      "sid-resume",
+    );
+
+    for (const result of [first, second]) {
+      expect(result).toContain("[ChatCCC Claude-specific injection prompt]");
+      expect(result).toContain("Never repeat successful commands for sid-resume.");
+      expect(result).toContain("[/ChatCCC Claude-specific injection prompt]");
+      expect(result).toContain("[ChatCCC IM skill: feishu-skill]");
+      expect(result).toContain("[/ChatCCC IM skill: feishu-skill]");
+    }
+    expect(first).toContain("[User message]\nfirst\n[/User message]");
+    expect(second).toContain("[User message]\nsecond\n[/User message]");
+  });
+
   it("leaves user text unchanged when the injection prompt is empty", () => {
     expect(buildClaudePromptText("hello", "   ")).toBe("hello");
     expect(buildClaudePromptText("hello", null)).toBe("hello");
@@ -490,13 +513,15 @@ describe("buildClaudePromptText", () => {
 });
 
 describe("buildSdkEnv", () => {
-  it("returns undefined when no SDK env override is configured", () => {
+  it("always sets CLAUDE_CODE_ATTRIBUTION_HEADER=0 to preserve prompt cache hit rate", () => {
     const originalPath = process.env.PATH;
     try {
       process.env.PATH = process.platform === "win32"
         ? "C:\\Program Files\\Git\\usr\\bin;C:\\Windows\\System32"
         : "/usr/bin:/bin";
-      expect(buildSdkEnv("", "  ", undefined)).toBeUndefined();
+      const env = buildSdkEnv("", "  ", undefined);
+      expect(env).toBeDefined();
+      expect(env!.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0");
     } finally {
       process.env.PATH = originalPath;
     }
