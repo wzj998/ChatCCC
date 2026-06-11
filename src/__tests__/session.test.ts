@@ -398,6 +398,79 @@ describe("runAgentSession process monitor", () => {
     );
   });
 
+  it("recreates the progress card when the initial CardKit send fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const platform = mockPlatform("feishu");
+    platform.cardCreate = vi.fn()
+      .mockResolvedValueOnce("bad-card")
+      .mockResolvedValueOnce("good-card");
+    platform.cardSend = vi.fn()
+      .mockRejectedValueOnce(new Error("cardid is invalid"))
+      .mockResolvedValueOnce("message-good");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-card-retry", "chat-card-retry");
+    recordLastActiveChat("sid-card-retry", "chat-card-retry");
+
+    const adapter: ToolAdapter = {
+      displayName: "Claude Code",
+      sessionDescPrefix: "Claude Code Session:",
+      createSession: async () => ({ sessionId: "sid-card-retry" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* () {
+        yield { type: "assistant", blocks: [{ type: "text", text: "done" }] };
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    await runAgentSession("sid-card-retry", "prompt", platform, "chat-card-retry", Date.now(), "claude");
+
+    expect(platform.cardCreate).toHaveBeenCalledTimes(2);
+    expect(platform.cardSend).toHaveBeenNthCalledWith(1, "chat-card-retry", "bad-card");
+    expect(platform.cardSend).toHaveBeenNthCalledWith(2, "chat-card-retry", "good-card");
+    expect(displayCards.get("chat-card-retry")?.cardId).toBe("good-card");
+    expect(platform.sendText).not.toHaveBeenCalledWith(
+      "chat-card-retry",
+      "生成中卡片发送失败，结果将以文本形式发送。",
+    );
+  });
+
+  it("does not register an invisible progress card and sends the final text fallback", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const platform = mockPlatform("feishu");
+    platform.cardCreate = vi.fn()
+      .mockResolvedValueOnce("bad-card-1")
+      .mockResolvedValueOnce("bad-card-2");
+    platform.cardSend = vi.fn()
+      .mockRejectedValueOnce(new Error("cardid is invalid"))
+      .mockRejectedValueOnce(new Error("cardid is invalid again"));
+    setSessionPlatform(platform);
+    bindChatToSession("sid-card-fallback", "chat-card-fallback");
+    recordLastActiveChat("sid-card-fallback", "chat-card-fallback");
+
+    const adapter: ToolAdapter = {
+      displayName: "Claude Code",
+      sessionDescPrefix: "Claude Code Session:",
+      createSession: async () => ({ sessionId: "sid-card-fallback" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* () {
+        yield { type: "assistant", blocks: [{ type: "text", text: "final answer" }] };
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    await runAgentSession("sid-card-fallback", "prompt", platform, "chat-card-fallback", Date.now(), "claude");
+
+    expect(displayCards.has("chat-card-fallback")).toBe(false);
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-card-fallback",
+      "生成中卡片发送失败，结果将以文本形式发送。",
+    );
+    expect(platform.sendText).toHaveBeenCalledWith("chat-card-fallback", "final answer");
+    expect(mockStreamStates.get("sid-card-fallback")?.finalReplySentTurn).toBe(1);
+  });
+
   it("sends the stopped notice only after the prompt generator exits", async () => {
     const platform = mockPlatform("feishu");
     setSessionPlatform(platform);
