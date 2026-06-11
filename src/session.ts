@@ -81,6 +81,36 @@ async function sendFinalReplyTextOnce(
   return sent;
 }
 
+async function createVisibleProgressCard(
+  platform: PlatformAdapter,
+  chatId: string,
+  sessionId: string,
+  turnCount: number,
+  notifyFailureText?: string,
+): Promise<string | null> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let cardId: string | null = null;
+    try {
+      cardId = await platform.cardCreate(
+        buildProgressCard("", { showStop: true, headerTitle: "生成中..." }),
+      );
+      if (!cardId) throw new Error("empty card id");
+      await platform.cardSend(chatId, cardId);
+      await addCardToTurn(sessionId, turnCount, cardId);
+      return cardId;
+    } catch (err) {
+      console.error(
+        `[${ts()}] [DISPLAY] progress card send attempt ${attempt} failed: chatId=${chatId} cardId=${cardId || "(none)"} ${(err as Error).message}`,
+      );
+    }
+  }
+
+  if (notifyFailureText) {
+    await platform.sendText(chatId, notifyFailureText).catch(() => {});
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
 // ---------------------------------------------------------------------------
@@ -1053,11 +1083,14 @@ export async function runAgentSession(
   if (displayChatIdForNew) {
     const ppNew = platformForChat(displayChatIdForNew);
     if (ppNew && ppNew.kind !== "wechat") {
-      const cardId = await ppNew.cardCreate(
-        buildProgressCard("", { showStop: true, headerTitle: "生成中..." }),
-      ).catch(() => null);
+      const cardId = await createVisibleProgressCard(
+        ppNew,
+        displayChatIdForNew,
+        sessionId,
+        nextTurnCount,
+        "生成中卡片发送失败，结果将以文本形式发送。",
+      );
       if (cardId) {
-        await ppNew.cardSend(displayChatIdForNew, cardId).catch(() => null);
         displayCards.set(displayChatIdForNew, {
           cardId,
           sequence: 1,
@@ -1069,7 +1102,6 @@ export async function runAgentSession(
           turnCount: nextTurnCount,
           dotCount: 0,
         });
-        addCardToTurn(sessionId, nextTurnCount, cardId).catch(() => {});
       }
     } else if (ppNew && ppNew.kind === "wechat") {
       // WeChat: 无卡片，但需要 display entry 追踪已发送内容
@@ -1284,7 +1316,14 @@ export async function runAgentSession(
         });
       }
       const active2 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
-      if (active2) platform.setChatAvatar(active2, tool, "idle").catch(() => {});
+      if (active2) {
+        const terminalState = await readStreamState(sessionId);
+        if (finalReply && !displayCards.has(active2) && (!terminalState || !isFinalReplySentForTurn(terminalState))) {
+          const pp = platformForChat(active2) ?? platform;
+          await sendFinalReplyTextOnce(pp, active2, sessionId, nextTurnCount, finalReply);
+        }
+        platform.setChatAvatar(active2, tool, "idle").catch(() => {});
+      }
       console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
     }
@@ -1482,28 +1521,33 @@ export function startUnifiedDisplayLoop(): void {
               if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
                 display.cardBusy = true;
                 try {
+                  const newCardId = await createVisibleProgressCard(
+                    p,
+                    chatId,
+                    sessionId,
+                    display.turnCount,
+                    display.streamErrorNotified ? undefined : "生成中卡片发送失败，结果将继续更新在上一张卡片中。",
+                  );
+                  if (!newCardId) {
+                    display.streamErrorNotified = true;
+                    continue;
+                  }
                   const oldSeqBase = display.sequence;
                   const oldContent = state.accumulatedContent + state.finalReply;
                   const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "生成中（上轮）" });
-                  await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).catch(err => {
+                  await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).then(() => {
+                    display.sequence = oldSeqBase + 1;
+                  }).catch(err => {
                     console.error(`[${ts()}] [DISPLAY] rotation old cardUpdate failed: ${(err as Error).message}`);
                   });
                   markCardDone(sessionId, display.turnCount, display.cardId).catch(() => {});
-                  const newCardId = await p.cardCreate(buildProgressCard(
-                    "",
-                    { showStop: true, headerTitle: "生成中..." },
-                  ));
-                  if (newCardId) {
-                    await p.cardSend(chatId, newCardId);
-                    addCardToTurn(sessionId, display.turnCount, newCardId).catch(() => {});
-                    display.cardId = newCardId;
-                    display.sequence = 1;
-                    display.cardCreatedAt = Date.now();
-                    display.rotationAccLen = state.accumulatedContent.length;
-                    display.rotationFinalReply = state.finalReply;
-                    display.lastSentContent = "";
-                    display.streamErrorNotified = false;
-                  }
+                  display.cardId = newCardId;
+                  display.sequence = 1;
+                  display.cardCreatedAt = Date.now();
+                  display.rotationAccLen = state.accumulatedContent.length;
+                  display.rotationFinalReply = state.finalReply;
+                  display.lastSentContent = "";
+                  display.streamErrorNotified = false;
                 } catch (err) {
                   console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
                 } finally {
