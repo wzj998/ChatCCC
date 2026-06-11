@@ -41,9 +41,13 @@ vi.mock("../stream-state.ts", () => ({
 import { stopSession } from "../session.ts";
 import { activePrompts } from "../session-chat-binding.ts";
 
-function seedRunningSession(sid: string, accumulated = "partial output"): AbortController {
+function seedRunningSession(
+  sid: string,
+  accumulated = "partial output",
+  closeSession?: () => void,
+): AbortController {
   const controller = new AbortController();
-  activePrompts.set(sid, { controller, stopped: false, startTime: Date.now() });
+  activePrompts.set(sid, { controller, stopped: false, startTime: Date.now(), closeSession });
   stateStore.set(sid, {
     sessionId: sid,
     status: "running",
@@ -122,5 +126,15 @@ describe("stopSession 行为护栏", () => {
     seedRunningSession("sid-C");
     stopSession("sid-C");
     expect(activePrompts.get("sid-C")?.stopped).toBe(true);
+  });
+
+  it("调用 adapter 提供的 closeSession 以主动关闭底层 SDK session", () => {
+    const closeSession = vi.fn();
+    seedRunningSession("sid-D", "partial output", closeSession);
+
+    const ok = stopSession("sid-D");
+
+    expect(ok).toBe(true);
+    expect(closeSession).toHaveBeenCalledTimes(1);
   });
 });

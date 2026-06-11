@@ -88,6 +88,7 @@ import {
   recordChatPlatform,
   _getPlatformForChatForTest,
   runAgentSession,
+  stopSession,
   startUnifiedDisplayLoop,
   stopUnifiedDisplayLoop,
   _setProcessAliveForTest,
@@ -396,6 +397,66 @@ describe("runAgentSession process monitor", () => {
       expect.stringContaining("进程异常结束"),
     );
   });
+
+  it("sends the stopped notice only after the prompt generator exits", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-stop-notice", "chat-stop-notice");
+    recordLastActiveChat("sid-stop-notice", "chat-stop-notice");
+
+    const closeSession = vi.fn();
+    let releasePrompt: (() => void) | undefined;
+    const adapter: ToolAdapter = {
+      displayName: "Claude Code",
+      sessionDescPrefix: "Claude Code Session:",
+      createSession: async () => ({ sessionId: "sid-stop-notice" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        const waitForStop = new Promise<void>((resolve) => {
+          releasePrompt = resolve;
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        options?.onSessionCreated?.(() => {
+          closeSession();
+          releasePrompt?.();
+        });
+        yield { type: "assistant", blocks: [{ type: "text", text: "partial answer" }] };
+        await waitForStop;
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    const runPromise = runAgentSession(
+      "sid-stop-notice",
+      "prompt",
+      platform,
+      "chat-stop-notice",
+      Date.now(),
+      "claude",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-stop-notice")?.closeSession).toBeTypeOf("function");
+    });
+    expect(platform.sendText).not.toHaveBeenCalledWith("chat-stop-notice", "会话已停止。");
+
+    const ok = stopSession("sid-stop-notice");
+    expect(ok).toBe(true);
+    expect(closeSession).toHaveBeenCalledTimes(1);
+
+    await runPromise;
+
+    expect(platform.sendText).toHaveBeenCalledWith("chat-stop-notice", "会话已停止。");
+    expect(activePrompts.has("sid-stop-notice")).toBe(false);
+  });
+
   it("re-injects IM skill capabilities for each resumed Claude prompt", async () => {
     const platform = mockPlatform("feishu");
     setSessionPlatform(platform);

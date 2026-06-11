@@ -778,8 +778,7 @@ export async function handleCommand(
       logTrace(tid, "BRANCH", { cmd: "/stop" });
       if (stopSession(sessionId)) {
         console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
-        await platform.sendText(chatId, "会话已停止。").catch(() => {});
-        logTrace(tid, "DONE", { outcome: "stopped" });
+        logTrace(tid, "DONE", { outcome: "stop_requested" });
       } else {
         await platform
           .sendText(chatId, "当前没有正在进行的会话。")

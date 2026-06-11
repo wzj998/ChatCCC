@@ -169,6 +169,26 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendText).toHaveBeenCalledWith("wx-chat", "生成中...");
   });
 
+  it("does not send the stopped success text until the running prompt really exits", async () => {
+    const platform = mockPlatform();
+    await recordSessionRegistry({
+      chatId: "wx-chat",
+      sessionId: "sid-wechat",
+      tool: "claude",
+      chatName: "busy-session",
+      running: true,
+    });
+    activePrompts.set("sid-wechat", {
+      controller: new AbortController(),
+      stopped: false,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/stop", "wx-chat", "wx-user", Date.now(), "p2p");
+
+    expect(platform.sendText).not.toHaveBeenCalledWith("wx-chat", "会话已停止。");
+  });
+
   it("cleans stale Feishu p2p binding, creates a group, and sends the private message as first prompt", async () => {
     const platform = mockPlatform("feishu");
     const prompt = vi.fn(async function* (_sessionId: string, userText: string) {

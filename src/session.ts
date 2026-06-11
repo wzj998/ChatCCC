@@ -1247,7 +1247,10 @@ export async function runAgentSession(
         });
       }
       const active1 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
-      if (active1) platform.setChatAvatar(active1, tool, "idle").catch(() => {});
+      if (active1) {
+        await platform.sendText(active1, "会话已停止。").catch(() => {});
+        platform.setChatAvatar(active1, tool, "idle").catch(() => {});
+      }
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
     } else if (wasAbnormalExit) {
@@ -1623,6 +1626,11 @@ export function stopSession(sessionId: string): boolean {
   prompt.stopped = true;
   clearPromptProcessMonitor(sessionId);
   cancelQueuedMessage(sessionId);
+  try {
+    prompt.closeSession?.();
+  } catch (err) {
+    console.warn(`[${ts()}] [STOP] closeSession failed for ${sessionId}: ${(err as Error).message}`);
+  }
   prompt.controller.abort();
 
   // 强制杀死 CLI 子进程。controller.abort() 只在 for-await 收到下一条
