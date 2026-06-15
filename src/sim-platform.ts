@@ -127,6 +127,13 @@ export const SimulatedPlatform: FeishuPlatform = {
     // 模拟模式不需要头像
   },
 
+  async getCodexUsageSummary() {
+    return {
+      fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+    };
+  },
+
   // ---- 图片下载 ----
   async getOrDownloadImage(_token, _messageId, fileKey) {
     return join(SIM_DIR, "images", fileKey);

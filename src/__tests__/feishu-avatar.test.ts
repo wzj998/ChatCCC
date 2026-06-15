@@ -61,20 +61,47 @@ describe("Codex avatar usage battery", () => {
     vi.restoreAllMocks();
   });
 
-  it("adds the 5h remaining percent to Codex avatar uploads when usage lookup succeeds", async () => {
+  it("adds weekly battery and 5h ring percentages to Codex avatar uploads when usage lookup succeeds", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
     const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
     const uploadedNames: string[] = [];
     await writeCodexAuth(homeDir);
     mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
-      rate_limit: { primary_window: { used_percent: 37 } },
+      rate_limit: {
+        primary_window: { used_percent: 37 },
+        secondary_window: { used_percent: 12 },
+      },
     }), { status: 200 }));
 
     try {
       const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
       await setChatAvatar("tenant-token", "chat_1", "codex", "busy");
 
-      expect(uploadedNames).toEqual(["avatar_codex_busy_usage_63.jpg"]);
+      expect(uploadedNames).toEqual(["avatar_codex_busy_week_88_5h_63.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns both 5h and weekly Codex usage windows", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    await writeCodexAuth(homeDir);
+    mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
+      rate_limit: {
+        primary_window: { used_percent: 37, reset_after_seconds: 10349, reset_at: 1781528212 },
+        secondary_window: { used_percent: 12, reset_after_seconds: 325063, reset_at: 1781842926 },
+      },
+    }), { status: 200 }));
+
+    try {
+      const { getCodexUsageSummary } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await expect(getCodexUsageSummary()).resolves.toEqual({
+        fiveHour: { usedPercent: 37, remainingPercent: 63, resetAfterSeconds: 10349, resetAtEpochSeconds: 1781528212 },
+        weekly: { usedPercent: 12, remainingPercent: 88, resetAfterSeconds: 325063, resetAtEpochSeconds: 1781842926 },
+      });
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });

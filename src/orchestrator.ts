@@ -78,9 +78,10 @@ import {
   enqueueMessage,
   cancelQueuedMessage,
 } from "./session-chat-binding.ts";
-import { getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
+import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
+import type { CodexUsageSummary } from "./feishu-api.ts";
 
 // ---------------------------------------------------------------------------
 // 辅助函数
@@ -108,6 +109,67 @@ function findModelMatch(input: string, models: string[]): string | null {
     .filter(m => m.toLowerCase().includes(inputLower))
     .sort((a, b) => a.length - b.length);
   return candidates[0] ?? null;
+}
+
+function formatCodexUsageSummary(usage: CodexUsageSummary): string {
+  const progressBar = (usedPercent: number) => {
+    const width = 20;
+    const usedBlocks = Math.max(0, Math.min(width, Math.round((usedPercent / 100) * width)));
+    return `[${"█".repeat(usedBlocks)}${"░".repeat(width - usedBlocks)}]`;
+  };
+
+  const formatDuration = (seconds: number | null) => {
+    if (seconds === null) return "";
+    if (seconds <= 0) return "（已到重置时间）";
+    const totalMinutes = Math.max(1, Math.floor(seconds / 60));
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}天`);
+    if (hours > 0) parts.push(`${hours}小时`);
+    if (minutes > 0 || parts.length === 0) parts.push(`${minutes}分钟`);
+    return `（约 ${parts.join("")}后）`;
+  };
+
+  const formatResetTime = (balance: CodexUsageSummary["fiveHour"]) => {
+    if (balance.resetAtEpochSeconds === null) return "暂无数据";
+    const date = new Date(balance.resetAtEpochSeconds * 1000);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const absolute = [
+      date.getFullYear(),
+      "-",
+      pad(date.getMonth() + 1),
+      "-",
+      pad(date.getDate()),
+      " ",
+      pad(date.getHours()),
+      ":",
+      pad(date.getMinutes()),
+    ].join("");
+    return `${absolute}${formatDuration(balance.resetAfterSeconds)}`;
+  };
+
+  const formatWindow = (label: string, balance: CodexUsageSummary["fiveHour"] | null) => {
+    if (!balance) return `**${label}:** 暂无数据`;
+    return [
+      `**${label}:** 已用 ${balance.usedPercent}%，剩余 ${balance.remainingPercent}%，重置: ${formatResetTime(balance)}`,
+      progressBar(balance.usedPercent),
+    ].join("\n");
+  };
+
+  return [
+    "Codex 用量：",
+    "",
+    formatWindow("5h", usage.fiveHour),
+    formatWindow("周", usage.weekly),
+  ].join("\n");
+}
+
+function codexUsageHelpLine(tool: string): string {
+  return tool === "codex"
+    ? "\n发送 **/usage** 查看 Codex 5h 和周用量。"
+    : "";
 }
 
 function isUntitledSessionChatName(name: string): boolean {
@@ -306,6 +368,28 @@ export async function handleCommand(
     appendStartupTrace("updateg: sync update begin", { fromPid: process.pid });
     syncUpdateAndRestart();
     setTimeout(() => process.exit(0), 2000);
+    return;
+  }
+
+  if (textLower === "/usage") {
+    logTrace(tid, "BRANCH", { cmd: "/usage", tool: "codex" });
+    try {
+      const content = formatCodexUsageSummary(await getCodexUsageSummary());
+      if (platform.kind === "wechat") {
+        await platform.sendText(chatId, content).catch(() => {});
+      } else {
+        await platform.sendCard(chatId, "Codex Usage", content, "blue");
+      }
+      logTrace(tid, "DONE", { outcome: "usage" });
+    } catch (err) {
+      const message = `无法获取 Codex 用量：${(err as Error).message}`;
+      if (platform.kind === "wechat") {
+        await platform.sendText(chatId, message).catch(() => {});
+      } else {
+        await platform.sendCard(chatId, "Codex Usage", message, "red");
+      }
+      logTrace(tid, "DONE", { outcome: "usage_fail", error: (err as Error).message });
+    }
     return;
   }
 
@@ -531,7 +615,8 @@ export async function handleCommand(
           `发送 **/model** 查看或切换当前会话的模型。\n` +
           `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
           `发送 **/sessions** 查看所有会话状态。\n` +
-          `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
+          `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
+          codexUsageHelpLine(tool),
         "green",
       );
       console.log(
@@ -617,7 +702,8 @@ export async function handleCommand(
         `发送 **/model** 查看或切换当前会话的模型。\n` +
         `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
         `发送 **/sessions** 查看所有会话状态。\n` +
-        `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。`,
+        `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
+        codexUsageHelpLine(tool),
       "green",
     );
 

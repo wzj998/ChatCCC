@@ -480,7 +480,7 @@ async function handleForgetIlink(_req: IncomingMessage, res: ServerResponse): Pr
 // HTML page (embedded template)
 // ---------------------------------------------------------------------------
 
-const PAGE_HTML = `<!DOCTYPE html>
+export const PAGE_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1541,6 +1541,8 @@ function editSection(section) {
     html += '</select></div>';
   }
   document.getElementById('edit-modal-fields').innerHTML = html;
+  document.getElementById('edit-modal').classList.remove('hidden');
+  document.getElementById('edit-overlay').classList.remove('hidden');
 }
 
 function closeEditModal() {
