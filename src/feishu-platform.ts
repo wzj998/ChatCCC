@@ -30,6 +30,7 @@ export interface FeishuPlatform {
   getChatInfo: typeof realApi.getChatInfo;
   disbandChat: typeof realApi.disbandChat;
   setChatAvatar: typeof realApi.setChatAvatar;
+  getCodexUsageSummary: typeof realApi.getCodexUsageSummary;
   getOrDownloadImage: typeof realApi.getOrDownloadImage;
   verifyAllPermissions: typeof realApi.verifyAllPermissions;
   reportPermissionResults: typeof realApi.reportPermissionResults;
@@ -110,6 +111,10 @@ export function disbandChat(...args: Parameters<typeof realApi.disbandChat>): Re
 
 export function setChatAvatar(...args: Parameters<typeof realApi.setChatAvatar>): ReturnType<typeof realApi.setChatAvatar> {
   return _impl.setChatAvatar(...args);
+}
+
+export function getCodexUsageSummary(...args: Parameters<typeof realApi.getCodexUsageSummary>): ReturnType<typeof realApi.getCodexUsageSummary> {
+  return _impl.getCodexUsageSummary(...args);
 }
 
 export function getOrDownloadImage(...args: Parameters<typeof realApi.getOrDownloadImage>): ReturnType<typeof realApi.getOrDownloadImage> {

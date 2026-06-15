@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  PAGE_HTML,
   chooseStartPath,
   unflattenConfig,
 } from "../web-ui.ts";
@@ -31,6 +32,14 @@ describe("unflattenConfig", () => {
         baseUrl: "https://api.example.com",
       },
     });
+  });
+});
+
+describe("dashboard edit modal", () => {
+  it("shows the edit modal and overlay when a section edit button is clicked", () => {
+    expect(PAGE_HTML).toContain("function editSection(section)");
+    expect(PAGE_HTML).toContain("document.getElementById('edit-modal').classList.remove('hidden');");
+    expect(PAGE_HTML).toContain("document.getElementById('edit-overlay').classList.remove('hidden');");
   });
 });
 

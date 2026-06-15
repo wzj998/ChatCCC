@@ -313,10 +313,20 @@ const AVATAR_BADGES: Record<string, string> = {
   codex: resolvePath(AVATAR_BADGE_DIR, "badge_codex.png"),
 };
 const AVATAR_SIZE = 256;
+const AVATAR_BADGE_SIZE = 92;
+const AVATAR_BADGE_MARGIN = 10;
+const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v1";
 
-interface CodexUsageBalance {
+export interface CodexUsageBalance {
   usedPercent: number;
   remainingPercent: number;
+  resetAtEpochSeconds: number | null;
+  resetAfterSeconds: number | null;
+}
+
+export interface CodexUsageSummary {
+  fiveHour: CodexUsageBalance;
+  weekly: CodexUsageBalance | null;
 }
 
 const avatarKeyCache = new Map<string, string>();
@@ -334,12 +344,12 @@ function avatarCombinationPath(tool: string, status: string): string {
   return resolvePath(AVATAR_COMBINATIONS_DIR, `avatar_${normalizeAvatarTool(tool)}_${normalizeAvatarStatus(status)}.png`);
 }
 
-function avatarCacheKey(tool: string, status: string, codexUsage: CodexUsageBalance | null = null): string {
+function avatarCacheKey(tool: string, status: string, codexUsage: CodexUsageSummary | null = null): string {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   if (normalizedTool === "codex") {
     return codexUsage
-      ? `${normalizedTool}:${normalizedStatus}:battery:${codexUsage.remainingPercent}`
+      ? `${normalizedTool}:${normalizedStatus}:${CODEX_AVATAR_USAGE_STYLE_VERSION}:week-battery:${codexUsage.weekly?.remainingPercent}:5h-ring:${codexUsage.fiveHour.remainingPercent}`
       : `${normalizedTool}:${normalizedStatus}:plain`;
   }
   return `${normalizedTool}:${normalizedStatus}`;
@@ -373,6 +383,31 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function usageBalanceFromWindow(raw: Record<string, unknown>, fieldName: string): CodexUsageBalance {
+  const value = raw.used_percent;
+  const usedPercent = Number(value);
+  if (!Number.isFinite(usedPercent)) throw new Error(`missing ${fieldName}.used_percent`);
+  const used = clampPercent(usedPercent);
+  const resetAt = Number(raw.reset_at);
+  const resetAfter = Number(raw.reset_after_seconds);
+  return {
+    usedPercent: used,
+    remainingPercent: clampPercent(100 - used),
+    resetAtEpochSeconds: Number.isFinite(resetAt) ? resetAt : null,
+    resetAfterSeconds: Number.isFinite(resetAfter) ? resetAfter : null,
+  };
+}
+
+function parseOptionalUsageWindow(rateLimit: Record<string, unknown>, keys: string[]): CodexUsageBalance | null {
+  for (const key of keys) {
+    const raw = rateLimit[key];
+    if (!raw || typeof raw !== "object") continue;
+    if ((raw as { used_percent?: unknown }).used_percent === undefined) continue;
+    return usageBalanceFromWindow(raw as Record<string, unknown>, `rate_limit.${key}`);
+  }
+  return null;
+}
+
 async function getCodexAccessToken(): Promise<string | null> {
   try {
     const raw = await readFile(CODEX_AUTH_FILE, "utf-8");
@@ -384,28 +419,41 @@ async function getCodexAccessToken(): Promise<string | null> {
   }
 }
 
-async function fetchCodexUsageBalance(): Promise<CodexUsageBalance | null> {
+export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
+  const token = await getCodexAccessToken();
+  if (!token) throw new Error("missing ~/.codex/auth.json access token");
+
+  const resp = await fetch(CODEX_USAGE_URL, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
+
+  const data = JSON.parse(text) as {
+    rate_limit?: Record<string, unknown>;
+  };
+  const rateLimit = data.rate_limit;
+  if (!rateLimit || typeof rateLimit !== "object") throw new Error("missing rate_limit");
+
+  const fiveHour = parseOptionalUsageWindow(rateLimit, ["primary_window"]);
+  if (!fiveHour) throw new Error("missing rate_limit.primary_window.used_percent");
+
+  return {
+    fiveHour,
+    weekly: parseOptionalUsageWindow(rateLimit, [
+      "secondary_window",
+      "weekly_window",
+      "week_window",
+      "long_window",
+    ]),
+  };
+}
+
+async function fetchCodexAvatarUsage(): Promise<CodexUsageSummary | null> {
   try {
-    const token = await getCodexAccessToken();
-    if (!token) throw new Error("missing ~/.codex/auth.json access token");
-
-    const resp = await fetch(CODEX_USAGE_URL, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const text = await resp.text();
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
-
-    const data = JSON.parse(text) as {
-      rate_limit?: { primary_window?: { used_percent?: unknown } };
-    };
-    const usedPercent = Number(data.rate_limit?.primary_window?.used_percent);
-    if (!Number.isFinite(usedPercent)) throw new Error("missing rate_limit.primary_window.used_percent");
-
-    const used = clampPercent(usedPercent);
-    return {
-      usedPercent: used,
-      remainingPercent: clampPercent(100 - used),
-    };
+    const summary = await getCodexUsageSummary();
+    if (!summary.weekly) throw new Error("missing weekly usage window");
+    return summary;
   } catch (err) {
     console.warn(`[${ts()}] [AVATAR] Codex usage unavailable, using plain avatar: ${(err as Error).message}`);
     return null;
@@ -465,16 +513,83 @@ function buildCodexUsageBatterySvg(remainingPercent: number): Buffer {
 </svg>`);
 }
 
-async function renderAvatar(tool: string, status: string, codexUsage: CodexUsageBalance | null = null): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+function buildCodexUsageRingSvg(remainingPercent: number): Buffer {
+  const remaining = clampPercent(remainingPercent);
+  const palette = codexUsagePalette(remaining);
+  const cx = 128;
+  const cy = 128;
+  const r = 118;
+  const strokeWidth = 13;
+  const used = clampPercent(100 - remaining);
+  const polar = (angleDegrees: number) => {
+    const angle = (angleDegrees * Math.PI) / 180;
+    return {
+      x: cx + r * Math.cos(angle),
+      y: cy + r * Math.sin(angle),
+    };
+  };
+  const startAngle = -90 + (used / 100) * 360;
+  const sweepAngle = (remaining / 100) * 360;
+  const start = polar(startAngle);
+  const end = polar(startAngle + Math.min(sweepAngle, 359.99));
+  const largeArcFlag = sweepAngle > 180 ? 1 : 0;
+  const progressPath = remaining >= 100
+    ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="url(#ring)" stroke-width="${strokeWidth}" stroke-linecap="round" filter="url(#ringShadow)"/>`
+    : remaining <= 0
+      ? ""
+      : `<path d="M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A ${r} ${r} 0 ${largeArcFlag} 1 ${end.x.toFixed(3)} ${end.y.toFixed(3)}" fill="none" stroke="url(#ring)" stroke-width="${strokeWidth}" stroke-linecap="round" filter="url(#ringShadow)"/>`;
+
+  return Buffer.from(`
+<svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="${palette.start}"/>
+      <stop offset="1" stop-color="${palette.end}"/>
+    </linearGradient>
+    <filter id="ringShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#0f172a" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#cbd5e1" stroke-width="${strokeWidth}"/>
+  ${progressPath}
+</svg>`);
+}
+
+async function buildAgentBadgeOverlay(tool: string): Promise<sharp.OverlayOptions> {
+  const badge = await sharp(AVATAR_BADGES[tool])
+    .resize(AVATAR_BADGE_SIZE, AVATAR_BADGE_SIZE, {
+      fit: "contain",
+      kernel: sharp.kernel.lanczos3,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
+  return {
+    input: badge,
+    left: AVATAR_SIZE - AVATAR_BADGE_SIZE - AVATAR_BADGE_MARGIN,
+    top: AVATAR_SIZE - AVATAR_BADGE_SIZE - AVATAR_BADGE_MARGIN,
+  };
+}
+
+async function renderAvatar(tool: string, status: string, codexUsage: CodexUsageSummary | null = null): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   const composites: sharp.OverlayOptions[] = [];
 
-  if (normalizedTool === "codex" && codexUsage) {
-    composites.push({ input: buildCodexUsageBatterySvg(codexUsage.remainingPercent), left: 0, top: 0 });
+  const useDynamicCodexAvatar = normalizedTool === "codex" && codexUsage?.weekly;
+  const basePath = useDynamicCodexAvatar
+    ? AVATAR_SOURCES[normalizedStatus]
+    : avatarCombinationPath(normalizedTool, normalizedStatus);
+
+  if (useDynamicCodexAvatar) {
+    composites.push(
+      { input: buildCodexUsageRingSvg(codexUsage.fiveHour.remainingPercent), left: 0, top: 0 },
+      { input: buildCodexUsageBatterySvg(codexUsage.weekly.remainingPercent), left: 0, top: 0 },
+      await buildAgentBadgeOverlay(normalizedTool),
+    );
   }
 
-  let pipeline = sharp(await readFile(avatarCombinationPath(normalizedTool, normalizedStatus)))
+  let pipeline = sharp(await readFile(basePath))
     .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "center" });
   if (composites.length > 0) {
     pipeline = pipeline.composite(composites);
@@ -489,13 +604,13 @@ async function renderAvatar(tool: string, status: string, codexUsage: CodexUsage
   return {
     buffer: jpeg,
     contentType: "image/jpeg",
-    filename: codexUsage
-      ? `avatar_${normalizedTool}_${normalizedStatus}_usage_${codexUsage.remainingPercent}.jpg`
+    filename: codexUsage?.weekly
+      ? `avatar_${normalizedTool}_${normalizedStatus}_week_${codexUsage.weekly.remainingPercent}_5h_${codexUsage.fiveHour.remainingPercent}.jpg`
       : `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
   };
 }
 
-async function uploadImage(token: string, tool: string, status: string, codexUsage: CodexUsageBalance | null = null): Promise<string> {
+async function uploadImage(token: string, tool: string, status: string, codexUsage: CodexUsageSummary | null = null): Promise<string> {
   const image = await renderAvatar(tool, status, codexUsage);
   const blob = new Blob([new Uint8Array(image.buffer)], { type: image.contentType });
   const form = new FormData();
@@ -521,7 +636,7 @@ async function getOrUploadAvatarKey(token: string, tool: string, status: string)
   await loadAvatarKeyCache();
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
-  const codexUsage = normalizedTool === "codex" ? await fetchCodexUsageBalance() : null;
+  const codexUsage = normalizedTool === "codex" ? await fetchCodexAvatarUsage() : null;
   const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage);
   const cached = avatarKeyCache.get(keyName);
   if (cached) return cached;

@@ -7,6 +7,7 @@ import type { PlatformAdapter } from "../platform-adapter.ts";
 import type { SessionInfo, ToolAdapter } from "../adapters/adapter-interface.ts";
 
 const mockStreamStates = new Map<string, { status: "running" | "done" | "stopped"; finalReply: string }>();
+const mockGetCodexUsageSummary = vi.hoisted(() => vi.fn());
 
 vi.mock("../im-skills.ts", () => ({
   buildImSkillsPrompt: async () => "",
@@ -50,6 +51,12 @@ vi.mock("../stream-state.ts", () => ({
     tool,
   }),
   fixStaleStreamStates: async () => {},
+}));
+
+vi.mock("../feishu-platform.ts", () => ({
+  getCodexUsageSummary: mockGetCodexUsageSummary,
+  getTenantAccessToken: vi.fn(async () => "tenant-token"),
+  sendPostMessage: vi.fn(async () => true),
 }));
 
 import { handleCommand } from "../orchestrator.ts";
@@ -114,6 +121,11 @@ describe("handleCommand WeChat processing ack", () => {
     resetState();
     resetBindingState();
     mockStreamStates.clear();
+    mockGetCodexUsageSummary.mockReset();
+    mockGetCodexUsageSummary.mockResolvedValue({
+      fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+    });
     _setAdapterForToolForTest("claude", mockAdapter());
   });
 
@@ -253,5 +265,75 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendRawCard).toHaveBeenCalled();
     const registry = await loadSessionRegistryForBinding();
     expect(registry["feishu-p2p"]).toBeUndefined();
+  });
+
+  it("handles /usage without creating a new Feishu group", async () => {
+    const platform = mockPlatform("feishu");
+    mockGetCodexUsageSummary.mockResolvedValue({
+      fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: 1781528212, resetAfterSeconds: 10349 },
+      weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
+    });
+
+    await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Codex Usage",
+      expect.stringContaining("**5h:** 已用 37%，剩余 63%，重置:"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Codex Usage",
+      expect.stringContaining("约 2小时52分钟后"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Codex Usage",
+      expect.stringContaining("[███████░░░░░░░░░░░░░]"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Codex Usage",
+      expect.stringContaining("**周:** 已用 12%，剩余 88%，重置:"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Codex Usage",
+      expect.stringContaining("约 3天18小时17分钟后"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Codex Usage",
+      expect.stringContaining("[██░░░░░░░░░░░░░░░░░░]"),
+      "blue",
+    );
+  });
+
+  it("only advertises /usage in new Codex session ready messages", async () => {
+    const codexPlatform = mockPlatform("feishu");
+    _setAdapterForToolForTest("codex", mockAdapter("sid-codex"));
+
+    await handleCommand(codexPlatform, "/new codex", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(codexPlatform.sendCard).toHaveBeenCalledWith(
+      "feishu-group",
+      "Codex Session Ready",
+      expect.stringContaining("发送 **/usage** 查看 Codex 5h 和周用量。"),
+      "green",
+    );
+
+    const claudePlatform = mockPlatform("feishu");
+    await handleCommand(claudePlatform, "/new claude", "feishu-p2p-2", "ou-user", Date.now(), "p2p");
+
+    const claudeReadyCall = vi.mocked(claudePlatform.sendCard).mock.calls.find(
+      ([chatId, title]) => chatId === "feishu-group" && title === "Claude Code Session Ready",
+    );
+    expect(claudeReadyCall?.[2]).not.toContain("/usage");
   });
 });

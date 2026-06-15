@@ -135,7 +135,8 @@ export function buildHelpCard(
     "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
-  "发送 **/restart** 重启 ChatCCC 进程",
+    "发送 **/usage** 查看 Codex 5h 和周用量",
+    "发送 **/restart** 重启 ChatCCC 进程",
     "发送 **/updateg** 更新并重启（仅 npm 全局安装可用）",
   ].join("\n");
   return JSON.stringify({
