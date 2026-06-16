@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// 在 import privacy 之前 mock config，让 USER_DATA_DIR 指向临时目录
 const TEST_DATA_DIR = await mkdtemp(join(tmpdir(), "chatccc-privacy-test-"));
 vi.mock("../config.ts", async () => {
   const actual = await vi.importActual<typeof import("../config.ts")>("../config.ts");
@@ -17,10 +16,10 @@ vi.mock("../config.ts", async () => {
 let applyPrivacy: (text: string) => string;
 let reloadPrivacyRules: () => void;
 let getPrivacyRules: () => Record<string, string>;
+let getPrivacyConfig: () => { enabled: boolean; rules: Record<string, string> };
 
 beforeEach(async () => {
   vi.resetModules();
-  // 清理临时目录中的 privacy.json
   try {
     await rm(join(TEST_DATA_DIR, "privacy.json"), { force: true });
   } catch {}
@@ -28,6 +27,7 @@ beforeEach(async () => {
   applyPrivacy = mod.applyPrivacy;
   reloadPrivacyRules = mod.reloadPrivacyRules;
   getPrivacyRules = mod.getPrivacyRules;
+  getPrivacyConfig = mod.getPrivacyConfig;
 });
 
 afterEach(async () => {
@@ -43,12 +43,12 @@ afterAll(async () => {
 });
 
 describe("applyPrivacy", () => {
-  it("无 privacy.json 时返回原文", () => {
+  it("returns original text when privacy.json is missing", () => {
     reloadPrivacyRules();
     expect(applyPrivacy("hello weizhangjian")).toBe("hello weizhangjian");
   });
 
-  it("privacy.json 存在时按规则替换", async () => {
+  it("supports legacy flat privacy rules", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify({ weizhangjian: "wzj", secret: "***" }),
@@ -61,7 +61,63 @@ describe("applyPrivacy", () => {
     expect(applyPrivacy("weizhangjian and secret")).toBe("wzj and ***");
   });
 
-  it("多规则替换多次出现", async () => {
+  it("supports privacy.json schema with enabled=false", async () => {
+    await writeFile(
+      join(TEST_DATA_DIR, "privacy.json"),
+      JSON.stringify({ enabled: false, rules: { weizhangjian: "wzj" } }),
+      "utf-8",
+    );
+    reloadPrivacyRules();
+
+    expect(getPrivacyConfig()).toEqual({ enabled: false, rules: { weizhangjian: "wzj" } });
+    expect(getPrivacyRules()).toEqual({ weizhangjian: "wzj" });
+    expect(applyPrivacy("hello weizhangjian")).toBe("hello weizhangjian");
+  });
+
+  it("supports privacy.json schema with enabled=true", async () => {
+    await writeFile(
+      join(TEST_DATA_DIR, "privacy.json"),
+      JSON.stringify({ enabled: true, rules: { weizhangjian: "wzj" } }),
+      "utf-8",
+    );
+    reloadPrivacyRules();
+
+    expect(applyPrivacy("hello weizhangjian")).toBe("hello wzj");
+  });
+
+  it("accepts UTF-8 BOM in privacy.json", async () => {
+    await writeFile(
+      join(TEST_DATA_DIR, "privacy.json"),
+      `\uFEFF${JSON.stringify({ enabled: false, rules: { weizhangjian: "wzj" } })}`,
+      "utf-8",
+    );
+    reloadPrivacyRules();
+
+    expect(getPrivacyConfig()).toEqual({ enabled: false, rules: { weizhangjian: "wzj" } });
+    expect(applyPrivacy("hello weizhangjian")).toBe("hello weizhangjian");
+  });
+
+  it("auto reloads privacy.json changes without explicit reload", async () => {
+    await writeFile(
+      join(TEST_DATA_DIR, "privacy.json"),
+      JSON.stringify({ weizhangjian: "wzj" }),
+      "utf-8",
+    );
+    reloadPrivacyRules();
+
+    expect(applyPrivacy("hello weizhangjian")).toBe("hello wzj");
+
+    await writeFile(
+      join(TEST_DATA_DIR, "privacy.json"),
+      JSON.stringify({ enabled: false, rules: { weizhangjian: "wzj-disabled" } }),
+      "utf-8",
+    );
+
+    expect(applyPrivacy("hello weizhangjian")).toBe("hello weizhangjian");
+    expect(getPrivacyConfig()).toEqual({ enabled: false, rules: { weizhangjian: "wzj-disabled" } });
+  });
+
+  it("replaces multiple rules and repeated occurrences", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify({ a: "A", b: "B" }),
@@ -72,7 +128,7 @@ describe("applyPrivacy", () => {
     expect(applyPrivacy("a b a b")).toBe("A B A B");
   });
 
-  it("空文本直接返回", async () => {
+  it("returns empty text directly", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify({ x: "y" }),
@@ -83,7 +139,7 @@ describe("applyPrivacy", () => {
     expect(applyPrivacy("")).toBe("");
   });
 
-  it("规则中的特殊字符不会被当作正则", async () => {
+  it("treats special characters in rule keys literally", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify({ "a.b": "X", "(test)": "Y", "*star": "Z" }),
@@ -96,7 +152,7 @@ describe("applyPrivacy", () => {
     expect(applyPrivacy("a *star shines")).toBe("a Z shines");
   });
 
-  it("reloadPrivacyRules 强制重新加载", async () => {
+  it("reloadPrivacyRules forces a reload", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify({ old: "OLD" }),
@@ -107,7 +163,6 @@ describe("applyPrivacy", () => {
     expect(applyPrivacy("old")).toBe("OLD");
     expect(getPrivacyRules()).toEqual({ old: "OLD" });
 
-    // 变更磁盘内容后 reload
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify({ new: "NEW" }),
@@ -119,7 +174,7 @@ describe("applyPrivacy", () => {
     expect(getPrivacyRules()).toEqual({ new: "NEW" });
   });
 
-  it("格式错误的 JSON 不抛异常，返回原文", async () => {
+  it("returns original text for malformed JSON", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       "not json",
@@ -130,7 +185,7 @@ describe("applyPrivacy", () => {
     expect(applyPrivacy("hello")).toBe("hello");
   });
 
-  it("数组格式的 JSON 不抛异常，返回原文", async () => {
+  it("returns original text for array JSON", async () => {
     await writeFile(
       join(TEST_DATA_DIR, "privacy.json"),
       JSON.stringify(["a", "b"]),

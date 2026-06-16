@@ -1,67 +1,117 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { USER_DATA_DIR } from "./config.ts";
-
-// ---------------------------------------------------------------------------
-// 隐私替换规则
-// ---------------------------------------------------------------------------
 
 interface PrivacyRules {
   [key: string]: string;
 }
 
-let rules: PrivacyRules | null = null;
-let loaded = false;
+interface PrivacyConfig {
+  enabled: boolean;
+  rules: PrivacyRules;
+}
 
-function loadRules(): PrivacyRules {
-  const filePath = join(USER_DATA_DIR, "privacy.json");
+let config: PrivacyConfig | null = null;
+let loadedStamp: string | null | undefined;
+
+function privacyFilePath(): string {
+  return join(USER_DATA_DIR, "privacy.json");
+}
+
+function privacyFileStamp(): string | null {
+  const filePath = privacyFilePath();
+  if (!existsSync(filePath)) return null;
+  try {
+    const s = statSync(filePath);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeRules(raw: Record<string, unknown>): PrivacyRules {
+  const result: PrivacyRules = {};
+  for (const [from, to] of Object.entries(raw)) {
+    if (!from) {
+      console.error("[PRIVACY] privacy.json rule key cannot be empty, skipped");
+      continue;
+    }
+    if (typeof to !== "string") {
+      console.error(`[PRIVACY] privacy.json value must be a string, skipped "${from}"`);
+      continue;
+    }
+    result[from] = to;
+  }
+  return result;
+}
+
+function normalizeConfig(parsed: Record<string, unknown>): PrivacyConfig {
+  const hasNewSchema = Object.prototype.hasOwnProperty.call(parsed, "enabled") ||
+    Object.prototype.hasOwnProperty.call(parsed, "rules");
+
+  if (!hasNewSchema) {
+    return { enabled: true, rules: sanitizeRules(parsed) };
+  }
+
+  const enabledRaw = parsed.enabled;
+  const enabled = enabledRaw === undefined ? true : enabledRaw !== false;
+  if (enabledRaw !== undefined && typeof enabledRaw !== "boolean") {
+    console.error("[PRIVACY] privacy.json enabled must be a boolean, using true");
+  }
+
+  const rulesRaw = parsed.rules;
+  if (rulesRaw === undefined) return { enabled, rules: {} };
+  if (typeof rulesRaw !== "object" || rulesRaw === null || Array.isArray(rulesRaw)) {
+    console.error("[PRIVACY] privacy.json rules must be an object");
+    return { enabled, rules: {} };
+  }
+  return { enabled, rules: sanitizeRules(rulesRaw as Record<string, unknown>) };
+}
+
+function loadConfig(): PrivacyConfig {
+  const filePath = privacyFilePath();
   if (!existsSync(filePath)) {
-    return {};
+    return { enabled: true, rules: {} };
   }
   try {
-    const raw = readFileSync(filePath, "utf-8");
+    const raw = readFileSync(filePath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      console.error(`[PRIVACY] privacy.json 格式错误：应为对象`);
-      return {};
+      console.error("[PRIVACY] privacy.json must be an object");
+      return { enabled: true, rules: {} };
     }
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v !== "string") {
-        console.error(`[PRIVACY] privacy.json 值必须为字符串，跳过 "${k}"`);
-        delete (parsed as Record<string, unknown>)[k];
-      }
-    }
-    return parsed as PrivacyRules;
+    return normalizeConfig(parsed as Record<string, unknown>);
   } catch (err) {
-    console.error(`[PRIVACY] 读取 privacy.json 失败: ${(err as Error).message}`);
-    return {};
+    console.error(`[PRIVACY] failed to read privacy.json: ${(err as Error).message}`);
+    return { enabled: true, rules: {} };
   }
+}
+
+export function getPrivacyConfig(): PrivacyConfig {
+  const stamp = privacyFileStamp();
+  if (!config || stamp !== loadedStamp) {
+    config = loadConfig();
+    loadedStamp = stamp;
+  }
+  return config;
 }
 
 export function getPrivacyRules(): PrivacyRules {
-  if (!loaded) {
-    rules = loadRules();
-    loaded = true;
-  }
-  return rules!;
+  return getPrivacyConfig().rules;
 }
 
-/** 重新加载规则（热更新用） */
 export function reloadPrivacyRules(): void {
-  loaded = false;
-  rules = null;
+  config = null;
+  loadedStamp = undefined;
 }
 
-/**
- * 对文本应用隐私替换规则。
- * 若无规则或文本为空，直接返回原文。
- */
 export function applyPrivacy(text: string): string {
-  const r = getPrivacyRules();
-  if (Object.keys(r).length === 0 || !text) return text;
+  const { enabled, rules } = getPrivacyConfig();
+  if (!enabled || Object.keys(rules).length === 0 || !text) return text;
+
   let result = text;
-  for (const [from, to] of Object.entries(r)) {
-    // 用 split+join 替代 replaceAll，避免正则特殊字符问题
+  for (const [from, to] of Object.entries(rules)) {
+    // Use split+join instead of regex replacement so rule keys stay literal.
     result = result.split(from).join(to);
   }
   return result;
