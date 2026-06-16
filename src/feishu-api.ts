@@ -315,7 +315,7 @@ const AVATAR_BADGES: Record<string, string> = {
 const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
-const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v1";
+const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v5";
 
 export interface CodexUsageBalance {
   usedPercent: number;
@@ -468,20 +468,21 @@ function codexUsagePalette(remainingPercent: number): { start: string; end: stri
 
 function buildCodexUsageBatterySvg(remainingPercent: number): Buffer {
   const remaining = clampPercent(remainingPercent);
-  const label = `${remaining}%`;
+  const label = String(remaining);
   const palette = codexUsagePalette(remaining);
 
   const bodyX = 28;
   const bodyY = 38;
-  const bodyW = 91;
-  const bodyH = 47;
-  const capW = 10;
-  const capH = 18;
+  const bodyW = 109;
+  const bodyH = 56;
+  const capW = 12;
+  const capH = 22;
   const capX = bodyX + bodyW;
   const capY = bodyY + Math.round((bodyH - capH) / 2);
-  const pad = 5;
+  const pad = 6;
   const fillMaxW = bodyW - pad * 2;
   const fillWidth = Math.round((fillMaxW * remaining) / 100);
+  const labelFontSize = label.length >= 3 ? 49 : 51;
 
   return Buffer.from(`
 <svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
@@ -502,13 +503,13 @@ function buildCodexUsageBatterySvg(remainingPercent: number): Buffer {
     </clipPath>
   </defs>
   <g filter="url(#shadow)">
-    <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="15" fill="#0f172a"/>
-    <rect x="${bodyX + pad}" y="${bodyY + pad}" width="${fillMaxW}" height="${bodyH - pad * 2}" rx="10" fill="url(#well)"/>
+    <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="18" fill="#0f172a"/>
+    <rect x="${bodyX + pad}" y="${bodyY + pad}" width="${fillMaxW}" height="${bodyH - pad * 2}" rx="12" fill="url(#well)"/>
     <rect x="${bodyX + pad}" y="${bodyY + pad}" width="${fillWidth}" height="${bodyH - pad * 2}" fill="url(#fill)" clip-path="url(#batteryInnerClip)"/>
-    <rect x="${bodyX + pad + 3}" y="${bodyY + pad + 4}" width="${Math.max(0, fillWidth - 6)}" height="7" rx="3.5" fill="${palette.glow}" fill-opacity="0.42" clip-path="url(#batteryInnerClip)"/>
-    <rect x="${capX}" y="${capY}" width="${capW}" height="${capH}" rx="5" fill="#0f172a"/>
-    <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="15" fill="none" stroke="#f8fafc" stroke-opacity="0.82" stroke-width="3.2"/>
-    <text x="${bodyX + bodyW / 2}" y="${bodyY + 32}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900" letter-spacing="0" stroke="#0b1220" stroke-width="5" paint-order="stroke" stroke-linejoin="round" fill="#ffffff">${label}</text>
+    <rect x="${bodyX + pad + 4}" y="${bodyY + pad + 5}" width="${Math.max(0, fillWidth - 8)}" height="8" rx="4" fill="${palette.glow}" fill-opacity="0.42" clip-path="url(#batteryInnerClip)"/>
+    <rect x="${capX}" y="${capY}" width="${capW}" height="${capH}" rx="6" fill="#0f172a"/>
+    <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="18" fill="none" stroke="#f8fafc" stroke-opacity="0.82" stroke-width="3.8"/>
+    <text x="${bodyX + bodyW / 2}" y="${bodyY + bodyH / 2 + 3}" text-anchor="middle" dominant-baseline="middle" alignment-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${labelFontSize}" font-weight="700" letter-spacing="0" stroke="#0b1220" stroke-width="2.6" paint-order="stroke" stroke-linejoin="round" fill="#ffffff">${label}</text>
   </g>
 </svg>`);
 }
