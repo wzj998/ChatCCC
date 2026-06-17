@@ -315,7 +315,7 @@ const AVATAR_BADGES: Record<string, string> = {
 const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
-const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v5";
+const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v8";
 
 export interface CodexUsageBalance {
   usedPercent: number;
@@ -509,7 +509,7 @@ function buildCodexUsageBatterySvg(remainingPercent: number): Buffer {
     <rect x="${bodyX + pad + 4}" y="${bodyY + pad + 5}" width="${Math.max(0, fillWidth - 8)}" height="8" rx="4" fill="${palette.glow}" fill-opacity="0.42" clip-path="url(#batteryInnerClip)"/>
     <rect x="${capX}" y="${capY}" width="${capW}" height="${capH}" rx="6" fill="#0f172a"/>
     <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="18" fill="none" stroke="#f8fafc" stroke-opacity="0.82" stroke-width="3.8"/>
-    <text x="${bodyX + bodyW / 2}" y="${bodyY + bodyH / 2 + 3}" text-anchor="middle" dominant-baseline="middle" alignment-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${labelFontSize}" font-weight="700" letter-spacing="0" stroke="#0b1220" stroke-width="2.6" paint-order="stroke" stroke-linejoin="round" fill="#ffffff">${label}</text>
+    <text x="${bodyX + bodyW / 2}" y="${bodyY + bodyH / 2 + 3}" text-anchor="middle" dominant-baseline="middle" alignment-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${labelFontSize}" font-weight="600" letter-spacing="0" stroke="#0b1220" stroke-width="4.6" paint-order="stroke" stroke-linejoin="round" fill="#ffffff">${label}</text>
   </g>
 </svg>`);
 }
