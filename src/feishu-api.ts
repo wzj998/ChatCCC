@@ -17,7 +17,9 @@ import {
   ts,
   resolveDefaultAgentTool,
   toolDisplayName,
+  config,
 } from "./config.ts";
+import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
 import { applyPrivacy } from "./privacy.ts";
 
 // ---------------------------------------------------------------------------
@@ -316,6 +318,7 @@ const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
 const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v13";
+const CURSOR_AVATAR_USAGE_STYLE_VERSION = "usage-battery-v1";
 
 export interface CodexUsageBalance {
   usedPercent: number;
@@ -344,12 +347,22 @@ function avatarCombinationPath(tool: string, status: string): string {
   return resolvePath(AVATAR_COMBINATIONS_DIR, `avatar_${normalizeAvatarTool(tool)}_${normalizeAvatarStatus(status)}.png`);
 }
 
-function avatarCacheKey(tool: string, status: string, codexUsage: CodexUsageSummary | null = null): string {
+function avatarCacheKey(
+  tool: string,
+  status: string,
+  codexUsage: CodexUsageSummary | null = null,
+  cursorBatteryPercent: number | null = null,
+): string {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   if (normalizedTool === "codex") {
     return codexUsage
       ? `${normalizedTool}:${normalizedStatus}:${CODEX_AVATAR_USAGE_STYLE_VERSION}:week-battery:${codexUsage.weekly?.remainingPercent}:5h-ring:${codexUsage.fiveHour.remainingPercent}`
+      : `${normalizedTool}:${normalizedStatus}:plain`;
+  }
+  if (normalizedTool === "cursor") {
+    return cursorBatteryPercent !== null
+      ? `${normalizedTool}:${normalizedStatus}:${CURSOR_AVATAR_USAGE_STYLE_VERSION}:battery:${cursorBatteryPercent}`
       : `${normalizedTool}:${normalizedStatus}:plain`;
   }
   return `${normalizedTool}:${normalizedStatus}`;
@@ -456,6 +469,28 @@ async function fetchCodexAvatarUsage(): Promise<CodexUsageSummary | null> {
     return summary;
   } catch (err) {
     console.warn(`[${ts()}] [AVATAR] Codex usage unavailable, using plain avatar: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+function cursorAvatarBatteryPercentFromUsage(summary: CursorUsageSummary): number {
+  if (config.cursor.avatarBatteryMode === "onDemandUse") {
+    const usedCents = Number(summary.spendLimitUsage?.individualUsed);
+    if (!Number.isFinite(usedCents)) throw new Error("missing spendLimitUsage.individualUsed");
+    const budget = config.cursor.onDemandMonthlyBudget > 0 ? config.cursor.onDemandMonthlyBudget : 1000;
+    return clampPercent(100 - ((usedCents / 100) / budget) * 100);
+  }
+
+  const apiPercentUsed = Number(summary.planUsage?.apiPercentUsed);
+  if (!Number.isFinite(apiPercentUsed)) throw new Error("missing planUsage.apiPercentUsed");
+  return clampPercent(100 - apiPercentUsed);
+}
+
+async function fetchCursorAvatarBatteryPercent(): Promise<number | null> {
+  try {
+    return cursorAvatarBatteryPercentFromUsage(await getCursorUsageSummary());
+  } catch (err) {
+    console.warn(`[${ts()}] [AVATAR] Cursor usage unavailable, using plain avatar: ${(err as Error).message}`);
     return null;
   }
 }
@@ -573,20 +608,32 @@ async function buildAgentBadgeOverlay(tool: string): Promise<sharp.OverlayOption
   };
 }
 
-async function renderAvatar(tool: string, status: string, codexUsage: CodexUsageSummary | null = null): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+async function renderAvatar(
+  tool: string,
+  status: string,
+  codexUsage: CodexUsageSummary | null = null,
+  cursorBatteryPercent: number | null = null,
+): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   const composites: sharp.OverlayOptions[] = [];
 
-  const useDynamicCodexAvatar = normalizedTool === "codex" && codexUsage?.weekly;
-  const basePath = useDynamicCodexAvatar
+  const codexWeeklyUsage = normalizedTool === "codex" ? codexUsage?.weekly : null;
+  const useDynamicCodexAvatar = codexUsage && codexWeeklyUsage;
+  const useDynamicCursorAvatar = normalizedTool === "cursor" && cursorBatteryPercent !== null;
+  const basePath = useDynamicCodexAvatar || useDynamicCursorAvatar
     ? AVATAR_SOURCES[normalizedStatus]
     : avatarCombinationPath(normalizedTool, normalizedStatus);
 
   if (useDynamicCodexAvatar) {
     composites.push(
       { input: buildCodexUsageRingSvg(codexUsage.fiveHour.remainingPercent), left: 0, top: 0 },
-      { input: buildCodexUsageBatterySvg(codexUsage.weekly.remainingPercent), left: 0, top: 0 },
+      { input: buildCodexUsageBatterySvg(codexWeeklyUsage.remainingPercent), left: 0, top: 0 },
+      await buildAgentBadgeOverlay(normalizedTool),
+    );
+  } else if (useDynamicCursorAvatar) {
+    composites.push(
+      { input: buildCodexUsageBatterySvg(cursorBatteryPercent), left: 0, top: 0 },
       await buildAgentBadgeOverlay(normalizedTool),
     );
   }
@@ -608,12 +655,20 @@ async function renderAvatar(tool: string, status: string, codexUsage: CodexUsage
     contentType: "image/jpeg",
     filename: codexUsage?.weekly
       ? `avatar_${normalizedTool}_${normalizedStatus}_week_${codexUsage.weekly.remainingPercent}_5h_${codexUsage.fiveHour.remainingPercent}.jpg`
+      : cursorBatteryPercent !== null
+        ? `avatar_${normalizedTool}_${normalizedStatus}_battery_${cursorBatteryPercent}.jpg`
       : `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
   };
 }
 
-async function uploadImage(token: string, tool: string, status: string, codexUsage: CodexUsageSummary | null = null): Promise<string> {
-  const image = await renderAvatar(tool, status, codexUsage);
+async function uploadImage(
+  token: string,
+  tool: string,
+  status: string,
+  codexUsage: CodexUsageSummary | null = null,
+  cursorBatteryPercent: number | null = null,
+): Promise<string> {
+  const image = await renderAvatar(tool, status, codexUsage, cursorBatteryPercent);
   const blob = new Blob([new Uint8Array(image.buffer)], { type: image.contentType });
   const form = new FormData();
   form.append("image_type", "avatar");
@@ -639,10 +694,11 @@ async function getOrUploadAvatarKey(token: string, tool: string, status: string)
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   const codexUsage = normalizedTool === "codex" ? await fetchCodexAvatarUsage() : null;
-  const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage);
+  const cursorBatteryPercent = normalizedTool === "cursor" ? await fetchCursorAvatarBatteryPercent() : null;
+  const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent);
   const cached = avatarKeyCache.get(keyName);
   if (cached) return cached;
-  const key = await uploadImage(token, normalizedTool, normalizedStatus, codexUsage);
+  const key = await uploadImage(token, normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent);
   avatarKeyCache.set(keyName, key);
   await persistAvatarKeyCache().catch((err) => {
     console.error(`[${ts()}] [AVATAR] persist cache FAIL: ${(err as Error).message}`);

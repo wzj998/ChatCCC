@@ -4,6 +4,14 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const mockConfig = {
+  cursor: {
+    avatarBatteryMode: "apiPercent",
+    onDemandMonthlyBudget: 1000,
+  },
+};
+const getCursorUsageSummaryMock = vi.fn();
+
 async function loadFeishuApiWithHome(homeDir: string, userDataDir: string) {
   vi.resetModules();
   vi.doMock("node:os", () => ({ homedir: () => homeDir }));
@@ -20,6 +28,10 @@ async function loadFeishuApiWithHome(homeDir: string, userDataDir: string) {
     ts: () => "test-ts",
     resolveDefaultAgentTool: () => "claude",
     toolDisplayName: (tool: string) => tool,
+    config: mockConfig,
+  }));
+  vi.doMock("../cursor-usage.ts", () => ({
+    getCursorUsageSummary: getCursorUsageSummaryMock,
   }));
   return import("../feishu-api.ts");
 }
@@ -58,7 +70,11 @@ describe("Codex avatar usage battery", () => {
     vi.unstubAllGlobals();
     vi.doUnmock("node:os");
     vi.doUnmock("../config.ts");
+    vi.doUnmock("../cursor-usage.ts");
     vi.restoreAllMocks();
+    getCursorUsageSummaryMock.mockReset();
+    mockConfig.cursor.avatarBatteryMode = "apiPercent";
+    mockConfig.cursor.onDemandMonthlyBudget = 1000;
   });
 
   it("adds weekly battery and 5h ring percentages to Codex avatar uploads when usage lookup succeeds", async () => {
@@ -121,6 +137,80 @@ describe("Codex avatar usage battery", () => {
       await setChatAvatar("tenant-token", "chat_1", "codex", "idle");
 
       expect(uploadedNames).toEqual(["avatar_codex_idle.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Cursor avatar usage battery", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock("node:os");
+    vi.doUnmock("../config.ts");
+    vi.doUnmock("../cursor-usage.ts");
+    vi.restoreAllMocks();
+    getCursorUsageSummaryMock.mockReset();
+    mockConfig.cursor.avatarBatteryMode = "apiPercent";
+    mockConfig.cursor.onDemandMonthlyBudget = 1000;
+  });
+
+  it("uses remaining API percentage for Cursor avatar battery", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    getCursorUsageSummaryMock.mockResolvedValue({
+      planUsage: { apiPercentUsed: 40 },
+    });
+    mockAvatarFetch(uploadedNames, new Response("unused", { status: 500 }));
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "cursor", "busy");
+
+      expect(uploadedNames).toEqual(["avatar_cursor_busy_battery_60.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses On-Demand budget for Cursor avatar battery when configured", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    mockConfig.cursor.avatarBatteryMode = "onDemandUse";
+    mockConfig.cursor.onDemandMonthlyBudget = 1000;
+    getCursorUsageSummaryMock.mockResolvedValue({
+      spendLimitUsage: { individualUsed: 25000 },
+    });
+    mockAvatarFetch(uploadedNames, new Response("unused", { status: 500 }));
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "cursor", "idle");
+
+      expect(uploadedNames).toEqual(["avatar_cursor_idle_battery_75.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the pre-combined Cursor avatar when usage lookup fails", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    getCursorUsageSummaryMock.mockRejectedValue(new Error("cursor unavailable"));
+    mockAvatarFetch(uploadedNames, new Response("unused", { status: 500 }));
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "cursor", "busy");
+
+      expect(uploadedNames).toEqual(["avatar_cursor_busy.jpg"]);
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });

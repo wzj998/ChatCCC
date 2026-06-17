@@ -79,6 +79,7 @@ import {
   cancelQueuedMessage,
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
+import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -166,10 +167,104 @@ function formatCodexUsageSummary(usage: CodexUsageSummary): string {
   ].join("\n");
 }
 
-function codexUsageHelpLine(tool: string): string {
-  return tool === "codex"
-    ? "\n发送 **/usage** 查看 Codex 5h 和周用量。"
-    : "";
+function formatCursorUsageSummary(usage: CursorUsageSummary): string {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "shortOffset",
+  });
+  const formatDate = (value: string | undefined) => {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp)) return "暂无数据";
+    return dateFormatter.format(new Date(timestamp));
+  };
+  const formatMoney = (value: number | undefined) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "暂无数据";
+    return `$${(value / 100).toFixed(2)}`;
+  };
+  const formatPercent = (value: number | undefined) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "暂无数据";
+    return `${value}%`;
+  };
+  const plan = usage.planUsage;
+  const spendLimit = usage.spendLimitUsage;
+
+  return [
+    "Cursor 用量：",
+    "",
+    `**计费周期:** ${formatDate(usage.billingCycleStart)} - ${formatDate(usage.billingCycleEnd)}`,
+    "",
+    "**Included usage:**",
+    `- Total: ${formatMoney(plan?.totalSpend)} / ${formatMoney(plan?.limit)} (${formatPercent(plan?.totalPercentUsed)})`,
+    `- Included: ${formatMoney(plan?.includedSpend)}`,
+    `- Bonus: ${formatMoney(plan?.bonusSpend)}`,
+    `- Auto: ${formatPercent(plan?.autoPercentUsed)}`,
+    `- API: ${formatPercent(plan?.apiPercentUsed)}`,
+    "",
+    "**On-Demand / Spend limit:**",
+    `- Individual used: ${formatMoney(spendLimit?.individualUsed)}`,
+    `- Pool used: ${formatMoney(spendLimit?.pooledUsed)} / ${formatMoney(spendLimit?.pooledLimit)}`,
+    `- Pool remaining: ${formatMoney(spendLimit?.pooledRemaining)}`,
+    `- Limit type: ${spendLimit?.limitType ?? "暂无数据"}`,
+    `- Display threshold: ${formatMoney(usage.displayThreshold)}`,
+    "",
+    `**Enabled:** ${usage.enabled === undefined ? "暂无数据" : String(usage.enabled)}`,
+    usage.displayMessage ? `**Message:** ${usage.displayMessage}` : "",
+    usage.autoModelSelectedDisplayMessage ? `**Auto model:** ${usage.autoModelSelectedDisplayMessage}` : "",
+    usage.namedModelSelectedDisplayMessage ? `**Named model:** ${usage.namedModelSelectedDisplayMessage}` : "",
+    usage.autoBucketModels?.length ? `**Auto bucket models:** ${usage.autoBucketModels.join(", ")}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function usageHelpLine(tool: string): string {
+  if (tool === "codex") return "\n发送 **/usage** 查看 Codex 5h 和周用量。";
+  if (tool === "cursor") return "\n发送 **/usage** 查看 Cursor 用量。";
+  return "";
+}
+
+async function resolveUsageTool(chatId: string): Promise<"codex" | "cursor"> {
+  try {
+    const registry = await loadSessionRegistryForBinding();
+    return registry[chatId]?.tool === "cursor" ? "cursor" : "codex";
+  } catch {
+    return "codex";
+  }
+}
+
+async function sendUsageSummary(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor"): Promise<void> {
+  if (tool === "cursor") {
+    const content = formatCursorUsageSummary(await getCursorUsageSummary());
+    if (platform.kind === "wechat") {
+      await platform.sendText(chatId, content).catch(() => {});
+    } else {
+      await platform.sendCard(chatId, "Cursor Usage", content, "blue");
+    }
+    return;
+  }
+
+  const content = formatCodexUsageSummary(await getCodexUsageSummary());
+  if (platform.kind === "wechat") {
+    await platform.sendText(chatId, content).catch(() => {});
+  } else {
+    await platform.sendCard(chatId, "Codex Usage", content, "blue");
+  }
+}
+
+async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor", err: unknown): Promise<void> {
+  const toolLabel = tool === "cursor" ? "Cursor" : "Codex";
+  const message = `${toolLabel} 用量获取失败：${(err as Error).message}`;
+  if (platform.kind === "wechat") {
+    await platform.sendText(chatId, message).catch(() => {});
+  } else {
+    await platform.sendCard(chatId, `${toolLabel} Usage`, message, "red");
+  }
 }
 
 function isUntitledSessionChatName(name: string): boolean {
@@ -372,23 +467,14 @@ export async function handleCommand(
   }
 
   if (textLower === "/usage") {
-    logTrace(tid, "BRANCH", { cmd: "/usage", tool: "codex" });
+    const usageTool = await resolveUsageTool(chatId);
+    logTrace(tid, "BRANCH", { cmd: "/usage", tool: usageTool });
     try {
-      const content = formatCodexUsageSummary(await getCodexUsageSummary());
-      if (platform.kind === "wechat") {
-        await platform.sendText(chatId, content).catch(() => {});
-      } else {
-        await platform.sendCard(chatId, "Codex Usage", content, "blue");
-      }
-      logTrace(tid, "DONE", { outcome: "usage" });
+      await sendUsageSummary(platform, chatId, usageTool);
+      logTrace(tid, "DONE", { outcome: "usage", tool: usageTool });
     } catch (err) {
-      const message = `无法获取 Codex 用量：${(err as Error).message}`;
-      if (platform.kind === "wechat") {
-        await platform.sendText(chatId, message).catch(() => {});
-      } else {
-        await platform.sendCard(chatId, "Codex Usage", message, "red");
-      }
-      logTrace(tid, "DONE", { outcome: "usage_fail", error: (err as Error).message });
+      await sendUsageError(platform, chatId, usageTool, err);
+      logTrace(tid, "DONE", { outcome: "usage_fail", tool: usageTool, error: (err as Error).message });
     }
     return;
   }
@@ -616,7 +702,7 @@ export async function handleCommand(
           `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
           `发送 **/sessions** 查看所有会话状态。\n` +
           `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
-          codexUsageHelpLine(tool),
+          usageHelpLine(tool),
         "green",
       );
       console.log(
@@ -703,7 +789,7 @@ export async function handleCommand(
         `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
         `发送 **/sessions** 查看所有会话状态。\n` +
         `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
-        codexUsageHelpLine(tool),
+        usageHelpLine(tool),
       "green",
     );
 
