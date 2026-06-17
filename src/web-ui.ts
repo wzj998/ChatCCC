@@ -33,7 +33,15 @@ interface AppConfig {
   gitTimeoutSeconds?: number;
   claude?: { enabled?: boolean; defaultAgent?: boolean; model?: string; subagentModel?: string; effort?: string; apiKey?: string; baseUrl?: string; maxTurn?: number };
   // `command` 是已废弃的旧字段名，保留只读以兼容升级前的 config.json
-  cursor?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string };
+  cursor?: {
+    enabled?: boolean;
+    defaultAgent?: boolean;
+    path?: string;
+    command?: string;
+    model?: string;
+    avatarBatteryMode?: string;
+    onDemandMonthlyBudget?: number;
+  };
   codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; effort?: string };
 }
 
@@ -362,6 +370,12 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CURSOR_MODEL") {
       result.cursor = result.cursor || {};
       (result.cursor as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_CURSOR_AVATAR_BATTERY_MODE") {
+      result.cursor = result.cursor || {};
+      (result.cursor as Record<string, unknown>).avatarBatteryMode = val;
+    } else if (key === "CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET") {
+      result.cursor = result.cursor || {};
+      (result.cursor as Record<string, unknown>).onDemandMonthlyBudget = Number(val);
     } else if (key === "CHATCCC_CURSOR_ENABLED") {
       result.cursor = result.cursor || {};
       (result.cursor as Record<string, unknown>).enabled = val === true || val === "true";
@@ -697,6 +711,17 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <label>模型</label>
               <input type="text" id="field-CHATCCC_CURSOR_MODEL" placeholder="留空表示不传 --model">
             </div>
+            <div class="form-group">
+              <label>头像电池电量</label>
+              <select id="field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE" onchange="onCursorBatteryModeChange('field-', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">
+                <option value="apiPercent">API 使用比例</option>
+                <option value="onDemandUse">On demand use 金额</option>
+              </select>
+            </div>
+            <div class="form-group" id="field-cursor-on-demand-budget-row" style="display:none">
+              <label>每月On demand use预算</label>
+              <input type="number" id="field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET" min="1" step="1" placeholder="1000">
+            </div>
             <button class="btn btn-outline" onclick="validateCli('cursor')" style="margin-bottom:12px">检测 Cursor CLI</button>
             <div id="cursor-validate-result"></div>
           </fieldset>
@@ -819,6 +844,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       <div class="section-detail">
         <div class="config-row"><span class="key">CLI 路径</span><span class="val" id="cfg-CURSOR_PATH">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CURSOR_MODEL">-</span></div>
+        <div class="config-row"><span class="key">头像电池电量</span><span class="val" id="cfg-CURSOR_AVATAR_BATTERY_MODE">-</span></div>
+        <div class="config-row" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW"><span class="key">每月On demand use预算</span><span class="val" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-cursor" onchange="setDashboardDefaultAgent('cursor', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('cursor')">编辑</button>
       </div>
@@ -876,10 +903,20 @@ var step2InputBound = false;
 
 const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
-  cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL'],
+  cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_EFFORT']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
+
+function cursorBatteryModeLabel(value) {
+  return value === 'onDemandUse' ? 'On demand use 金额' : 'API 使用比例';
+}
+
+function onCursorBatteryModeChange(prefix, value) {
+  var rowId = prefix === 'edit-' ? 'edit-cursor-on-demand-budget-row' : 'field-cursor-on-demand-budget-row';
+  var row = document.getElementById(rowId);
+  if (row) row.style.display = value === 'onDemandUse' ? '' : 'none';
+}
 
 function onWizardPlatformToggle(platform, enabled) {
   state.platformsEnabled[platform] = enabled;
@@ -1127,7 +1164,18 @@ function renderStep2() {
   if (c.cursor) {
     prefillNested('field-CHATCCC_CURSOR_PATH', c.cursor.path || c.cursor.command);
     prefillNested('field-CHATCCC_CURSOR_MODEL', c.cursor.model);
+    var cursorMode = c.cursor.avatarBatteryMode || 'apiPercent';
+    var cursorModeInput = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
+    if (cursorModeInput) cursorModeInput.value = cursorMode;
+    prefillNested('field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET', c.cursor.onDemandMonthlyBudget || 1000);
+  } else {
+    var defaultCursorModeInput = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
+    if (defaultCursorModeInput) defaultCursorModeInput.value = 'apiPercent';
+    prefillNested('field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET', 1000);
   }
+  var cursorBatteryModeEl = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
+  if (cursorBatteryModeEl && !cursorBatteryModeEl.value) cursorBatteryModeEl.value = 'apiPercent';
+  onCursorBatteryModeChange('field-', cursorBatteryModeEl ? cursorBatteryModeEl.value : 'apiPercent');
   if (c.codex) {
     prefillNested('field-CHATCCC_CODEX_PATH', c.codex.path || c.codex.command);
     prefillNested('field-CHATCCC_CODEX_MODEL', c.codex.model);
@@ -1256,6 +1304,10 @@ function renderStep3() {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Cursor</h4>');
       if (vars.CHATCCC_CURSOR_PATH) lines.push('<div class="config-row"><span class="key">CLI 路径</span><span class="val">' + vars.CHATCCC_CURSOR_PATH + '</span></div>');
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CURSOR_MODEL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">头像电池电量</span><span class="val">' + cursorBatteryModeLabel(vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE) + '</span></div>');
+      if (vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse') {
+        lines.push('<div class="config-row"><span class="key">每月On demand use预算</span><span class="val">' + (vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET || '1000') + '</span></div>');
+      }
     } else if (t === 'codex') {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Codex</h4>');
       if (vars.CHATCCC_CODEX_PATH) lines.push('<div class="config-row"><span class="key">CLI 路径</span><span class="val">' + vars.CHATCCC_CODEX_PATH + '</span></div>');
@@ -1435,6 +1487,11 @@ function updateDashboardUI() {
   document.getElementById('cfg-ANTHROPIC_MAX_TURN').textContent = (c.claude && c.claude.maxTurn != null) ? String(c.claude.maxTurn) : '0';
   document.getElementById('cfg-CURSOR_PATH').textContent = (c.cursor && (c.cursor.path || c.cursor.command)) || '-';
   document.getElementById('cfg-CURSOR_MODEL').textContent = (c.cursor && c.cursor.model) || '(留空)';
+  var cursorBatteryMode = (c.cursor && c.cursor.avatarBatteryMode) || 'apiPercent';
+  document.getElementById('cfg-CURSOR_AVATAR_BATTERY_MODE').textContent = cursorBatteryModeLabel(cursorBatteryMode);
+  var cursorBudgetRow = document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW');
+  if (cursorBudgetRow) cursorBudgetRow.style.display = cursorBatteryMode === 'onDemandUse' ? '' : 'none';
+  document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET').textContent = String((c.cursor && c.cursor.onDemandMonthlyBudget) || 1000);
   document.getElementById('cfg-CODEX_PATH').textContent = (c.codex && (c.codex.path || c.codex.command)) || 'codex';
   document.getElementById('cfg-CODEX_MODEL').textContent = (c.codex && c.codex.model) || '(留空)';
   document.getElementById('cfg-CODEX_EFFORT').textContent = (c.codex && c.codex.effort) || '(留空)';
@@ -1500,6 +1557,8 @@ function editSection(section) {
     'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
     'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL', 'CHATCCC_ANTHROPIC_MAX_TURN': 'Max Turns (0=无限制)',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
+    'CHATCCC_CURSOR_AVATAR_BATTERY_MODE': '头像电池电量',
+    'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月On demand use预算',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
 
@@ -1520,6 +1579,8 @@ function editSection(section) {
       } else if (section === 'cursor' && state.config.cursor) {
         if (key === 'CHATCCC_CURSOR_PATH') val = state.config.cursor.path || state.config.cursor.command || '';
         else if (key === 'CHATCCC_CURSOR_MODEL') val = state.config.cursor.model || '';
+        else if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') val = state.config.cursor.avatarBatteryMode || 'apiPercent';
+        else if (key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET') val = (state.config.cursor.onDemandMonthlyBudget != null) ? String(state.config.cursor.onDemandMonthlyBudget) : '1000';
       } else if (section === 'codex' && state.config.codex) {
         if (key === 'CHATCCC_CODEX_PATH') val = state.config.codex.path || state.config.codex.command || '';
         else if (key === 'CHATCCC_CODEX_MODEL') val = state.config.codex.model || '';
@@ -1527,9 +1588,21 @@ function editSection(section) {
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
-    html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
-    html += '<input type="' + (isSecret ? 'password' : 'text') + '" id="edit-' + key + '" value="' + String(val).replace(/"/g,'&quot;') + '">';
-    html += '</div>';
+    if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') {
+      var modeVal = val || 'apiPercent';
+      html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
+      html += '<select id="edit-' + key + '" onchange="onCursorBatteryModeChange(\\'edit-\\', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
+      html += '<option value="apiPercent"' + (modeVal === 'apiPercent' ? ' selected' : '') + '>API 使用比例</option>';
+      html += '<option value="onDemandUse"' + (modeVal === 'onDemandUse' ? ' selected' : '') + '>On demand use 金额</option>';
+      html += '</select></div>';
+    } else {
+      var rowId = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' ? ' id="edit-cursor-on-demand-budget-row"' : '';
+      var inputType = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' ? 'number' : (isSecret ? 'password' : 'text');
+      var attrs = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' ? ' min="1" step="1"' : '';
+      html += '<div class="form-group"' + rowId + '><label>' + (labelMap[key] || key) + '</label>';
+      html += '<input type="' + inputType + '" id="edit-' + key + '"' + attrs + ' value="' + String(val).replace(/"/g,'&quot;') + '">';
+      html += '</div>';
+    }
   });
   // 平台类型：feishu 编辑时额外渲染下拉选择框
   if (section === 'feishu') {
@@ -1541,6 +1614,10 @@ function editSection(section) {
     html += '</select></div>';
   }
   document.getElementById('edit-modal-fields').innerHTML = html;
+  if (section === 'cursor') {
+    var editModeEl = document.getElementById('edit-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
+    onCursorBatteryModeChange('edit-', editModeEl ? editModeEl.value : 'apiPercent');
+  }
   document.getElementById('edit-modal').classList.remove('hidden');
   document.getElementById('edit-overlay').classList.remove('hidden');
 }
@@ -1561,12 +1638,19 @@ async function saveEdit() {
     var el = document.getElementById('edit-' + key);
     if (el) vars[key] = el.value.trim();
   });
+  if (editSectionType === 'cursor' && vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse' && !vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET) {
+    vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET = '1000';
+  }
   // 平台类型：feishu 编辑时额外采集下拉选择框的值
   if (editSectionType === 'feishu') {
     var ptEl = document.getElementById('edit-CHATCCC_FEISHU_PLATFORM_TYPE');
     if (ptEl && ptEl.value.trim()) vars['CHATCCC_FEISHU_PLATFORM_TYPE'] = ptEl.value.trim();
   }
   await saveConfig(vars);
+  try {
+    var fresh = await api('/api/config');
+    state.config = fresh.vars || state.config;
+  } catch(e) {}
   closeEditModal();
   updateDashboardUI();
   toast('修改已保存。若服务正在运行，需重启生效。');

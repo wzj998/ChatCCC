@@ -8,6 +8,7 @@ import type { SessionInfo, ToolAdapter } from "../adapters/adapter-interface.ts"
 
 const mockStreamStates = new Map<string, { status: "running" | "done" | "stopped"; finalReply: string }>();
 const mockGetCodexUsageSummary = vi.hoisted(() => vi.fn());
+const mockGetCursorUsageSummary = vi.hoisted(() => vi.fn());
 
 vi.mock("../im-skills.ts", () => ({
   buildImSkillsPrompt: async () => "",
@@ -57,6 +58,10 @@ vi.mock("../feishu-platform.ts", () => ({
   getCodexUsageSummary: mockGetCodexUsageSummary,
   getTenantAccessToken: vi.fn(async () => "tenant-token"),
   sendPostMessage: vi.fn(async () => true),
+}));
+
+vi.mock("../cursor-usage.ts", () => ({
+  getCursorUsageSummary: mockGetCursorUsageSummary,
 }));
 
 import { handleCommand } from "../orchestrator.ts";
@@ -122,9 +127,35 @@ describe("handleCommand WeChat processing ack", () => {
     resetBindingState();
     mockStreamStates.clear();
     mockGetCodexUsageSummary.mockReset();
+    mockGetCursorUsageSummary.mockReset();
     mockGetCodexUsageSummary.mockResolvedValue({
       fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
       weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+    });
+    mockGetCursorUsageSummary.mockResolvedValue({
+      billingCycleStart: "1779357999000",
+      billingCycleEnd: "1782036399000",
+      planUsage: {
+        totalSpend: 8159,
+        includedSpend: 2000,
+        bonusSpend: 6159,
+        limit: 2000,
+        remainingBonus: false,
+        autoPercentUsed: 0,
+        apiPercentUsed: 100,
+        totalPercentUsed: 100,
+      },
+      spendLimitUsage: {
+        pooledLimit: 48950000,
+        pooledUsed: 31808224,
+        pooledRemaining: 17141776,
+        individualUsed: 101252,
+        limitType: "team",
+      },
+      displayThreshold: 200,
+      enabled: true,
+      displayMessage: "You've hit your usage limit",
+      autoBucketModels: ["default"],
     });
     _setAdapterForToolForTest("claude", mockAdapter());
   });
@@ -315,7 +346,36 @@ describe("handleCommand WeChat processing ack", () => {
     );
   });
 
-  it("only advertises /usage in new Codex session ready messages", async () => {
+  it("handles /usage as Cursor usage in Cursor chats", async () => {
+    const platform = mockPlatform("feishu");
+    await recordSessionRegistry({
+      chatId: "cursor-chat",
+      sessionId: "sid-cursor",
+      tool: "cursor",
+      chatName: "cursor-session",
+      running: false,
+    });
+
+    await handleCommand(platform, "/usage", "cursor-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    expect(mockGetCodexUsageSummary).not.toHaveBeenCalled();
+    expect(mockGetCursorUsageSummary).toHaveBeenCalled();
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "cursor-chat",
+      "Cursor Usage",
+      expect.stringContaining("Individual used: $1012.52"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "cursor-chat",
+      "Cursor Usage",
+      expect.stringContaining("Pool remaining: $171417.76"),
+      "blue",
+    );
+  });
+
+  it("advertises /usage in new Codex and Cursor session ready messages", async () => {
     const codexPlatform = mockPlatform("feishu");
     _setAdapterForToolForTest("codex", mockAdapter("sid-codex"));
 
@@ -327,6 +387,16 @@ describe("handleCommand WeChat processing ack", () => {
       expect.stringContaining("发送 **/usage** 查看 Codex 5h 和周用量。"),
       "green",
     );
+
+    const cursorPlatform = mockPlatform("feishu");
+    _setAdapterForToolForTest("cursor", mockAdapter("sid-cursor"));
+
+    await handleCommand(cursorPlatform, "/new cursor", "feishu-p2p-cursor", "ou-user", Date.now(), "p2p");
+
+    const cursorReadyCall = vi.mocked(cursorPlatform.sendCard).mock.calls.find(
+      ([chatId, title]) => chatId === "feishu-group" && title === "Cursor Session Ready",
+    );
+    expect(cursorReadyCall?.[2]).toContain("/usage");
 
     const claudePlatform = mockPlatform("feishu");
     await handleCommand(claudePlatform, "/new claude", "feishu-p2p-2", "ou-user", Date.now(), "p2p");

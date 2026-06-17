@@ -24,7 +24,9 @@
     "enabled": false,
     "defaultAgent": false,
     "path": "",
-    "model": ""
+    "model": "",
+    "avatarBatteryMode": "apiPercent",
+    "onDemandMonthlyBudget": 1000
   },
   "codex": {
     "enabled": false,

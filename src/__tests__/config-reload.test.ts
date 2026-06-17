@@ -53,7 +53,14 @@ const baseAppConfig: AppConfig = {
     baseUrl: "",
     maxTurn: 0,
   },
-  cursor: { enabled: true, defaultAgent: false, path: "/initial/cursor", model: "initial-cursor-model" },
+  cursor: {
+    enabled: true,
+    defaultAgent: false,
+    path: "/initial/cursor",
+    model: "initial-cursor-model",
+    avatarBatteryMode: "apiPercent",
+    onDemandMonthlyBudget: 1000,
+  },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", effort: "initial-codex-effort" },
 };
 
@@ -132,7 +139,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("CURSOR_AGENT_ARGS 跟随 cursor.model 重新解析", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "claude-3.7-sonnet" },
+      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "claude-3.7-sonnet", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
     });
 
     // CURSOR_AGENT_ARGS 是 ['-p', '--force', '--approve-mcps', ..., '--model', 'claude-3.7-sonnet']
@@ -144,7 +151,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("cursor.model 留空时 CURSOR_AGENT_ARGS 不含 --model", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "" },
+      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
     });
 
     expect(CURSOR_AGENT_ARGS).not.toContain("--model");
@@ -153,7 +160,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("CURSOR_AGENT_COMMAND 优先取 config.cursor.path", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, defaultAgent: false, path: "C:/custom/cursor.exe", model: "" },
+      cursor: { enabled: true, defaultAgent: false, path: "C:/custom/cursor.exe", model: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
     });
 
     expect(CURSOR_AGENT_COMMAND).toBe("C:/custom/cursor.exe");

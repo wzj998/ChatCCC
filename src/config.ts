@@ -81,6 +81,8 @@ export interface CursorConfig {
   /** Cursor Agent CLI 可执行文件绝对路径；留空时由运行时按 LocalAppData / PATH 兜底 */
   path: string;
   model: string;
+  avatarBatteryMode: CursorAvatarBatteryMode;
+  onDemandMonthlyBudget: number;
 }
 
 export interface CodexConfig {
@@ -125,6 +127,7 @@ export interface AppConfig {
 
 export type AgentTool = "claude" | "cursor" | "codex";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
+export type CursorAvatarBatteryMode = "apiPercent" | "onDemandUse";
 
 /** 获取指定 agent 配置中所有模型相关的值（最多 100 个，去重） */
 export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): string[] {
@@ -326,6 +329,15 @@ function normalizePlatformType(raw: string): "feishu" | "lark" {
   return "feishu";
 }
 
+function normalizeCursorAvatarBatteryMode(raw: unknown): CursorAvatarBatteryMode {
+  return raw === "onDemandUse" ? "onDemandUse" : "apiPercent";
+}
+
+function normalizeCursorOnDemandMonthlyBudget(raw: unknown): number {
+  const value = typeof raw === "string" ? Number(raw.trim()) : Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 1000;
+}
+
 function loadConfig(): AppConfig {
   const defaults: AppConfig = {
     feishu: { appId: "", appSecret: "" },
@@ -334,7 +346,14 @@ function loadConfig(): AppConfig {
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
     claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 0 },
-    cursor: { enabled: false, defaultAgent: false, path: "", model: "claude-opus-4-7-max" },
+    cursor: {
+      enabled: false,
+      defaultAgent: false,
+      path: "",
+      model: "claude-opus-4-7-max",
+      avatarBatteryMode: "apiPercent",
+      onDemandMonthlyBudget: 1000,
+    },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
   };
 
@@ -377,7 +396,15 @@ function loadConfig(): AppConfig {
 
   let parsed: Partial<AppConfig> & {
     claude?: Partial<ClaudeConfig> & { enabled?: unknown };
-    cursor?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown };
+    cursor?: {
+      enabled?: unknown;
+      defaultAgent?: unknown;
+      path?: unknown;
+      command?: unknown;
+      model?: unknown;
+      avatarBatteryMode?: unknown;
+      onDemandMonthlyBudget?: unknown;
+    };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
   };
   try {
@@ -491,6 +518,8 @@ function loadConfig(): AppConfig {
       defaultAgent: defaultTool === "cursor",
       path: readToolCliPath(cursorRaw, { label: "cursor", onLegacyField }),
       model: normalizeOptionalConfigField(cursorRaw.model, { label: "cursor.model", fallback: "claude-opus-4-7-max" }),
+      avatarBatteryMode: normalizeCursorAvatarBatteryMode(cursorRaw.avatarBatteryMode),
+      onDemandMonthlyBudget: normalizeCursorOnDemandMonthlyBudget(cursorRaw.onDemandMonthlyBudget),
     },
     codex: {
       enabled: codexEnabled,
