@@ -315,7 +315,7 @@ const AVATAR_BADGES: Record<string, string> = {
 const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
-const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v8";
+const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v13";
 
 export interface CodexUsageBalance {
   usedPercent: number;
@@ -520,7 +520,7 @@ function buildCodexUsageRingSvg(remainingPercent: number): Buffer {
   const cx = 128;
   const cy = 128;
   const r = 118;
-  const strokeWidth = 13;
+  const strokeWidth = 16;
   const used = clampPercent(100 - remaining);
   const polar = (angleDegrees: number) => {
     const angle = (angleDegrees * Math.PI) / 180;
@@ -547,11 +547,12 @@ function buildCodexUsageRingSvg(remainingPercent: number): Buffer {
       <stop offset="0" stop-color="${palette.start}"/>
       <stop offset="1" stop-color="${palette.end}"/>
     </linearGradient>
-    <filter id="ringShadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#0f172a" flood-opacity="0.25"/>
+    <filter id="ringShadow" x="-22%" y="-22%" width="144%" height="144%">
+      <feDropShadow dx="0" dy="0" stdDeviation="5.2" flood-color="#0f172a" flood-opacity="0.78"/>
+      <feDropShadow dx="0" dy="3" stdDeviation="2.8" flood-color="#0f172a" flood-opacity="0.45"/>
     </filter>
   </defs>
-  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#cbd5e1" stroke-width="${strokeWidth}"/>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#94a3b8" stroke-width="${strokeWidth}"/>
   ${progressPath}
 </svg>`);
 }
