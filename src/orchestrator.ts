@@ -327,49 +327,49 @@ function isRunningFromGlobalNpm(): boolean {
   }
 }
 
-const UPDATEG_LOG = join(homedir(), ".chatccc", "logs", "updateg-watcher.log");
+const UPDATE_LOG = join(homedir(), ".chatccc", "logs", "update-watcher.log");
 
 function updLog(msg: string): void {
   const ts = new Date().toISOString();
-  try { appendFileSync(UPDATEG_LOG, `${ts} [UPG-SYNC] ${msg}\n`, "utf-8"); } catch {}
+  try { appendFileSync(UPDATE_LOG, `${ts} [UPDATE-SYNC] ${msg}\n`, "utf-8"); } catch {}
 }
 
 /** 同步更新 npm 全局包并 spawn 新进程重启。不依赖 systemd 或任何服务管理器。 */
 function syncUpdateAndRestart(): void {
   updLog(`sync update start, pid=${process.pid}`);
-  appendStartupTrace("updateg: sync update start", { pid: process.pid });
+  appendStartupTrace("update: sync update start", { pid: process.pid });
 
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 
   // 1. npm update
   updLog(`running: ${npmCmd} update -g chatccc`);
-  appendStartupTrace("updateg: npm update begin", { npmCmd });
+  appendStartupTrace("update: npm update begin", { npmCmd });
   const t0 = Date.now();
   try {
     const out = execSync(`${npmCmd} update -g chatccc 2>&1`, { encoding: "utf8", timeout: 120000, windowsHide: true });
     const elapsed = Date.now() - t0;
     updLog(`npm update OK (${elapsed}ms): ${out.slice(0, 500)}`);
-    appendStartupTrace("updateg: npm update OK", { elapsedMs: elapsed, outputLen: out.length });
+    appendStartupTrace("update: npm update OK", { elapsedMs: elapsed, outputLen: out.length });
   } catch (e) {
     const elapsed = Date.now() - t0;
     const err = e as Error & { stderr?: string; stdout?: string; status?: number };
     updLog(`npm update failed (${elapsed}ms): message=${err.message}, stderr=${(err.stderr || "").slice(0, 500)}, stdout=${(err.stdout || "").slice(0, 200)}`);
-    appendStartupTrace("updateg: npm update failed", { elapsedMs: elapsed, message: err.message, stderrLen: (err.stderr || "").length });
+    appendStartupTrace("update: npm update failed", { elapsedMs: elapsed, message: err.message, stderrLen: (err.stderr || "").length });
 
     // fallback
     updLog(`fallback: ${npmCmd} install -g chatccc@latest`);
-    appendStartupTrace("updateg: npm install fallback begin", { npmCmd });
+    appendStartupTrace("update: npm install fallback begin", { npmCmd });
     const t1 = Date.now();
     try {
       const out2 = execSync(`${npmCmd} install -g chatccc@latest 2>&1`, { encoding: "utf8", timeout: 120000, windowsHide: true });
       const elapsed2 = Date.now() - t1;
       updLog(`npm install fallback OK (${elapsed2}ms): ${out2.slice(0, 500)}`);
-      appendStartupTrace("updateg: npm install fallback OK", { elapsedMs: elapsed2, outputLen: out2.length });
+      appendStartupTrace("update: npm install fallback OK", { elapsedMs: elapsed2, outputLen: out2.length });
     } catch (e2) {
       const elapsed2 = Date.now() - t1;
       const err2 = e2 as Error & { stderr?: string; stdout?: string };
       updLog(`npm install fallback also failed (${elapsed2}ms): message=${err2.message}, stderr=${(err2.stderr || "").slice(0, 500)}`);
-      appendStartupTrace("updateg: npm install fallback failed", { elapsedMs: elapsed2, message: err2.message });
+      appendStartupTrace("update: npm install fallback failed", { elapsedMs: elapsed2, message: err2.message });
     }
   }
 
@@ -378,22 +378,22 @@ function syncUpdateAndRestart(): void {
   const binName = process.platform === "win32" ? "chatccc.cmd" : "chatccc";
   const binPath = npmPrefix ? join(npmPrefix, binName) : "chatccc";
   updLog(`bin path: npmPrefix=${npmPrefix || "(empty)"}, binPath=${binPath}`);
-  appendStartupTrace("updateg: spawn begin", { npmPrefix: npmPrefix || "(empty)", binPath });
+  appendStartupTrace("update: spawn begin", { npmPrefix: npmPrefix || "(empty)", binPath });
 
   // 3. spawn new chatccc
   try {
     const child = spawn(binPath, [], { detached: true, stdio: "ignore", shell: true });
     child.unref();
     updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${binPath}`);
-    appendStartupTrace("updateg: spawn OK", { childPid: child.pid, binPath });
+    appendStartupTrace("update: spawn OK", { childPid: child.pid, binPath });
   } catch (e) {
     const errMsg = (e as Error).message;
     updLog(`spawn new chatccc failed: ${errMsg}`);
-    appendStartupTrace("updateg: spawn failed", { error: errMsg });
+    appendStartupTrace("update: spawn failed", { error: errMsg });
   }
 
   updLog("sync update done, parent exiting in 2s");
-  appendStartupTrace("updateg: sync update done, exiting", { pid: process.pid });
+  appendStartupTrace("update: sync update done, exiting", { pid: process.pid });
 }
 
 // ---------------------------------------------------------------------------
@@ -449,18 +449,18 @@ export async function handleCommand(
     return;
   }
 
-  if (textLower === "/updateg") {
-    logTrace(tid, "BRANCH", { cmd: "/updateg" });
+  if (textLower === "/update") {
+    logTrace(tid, "BRANCH", { cmd: "/update" });
     const isGlobal = isRunningFromGlobalNpm();
-    appendStartupTrace("updateg: command received", { isGlobal, chatId });
+    appendStartupTrace("update: command received", { isGlobal, chatId });
     if (!isGlobal) {
-      await platform.sendText(chatId, "当前进程非 npm 全局安装，无法使用 /updateg 更新。请通过 npm install -g chatccc 安装后使用。").catch(() => {});
-      logTrace(tid, "DONE", { outcome: "updateg_not_global" });
+      await platform.sendText(chatId, "当前进程非 npm 全局安装，无法使用 /update 更新。请通过 npm install -g chatccc 安装后使用。").catch(() => {});
+      logTrace(tid, "DONE", { outcome: "update_not_global" });
       return;
     }
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
-    logTrace(tid, "DONE", { outcome: "updateg" });
-    appendStartupTrace("updateg: sync update begin", { fromPid: process.pid });
+    logTrace(tid, "DONE", { outcome: "update" });
+    appendStartupTrace("update: sync update begin", { fromPid: process.pid });
     syncUpdateAndRestart();
     setTimeout(() => process.exit(0), 2000);
     return;
