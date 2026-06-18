@@ -80,6 +80,7 @@ import {
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
+import { applySharedPrefix } from "./shared-prefix.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -273,11 +274,10 @@ function isUntitledSessionChatName(name: string): boolean {
 
 function shouldSendWechatProcessingAck(
   platform: PlatformAdapter,
-  textLower: string,
+  isCommandText: boolean,
   chatType: string,
-  text: string,
 ): boolean {
-  return platform.kind === "wechat" && chatType === "p2p" && !textLower.startsWith("/");
+  return platform.kind === "wechat" && chatType === "p2p" && !isCommandText;
 }
 
 function isNonWechatP2p(platform: PlatformAdapter, chatType: string): boolean {
@@ -410,11 +410,15 @@ export async function handleCommand(
   traceId?: string,
 ): Promise<void> {
   const tid = traceId ?? makeTraceId();
+  const sharedPrefix = applySharedPrefix(text);
+  const promptText = sharedPrefix.text;
+  text = sharedPrefix.body;
   const textLower = text.toLowerCase();
+  const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
   recordChatPlatform(chatId, platform);
   await cleanupNonWechatP2pBinding(platform, chatId, chatType, tid);
 
-  if (textLower === "/restart") {
+  if (isCommandText && textLower === "/restart") {
     logTrace(tid, "BRANCH", { cmd: "/restart" });
     await platform.sendText(chatId, "重启中...请几秒后发消息唤醒我").catch(() => {});
     logTrace(tid, "DONE", { outcome: "restart" });
@@ -449,7 +453,7 @@ export async function handleCommand(
     return;
   }
 
-  if (textLower === "/update") {
+  if (isCommandText && textLower === "/update") {
     logTrace(tid, "BRANCH", { cmd: "/update" });
     const isGlobal = isRunningFromGlobalNpm();
     appendStartupTrace("update: command received", { isGlobal, chatId });
@@ -466,7 +470,7 @@ export async function handleCommand(
     return;
   }
 
-  if (textLower === "/usage") {
+  if (isCommandText && textLower === "/usage") {
     const usageTool = await resolveUsageTool(chatId);
     logTrace(tid, "BRANCH", { cmd: "/usage", tool: usageTool });
     try {
@@ -479,7 +483,7 @@ export async function handleCommand(
     return;
   }
 
-  if (textLower === "/cd" || textLower.startsWith("/cd ")) {
+  if (isCommandText && (textLower === "/cd" || textLower.startsWith("/cd "))) {
     logTrace(tid, "BRANCH", {
       cmd: "/cd",
       arg: text.slice(3).trim() || "(none)",
@@ -602,7 +606,7 @@ export async function handleCommand(
     return;
   }
 
-  if (textLower === "/new" || textLower.startsWith("/new ")) {
+  if (isCommandText && (textLower === "/new" || textLower.startsWith("/new "))) {
     const toolArg = text.slice(5).trim().toLowerCase();
     const tool = toolArg || resolveDefaultAgentTool();
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
@@ -863,7 +867,7 @@ export async function handleCommand(
   if (sessionId && descriptionTool && toolLabel) {
     // 有会话上下文 — 路由到命令处理或 prompt
     logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
-    const routeKind = textLower.startsWith("/") ? "command" : "prompt";
+    const routeKind = isCommandText ? "command" : "prompt";
     const chatKind = chatType === "p2p" ? "p2p chat" : "session group";
     console.log(
       `[${ts()}] [ROUTE] ${toolLabel} ${chatKind} ${routeKind} detected, session=${sessionId} tool=${descriptionTool}`,
@@ -872,7 +876,7 @@ export async function handleCommand(
     if (
       chatType !== "p2p" &&
       isUntitledSessionChatName(chatInfo!.name) &&
-      !textLower.startsWith("/")
+      !isCommandText
     ) {
       const MAX_PREFIX = 10;
       const prefix = text.slice(0, MAX_PREFIX);
@@ -907,7 +911,7 @@ export async function handleCommand(
     if (
       chatType === "p2p" &&
       platform.kind === "wechat" &&
-      !textLower.startsWith("/")
+      !isCommandText
     ) {
       try {
         const reg = await loadSessionRegistryForBinding();
@@ -946,7 +950,7 @@ export async function handleCommand(
       }
     }
 
-    if (textLower === "/stop") {
+    if (isCommandText && textLower === "/stop") {
       logTrace(tid, "BRANCH", { cmd: "/stop" });
       if (stopSession(sessionId)) {
         console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
@@ -960,7 +964,7 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/cancel") {
+    if (isCommandText && textLower === "/cancel") {
       logTrace(tid, "BRANCH", { cmd: "/cancel" });
       if (cancelQueuedMessage(sessionId)) {
         console.log(`[${ts()}] [CANCEL] Queue cancelled for session=${sessionId}`);
@@ -973,7 +977,7 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/test") {
+    if (isCommandText && textLower === "/test") {
       logTrace(tid, "BRANCH", { cmd: "/test" });
       const tableHeaders = ["名称", "版本", "状态"];
       const tableRows = [
@@ -1010,7 +1014,7 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/state") {
+    if (isCommandText && textLower === "/state") {
       logTrace(tid, "BRANCH", { cmd: "/state" });
       const status = await getSessionStatus(chatId);
       const isActive = isSessionRunning(sessionId);
@@ -1049,7 +1053,7 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/sessions") {
+    if (isCommandText && textLower === "/sessions") {
       logTrace(tid, "BRANCH", { cmd: "/sessions" });
       const allSessions = await getAllSessionsStatus();
       const now = Date.now();
@@ -1074,7 +1078,7 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/newh") {
+    if (isCommandText && textLower === "/newh") {
       logTrace(tid, "BRANCH", { cmd: "/newh" });
       const adapter = getAdapterForTool(descriptionTool, sessionId);
       let cwd: string;
@@ -1161,7 +1165,7 @@ export async function handleCommand(
       return;
     }
 
-    if (textLower === "/deleteg") {
+    if (isCommandText && textLower === "/deleteg") {
       logTrace(tid, "BRANCH", { cmd: "/deleteg" });
       if (chatType === "p2p") {
         await platform
@@ -1199,7 +1203,7 @@ export async function handleCommand(
     }
 
     // /session <number>：切换到 /sessions 列表中的指定会话
-    const sessionMatch = textLower.match(/^\/session\s+(\d+)$/);
+    const sessionMatch = isCommandText ? textLower.match(/^\/session\s+(\d+)$/) : null;
     if (sessionMatch) {
       const index = parseInt(sessionMatch[1], 10) - 1;
       logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
@@ -1325,7 +1329,7 @@ export async function handleCommand(
     }
 
     // /model clear — 清除当前 session 的模型覆盖
-    if (textLower === "/model clear") {
+    if (isCommandText && textLower === "/model clear") {
       logTrace(tid, "BRANCH", { cmd: "/model clear", sessionId });
       clearSessionModelOverride(sessionId);
       const defaultModel = getEffectiveModelForTool(descriptionTool);
@@ -1340,7 +1344,7 @@ export async function handleCommand(
     }
 
     // /model <name> — 切换当前 session 的模型（支持所有 agent，模糊匹配）
-    if (textLower.startsWith("/model ")) {
+    if (isCommandText && textLower.startsWith("/model ")) {
       const modelArg = text.slice(7).trim();
       if (!modelArg) return; // 纯 "/model " 不处理，交给上面的 /model 分支
       logTrace(tid, "BRANCH", { cmd: "/model", arg: modelArg, sessionId, tool: descriptionTool });
@@ -1374,7 +1378,7 @@ export async function handleCommand(
     }
 
     // /model — 查看当前会话的可用模型（根据会话 Agent 类型）
-    if (textLower === "/model") {
+    if (isCommandText && textLower === "/model") {
       logTrace(tid, "BRANCH", { cmd: "/model", sessionId, tool: descriptionTool });
       const models = getAllModelsForTool(descriptionTool as AgentTool);
       const currentModel = getEffectiveModelForTool(descriptionTool, sessionId);
@@ -1398,7 +1402,7 @@ export async function handleCommand(
     }
 
     // /git <args>：在「当前会话工作目录」执行 git 命令
-    if (textLower.startsWith("/git ") || textLower === "/git") {
+    if (isCommandText && (textLower.startsWith("/git ") || textLower === "/git")) {
       const args = text === "/git" ? "" : text.slice(5).trim();
       logTrace(tid, "BRANCH", { cmd: "/git", args: args || "(none)" });
       if (!args) {
@@ -1468,7 +1472,7 @@ export async function handleCommand(
     // 并发检查：同一 session 只能有一个活跃 prompt，多余消息进入队列
     if (isSessionRunning(sessionId)) {
       const queued = enqueueMessage(sessionId, {
-        text, chatId, openId, msgTimestamp, chatType, traceId: tid,
+        text: promptText, chatId, openId, msgTimestamp, chatType, traceId: tid,
       });
       if (queued) {
         logTrace(tid, "QUEUED", { sessionId });
@@ -1494,7 +1498,7 @@ export async function handleCommand(
       return;
     }
 
-    if (shouldSendWechatProcessingAck(platform, textLower, chatType, text)) {
+    if (shouldSendWechatProcessingAck(platform, isCommandText, chatType)) {
       await platform.sendText(chatId, "生成中...").catch(() => {});
     }
 
@@ -1502,7 +1506,7 @@ export async function handleCommand(
       logTrace(tid, "RESUME", { sessionId, tool: descriptionTool });
       await resumeAndPrompt(
         sessionId,
-        text,
+        promptText,
         platform,
         chatId,
         msgTimestamp,
@@ -1529,7 +1533,7 @@ export async function handleCommand(
   }
 
   // 无会话上下文 → 检查是否是 /model 查询
-  if (textLower === "/model") {
+  if (isCommandText && textLower === "/model") {
     const defaultTool = resolveDefaultAgentTool();
     const models = getAllModelsForTool(defaultTool);
     let currentModel = "";
@@ -1556,7 +1560,7 @@ export async function handleCommand(
   }
 
   // 无会话上下文 → /sessions 仍是有效指令，不触发飞书私聊自动建群。
-  if (textLower === "/sessions") {
+  if (isCommandText && textLower === "/sessions") {
     logTrace(tid, "BRANCH", { cmd: "/sessions", scope: "global" });
     const allSessions = await getAllSessionsStatus();
     const now = Date.now();
@@ -1582,7 +1586,7 @@ export async function handleCommand(
   }
 
   // 飞书私聊普通消息：不再绑定私聊本身，而是自动创建会话群并把私聊内容作为首轮 prompt。
-  if (isNonWechatP2p(platform, chatType) && !textLower.startsWith("/")) {
+  if (isNonWechatP2p(platform, chatType) && !isCommandText) {
     const tool = resolveDefaultAgentTool();
     const toolLabel = toolDisplayName(tool);
     logTrace(tid, "BRANCH", { cmd: "auto_new_from_p2p", tool });
@@ -1701,7 +1705,7 @@ export async function handleCommand(
       logTrace(tid, "RESUME", { sessionId, tool, trigger: "auto_new_from_p2p" });
       await resumeAndPrompt(
         sessionId,
-        text,
+        promptText,
         platform,
         newChatId,
         msgTimestamp,

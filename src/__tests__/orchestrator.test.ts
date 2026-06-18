@@ -77,6 +77,7 @@ import {
   resetState,
 } from "../session.ts";
 import { activePrompts, resetBindingState } from "../session-chat-binding.ts";
+import { ABD_APPEND_PROMPT } from "../shared-prefix.ts";
 
 function mockPlatform(kind: "wechat" | "feishu" = "wechat"): PlatformAdapter {
   return {
@@ -212,6 +213,41 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendText).toHaveBeenCalledWith("wx-chat", "生成中...");
   });
 
+  it("treats /abd as a shared prompt prefix in an existing session", async () => {
+    const platform = mockPlatform();
+    const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
+      yield {
+        type: "assistant" as const,
+        blocks: [{ type: "text" as const, text: "done" }],
+      };
+    });
+    _setAdapterForToolForTest("claude", {
+      displayName: "Claude",
+      sessionDescPrefix: "Claude Session:",
+      createSession: vi.fn(async () => ({ sessionId: "sid-wechat" })),
+      prompt,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
+        sessionId,
+        cwd: "F:\\repo",
+      }),
+      closeSession: async () => {},
+    });
+    await recordSessionRegistry({
+      chatId: "wx-chat",
+      sessionId: "sid-wechat",
+      tool: "claude",
+      chatName: "ready-session",
+      running: false,
+    });
+
+    await handleCommand(platform, "/abd帮我分析", "wx-chat", "wx-user", Date.now(), "p2p");
+
+    expect(platform.sendText).toHaveBeenCalledWith("wx-chat", "生成中...");
+    const userText = prompt.mock.calls[0][1];
+    expect(userText).toContain(`[User message]\n帮我分析\n\n---\n${ABD_APPEND_PROMPT}\n[/User message]`);
+    expect(userText).not.toContain("/abd");
+  });
+
   it("does not send the stopped success text until the running prompt really exits", async () => {
     const platform = mockPlatform();
     await recordSessionRegistry({
@@ -278,6 +314,38 @@ describe("handleCommand WeChat processing ack", () => {
     const registry = await loadSessionRegistryForBinding();
     expect(registry["feishu-p2p"]).toBeUndefined();
     expect(registry["feishu-group"]?.sessionId).toBe("sid-feishu-new");
+  });
+
+  it("auto-creates a Feishu group for /abd private messages and sends the transformed prompt", async () => {
+    const platform = mockPlatform("feishu");
+    const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
+      yield {
+        type: "assistant" as const,
+        blocks: [{ type: "text" as const, text: "done" }],
+      };
+    });
+    _setAdapterForToolForTest("claude", {
+      displayName: "Claude",
+      sessionDescPrefix: "Claude Session:",
+      createSession: vi.fn(async () => ({ sessionId: "sid-feishu-abd" })),
+      prompt,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
+        sessionId,
+        cwd: "F:\\repo",
+      }),
+      closeSession: async () => {},
+    });
+
+    await handleCommand(platform, "/abd帮我看一下日志", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(platform.createGroup).toHaveBeenCalledWith(expect.stringContaining("帮我看一下日志"), ["ou-user"]);
+    expect(platform.createGroup).not.toHaveBeenCalledWith(expect.stringContaining("---"), expect.anything());
+    const updateCall = vi.mocked(platform.updateChatInfo).mock.calls[0];
+    expect(updateCall[1]).not.toContain("---");
+    expect(updateCall[1]).not.toContain(ABD_APPEND_PROMPT);
+    const userText = prompt.mock.calls[0][1];
+    expect(userText).toContain(`[User message]\n帮我看一下日志\n\n---\n${ABD_APPEND_PROMPT}\n[/User message]`);
+    expect(userText).not.toContain("/abd");
   });
 
   it("cleans stale Feishu p2p binding but keeps valid commands from auto-creating a group", async () => {

@@ -10,6 +10,7 @@ import {
   truncateContent,
   getToolEmoji,
 } from "../cards.ts";
+import { ABD_HELP_LINE } from "../shared-prefix.ts";
 
 // ---------------------------------------------------------------------------
 // truncateContent
@@ -157,6 +158,14 @@ describe("buildHelpCard", () => {
     const action = parsed.elements[2];
     expect(action.tag).toBe("action");
     expect(action.actions).toHaveLength(7);
+  });
+
+  it("adds ABD prefix help as the final help line", () => {
+    const card = buildHelpCard("test");
+    const parsed = JSON.parse(card);
+    const lines = parsed.elements[1].text.content.split("\n");
+
+    expect(lines.at(-1)).toBe(ABD_HELP_LINE);
   });
 });
 
