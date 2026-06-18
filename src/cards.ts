@@ -2,6 +2,8 @@
 // Button helpers
 // ---------------------------------------------------------------------------
 
+import { ABD_HELP_LINE } from "./shared-prefix.ts";
+
 export interface ButtonDef {
   text: string;
   value: string;
@@ -138,6 +140,7 @@ export function buildHelpCard(
     "发送 **/usage** 查看 Codex 5h 和周用量",
     "发送 **/restart** 重启 ChatCCC 进程",
     "发送 **/update** 更新并重启（仅 npm 全局安装可用）",
+    ABD_HELP_LINE,
   ].join("\n");
   return JSON.stringify({
     config: { wide_screen_mode: true },

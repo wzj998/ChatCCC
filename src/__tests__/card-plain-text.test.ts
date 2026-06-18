@@ -19,6 +19,7 @@ describe("cardJsonToPlainText", () => {
     expect(text).toContain("/restart");
     expect(text).toContain("/update");
     expect(text).toContain("/cd");
+    expect(text).toContain("/abd");
   });
 
   it("converts status cards from v1 card format", () => {
