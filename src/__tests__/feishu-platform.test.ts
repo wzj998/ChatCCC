@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, sendPostMessage, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, getCodexUsageSummary, disbandChat, sendRestartCard, getMergeForwardMessages } from "../feishu-platform.ts";
+import { getPlatform, setPlatform, getTenantAccessToken, getChatInfo, createGroupChat, updateChatInfo, sendTextReply, sendCardReply, sendRawCard, sendPostMessage, extractSessionInfo, formatDelayNotice, reportPermissionResults, verifyAllPermissions, addReaction, recallMessage, updateCardMessage, setChatAvatar, getCodexUsageSummary, consumeCodexRateLimitResetCredit, disbandChat, sendRestartCard, getMergeForwardMessages } from "../feishu-platform.ts";
 import type { FeishuPlatform } from "../feishu-platform.ts";
 
 const realPlatform = getPlatform();
@@ -31,7 +31,10 @@ describe("feishu-platform", () => {
       getCodexUsageSummary: async () => ({
         fiveHour: { usedPercent: 10, remainingPercent: 90, resetAtEpochSeconds: 1781528212, resetAfterSeconds: 10349 },
         weekly: { usedPercent: 20, remainingPercent: 80, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
+        rateLimitResetCreditsAvailable: 1,
+        rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-07-12T04:01:47.770016Z" }],
       }),
+      consumeCodexRateLimitResetCredit: async () => ({ code: "reset", windowsReset: 2 }),
       getOrDownloadImage: async () => "/tmp/img.png",
       verifyAllPermissions: async () => [],
       reportPermissionResults: realPlatform.reportPermissionResults,
@@ -55,7 +58,10 @@ describe("feishu-platform", () => {
       expect(await getCodexUsageSummary()).toEqual({
         fiveHour: { usedPercent: 10, remainingPercent: 90, resetAtEpochSeconds: 1781528212, resetAfterSeconds: 10349 },
         weekly: { usedPercent: 20, remainingPercent: 80, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
+        rateLimitResetCreditsAvailable: 1,
+        rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-07-12T04:01:47.770016Z" }],
       });
+      expect(await consumeCodexRateLimitResetCredit("request-1")).toEqual({ code: "reset", windowsReset: 2 });
     } finally {
       // 恢复到真实实现，避免影响后续测试
       setPlatform(realPlatform);

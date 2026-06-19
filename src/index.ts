@@ -74,6 +74,7 @@ import {
   verifyAllPermissions,
   reportPermissionResults,
   setPlatform,
+  consumeCodexRateLimitResetCredit,
 } from "./feishu-platform.ts";
 import { SimulatedPlatform, SIM_DEFAULT_CHAT_ID } from "./sim-platform.ts";
 import { setMessageHandler } from "./sim-store.ts";
@@ -103,6 +104,7 @@ import {
 import { fixStaleStreamStates } from "./stream-state.ts";
 import { handleCommand, type PlatformAdapter } from "./orchestrator.ts";
 import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
+import { handleCodexResetCardAction } from "./codex-reset-actions.ts";
 
 // ---------------------------------------------------------------------------
 // Feishu 平台适配器
@@ -463,6 +465,15 @@ async function startBotServiceCore(): Promise<void> {
         }
         return;
       }
+
+      const handledCodexReset = await handleCodexResetCardAction(data, {
+        getTenantAccessToken,
+        sendRawCard,
+        sendCardReply,
+        updateCardMessage,
+        consumeCodexRateLimitResetCredit,
+      });
+      if (handledCodexReset) return;
 
       const result = parseCardAction(data);
       if (!result) return;

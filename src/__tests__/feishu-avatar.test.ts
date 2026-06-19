@@ -41,7 +41,7 @@ async function writeCodexAuth(homeDir: string): Promise<void> {
   await mkdir(codexDir, { recursive: true });
   await writeFile(
     join(codexDir, "auth.json"),
-    JSON.stringify({ tokens: { access_token: "codex-access-token" } }),
+    JSON.stringify({ tokens: { access_token: "codex-access-token", account_id: "codex-account-id" } }),
     "utf-8",
   );
 }
@@ -51,6 +51,9 @@ function mockAvatarFetch(uploadedNames: string[], usageResponse: Response): void
     const urlText = String(url);
     if (urlText === "https://chatgpt.com/backend-api/wham/usage") {
       return usageResponse.clone();
+    }
+    if (urlText === "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") {
+      return new Response(JSON.stringify({ credits: [] }), { status: 200 });
     }
     if (urlText === "https://open.feishu.test/im/v1/images") {
       const form = init?.body as FormData;
@@ -100,24 +103,102 @@ describe("Codex avatar usage battery", () => {
     }
   });
 
-  it("returns both 5h and weekly Codex usage windows", async () => {
+  it("returns both usage windows and available reset credit expiries", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
     const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
-    const uploadedNames: string[] = [];
     await writeCodexAuth(homeDir);
-    mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
-      rate_limit: {
-        primary_window: { used_percent: 37, reset_after_seconds: 10349, reset_at: 1781528212 },
-        secondary_window: { used_percent: 12, reset_after_seconds: 325063, reset_at: 1781842926 },
-      },
-    }), { status: 200 }));
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlText = String(url);
+      if (urlText === "https://chatgpt.com/backend-api/wham/usage") {
+        return new Response(JSON.stringify({
+          rate_limit: {
+            primary_window: { used_percent: 37, reset_after_seconds: 10349, reset_at: 1781528212 },
+            secondary_window: { used_percent: 12, reset_after_seconds: 325063, reset_at: 1781842926 },
+          },
+          rate_limit_reset_credits: { available_count: 1 },
+        }), { status: 200 });
+      }
+      if (urlText === "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") {
+        return new Response(JSON.stringify({
+          available_count: 2,
+          credits: [
+            {
+              status: "available",
+              granted_at: "2026-06-12T04:01:47.770016Z",
+              expires_at: "2026-07-12T04:01:47.770016Z",
+            },
+            {
+              status: "redeemed",
+              granted_at: "2026-06-13T04:01:47.770016Z",
+              expires_at: "2026-07-13T04:01:47.770016Z",
+            },
+            {
+              status: "available",
+              granted_at: "2026-06-18T00:44:23.904386Z",
+              expires_at: "2026-07-18T00:44:23.904386Z",
+            },
+          ],
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${urlText}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     try {
       const { getCodexUsageSummary } = await loadFeishuApiWithHome(homeDir, userDataDir);
       await expect(getCodexUsageSummary()).resolves.toEqual({
         fiveHour: { usedPercent: 37, remainingPercent: 63, resetAfterSeconds: 10349, resetAtEpochSeconds: 1781528212 },
         weekly: { usedPercent: 12, remainingPercent: 88, resetAfterSeconds: 325063, resetAtEpochSeconds: 1781842926 },
+        rateLimitResetCreditsAvailable: 2,
+        rateLimitResetCredits: [
+          { grantedAt: "2026-06-12T04:01:47.770016Z", expiresAt: "2026-07-12T04:01:47.770016Z" },
+          { grantedAt: "2026-06-18T00:44:23.904386Z", expiresAt: "2026-07-18T00:44:23.904386Z" },
+        ],
       });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer codex-access-token",
+            "ChatGPT-Account-ID": "codex-account-id",
+            "OpenAI-Beta": "codex-1",
+            originator: "Codex Desktop",
+          }),
+        }),
+      );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("consumes a Codex rate-limit reset credit through the WHAM endpoint", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    await writeCodexAuth(homeDir);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      code: "reset",
+      windows_reset: 2,
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { consumeCodexRateLimitResetCredit } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await expect(consumeCodexRateLimitResetCredit("request-1")).resolves.toEqual({
+        code: "reset",
+        windowsReset: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            Authorization: "Bearer codex-access-token",
+            "Content-Type": "application/json",
+          }),
+          body: JSON.stringify({ redeem_request_id: "request-1" }),
+        }),
+      );
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });

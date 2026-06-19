@@ -304,6 +304,8 @@ const AVATAR_COMBINATIONS_DIR = resolvePath(AVATAR_DIR, "combinations");
 const AVATAR_KEY_CACHE_FILE = resolvePath(USER_DATA_DIR, "state", "avatar-image-keys.json");
 const CODEX_AUTH_FILE = resolvePath(homedir(), ".codex", "auth.json");
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const CODEX_RESET_CONSUME_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 const AVATAR_SOURCES: Record<string, string> = {
   new: resolvePath(AVATAR_DIR, "status_new.png"),
   busy: resolvePath(AVATAR_DIR, "status_busy.png"),
@@ -327,9 +329,23 @@ export interface CodexUsageBalance {
   resetAfterSeconds: number | null;
 }
 
+export interface CodexRateLimitResetCredit {
+  grantedAt: string | null;
+  expiresAt: string;
+}
+
 export interface CodexUsageSummary {
   fiveHour: CodexUsageBalance;
   weekly: CodexUsageBalance | null;
+  rateLimitResetCreditsAvailable: number | null;
+  rateLimitResetCredits: CodexRateLimitResetCredit[] | null;
+}
+
+export type CodexResetConsumeCode = "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
+
+export interface CodexResetConsumeResult {
+  code: CodexResetConsumeCode;
+  windowsReset: number;
 }
 
 const avatarKeyCache = new Map<string, string>();
@@ -421,35 +437,109 @@ function parseOptionalUsageWindow(rateLimit: Record<string, unknown>, keys: stri
   return null;
 }
 
-async function getCodexAccessToken(): Promise<string | null> {
+function parseRateLimitResetCredits(data: Record<string, unknown>): number | null {
+  const raw = data.rate_limit_reset_credits;
+  if (!raw || typeof raw !== "object") return null;
+  const availableCount = Number((raw as { available_count?: unknown }).available_count);
+  if (!Number.isFinite(availableCount)) return null;
+  return Math.max(0, Math.trunc(availableCount));
+}
+
+interface CodexAuth {
+  accessToken: string;
+  accountId?: string;
+}
+
+async function getCodexAuth(): Promise<CodexAuth | null> {
   try {
     const raw = await readFile(CODEX_AUTH_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown } };
+    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown; account_id?: unknown } };
     const token = parsed.tokens?.access_token;
-    return typeof token === "string" && token.trim() ? token : null;
+    if (typeof token !== "string" || !token.trim()) return null;
+    const accountId = parsed.tokens?.account_id;
+    return {
+      accessToken: token,
+      accountId: typeof accountId === "string" && accountId.trim() ? accountId : undefined,
+    };
   } catch {
     return null;
   }
 }
 
+async function getCodexAccessToken(): Promise<string | null> {
+  return (await getCodexAuth())?.accessToken ?? null;
+}
+
+function codexAuthHeaders(auth: CodexAuth): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${auth.accessToken}`,
+    "OpenAI-Beta": "codex-1",
+    originator: "Codex Desktop",
+  };
+  if (auth.accountId) headers["ChatGPT-Account-ID"] = auth.accountId;
+  return headers;
+}
+
+function parseCodexResetCreditDetails(data: Record<string, unknown>): {
+  availableCount: number | null;
+  availableCredits: CodexRateLimitResetCredit[];
+} {
+  const availableCount = Number(data.available_count);
+  const credits = Array.isArray(data.credits) ? data.credits : [];
+  return {
+    availableCount: Number.isFinite(availableCount) ? Math.max(0, Math.trunc(availableCount)) : null,
+    availableCredits: credits.flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const credit = raw as { status?: unknown; granted_at?: unknown; expires_at?: unknown };
+      if (credit.status !== "available") return [];
+      if (typeof credit.expires_at !== "string" || !credit.expires_at.trim()) return [];
+      return [{
+        grantedAt: typeof credit.granted_at === "string" && credit.granted_at.trim() ? credit.granted_at : null,
+        expiresAt: credit.expires_at,
+      }];
+    }),
+  };
+}
+
+async function fetchCodexRateLimitResetCredits(auth: CodexAuth): Promise<{
+  availableCount: number | null;
+  availableCredits: CodexRateLimitResetCredit[];
+} | null> {
+  try {
+    const resp = await fetch(CODEX_RESET_CREDITS_URL, {
+      headers: codexAuthHeaders(auth),
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
+    return parseCodexResetCreditDetails(JSON.parse(text) as Record<string, unknown>);
+  } catch (err) {
+    console.warn(`[Codex] reset credits lookup failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
-  const token = await getCodexAccessToken();
-  if (!token) throw new Error("missing ~/.codex/auth.json access token");
+  const auth = await getCodexAuth();
+  if (!auth) throw new Error("missing ~/.codex/auth.json access token");
+
+  const resetCreditsPromise = fetchCodexRateLimitResetCredits(auth);
 
   const resp = await fetch(CODEX_USAGE_URL, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${auth.accessToken}` },
   });
   const text = await resp.text();
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
 
   const data = JSON.parse(text) as {
     rate_limit?: Record<string, unknown>;
+    rate_limit_reset_credits?: unknown;
   };
   const rateLimit = data.rate_limit;
   if (!rateLimit || typeof rateLimit !== "object") throw new Error("missing rate_limit");
 
   const fiveHour = parseOptionalUsageWindow(rateLimit, ["primary_window"]);
   if (!fiveHour) throw new Error("missing rate_limit.primary_window.used_percent");
+  const resetCredits = await resetCreditsPromise;
 
   return {
     fiveHour,
@@ -459,6 +549,41 @@ export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
       "week_window",
       "long_window",
     ]),
+    rateLimitResetCreditsAvailable: resetCredits?.availableCount ?? parseRateLimitResetCredits(data),
+    rateLimitResetCredits: resetCredits?.availableCredits ?? null,
+  };
+}
+
+export async function consumeCodexRateLimitResetCredit(redeemRequestId: string): Promise<CodexResetConsumeResult> {
+  if (!redeemRequestId.trim()) throw new Error("missing redeem_request_id");
+  const token = await getCodexAccessToken();
+  if (!token) throw new Error("missing ~/.codex/auth.json access token");
+
+  const resp = await fetch(CODEX_RESET_CONSUME_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ redeem_request_id: redeemRequestId }),
+  });
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
+
+  const data = JSON.parse(text) as { code?: unknown; windows_reset?: unknown };
+  const code = data.code;
+  if (
+    code !== "reset"
+    && code !== "nothing_to_reset"
+    && code !== "no_credit"
+    && code !== "already_redeemed"
+  ) {
+    throw new Error("missing or unknown reset result code");
+  }
+  const windowsReset = Number(data.windows_reset);
+  return {
+    code,
+    windowsReset: Number.isFinite(windowsReset) ? Math.max(0, Math.trunc(windowsReset)) : 0,
   };
 }
 

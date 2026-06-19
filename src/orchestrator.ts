@@ -44,6 +44,7 @@ import {
   buildSessionsCard,
   buildQueuedCard,
   buildQueueFullCard,
+  buildCodexUsageCard,
 } from "./cards.ts";
 import {
   formatGitResult,
@@ -160,8 +161,41 @@ function formatCodexUsageSummary(usage: CodexUsageSummary): string {
     ].join("\n");
   };
 
+  const formatResetCredits = () => {
+    if (usage.rateLimitResetCreditsAvailable === null) return "**主动重置:** 暂无数据";
+    const lines = [`**主动重置:** 剩余 ${usage.rateLimitResetCreditsAvailable} 次`];
+    const credits = usage.rateLimitResetCredits ?? [];
+    if (credits.length > 0) {
+      const pad = (value: number) => String(value).padStart(2, "0");
+      const formatExpiresAt = (value: string) => {
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return value;
+        return [
+          date.getFullYear(),
+          "-",
+          pad(date.getMonth() + 1),
+          "-",
+          pad(date.getDate()),
+          " ",
+          pad(date.getHours()),
+          ":",
+          pad(date.getMinutes()),
+          ":",
+          pad(date.getSeconds()),
+        ].join("");
+      };
+      lines.push("**过期时间:**");
+      for (const credit of credits) {
+        lines.push(`- ${formatExpiresAt(credit.expiresAt)}`);
+      }
+    }
+    return lines.join("\n");
+  };
+
   return [
     "Codex 用量：",
+    "",
+    formatResetCredits(),
     "",
     formatWindow("5h", usage.fiveHour),
     formatWindow("周", usage.weekly),
@@ -225,7 +259,7 @@ function formatCursorUsageSummary(usage: CursorUsageSummary): string {
 }
 
 function usageHelpLine(tool: string): string {
-  if (tool === "codex") return "\n发送 **/usage** 查看 Codex 5h 和周用量。";
+  if (tool === "codex") return "\n发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡。";
   if (tool === "cursor") return "\n发送 **/usage** 查看 Cursor 用量。";
   return "";
 }
@@ -250,9 +284,12 @@ async function sendUsageSummary(platform: PlatformAdapter, chatId: string, tool:
     return;
   }
 
-  const content = formatCodexUsageSummary(await getCodexUsageSummary());
+  const usage = await getCodexUsageSummary();
+  const content = formatCodexUsageSummary(usage);
   if (platform.kind === "wechat") {
     await platform.sendText(chatId, content).catch(() => {});
+  } else if (platform.kind === "feishu") {
+    await platform.sendRawCard(chatId, buildCodexUsageCard(content, usage.rateLimitResetCreditsAvailable));
   } else {
     await platform.sendCard(chatId, "Codex Usage", content, "blue");
   }

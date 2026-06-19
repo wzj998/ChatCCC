@@ -6,6 +6,8 @@ import {
   buildCdCard,
   buildSessionsCard,
   buildStatusCard,
+  buildCodexUsageCard,
+  buildCodexResetConfirmCard,
   buildButtons,
   truncateContent,
   getToolEmoji,
@@ -165,6 +167,7 @@ describe("buildHelpCard", () => {
     const parsed = JSON.parse(card);
     const lines = parsed.elements[1].text.content.split("\n");
 
+    expect(lines).toContain("发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡");
     expect(lines.at(-1)).toBe(ABD_HELP_LINE);
   });
 });
@@ -441,6 +444,49 @@ describe("buildStatusCard", () => {
     const parsed = JSON.parse(card);
     const action = parsed.elements[2];
     expect(action.actions[0].text.content).toBe("收起");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildCodexUsageCard / buildCodexResetConfirmCard
+// ---------------------------------------------------------------------------
+
+describe("Codex usage reset cards", () => {
+  it("shows the reset button only when reset credits are available", () => {
+    const card = buildCodexUsageCard("Codex 用量", 2);
+    const parsed = JSON.parse(card);
+    const action = parsed.elements.find((element: any) => element.tag === "action");
+    expect(action.actions[0].text.content).toBe("发起重置");
+    expect(action.actions[0].value).toEqual({ action: "codex_reset_request", availableCount: 2 });
+
+    const noCreditCard = buildCodexUsageCard("Codex 用量", 0);
+    const noCreditParsed = JSON.parse(noCreditCard);
+    expect(noCreditParsed.elements.some((element: any) => element.tag === "action")).toBe(false);
+  });
+
+  it("builds yes/no confirmation buttons tied to the parent usage card", () => {
+    const card = buildCodexResetConfirmCard({
+      availableCount: 2,
+      parentMessageId: "usage-message",
+      requestId: "request-1",
+    });
+    const parsed = JSON.parse(card);
+    const action = parsed.elements.find((element: any) => element.tag === "action");
+
+    expect(action.actions[0].text.content).toBe("是，发起重置");
+    expect(action.actions[0].value).toEqual({
+      action: "codex_reset_confirm",
+      decision: "yes",
+      parentMessageId: "usage-message",
+      requestId: "request-1",
+    });
+    expect(action.actions[1].text.content).toBe("否");
+    expect(action.actions[1].value).toEqual({
+      action: "codex_reset_confirm",
+      decision: "no",
+      parentMessageId: "usage-message",
+      requestId: "request-1",
+    });
   });
 });
 

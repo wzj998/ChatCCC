@@ -132,6 +132,8 @@ describe("handleCommand WeChat processing ack", () => {
     mockGetCodexUsageSummary.mockResolvedValue({
       fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
       weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      rateLimitResetCreditsAvailable: null,
+      rateLimitResetCredits: null,
     });
     mockGetCursorUsageSummary.mockResolvedValue({
       billingCycleStart: "1779357999000",
@@ -371,47 +373,31 @@ describe("handleCommand WeChat processing ack", () => {
     mockGetCodexUsageSummary.mockResolvedValue({
       fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: 1781528212, resetAfterSeconds: 10349 },
       weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
+      rateLimitResetCreditsAvailable: 2,
+      rateLimitResetCredits: [
+        { grantedAt: "2026-06-12T04:01:47.770016Z", expiresAt: "2026-07-12T04:01:47.770016Z" },
+        { grantedAt: "2026-06-18T00:44:23.904386Z", expiresAt: "2026-07-18T00:44:23.904386Z" },
+      ],
     });
 
     await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
     expect(platform.createGroup).not.toHaveBeenCalled();
-    expect(platform.sendCard).toHaveBeenCalledWith(
-      "feishu-p2p",
-      "Codex Usage",
-      expect.stringContaining("**5h:** 已用 37%，剩余 63%，重置:"),
-      "blue",
-    );
-    expect(platform.sendCard).toHaveBeenCalledWith(
-      "feishu-p2p",
-      "Codex Usage",
-      expect.stringContaining("约 2小时52分钟后"),
-      "blue",
-    );
-    expect(platform.sendCard).toHaveBeenCalledWith(
-      "feishu-p2p",
-      "Codex Usage",
-      expect.stringContaining("[███████░░░░░░░░░░░░░]"),
-      "blue",
-    );
-    expect(platform.sendCard).toHaveBeenCalledWith(
-      "feishu-p2p",
-      "Codex Usage",
-      expect.stringContaining("**周:** 已用 12%，剩余 88%，重置:"),
-      "blue",
-    );
-    expect(platform.sendCard).toHaveBeenCalledWith(
-      "feishu-p2p",
-      "Codex Usage",
-      expect.stringContaining("约 3天18小时17分钟后"),
-      "blue",
-    );
-    expect(platform.sendCard).toHaveBeenCalledWith(
-      "feishu-p2p",
-      "Codex Usage",
-      expect.stringContaining("[██░░░░░░░░░░░░░░░░░░]"),
-      "blue",
-    );
+    expect(platform.sendCard).not.toHaveBeenCalled();
+    expect(platform.sendRawCard).toHaveBeenCalledTimes(1);
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    expect(card.header.title.content).toBe("Codex Usage");
+    expect(card.elements[0].text.content).toContain("2026-07-12");
+    expect(card.elements[0].text.content).toContain("2026-07-18");
+    expect(card.elements[0].text.content).toContain("**主动重置:** 剩余 2 次");
+    expect(card.elements[0].text.content).toContain("**5h:** 已用 37%，剩余 63%，重置:");
+    expect(card.elements[0].text.content).toContain("约 2小时52分钟后");
+    expect(card.elements[0].text.content).toContain("[███████░░░░░░░░░░░░░]");
+    expect(card.elements[0].text.content).toContain("**周:** 已用 12%，剩余 88%，重置:");
+    expect(card.elements[0].text.content).toContain("约 3天18小时17分钟后");
+    expect(card.elements[0].text.content).toContain("[██░░░░░░░░░░░░░░░░░░]");
+    expect(card.elements[2].actions[0].text.content).toBe("发起重置");
+    expect(card.elements[2].actions[0].value).toEqual({ action: "codex_reset_request", availableCount: 2 });
   });
 
   it("handles /usage as Cursor usage in Cursor chats", async () => {
@@ -452,7 +438,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(codexPlatform.sendCard).toHaveBeenCalledWith(
       "feishu-group",
       "Codex Session Ready",
-      expect.stringContaining("发送 **/usage** 查看 Codex 5h 和周用量。"),
+      expect.stringContaining("发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡。"),
       "green",
     );
 
