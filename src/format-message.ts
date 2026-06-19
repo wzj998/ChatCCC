@@ -40,7 +40,7 @@ export async function formatMessageContent(message: {
   }
 
   if (message.message_type === "post") {
-    return formatPostContent(content);
+    return formatPostContentWithImages(content, message.message_id);
   }
 
   if (message.message_type === "image") {
@@ -91,7 +91,7 @@ export async function formatMessageContent(message: {
 }
 
 export function formatPostContent(content: Record<string, unknown>): string {
-  const paragraphs = content.content as unknown[][];
+  const paragraphs = getPostParagraphs(content);
   if (!Array.isArray(paragraphs)) return "";
 
   const parts: string[] = [];
@@ -100,17 +100,96 @@ export function formatPostContent(content: Record<string, unknown>): string {
     for (const elem of line) {
       const el = elem as Record<string, unknown>;
       if (!el || typeof el !== "object") continue;
-      const t = typeof el.text === "string" ? el.text : "";
+      const text = formatPostTextElement(el);
+      if (text) parts.push(text);
+    }
+  }
+  return parts.join("\n").trim();
+}
 
-      if (el.tag === "code_block") {
-        const lang = typeof el.language === "string" ? el.language : "";
-        parts.push("```" + lang + "\n" + t + "\n```");
-      } else if (el.tag === "p" || el.tag === "text") {
-        if (t) parts.push(t);
+function getPostParagraphs(content: Record<string, unknown>): unknown[][] {
+  const direct = content.content;
+  if (Array.isArray(direct)) return direct as unknown[][];
+
+  for (const locale of ["zh_cn", "en_us", "ja_jp"]) {
+    const localized = content[locale] as Record<string, unknown> | undefined;
+    if (localized && Array.isArray(localized.content)) {
+      return localized.content as unknown[][];
+    }
+  }
+
+  return [];
+}
+
+function formatPostTextElement(el: Record<string, unknown>): string {
+  const t = typeof el.text === "string" ? el.text : "";
+
+  if (el.tag === "code_block") {
+    const lang = typeof el.language === "string" ? el.language : "";
+    return "```" + lang + "\n" + t + "\n```";
+  }
+
+  if (el.tag === "p" || el.tag === "text") {
+    return t;
+  }
+
+  return "";
+}
+
+function getPostImageKey(el: Record<string, unknown>): string | undefined {
+  const imageKey = el.image_key;
+  if (typeof imageKey === "string" && imageKey.trim()) return imageKey;
+
+  if (el.tag === "img") {
+    const fileKey = el.file_key;
+    if (typeof fileKey === "string" && fileKey.trim()) return fileKey;
+  }
+
+  return undefined;
+}
+
+async function formatPostContentWithImages(
+  content: Record<string, unknown>,
+  messageId?: string,
+): Promise<string> {
+  const paragraphs = getPostParagraphs(content);
+  if (!Array.isArray(paragraphs)) return "";
+
+  const parts: string[] = [];
+  for (const line of paragraphs) {
+    if (!Array.isArray(line)) continue;
+    for (const elem of line) {
+      const el = elem as Record<string, unknown>;
+      if (!el || typeof el !== "object") continue;
+
+      const text = formatPostTextElement(el);
+      if (text) parts.push(text);
+
+      const imageKey = getPostImageKey(el);
+      if (imageKey) {
+        parts.push(await formatPostImageElement(messageId, imageKey));
       }
     }
   }
   return parts.join("\n").trim();
+}
+
+async function formatPostImageElement(
+  messageId: string | undefined,
+  imageKey: string,
+): Promise<string> {
+  if (!messageId) return `[图片: ${imageKey}]`;
+
+  try {
+    const token = await getTenantAccessToken();
+    const localPath = await getOrDownloadImage(token, messageId, imageKey);
+    return `[图片] ${localPath}`;
+  } catch (err) {
+    console.error(
+      `[${ts()}] [IMAGE] download failed for post image ${imageKey}: ${(err as Error).message}`,
+    );
+    return `[图片: ${imageKey}]`;
+  }
 }
 
 // ---------------------------------------------------------------------------

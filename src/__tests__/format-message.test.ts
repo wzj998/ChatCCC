@@ -13,6 +13,49 @@ vi.mock("../feishu-platform.ts", () => ({
 
 import { formatMessageContent, formatPostContent, formatMergeForward } from "../format-message.ts";
 
+describe("formatMessageContent mixed post images", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetTenantAccessToken.mockResolvedValue("mock_token");
+  });
+
+  it("includes downloaded images from mixed post messages", async () => {
+    mockGetOrDownloadImage.mockResolvedValue("C:\\tmp\\img_001.png");
+
+    const result = await formatMessageContent({
+      message_id: "om_post",
+      message_type: "post",
+      content: JSON.stringify({
+        content: [[
+          { tag: "text", text: "use this image" },
+          { tag: "img", image_key: "img_001" },
+        ]],
+      }),
+    });
+
+    expect(result).toBe("use this image\n[图片] C:\\tmp\\img_001.png");
+    expect(mockGetTenantAccessToken).toHaveBeenCalled();
+    expect(mockGetOrDownloadImage).toHaveBeenCalledWith("mock_token", "om_post", "img_001");
+  });
+
+  it("keeps post image key when mixed post image download fails", async () => {
+    mockGetOrDownloadImage.mockRejectedValue(new Error("download failed"));
+
+    const result = await formatMessageContent({
+      message_id: "om_post",
+      message_type: "post",
+      content: JSON.stringify({
+        content: [[
+          { tag: "text", text: "caption" },
+          { tag: "img", image_key: "img_002" },
+        ]],
+      }),
+    });
+
+    expect(result).toBe("caption\n[图片: img_002]");
+  });
+});
+
 describe("formatMessageContent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
