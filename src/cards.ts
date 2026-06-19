@@ -137,7 +137,7 @@ export function buildHelpCard(
     "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
-    "发送 **/usage** 查看 Codex 5h 和周用量",
+    "发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡",
     "发送 **/restart** 重启 ChatCCC 进程",
     "发送 **/update** 更新并重启（仅 npm 全局安装可用）",
     ABD_HELP_LINE,
@@ -425,6 +425,72 @@ export function buildStatusCard(statusText: string, template = "blue"): string {
           type: "default",
           value: { action: "close" },
         }],
+      },
+    ],
+  });
+}
+
+export function buildCodexUsageCard(content: string, resetCreditsAvailable: number | null): string {
+  const elements: object[] = [
+    { tag: "div", text: { tag: "lark_md", content } },
+  ];
+  if (resetCreditsAvailable !== null && resetCreditsAvailable > 0) {
+    elements.push({ tag: "hr" });
+    elements.push({
+      tag: "action",
+      actions: [{
+        tag: "button",
+        text: { tag: "plain_text", content: "发起重置" },
+        type: "primary",
+        value: { action: "codex_reset_request", availableCount: resetCreditsAvailable },
+      }],
+    });
+  }
+
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "blue", title: { content: "Codex Usage", tag: "plain_text" } },
+    elements,
+  });
+}
+
+export function buildCodexResetConfirmCard(params: {
+  availableCount: number;
+  parentMessageId: string;
+  requestId: string;
+}): string {
+  const valueBase = {
+    parentMessageId: params.parentMessageId,
+    requestId: params.requestId,
+  };
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "yellow", title: { content: "确认 Codex 主动重置", tag: "plain_text" } },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `当前可用主动重置次数：**${params.availableCount}**。\n\n确认后会消耗 1 次主动重置，并重置当前可重置的 Codex 用量窗口。`,
+        },
+      },
+      { tag: "hr" },
+      {
+        tag: "action",
+        actions: [
+          {
+            tag: "button",
+            text: { tag: "plain_text", content: "是，发起重置" },
+            type: "danger",
+            value: { action: "codex_reset_confirm", decision: "yes", ...valueBase },
+          },
+          {
+            tag: "button",
+            text: { tag: "plain_text", content: "否" },
+            type: "default",
+            value: { action: "codex_reset_confirm", decision: "no", ...valueBase },
+          },
+        ],
       },
     ],
   });

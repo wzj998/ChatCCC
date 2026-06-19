@@ -131,7 +131,13 @@ export const SimulatedPlatform: FeishuPlatform = {
     return {
       fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
       weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      rateLimitResetCreditsAvailable: null,
+      rateLimitResetCredits: null,
     };
+  },
+
+  async consumeCodexRateLimitResetCredit(_redeemRequestId) {
+    return { code: "no_credit" as const, windowsReset: 0 };
   },
 
   // ---- 图片下载 ----
