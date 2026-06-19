@@ -14,8 +14,10 @@ interface PendingCodexResetRequest {
 export interface CodexResetActionDeps {
   getTenantAccessToken(): Promise<string>;
   sendRawCard(token: string, chatId: string, cardJson: string): Promise<boolean>;
+  sendTextReply(token: string, chatId: string, text: string): Promise<boolean>;
   sendCardReply(token: string, chatId: string, title: string, content: string, template?: string): Promise<boolean>;
   updateCardMessage(token: string, messageId: string, content: string): Promise<boolean>;
+  recallMessage(token: string, messageId: string): Promise<boolean>;
   consumeCodexRateLimitResetCredit(redeemRequestId: string): Promise<CodexResetConsumeResult>;
   createRequestId?: () => string;
 }
@@ -38,7 +40,13 @@ function eventMessageId(raw: Record<string, unknown>): string {
     ? raw.open_message_id
     : typeof (raw.context as Record<string, unknown> | undefined)?.open_message_id === "string"
       ? (raw.context as Record<string, string>).open_message_id
-      : "";
+      : typeof raw.message_id === "string"
+        ? raw.message_id
+        : typeof (raw.context as Record<string, unknown> | undefined)?.message_id === "string"
+          ? (raw.context as Record<string, string>).message_id
+          : typeof (raw.message as Record<string, unknown> | undefined)?.message_id === "string"
+            ? (raw.message as Record<string, string>).message_id
+            : "";
 }
 
 function eventChatId(raw: Record<string, unknown>): string {
@@ -124,7 +132,12 @@ async function handleResetConfirmation(
   const token = await deps.getTenantAccessToken();
   const confirmMessageId = eventMessageId(raw);
   if (confirmMessageId) {
-    await deps.updateCardMessage(token, confirmMessageId, collapsedCard());
+    const collapsed = await deps.updateCardMessage(token, confirmMessageId, collapsedCard());
+    console.log(`[Codex Reset] collapse confirmation card ${collapsed ? "OK" : "FAILED"}: messageId=${confirmMessageId}`);
+    const recalled = await deps.recallMessage(token, confirmMessageId);
+    console.log(`[Codex Reset] recall confirmation card ${recalled ? "OK" : "FAILED"}: messageId=${confirmMessageId}`);
+  } else {
+    console.error("[Codex Reset] missing confirmation card message id; cannot collapse");
   }
 
   const pending = pendingCodexResetRequests.get(requestId);
@@ -132,22 +145,22 @@ async function handleResetConfirmation(
   if (!chatId) return true;
 
   if (!pending || pending.status !== "pending" || pending.parentMessageId !== parentMessageId) {
-    await deps.sendCardReply(token, chatId, "Codex 主动重置", "这张确认卡片已经失效或已处理。", "yellow");
+    await deps.sendTextReply(token, chatId, "Codex 主动重置：这张确认卡片已经失效或已处理。");
     return true;
   }
   pending.status = "handled";
 
   if (decision === "no") {
-    await deps.sendCardReply(token, chatId, "Codex 主动重置", "用户取消了重置。", "grey");
+    await deps.sendTextReply(token, chatId, "Codex 主动重置：用户取消了重置。");
     return true;
   }
 
   try {
     const result = await deps.consumeCodexRateLimitResetCredit(requestId);
     const message = resetResultMessage(result);
-    await deps.sendCardReply(token, chatId, "Codex 主动重置", message.content, message.template);
+    await deps.sendTextReply(token, chatId, `Codex 主动重置：${message.content}`);
   } catch (err) {
-    await deps.sendCardReply(token, chatId, "Codex 主动重置", `重置失败：${(err as Error).message}`, "red");
+    await deps.sendTextReply(token, chatId, `Codex 主动重置失败：${(err as Error).message}`);
   }
   return true;
 }

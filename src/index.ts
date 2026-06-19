@@ -469,8 +469,10 @@ async function startBotServiceCore(): Promise<void> {
       const handledCodexReset = await handleCodexResetCardAction(data, {
         getTenantAccessToken,
         sendRawCard,
+        sendTextReply,
         sendCardReply,
         updateCardMessage,
+        recallMessage,
         consumeCodexRateLimitResetCredit,
       });
       if (handledCodexReset) return;
