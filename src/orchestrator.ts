@@ -81,7 +81,9 @@ import {
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
+import { delegateAgentTask } from "./agent-delegate-task.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
+import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -89,15 +91,6 @@ import type { CodexUsageSummary } from "./feishu-api.ts";
 // ---------------------------------------------------------------------------
 // 辅助函数
 // ---------------------------------------------------------------------------
-
-export function cwdDisplayName(cwd: string): string {
-  const trimmed = cwd.trim().replace(/[\\/]+$/, "");
-  return trimmed.split(/[\\/]/).filter(Boolean).pop() || trimmed || "cwd";
-}
-
-export function sessionChatName(left: string, cwd: string): string {
-  return `${left}-${cwdDisplayName(cwd)}`;
-}
 
 /** 模型模糊匹配：精确匹配优先，否则找子串匹配（模型名越短越优先） */
 function findModelMatch(input: string, models: string[]): string | null {
@@ -1639,128 +1632,34 @@ export async function handleCommand(
       return;
     }
 
-    let sessionId: string;
-    let sessionCwd: string;
     try {
-      const init = await initClaudeSession(tool, undefined, chatId);
-      sessionId = init.sessionId;
-      sessionCwd = init.cwd;
-      console.log(
-        `[${ts()}] [AUTO-P2P 1/5] ${toolLabel} session created: ${sessionId} → OK`,
-      );
-    } catch (err) {
-      console.error(`[${ts()}] [AUTO-P2P 1/5] FAIL: ${(err as Error).message}`);
-      logTrace(tid, "DONE", {
-        outcome: "auto_new_p2p_session_fail",
-        error: (err as Error).message,
-      });
-      await platform.sendCard(
-        chatId,
-        "Error",
-        `Failed to initialize ${toolLabel} session:\n${(err as Error).message}`,
-        "red",
-      );
-      return;
-    }
-
-    const cwd = sessionCwd;
-    const initialName = sessionChatName(text.slice(0, 10) || "新会话", cwd);
-    let newChatId: string;
-    try {
-      newChatId = await platform.createGroup(initialName, [openId]);
-      console.log(
-        `[${ts()}] [AUTO-P2P 2/5] Created Feishu group: ${newChatId} → OK`,
-      );
-    } catch (err) {
-      console.error(`[${ts()}] [AUTO-P2P 2/5] FAIL: ${(err as Error).message}`);
-      logTrace(tid, "DONE", {
-        outcome: "auto_new_p2p_group_fail",
-        error: (err as Error).message,
-      });
-      await platform.sendCard(
-        chatId,
-        "Error",
-        `Failed to create group:\n${(err as Error).message}`,
-        "red",
-      );
-      return;
-    }
-
-    try {
-      const descPrefix = sessionPrefixForTool(tool);
-      await platform.updateChatInfo(
-        newChatId,
-        initialName,
-        `${descPrefix} ${sessionId}`,
-      );
-      console.log(
-        `[${ts()}] [AUTO-P2P 3/5] Renamed group → name="${initialName}" (${toolLabel}) → OK`,
-      );
-    } catch (err) {
-      console.error(`[${ts()}] [AUTO-P2P 3/5] FAIL: ${(err as Error).message}`);
-      logTrace(tid, "DONE", {
-        outcome: "auto_new_p2p_rename_fail",
-        error: (err as Error).message,
-      });
-      await platform.sendCard(
-        chatId,
-        "Error",
-        `Group created but rename failed:\n${(err as Error).message}`,
-        "yellow",
-      );
-      return;
-    }
-
-    await setDefaultCwd(cwd, newChatId);
-    bindChatToSession(sessionId, newChatId);
-    await recordSessionRegistry({
-      chatId: newChatId,
-      sessionId,
-      tool,
-      chatName: initialName,
-      turnCount: 0,
-      startTime: Date.now(),
-      running: false,
-    });
-    await saveSessionTool(sessionId, tool, initialName);
-
-    await platform.sendCard(
-      newChatId,
-      `${toolLabel} Session Ready`,
-      `已根据私聊消息创建 **${toolLabel}** 会话群。\n\n` +
-        `**Session ID:** ${sessionId}\n` +
-        `**工作目录:** \`${cwd}\`\n\n` +
-        `下面会自动把你的私聊消息作为第一句话发送给 ${toolLabel}。\n\n` +
-        `发送 **/model** 查看或切换当前会话的模型。\n` +
-        `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。`,
-      "green",
-    );
-    platform.setChatAvatar(newChatId, tool, "new").catch(() => {});
-    console.log(`[${ts()}] [AUTO-P2P 4/5] Replied to new group → OK`);
-
-    try {
-      logTrace(tid, "RESUME", { sessionId, tool, trigger: "auto_new_from_p2p" });
-      await resumeAndPrompt(
-        sessionId,
-        promptText,
+      const cwd = await getDefaultCwd(chatId);
+      const result = await delegateAgentTask({
         platform,
-        newChatId,
-        msgTimestamp,
         tool,
-        tid,
-      );
-      console.log(`[${ts()}] [AUTO-P2P 5/5] First prompt sent → OK`);
-      logTrace(tid, "DONE", { outcome: "auto_new_p2p_prompt_done", newChatId, sessionId, tool });
-    } catch (err) {
-      console.error(`[${ts()}] [AUTO-P2P 5/5] FAIL: ${(err as Error).message}`);
+        cwd,
+        promptText,
+        openIds: [openId],
+        chatNamePrefix: text.slice(0, 10) || "新会话",
+        msgTimestamp,
+        traceId: tid,
+      });
       logTrace(tid, "DONE", {
-        outcome: "auto_new_p2p_prompt_fail",
+        outcome: "auto_new_p2p_prompt_done",
+        newChatId: result.chatId,
+        sessionId: result.sessionId,
+        tool,
+      });
+    } catch (err) {
+      console.error(`[${ts()}] [AUTO-P2P] FAIL: ${(err as Error).message}`);
+      logTrace(tid, "DONE", {
+        outcome: "auto_new_p2p_delegate_fail",
         error: (err as Error).message,
       });
       await platform.sendCard(
-        newChatId,
+        chatId,
         "Error",
-        `Failed to send first prompt:\n${(err as Error).message}`,
+        `Failed to create ${toolLabel} delegated task:\n${(err as Error).message}`,
         "red",
       );
     }

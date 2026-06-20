@@ -957,6 +957,7 @@ export async function runAgentSession(
       cwd,
       session_id: sessionId,
       im_skills_cache_dir: imSkillsCacheDir,
+      delegate_task_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/delegate-task`,
       send_image_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-image`,
       send_file_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-file`,
       send_image_script: join(feishuSkillDir, "send-image.mjs"),
