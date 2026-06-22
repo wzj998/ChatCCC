@@ -7,6 +7,11 @@
     "feishu": { "enabled": true, "platformType": "feishu" },
     "ilink": { "enabled": true, "reuseTokenOnStart": true }
   },
+  "chromeDevtools": {
+    "enabled": false,
+    "port": 15166,
+    "chromePath": ""
+  },
   "port": 18080,
   "gitTimeoutSeconds": 180,
   "allowInterrupt": false,

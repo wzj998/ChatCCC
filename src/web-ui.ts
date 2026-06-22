@@ -29,6 +29,7 @@ const ILINK_AUTH_PATH = join(USER_DATA_DIR, "state", "ilink-auth.json");
 interface AppConfig {
   feishu?: { appId?: string; appSecret?: string };
   platforms?: { feishu?: { enabled?: boolean }; ilink?: { enabled?: boolean } };
+  chromeDevtools?: { enabled?: boolean; port?: number; chromePath?: string };
   port?: number;
   gitTimeoutSeconds?: number;
   claude?: { enabled?: boolean; defaultAgent?: boolean; model?: string; subagentModel?: string; effort?: string; apiKey?: string; baseUrl?: string; maxTurn?: number };
@@ -336,6 +337,15 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
       result.platforms = result.platforms || {};
       (result.platforms as Record<string, unknown>).ilink = (result.platforms as Record<string, unknown>).ilink || {};
       ((result.platforms as Record<string, unknown>).ilink as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_CHROME_DEVTOOLS_ENABLED") {
+      result.chromeDevtools = result.chromeDevtools || {};
+      (result.chromeDevtools as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_CHROME_DEVTOOLS_PORT") {
+      result.chromeDevtools = result.chromeDevtools || {};
+      (result.chromeDevtools as Record<string, unknown>).port = parseInt(val as string, 10) || 15166;
+    } else if (key === "CHATCCC_CHROME_DEVTOOLS_PATH") {
+      result.chromeDevtools = result.chromeDevtools || {};
+      (result.chromeDevtools as Record<string, unknown>).chromePath = val;
     } else if (key === "CHATCCC_PORT") {
       result.port = parseInt(val as string, 10) || 18080;
     } else if (key === "CHATCCC_GIT_TIMEOUT_SECONDS") {
@@ -639,6 +649,32 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         </div>
       </div>
 
+      <!-- Chrome CDP -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px" id="chrome-devtools-block">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-weight:600;font-size:14px">常驻 Chrome CDP（选填）</div>
+            <div style="font-size:12px;color:#64748b">维护本机 Chrome DevTools Protocol 端口，用于 ChatGPT 订阅到期查询</div>
+          </div>
+          <input type="checkbox" class="agent-toggle" id="field-CHATCCC_CHROME_DEVTOOLS_ENABLED" onchange="toggleWizardChromeDevtoolsFields(this.checked)">
+        </div>
+        <div id="chrome-devtools-settings" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
+          <div class="hint" style="margin-bottom:10px;line-height:1.6">
+            依赖：本机已安装 Google Chrome；查询 ChatGPT 订阅到期时间时，需要在这个 CDP 专用 Chrome 窗口中登录 ChatGPT。
+          </div>
+          <div class="form-group" style="margin-bottom:10px">
+            <label>CDP 端口</label>
+            <input type="number" id="field-CHATCCC_CHROME_DEVTOOLS_PORT" min="1" max="65535" step="1" placeholder="15166">
+            <div class="hint">默认 15166；健康检查端点：http://127.0.0.1:15166/json/version</div>
+          </div>
+          <div class="form-group">
+            <label>Chrome 路径（选填）</label>
+            <input type="text" id="field-CHATCCC_CHROME_DEVTOOLS_PATH" placeholder="留空自动探测 chrome.exe">
+            <div class="hint">选填；留空时自动探测 Google Chrome。</div>
+          </div>
+        </div>
+      </div>
+
       <div class="btn-group" style="justify-content:flex-end">
         <button class="btn btn-primary" id="btn-step1-next" onclick="goStep1Next()">下一步</button>
       </div>
@@ -825,6 +861,17 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       </div>
     </details>
 
+    <details class="card config-section">
+      <summary>Chrome CDP（选填）</summary>
+      <div class="section-detail">
+        <div class="config-row"><span class="key">状态</span><span class="val" id="cfg-CHROME_DEVTOOLS_ENABLED">-</span></div>
+        <div class="config-row" id="cfg-CHROME_DEVTOOLS_PORT_ROW"><span class="key">CDP 端口</span><span class="val" id="cfg-CHROME_DEVTOOLS_PORT">-</span></div>
+        <div class="config-row" id="cfg-CHROME_DEVTOOLS_PATH_ROW"><span class="key">Chrome 路径</span><span class="val" id="cfg-CHROME_DEVTOOLS_PATH">-</span></div>
+        <div class="hint" style="margin-top:6px;line-height:1.6">依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。</div>
+        <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('chromeDevtools')">编辑</button>
+      </div>
+    </details>
+
     <details class="card config-section" id="dash-claude">
       <summary>Claude Agent</summary>
       <div class="section-detail">
@@ -907,6 +954,7 @@ const AGENT_FIELDS = {
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_EFFORT']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
+const CHROME_DEVTOOLS_FIELDS = ['CHATCCC_CHROME_DEVTOOLS_ENABLED','CHATCCC_CHROME_DEVTOOLS_PORT','CHATCCC_CHROME_DEVTOOLS_PATH'];
 
 function cursorBatteryModeLabel(value) {
   return value === 'onDemandUse' ? 'On demand use 金额' : 'API 使用比例';
@@ -916,6 +964,18 @@ function onCursorBatteryModeChange(prefix, value) {
   var rowId = prefix === 'edit-' ? 'edit-cursor-on-demand-budget-row' : 'field-cursor-on-demand-budget-row';
   var row = document.getElementById(rowId);
   if (row) row.style.display = value === 'onDemandUse' ? '' : 'none';
+}
+
+function toggleWizardChromeDevtoolsFields(enabled) {
+  var settings = document.getElementById('chrome-devtools-settings');
+  if (settings) settings.style.display = enabled ? '' : 'none';
+}
+
+function toggleEditChromeDevtoolsFields(enabled) {
+  ['CHATCCC_CHROME_DEVTOOLS_PORT', 'CHATCCC_CHROME_DEVTOOLS_PATH'].forEach(function(key){
+    var row = document.getElementById('edit-row-' + key);
+    if (row) row.style.display = enabled ? '' : 'none';
+  });
 }
 
 function onWizardPlatformToggle(platform, enabled) {
@@ -1133,6 +1193,12 @@ function renderStep1() {
   if (credFields) credFields.style.display = feishuEnabled ? '' : 'none';
   var ilToggle = document.getElementById('platform-enable-ilink');
   if (ilToggle) ilToggle.checked = ilinkEnabled;
+  var cd = c.chromeDevtools || {};
+  var cdpEnabled = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_ENABLED');
+  if (cdpEnabled) cdpEnabled.checked = cd.enabled === true;
+  prefillNested('field-CHATCCC_CHROME_DEVTOOLS_PORT', cd.port || 15166);
+  prefillNested('field-CHATCCC_CHROME_DEVTOOLS_PATH', cd.chromePath);
+  toggleWizardChromeDevtoolsFields(cd.enabled === true);
 }
 
 /**
@@ -1231,6 +1297,12 @@ function collectAllFields() {
   if (ptEl && ptEl.value.trim()) vars['CHATCCC_FEISHU_PLATFORM_TYPE'] = ptEl.value.trim();
   vars.CHATCCC_FEISHU_ENABLED = !!state.platformsEnabled.feishu;
   vars.CHATCCC_ILINK_ENABLED = !!state.platformsEnabled.ilink;
+  var cdpEnabledEl = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_ENABLED');
+  vars.CHATCCC_CHROME_DEVTOOLS_ENABLED = !!(cdpEnabledEl && cdpEnabledEl.checked);
+  var cdpPortEl = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_PORT');
+  vars.CHATCCC_CHROME_DEVTOOLS_PORT = (cdpPortEl && cdpPortEl.value.trim()) ? cdpPortEl.value.trim() : '15166';
+  var cdpPathEl = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_PATH');
+  if (cdpPathEl && cdpPathEl.value.trim()) vars.CHATCCC_CHROME_DEVTOOLS_PATH = cdpPathEl.value.trim();
   vars.CHATCCC_CLAUDE_ENABLED = !!state.agentsEnabled.claude;
   vars.CHATCCC_CURSOR_ENABLED = !!state.agentsEnabled.cursor;
   vars.CHATCCC_CODEX_ENABLED = !!state.agentsEnabled.codex;
@@ -1279,6 +1351,15 @@ function renderStep3() {
 
   if (!state.platformsEnabled.feishu && !state.platformsEnabled.ilink) {
     lines.push('<div style="color:#ef4444;margin-top:8px">未启用任何平台</div>');
+  }
+
+  lines.push('<h3 style="margin:16px 0 8px">Chrome CDP</h3>');
+  lines.push('<div class="config-row"><span class="key">状态</span><span class="val">' + (vars.CHATCCC_CHROME_DEVTOOLS_ENABLED ? '已启用' : '已禁用') + '</span></div>');
+  if (vars.CHATCCC_CHROME_DEVTOOLS_ENABLED) {
+    lines.push('<div class="config-row"><span class="key">CDP 端口</span><span class="val">' + (vars.CHATCCC_CHROME_DEVTOOLS_PORT || '15166') + '</span></div>');
+    if (vars.CHATCCC_CHROME_DEVTOOLS_PATH) {
+      lines.push('<div class="config-row"><span class="key">Chrome 路径</span><span class="val">' + vars.CHATCCC_CHROME_DEVTOOLS_PATH + '</span></div>');
+    }
   }
 
   lines.push('<h3 style="margin:16px 0 8px">已启用的 AI Agent</h3>');
@@ -1471,6 +1552,16 @@ function updateDashboardUI() {
     ilinkForgetRow.style.display = (ilinkEnabled && state.ilinkAuthExists) ? '' : 'none';
   }
 
+  var chromeDevtools = c.chromeDevtools || {};
+  var cdpPort = chromeDevtools.port || 15166;
+  document.getElementById('cfg-CHROME_DEVTOOLS_ENABLED').textContent = chromeDevtools.enabled ? '已启用' : '已禁用';
+  document.getElementById('cfg-CHROME_DEVTOOLS_PORT').textContent = String(cdpPort);
+  document.getElementById('cfg-CHROME_DEVTOOLS_PATH').textContent = chromeDevtools.chromePath || '(自动探测)';
+  var cdpPortRow = document.getElementById('cfg-CHROME_DEVTOOLS_PORT_ROW');
+  var cdpPathRow = document.getElementById('cfg-CHROME_DEVTOOLS_PATH_ROW');
+  if (cdpPortRow) cdpPortRow.style.display = chromeDevtools.enabled ? '' : 'none';
+  if (cdpPathRow) cdpPathRow.style.display = chromeDevtools.enabled ? '' : 'none';
+
   document.getElementById('dash-claude').style.display = claudeOn ? '' : 'none';
   document.getElementById('dash-cursor').style.display = cursorOn ? '' : 'none';
   document.getElementById('dash-codex').style.display = codexOn ? '' : 'none';
@@ -1546,14 +1637,18 @@ function editSection(section) {
   editSectionType = section;
   var fields;
   if (section === 'feishu') fields = FEISHU_FIELDS;
+  else if (section === 'chromeDevtools') fields = CHROME_DEVTOOLS_FIELDS;
   else fields = AGENT_FIELDS[section] || [];
 
-  var titleMap = { feishu: '飞书', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
+  var titleMap = { feishu: '飞书', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
   document.getElementById('edit-modal-title').textContent = '编辑 ' + (titleMap[section] || section);
 
   var html = '';
   var labelMap = {
     'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
+    'CHATCCC_CHROME_DEVTOOLS_ENABLED': '启用常驻 Chrome CDP（选填）',
+    'CHATCCC_CHROME_DEVTOOLS_PORT': 'CDP 端口',
+    'CHATCCC_CHROME_DEVTOOLS_PATH': 'Chrome 路径（选填）',
     'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
     'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL', 'CHATCCC_ANTHROPIC_MAX_TURN': 'Max Turns (0=无限制)',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
@@ -1561,6 +1656,15 @@ function editSection(section) {
     'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月On demand use预算',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
+  var hintMap = {
+    'CHATCCC_CHROME_DEVTOOLS_ENABLED': '依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。',
+    'CHATCCC_CHROME_DEVTOOLS_PORT': '默认 15166，健康检查端点为 http://127.0.0.1:15166/json/version。',
+    'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。'
+  };
+
+  if (section === 'chromeDevtools') {
+    html += '<div class="hint" style="margin-bottom:12px;line-height:1.6">常驻 Chrome CDP 用于维护本机 Chrome DevTools Protocol 端口。依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。</div>';
+  }
 
   fields.forEach(function(key){
     var val = state.config[key] || '';
@@ -1569,6 +1673,10 @@ function editSection(section) {
       if (section === 'feishu') {
         if (key === 'CHATCCC_APP_ID' && state.config.feishu) val = state.config.feishu.appId || '';
         else if (key === 'CHATCCC_APP_SECRET' && state.config.feishu) val = state.config.feishu.appSecret || '';
+      } else if (section === 'chromeDevtools' && state.config.chromeDevtools) {
+        if (key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') val = state.config.chromeDevtools.enabled === true ? 'true' : 'false';
+        else if (key === 'CHATCCC_CHROME_DEVTOOLS_PORT') val = state.config.chromeDevtools.port != null ? String(state.config.chromeDevtools.port) : '15166';
+        else if (key === 'CHATCCC_CHROME_DEVTOOLS_PATH') val = state.config.chromeDevtools.chromePath || '';
       } else if (section === 'claude' && state.config.claude) {
         if (key === 'CHATCCC_ANTHROPIC_MODEL') val = state.config.claude.model || '';
         else if (key === 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL') val = state.config.claude.subagentModel || '';
@@ -1588,7 +1696,12 @@ function editSection(section) {
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
-    if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') {
+    if (key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') {
+      var checked = val === true || val === 'true';
+      html += '<div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="edit-' + key + '"' + (checked ? ' checked' : '') + ' onchange="toggleEditChromeDevtoolsFields(this.checked)"> ' + (labelMap[key] || key) + '</label>';
+      if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
+      html += '</div>';
+    } else if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') {
       var modeVal = val || 'apiPercent';
       html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
       html += '<select id="edit-' + key + '" onchange="onCursorBatteryModeChange(\\'edit-\\', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
@@ -1596,11 +1709,19 @@ function editSection(section) {
       html += '<option value="onDemandUse"' + (modeVal === 'onDemandUse' ? ' selected' : '') + '>On demand use 金额</option>';
       html += '</select></div>';
     } else {
-      var rowId = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' ? ' id="edit-cursor-on-demand-budget-row"' : '';
-      var inputType = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' ? 'number' : (isSecret ? 'password' : 'text');
-      var attrs = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' ? ' min="1" step="1"' : '';
+      var rowId = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'
+        ? ' id="edit-cursor-on-demand-budget-row"'
+        : (section === 'chromeDevtools' && key !== 'CHATCCC_CHROME_DEVTOOLS_ENABLED' ? ' id="edit-row-' + key + '"' : '');
+      var isNumber = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' || key === 'CHATCCC_CHROME_DEVTOOLS_PORT';
+      var inputType = isNumber ? 'number' : (isSecret ? 'password' : 'text');
+      var attrs = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'
+        ? ' min="1" step="1"'
+        : key === 'CHATCCC_CHROME_DEVTOOLS_PORT'
+          ? ' min="1" max="65535" step="1" placeholder="15166"'
+          : '';
       html += '<div class="form-group"' + rowId + '><label>' + (labelMap[key] || key) + '</label>';
       html += '<input type="' + inputType + '" id="edit-' + key + '"' + attrs + ' value="' + String(val).replace(/"/g,'&quot;') + '">';
+      if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
       html += '</div>';
     }
   });
@@ -1617,6 +1738,9 @@ function editSection(section) {
   if (section === 'cursor') {
     var editModeEl = document.getElementById('edit-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
     onCursorBatteryModeChange('edit-', editModeEl ? editModeEl.value : 'apiPercent');
+  } else if (section === 'chromeDevtools') {
+    var editChromeDevtoolsEnabledEl = document.getElementById('edit-CHATCCC_CHROME_DEVTOOLS_ENABLED');
+    toggleEditChromeDevtoolsFields(!!(editChromeDevtoolsEnabledEl && editChromeDevtoolsEnabledEl.checked));
   }
   document.getElementById('edit-modal').classList.remove('hidden');
   document.getElementById('edit-overlay').classList.remove('hidden');
@@ -1631,13 +1755,19 @@ function closeEditModal() {
 async function saveEdit() {
   var fields;
   if (editSectionType === 'feishu') fields = FEISHU_FIELDS;
+  else if (editSectionType === 'chromeDevtools') fields = CHROME_DEVTOOLS_FIELDS;
   else fields = AGENT_FIELDS[editSectionType] || [];
 
   var vars = {};
   fields.forEach(function(key){
     var el = document.getElementById('edit-' + key);
-    if (el) vars[key] = el.value.trim();
+    if (!el) return;
+    if (key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') vars[key] = !!el.checked;
+    else vars[key] = el.value.trim();
   });
+  if (editSectionType === 'chromeDevtools' && !vars.CHATCCC_CHROME_DEVTOOLS_PORT) {
+    vars.CHATCCC_CHROME_DEVTOOLS_PORT = '15166';
+  }
   if (editSectionType === 'cursor' && vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse' && !vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET) {
     vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET = '1000';
   }

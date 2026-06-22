@@ -82,6 +82,7 @@ import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { handleAgentDelegateTaskRequest } from "./agent-delegate-task-rpc.ts";
 import { handleAgentStopStuckRequest } from "./agent-stop-stuck.ts";
+import { handleChatGptSubscriptionRequest } from "./chatgpt-subscription-rpc.ts";
 import { applyPrivacy } from "./privacy.ts";
 import {
   createCardKitCard,
@@ -98,6 +99,7 @@ import {
   setSessionPlatform,
   startUnifiedDisplayLoop,
 } from "./session.ts";
+import { startChromeDevtoolsGuard, stopChromeDevtoolsGuard } from "./chrome-devtools-guard.ts";
 import {
   rebuildSessionChatsFromRegistry,
   setQueueConsumer,
@@ -711,7 +713,8 @@ async function main(): Promise<void> {
       return (await handleAgentImageRequest(req, res))
         || (await handleAgentFileRequest(req, res))
         || (await handleAgentDelegateTaskRequest(req, res, feishuPlatform))
-        || (await handleAgentStopStuckRequest(req, res));
+        || (await handleAgentStopStuckRequest(req, res))
+        || (await handleChatGptSubscriptionRequest(req, res));
     });
 
     const simServer = createServer(createUiRouter());
@@ -765,6 +768,7 @@ async function main(): Promise<void> {
   setReloadConfigHook(() => {
     reloadConfigFromDisk();
     clearAdapterCache();
+    startChromeDevtoolsGuard();
     appendStartupTrace("reload-from-ui: config reloaded", {
       appIdMask: maskAppId(APP_ID),
     });
@@ -773,7 +777,8 @@ async function main(): Promise<void> {
     return (await handleAgentImageRequest(req, res))
       || (await handleAgentFileRequest(req, res))
       || (await handleAgentDelegateTaskRequest(req, res, feishuPlatform))
-      || (await handleAgentStopStuckRequest(req, res));
+      || (await handleAgentStopStuckRequest(req, res))
+      || (await handleChatGptSubscriptionRequest(req, res));
   });
 
   console.log(`[启动 2/7] 环境与凭证检查`);
@@ -793,6 +798,7 @@ async function main(): Promise<void> {
         onActivate: async (httpServer: Server) => {
           reloadConfigFromDisk();
           clearAdapterCache();
+          startChromeDevtoolsGuard();
           appendStartupTrace("setup-activate: reloaded config from disk", {
             appIdMaskAfterReload: maskAppId(APP_ID),
           });
@@ -816,6 +822,8 @@ async function main(): Promise<void> {
     console.log("  飞书平台未启用（platforms.feishu.enabled = false），跳过飞书凭证检查。\n");
     appendStartupTrace("main: feishu disabled", {});
   }
+
+  startChromeDevtoolsGuard();
 
   // 启动 HTTP server（同时挂 UI router，供 dashboard / setup / agent image/file 使用）
   appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
@@ -877,8 +885,8 @@ async function listenWithRetry(
  * 先写盘，再走这里。
  */
 function installShutdownHandlers(httpServer: Server): void {
-  process.on("SIGINT", () => { console.log("\nShutting down..."); wechatSignal.stopped = true; httpServer.close(); process.exit(0); });
-  process.on("SIGTERM", () => { wechatSignal.stopped = true; httpServer.close(); process.exit(0); });
+  process.on("SIGINT", () => { console.log("\nShutting down..."); wechatSignal.stopped = true; stopChromeDevtoolsGuard(); httpServer.close(); process.exit(0); });
+  process.on("SIGTERM", () => { wechatSignal.stopped = true; stopChromeDevtoolsGuard(); httpServer.close(); process.exit(0); });
 }
 
 main().catch((err: Error) => {
