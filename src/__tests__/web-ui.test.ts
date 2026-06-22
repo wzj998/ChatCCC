@@ -33,6 +33,22 @@ describe("unflattenConfig", () => {
       },
     });
   });
+
+  it("maps Chrome CDP guard fields into chromeDevtools config", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_CHROME_DEVTOOLS_ENABLED: true,
+        CHATCCC_CHROME_DEVTOOLS_PORT: "15166",
+        CHATCCC_CHROME_DEVTOOLS_PATH: "C:/Program Files/Google/Chrome/Application/chrome.exe",
+      }),
+    ).toEqual({
+      chromeDevtools: {
+        enabled: true,
+        port: 15166,
+        chromePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
+      },
+    });
+  });
 });
 
 describe("dashboard edit modal", () => {

@@ -27,4 +27,15 @@ describe("config.sample.json", () => {
     expect(sample.claude?.model).toBe("");
     expect(sample.claude?.subagentModel).toBe("");
   });
+
+  it("keeps Chrome CDP guard disabled by default with port 15166", () => {
+    const configSamplePath = join(process.cwd(), "config.sample.json");
+    const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
+      chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
+    };
+
+    expect(sample.chromeDevtools?.enabled).toBe(false);
+    expect(sample.chromeDevtools?.port).toBe(15166);
+    expect(sample.chromeDevtools?.chromePath).toBe("");
+  });
 });

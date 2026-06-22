@@ -9,6 +9,7 @@ import type { SessionInfo, ToolAdapter } from "../adapters/adapter-interface.ts"
 const mockStreamStates = new Map<string, { status: "running" | "done" | "stopped"; finalReply: string }>();
 const mockGetCodexUsageSummary = vi.hoisted(() => vi.fn());
 const mockGetCursorUsageSummary = vi.hoisted(() => vi.fn());
+const mockGetChatGptSubscriptionStatus = vi.hoisted(() => vi.fn());
 
 vi.mock("../im-skills.ts", () => ({
   buildImSkillsPrompt: async () => "",
@@ -62,6 +63,10 @@ vi.mock("../feishu-platform.ts", () => ({
 
 vi.mock("../cursor-usage.ts", () => ({
   getCursorUsageSummary: mockGetCursorUsageSummary,
+}));
+
+vi.mock("../chatgpt-subscription.ts", () => ({
+  getChatGptSubscriptionStatus: mockGetChatGptSubscriptionStatus,
 }));
 
 import { handleCommand } from "../orchestrator.ts";
@@ -129,6 +134,7 @@ describe("handleCommand WeChat processing ack", () => {
     mockStreamStates.clear();
     mockGetCodexUsageSummary.mockReset();
     mockGetCursorUsageSummary.mockReset();
+    mockGetChatGptSubscriptionStatus.mockReset();
     mockGetCodexUsageSummary.mockResolvedValue({
       fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
       weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
@@ -159,6 +165,12 @@ describe("handleCommand WeChat processing ack", () => {
       enabled: true,
       displayMessage: "You've hit your usage limit",
       autoBucketModels: ["default"],
+    });
+    mockGetChatGptSubscriptionStatus.mockResolvedValue({
+      ok: false,
+      code: "chrome_cdp_disabled",
+      reason: "Chrome CDP guard is disabled in ChatCCC config.",
+      chromeCdp: { enabled: false, port: 15166, status: "skipped" },
     });
     _setAdapterForToolForTest("claude", mockAdapter());
   });
@@ -390,6 +402,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(card.elements[0].text.content).toContain("2026-07-12");
     expect(card.elements[0].text.content).toContain("2026-07-18");
     expect(card.elements[0].text.content).toContain("**主动重置:** 剩余 2 次");
+    expect(card.elements[0].text.content).not.toContain("ChatGPT 订阅");
     expect(card.elements[0].text.content).toContain("**5h:** 已用 37%，剩余 63%，重置:");
     expect(card.elements[0].text.content).toContain("约 2小时52分钟后");
     expect(card.elements[0].text.content).toContain("[███████░░░░░░░░░░░░░]");
@@ -398,6 +411,38 @@ describe("handleCommand WeChat processing ack", () => {
     expect(card.elements[0].text.content).toContain("[██░░░░░░░░░░░░░░░░░░]");
     expect(card.elements[2].actions[0].text.content).toBe("发起重置");
     expect(card.elements[2].actions[0].value).toEqual({ action: "codex_reset_request", availableCount: 2 });
+  });
+
+  it("adds ChatGPT subscription expiry to Codex /usage when CDP lookup succeeds", async () => {
+    const platform = mockPlatform("feishu");
+    mockGetCodexUsageSummary.mockResolvedValue({
+      fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: 1781528212, resetAfterSeconds: 10349 },
+      weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
+      rateLimitResetCreditsAvailable: 0,
+      rateLimitResetCredits: [],
+    });
+    mockGetChatGptSubscriptionStatus.mockResolvedValue({
+      ok: true,
+      code: "ok",
+      chromeCdp: { enabled: true, port: 15166, status: "healthy" },
+      chatgpt: { sessionOk: true, maskedEmail: "gg***@gmail.com", sessionExpiresAt: "2026-09-20T09:30:07.340Z" },
+      subscription: {
+        active: true,
+        plan: "chatgptprolite",
+        expiresAt: "2026-07-12T10:20:11+00:00",
+        willRenew: false,
+        purchaseOriginPlatform: "chatgpt_web",
+        remainingDays: 20,
+      },
+    });
+
+    await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    expect(card.elements[0].text.content).toContain("**ChatGPT 订阅:**");
+    expect(card.elements[0].text.content).toContain("- 套餐: chatgptprolite");
+    expect(card.elements[0].text.content).toContain("剩余 20 天");
+    expect(card.elements[0].text.content).toContain("- 自动续费: 否");
   });
 
   it("handles /usage as Cursor usage in Cursor chats", async () => {

@@ -113,9 +113,19 @@ export interface PlatformsConfig {
   ilink: PlatformConfig;
 }
 
+export interface ChromeDevtoolsConfig {
+  /** 是否由 ChatCCC 守护一个常驻 Chrome CDP 实例 */
+  enabled: boolean;
+  /** Chrome remote debugging 端口，默认 15166 */
+  port: number;
+  /** Chrome 可执行文件路径；留空时按常见安装位置自动探测 */
+  chromePath: string;
+}
+
 export interface AppConfig {
   feishu: FeishuConfig;
   platforms: PlatformsConfig;
+  chromeDevtools: ChromeDevtoolsConfig;
   port: number;
   gitTimeoutSeconds: number;
   /** 若为 false，AI 生成过程中用户发送消息不会打断，须先点「停止」再发送新消息 */
@@ -342,6 +352,7 @@ function loadConfig(): AppConfig {
   const defaults: AppConfig = {
     feishu: { appId: "", appSecret: "" },
     platforms: { feishu: { enabled: true }, ilink: { enabled: true } },
+    chromeDevtools: { enabled: false, port: 15166, chromePath: "" },
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
@@ -406,6 +417,7 @@ function loadConfig(): AppConfig {
       onDemandMonthlyBudget?: unknown;
     };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
+    chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
   };
   try {
     parsed = JSON.parse(raw);
@@ -418,6 +430,7 @@ function loadConfig(): AppConfig {
   const claude = parsed.claude ?? {} as Partial<ClaudeConfig>;
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
+  const chromeDevtoolsRaw = (parsed.chromeDevtools ?? {}) as NonNullable<typeof parsed.chromeDevtools>;
 
   // 兼容旧字段 `command`：命中时打印一次性 warning 提示用户改名
   const onLegacyField = (label: string, value: string): void => {
@@ -461,6 +474,7 @@ function loadConfig(): AppConfig {
   const claudeEnabled = resolveEnabled(claude.enabled, claudeNonEmpty);
   const cursorEnabled = resolveEnabled(cursorRaw.enabled, cursorNonEmpty);
   const codexEnabled = resolveEnabled(codexRaw.enabled, codexNonEmpty);
+  const chromeDevtoolsPort = Number(chromeDevtoolsRaw.port);
   const explicitDefaultTool: AgentTool | null =
     typeof claude.defaultAgent === "boolean" && claude.defaultAgent && claudeEnabled ? "claude" :
     typeof cursorRaw.defaultAgent === "boolean" && cursorRaw.defaultAgent && cursorEnabled ? "cursor" :
@@ -497,6 +511,13 @@ function loadConfig(): AppConfig {
           ? Boolean(((parsed.platforms as unknown as Record<string, unknown>).ilink as Record<string, unknown>).reuseTokenOnStart ?? true)
           : true,
       },
+    },
+    chromeDevtools: {
+      enabled: typeof chromeDevtoolsRaw.enabled === "boolean" ? chromeDevtoolsRaw.enabled : false,
+      port: Number.isInteger(chromeDevtoolsPort) && chromeDevtoolsPort >= 1 && chromeDevtoolsPort <= 65535
+        ? chromeDevtoolsPort
+        : 15166,
+      chromePath: normalizeOptionalConfigField(chromeDevtoolsRaw.chromePath, { label: "chromeDevtools.chromePath" }),
     },
     port: typeof parsed.port === "number" ? parsed.port : 18080,
     gitTimeoutSeconds: typeof parsed.gitTimeoutSeconds === "number" ? parsed.gitTimeoutSeconds : 180,

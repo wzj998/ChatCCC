@@ -81,6 +81,7 @@ import {
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
+import { getChatGptSubscriptionStatus, type ChatGptSubscriptionResult } from "./chatgpt-subscription.ts";
 import { delegateAgentTask } from "./agent-delegate-task.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
@@ -107,7 +108,7 @@ function findModelMatch(input: string, models: string[]): string | null {
   return candidates[0] ?? null;
 }
 
-function formatCodexUsageSummary(usage: CodexUsageSummary): string {
+function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: ChatGptSubscriptionResult | null = null): string {
   const progressBar = (usedPercent: number) => {
     const width = 20;
     const usedBlocks = Math.max(0, Math.min(width, Math.round((usedPercent / 100) * width)));
@@ -185,14 +186,47 @@ function formatCodexUsageSummary(usage: CodexUsageSummary): string {
     return lines.join("\n");
   };
 
+  const formatChatGptSubscription = () => {
+    if (!chatGptSubscription?.ok || !chatGptSubscription.subscription) return "";
+    const subscription = chatGptSubscription.subscription;
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const formatExpiresAt = (value: string | null) => {
+      if (!value) return "暂无数据";
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return value;
+      return [
+        date.getFullYear(),
+        "-",
+        pad(date.getMonth() + 1),
+        "-",
+        pad(date.getDate()),
+        " ",
+        pad(date.getHours()),
+        ":",
+        pad(date.getMinutes()),
+      ].join("");
+    };
+    const remaining = typeof subscription.remainingDays === "number"
+      ? `（剩余 ${subscription.remainingDays} 天）`
+      : "";
+    return [
+      "**ChatGPT 订阅:**",
+      `- 套餐: ${subscription.plan ?? "暂无数据"}`,
+      `- 到期: ${formatExpiresAt(subscription.expiresAt)}${remaining}`,
+      `- 自动续费: ${subscription.willRenew === null ? "暂无数据" : subscription.willRenew ? "是" : "否"}`,
+    ].join("\n");
+  };
+
   return [
     "Codex 用量：",
     "",
+    formatChatGptSubscription(),
+    chatGptSubscription?.ok ? "" : "",
     formatResetCredits(),
     "",
     formatWindow("5h", usage.fiveHour),
     formatWindow("周", usage.weekly),
-  ].join("\n");
+  ].filter((line, index, arr) => line !== "" || (index > 0 && arr[index - 1] !== "")).join("\n");
 }
 
 function formatCursorUsageSummary(usage: CursorUsageSummary): string {
@@ -277,8 +311,11 @@ async function sendUsageSummary(platform: PlatformAdapter, chatId: string, tool:
     return;
   }
 
-  const usage = await getCodexUsageSummary();
-  const content = formatCodexUsageSummary(usage);
+  const [usage, chatGptSubscription] = await Promise.all([
+    getCodexUsageSummary(),
+    getChatGptSubscriptionStatus().catch(() => null),
+  ]);
+  const content = formatCodexUsageSummary(usage, chatGptSubscription);
   if (platform.kind === "wechat") {
     await platform.sendText(chatId, content).catch(() => {});
   } else if (platform.kind === "feishu") {
