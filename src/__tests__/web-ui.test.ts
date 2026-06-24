@@ -34,6 +34,22 @@ describe("unflattenConfig", () => {
     });
   });
 
+  it("maps Cursor and Codex alternative models into agent config", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_CURSOR_ALTERNATIVE_MODEL: "gpt-5.5-high",
+        CHATCCC_CODEX_ALTERNATIVE_MODEL: "gpt-5.3-codex",
+      }),
+    ).toEqual({
+      cursor: {
+        alternativeModel: "gpt-5.5-high",
+      },
+      codex: {
+        alternativeModel: "gpt-5.3-codex",
+      },
+    });
+  });
+
   it("maps Chrome CDP guard fields into chromeDevtools config", () => {
     expect(
       unflattenConfig({
@@ -56,6 +72,12 @@ describe("dashboard edit modal", () => {
     expect(PAGE_HTML).toContain("function editSection(section)");
     expect(PAGE_HTML).toContain("document.getElementById('edit-modal').classList.remove('hidden');");
     expect(PAGE_HTML).toContain("document.getElementById('edit-overlay').classList.remove('hidden');");
+  });
+
+  it("uses plain alternative model labels for Cursor and Codex", () => {
+    expect(PAGE_HTML).toContain("field-CHATCCC_CURSOR_ALTERNATIVE_MODEL");
+    expect(PAGE_HTML).toContain("field-CHATCCC_CODEX_ALTERNATIVE_MODEL");
+    expect(PAGE_HTML).toContain("备选模型");
   });
 });
 

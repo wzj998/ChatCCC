@@ -28,6 +28,17 @@ describe("config.sample.json", () => {
     expect(sample.claude?.subagentModel).toBe("");
   });
 
+  it("leaves Cursor and Codex alternative models empty by default", () => {
+    const configSamplePath = join(process.cwd(), "config.sample.json");
+    const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
+      cursor?: { alternativeModel?: unknown };
+      codex?: { alternativeModel?: unknown };
+    };
+
+    expect(sample.cursor?.alternativeModel).toBe("");
+    expect(sample.codex?.alternativeModel).toBe("");
+  });
+
   it("keeps Chrome CDP guard disabled by default with port 15166", () => {
     const configSamplePath = join(process.cwd(), "config.sample.json");
     const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
