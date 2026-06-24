@@ -20,12 +20,16 @@ import type {
   SessionInfo,
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
-import { CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS } from "../config.ts";
+import { config, CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultCursorSessionMetaStore,
   type CursorSessionMetaStore,
 } from "./cursor-session-meta-store.ts";
 import { killProcessTree } from "./proc-tree-kill.ts";
+import {
+  createRawStreamLog,
+  type RawStreamLogHandle,
+} from "./raw-stream-log.ts";
 
 // ---------------------------------------------------------------------------
 // 特殊注入提示
@@ -348,6 +352,7 @@ async function* readJsonLines(
   proc: ChildProcess,
   signal?: AbortSignal,
   debugTag?: string,
+  rawLog?: RawStreamLogHandle | null,
 ): AsyncGenerator<CursorMessageLine> {
   const tag = debugTag ?? "cursor";
   const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
@@ -361,6 +366,7 @@ async function* readJsonLines(
       lineCount++;
       const trimmed = line.trim();
       if (!trimmed) continue;
+      rawLog?.writeLine(trimmed);
       try {
         yield JSON.parse(trimmed) as CursorMessageLine;
       } catch { /* 非 JSON 行静默跳过 */ }
@@ -428,13 +434,30 @@ class CursorAdapter implements ToolAdapter {
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
+    const rawLogConfig = config.rawStreamLogs.cursor;
+    let rawLog: RawStreamLogHandle | null = null;
+    try {
+      rawLog = await createRawStreamLog({
+        enabled: rawLogConfig.enabled,
+        rootDir: RAW_STREAM_LOGS_DIR,
+        tool: "cursor",
+        sessionId,
+        label: "prompt",
+        maxBytesPerTurn: rawLogConfig.maxBytesPerTurn,
+        retentionDays: rawLogConfig.retentionDays,
+      });
+    } catch (err) {
+      console.error(`[Cursor raw stream log] create failed: ${(err as Error).message}`);
+    }
+
     // 见 codex-adapter.ts 同位置注释：spawn 用了 shell:true，必须杀整棵树，
     // 否则 abort 后真正在跑的孙进程 cursor-agent 还会继续输出 & 占用资源。
     const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
+    let sawResult = false;
 
     try {
-      for await (const raw of readJsonLines(proc, signal, sessionId)) {
+      for await (const raw of readJsonLines(proc, signal, sessionId, rawLog)) {
         if (signal?.aborted) break;
         if (
           raw.type === "system" &&
@@ -451,6 +474,7 @@ class CursorAdapter implements ToolAdapter {
 
         // result 是流末事件，收到后立即结束进程，防止 CLI 僵死导致 readline 挂起。
         if (raw.type === "result") {
+          sawResult = true;
           void killProcessTree(proc.pid);
           break;
         }
@@ -458,6 +482,7 @@ class CursorAdapter implements ToolAdapter {
     } finally {
       signal?.removeEventListener("abort", onAbort);
       await killProcessTree(proc.pid);
+      await rawLog?.close({ keep: rawLogConfig.keepCompleted || signal?.aborted === true || !sawResult });
       this.activeProcs.delete(proc);
       if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
       console.log(`[Cursor debug] prompt end: sessionId=${sessionId}, signalAborted=${signal?.aborted ?? false}`);
