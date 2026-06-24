@@ -42,6 +42,7 @@ export const LOG_DIR = join(USER_DATA_DIR, "logs");
 export const fileLog = setupFileLogging(LOG_DIR, "index");
 
 export const CHAT_LOGS_DIR = join(USER_DATA_DIR, "state", "chat_logs");
+export const RAW_STREAM_LOGS_DIR = join(LOG_DIR, "raw-streams");
 
 export async function appendChatLog(chatId: string, sender: string, text: string): Promise<void> {
   try {
@@ -122,6 +123,19 @@ export interface ChromeDevtoolsConfig {
   chromePath: string;
 }
 
+export interface RawStreamAgentLogConfig {
+  enabled: boolean;
+  maxBytesPerTurn: number;
+  retentionDays: number;
+  keepCompleted: boolean;
+}
+
+export interface RawStreamLogsConfig {
+  claude: RawStreamAgentLogConfig;
+  cursor: RawStreamAgentLogConfig;
+  codex: RawStreamAgentLogConfig;
+}
+
 export interface AppConfig {
   feishu: FeishuConfig;
   platforms: PlatformsConfig;
@@ -130,6 +144,7 @@ export interface AppConfig {
   gitTimeoutSeconds: number;
   /** 若为 false，AI 生成过程中用户发送消息不会打断，须先点「停止」再发送新消息 */
   allowInterrupt: boolean;
+  rawStreamLogs: RawStreamLogsConfig;
   claude: ClaudeConfig;
   cursor: CursorConfig;
   codex: CodexConfig;
@@ -348,6 +363,23 @@ function normalizeCursorOnDemandMonthlyBudget(raw: unknown): number {
   return Number.isFinite(value) && value > 0 ? value : 1000;
 }
 
+function normalizePositiveInteger(raw: unknown, fallback: number): number {
+  const value = typeof raw === "string" ? Number(raw.trim()) : Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizeRawStreamAgentLogConfig(raw: unknown): RawStreamAgentLogConfig {
+  const obj = typeof raw === "object" && raw !== null
+    ? raw as Record<string, unknown>
+    : {};
+  return {
+    enabled: typeof obj.enabled === "boolean" ? obj.enabled : false,
+    maxBytesPerTurn: normalizePositiveInteger(obj.maxBytesPerTurn, 50 * 1024 * 1024),
+    retentionDays: normalizePositiveInteger(obj.retentionDays, 7),
+    keepCompleted: typeof obj.keepCompleted === "boolean" ? obj.keepCompleted : false,
+  };
+}
+
 function loadConfig(): AppConfig {
   const defaults: AppConfig = {
     feishu: { appId: "", appSecret: "" },
@@ -356,6 +388,11 @@ function loadConfig(): AppConfig {
     port: 18080,
     gitTimeoutSeconds: 180,
     allowInterrupt: false,
+    rawStreamLogs: {
+      claude: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
+      cursor: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
+      codex: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
+    },
     claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 0 },
     cursor: {
       enabled: false,
@@ -418,6 +455,7 @@ function loadConfig(): AppConfig {
     };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
+    rawStreamLogs?: unknown;
   };
   try {
     parsed = JSON.parse(raw);
@@ -431,6 +469,9 @@ function loadConfig(): AppConfig {
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
   const chromeDevtoolsRaw = (parsed.chromeDevtools ?? {}) as NonNullable<typeof parsed.chromeDevtools>;
+  const rawStreamLogsRaw = typeof parsed.rawStreamLogs === "object" && parsed.rawStreamLogs !== null
+    ? parsed.rawStreamLogs as unknown as Record<string, unknown>
+    : {};
 
   // 兼容旧字段 `command`：命中时打印一次性 warning 提示用户改名
   const onLegacyField = (label: string, value: string): void => {
@@ -522,6 +563,11 @@ function loadConfig(): AppConfig {
     port: typeof parsed.port === "number" ? parsed.port : 18080,
     gitTimeoutSeconds: typeof parsed.gitTimeoutSeconds === "number" ? parsed.gitTimeoutSeconds : 180,
     allowInterrupt: typeof parsed.allowInterrupt === "boolean" ? parsed.allowInterrupt : false,
+    rawStreamLogs: {
+      claude: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.claude),
+      cursor: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.cursor),
+      codex: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.codex),
+    },
     claude: {
       enabled: claudeEnabled,
       defaultAgent: defaultTool === "claude",

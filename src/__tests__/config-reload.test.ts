@@ -44,6 +44,11 @@ const baseAppConfig: AppConfig = {
   port: 18080,
   gitTimeoutSeconds: 180,
   allowInterrupt: false,
+  rawStreamLogs: {
+    claude: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
+    cursor: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
+    codex: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
+  },
   claude: {
     enabled: true,
     defaultAgent: true,

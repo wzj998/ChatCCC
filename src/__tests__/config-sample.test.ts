@@ -38,4 +38,23 @@ describe("config.sample.json", () => {
     expect(sample.chromeDevtools?.port).toBe(15166);
     expect(sample.chromeDevtools?.chromePath).toBe("");
   });
+
+  it("keeps raw stream logs disabled by default for every agent", () => {
+    const configSamplePath = join(process.cwd(), "config.sample.json");
+    const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
+      rawStreamLogs?: Record<string, {
+        enabled?: unknown;
+        maxBytesPerTurn?: unknown;
+        retentionDays?: unknown;
+        keepCompleted?: unknown;
+      }>;
+    };
+
+    for (const tool of ["claude", "cursor", "codex"]) {
+      expect(sample.rawStreamLogs?.[tool]?.enabled).toBe(false);
+      expect(sample.rawStreamLogs?.[tool]?.maxBytesPerTurn).toBe(52_428_800);
+      expect(sample.rawStreamLogs?.[tool]?.retentionDays).toBe(7);
+      expect(sample.rawStreamLogs?.[tool]?.keepCompleted).toBe(false);
+    }
+  });
 });
