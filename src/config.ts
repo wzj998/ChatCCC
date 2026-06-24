@@ -82,6 +82,8 @@ export interface CursorConfig {
   /** Cursor Agent CLI 可执行文件绝对路径；留空时由运行时按 LocalAppData / PATH 兜底 */
   path: string;
   model: string;
+  /** /model 可切换的单个备选模型；留空则不加入候选列表 */
+  alternativeModel: string;
   avatarBatteryMode: CursorAvatarBatteryMode;
   onDemandMonthlyBudget: number;
 }
@@ -94,6 +96,8 @@ export interface CodexConfig {
   /** Codex CLI 可执行文件绝对路径；留空时退回到 PATH 中的 `codex` */
   path: string;
   model: string;
+  /** /model 可切换的单个备选模型；留空则不加入候选列表 */
+  alternativeModel: string;
   effort: string;
 }
 
@@ -166,8 +170,10 @@ export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): s
     collect(cfg.claude.subagentModel);
   } else if (tool === "cursor") {
     collect(cfg.cursor.model);
+    collect(cfg.cursor.alternativeModel);
   } else if (tool === "codex") {
     collect(cfg.codex.model);
+    collect(cfg.codex.alternativeModel);
   }
 
   return Array.from(seen).slice(0, 100);
@@ -399,10 +405,11 @@ function loadConfig(): AppConfig {
       defaultAgent: false,
       path: "",
       model: "claude-opus-4-7-max",
+      alternativeModel: "",
       avatarBatteryMode: "apiPercent",
       onDemandMonthlyBudget: 1000,
     },
-    codex: { enabled: false, defaultAgent: false, path: "", model: "", effort: "" },
+    codex: { enabled: false, defaultAgent: false, path: "", model: "", alternativeModel: "", effort: "" },
   };
 
   if (!IS_TEST_ENV) {
@@ -450,10 +457,11 @@ function loadConfig(): AppConfig {
       path?: unknown;
       command?: unknown;
       model?: unknown;
+      alternativeModel?: unknown;
       avatarBatteryMode?: unknown;
       onDemandMonthlyBudget?: unknown;
     };
-    codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; effort?: unknown };
+    codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
     rawStreamLogs?: unknown;
   };
@@ -502,13 +510,15 @@ function loadConfig(): AppConfig {
     Boolean(
       (typeof cursorRaw.path === "string" && cursorRaw.path.trim()) ||
       (typeof cursorRaw.command === "string" && (cursorRaw.command as string).trim()) ||
-      (typeof cursorRaw.model === "string" && (cursorRaw.model as string).trim()),
+      (typeof cursorRaw.model === "string" && (cursorRaw.model as string).trim()) ||
+      (typeof cursorRaw.alternativeModel === "string" && (cursorRaw.alternativeModel as string).trim()),
     );
   const codexNonEmpty = (): boolean =>
     Boolean(
       (typeof codexRaw.path === "string" && codexRaw.path.trim()) ||
       (typeof codexRaw.command === "string" && (codexRaw.command as string).trim()) ||
       (typeof codexRaw.model === "string" && (codexRaw.model as string).trim()) ||
+      (typeof codexRaw.alternativeModel === "string" && (codexRaw.alternativeModel as string).trim()) ||
       (typeof codexRaw.effort === "string" && (codexRaw.effort as string).trim()),
     );
 
@@ -585,6 +595,7 @@ function loadConfig(): AppConfig {
       defaultAgent: defaultTool === "cursor",
       path: readToolCliPath(cursorRaw, { label: "cursor", onLegacyField }),
       model: normalizeOptionalConfigField(cursorRaw.model, { label: "cursor.model", fallback: "claude-opus-4-7-max" }),
+      alternativeModel: normalizeOptionalConfigField(cursorRaw.alternativeModel, { label: "cursor.alternativeModel" }),
       avatarBatteryMode: normalizeCursorAvatarBatteryMode(cursorRaw.avatarBatteryMode),
       onDemandMonthlyBudget: normalizeCursorOnDemandMonthlyBudget(cursorRaw.onDemandMonthlyBudget),
     },
@@ -593,6 +604,7 @@ function loadConfig(): AppConfig {
       defaultAgent: defaultTool === "codex",
       path: readToolCliPath(codexRaw, { label: "codex", onLegacyField }),
       model: normalizeOptionalConfigField(codexRaw.model, { label: "codex.model" }),
+      alternativeModel: normalizeOptionalConfigField(codexRaw.alternativeModel, { label: "codex.alternativeModel" }),
       effort: normalizeOptionalConfigField(codexRaw.effort, { label: "codex.effort" }),
     },
   };

@@ -22,6 +22,7 @@ import {
   ILINK_ENABLED,
   applyLoadedConfig,
   config,
+  getAllModelsForTool,
   resolveDefaultAgentTool,
   type AppConfig,
 } from "../config.ts";
@@ -64,10 +65,11 @@ const baseAppConfig: AppConfig = {
     defaultAgent: false,
     path: "/initial/cursor",
     model: "initial-cursor-model",
+    alternativeModel: "initial-cursor-alt-model",
     avatarBatteryMode: "apiPercent",
     onDemandMonthlyBudget: 1000,
   },
-  codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", effort: "initial-codex-effort" },
+  codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort" },
 };
 
 // 把 module 状态抢救快照：每个 it 跑前重置回这个状态，避免污染相邻测试。
@@ -145,7 +147,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("CURSOR_AGENT_ARGS 跟随 cursor.model 重新解析", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "claude-3.7-sonnet", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
+      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "claude-3.7-sonnet", alternativeModel: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
     });
 
     // CURSOR_AGENT_ARGS 是 ['-p', '--force', '--approve-mcps', ..., '--model', 'claude-3.7-sonnet']
@@ -157,7 +159,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("cursor.model 留空时 CURSOR_AGENT_ARGS 不含 --model", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
+      cursor: { enabled: true, defaultAgent: false, path: "/x/cursor", model: "", alternativeModel: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
     });
 
     expect(CURSOR_AGENT_ARGS).not.toContain("--model");
@@ -166,10 +168,21 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
   it("CURSOR_AGENT_COMMAND 优先取 config.cursor.path", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
-      cursor: { enabled: true, defaultAgent: false, path: "C:/custom/cursor.exe", model: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
+      cursor: { enabled: true, defaultAgent: false, path: "C:/custom/cursor.exe", model: "", alternativeModel: "", avatarBatteryMode: "apiPercent", onDemandMonthlyBudget: 1000 },
     });
 
     expect(CURSOR_AGENT_COMMAND).toBe("C:/custom/cursor.exe");
+  });
+
+  it("/model 候选列表包含 Cursor/Codex 的单个备选模型并保持主模型优先", () => {
+    const cfg = structuredClone(baseAppConfig);
+    cfg.cursor.model = "cursor-main";
+    cfg.cursor.alternativeModel = "cursor-alt";
+    cfg.codex.model = "codex-main";
+    cfg.codex.alternativeModel = "codex-main";
+
+    expect(getAllModelsForTool("cursor", cfg)).toEqual(["cursor-main", "cursor-alt"]);
+    expect(getAllModelsForTool("codex", cfg)).toEqual(["codex-main"]);
   });
 
   it("不修改 CHATCCC_PORT（端口在 setup 切换时必须保持不变）", () => {
@@ -191,7 +204,7 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
       feishu: { appId: "REF_TEST_APP", appSecret: "REF_TEST_SECRET" },
-      codex: { enabled: true, defaultAgent: false, path: "/refresh/codex", model: "fresh-model", effort: "low" },
+      codex: { enabled: true, defaultAgent: false, path: "/refresh/codex", model: "fresh-model", alternativeModel: "", effort: "low" },
     });
 
     // 必须是同一个引用：codex-adapter 等下游模块"直接 import config"，

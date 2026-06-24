@@ -40,10 +40,11 @@ interface AppConfig {
     path?: string;
     command?: string;
     model?: string;
+    alternativeModel?: string;
     avatarBatteryMode?: string;
     onDemandMonthlyBudget?: number;
   };
-  codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; effort?: string };
+  codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; alternativeModel?: string; effort?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +381,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CURSOR_MODEL") {
       result.cursor = result.cursor || {};
       (result.cursor as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_CURSOR_ALTERNATIVE_MODEL") {
+      result.cursor = result.cursor || {};
+      (result.cursor as Record<string, unknown>).alternativeModel = val;
     } else if (key === "CHATCCC_CURSOR_AVATAR_BATTERY_MODE") {
       result.cursor = result.cursor || {};
       (result.cursor as Record<string, unknown>).avatarBatteryMode = val;
@@ -398,6 +402,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CODEX_MODEL") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_CODEX_ALTERNATIVE_MODEL") {
+      result.codex = result.codex || {};
+      (result.codex as Record<string, unknown>).alternativeModel = val;
     } else if (key === "CHATCCC_CODEX_EFFORT") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).effort = val;
@@ -748,6 +755,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <input type="text" id="field-CHATCCC_CURSOR_MODEL" placeholder="留空表示不传 --model">
             </div>
             <div class="form-group">
+              <label>备选模型（选填）</label>
+              <input type="text" id="field-CHATCCC_CURSOR_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
+            </div>
+            <div class="form-group">
               <label>头像电池电量</label>
               <select id="field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE" onchange="onCursorBatteryModeChange('field-', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">
                 <option value="apiPercent">API 使用比例</option>
@@ -784,6 +795,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <div class="form-group">
               <label>模型</label>
               <input type="text" id="field-CHATCCC_CODEX_MODEL" placeholder="留空由 codex config.toml 决定">
+            </div>
+            <div class="form-group">
+              <label>备选模型（选填）</label>
+              <input type="text" id="field-CHATCCC_CODEX_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
             </div>
             <div class="form-group">
               <label>努力程度 (Effort)</label>
@@ -891,6 +906,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       <div class="section-detail">
         <div class="config-row"><span class="key">CLI 路径</span><span class="val" id="cfg-CURSOR_PATH">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CURSOR_MODEL">-</span></div>
+        <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CURSOR_ALTERNATIVE_MODEL">-</span></div>
         <div class="config-row"><span class="key">头像电池电量</span><span class="val" id="cfg-CURSOR_AVATAR_BATTERY_MODE">-</span></div>
         <div class="config-row" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW"><span class="key">每月On demand use预算</span><span class="val" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-cursor" onchange="setDashboardDefaultAgent('cursor', this.checked)"> 设为默认 Agent</label>
@@ -903,6 +919,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       <div class="section-detail">
         <div class="config-row"><span class="key">CLI 路径</span><span class="val" id="cfg-CODEX_PATH">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CODEX_MODEL">-</span></div>
+        <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CODEX_ALTERNATIVE_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-CODEX_EFFORT">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-codex" onchange="setDashboardDefaultAgent('codex', this.checked)"> 设为默认 Agent</label>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('codex')">编辑</button>
@@ -950,8 +967,8 @@ var step2InputBound = false;
 
 const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
-  cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
-  codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_EFFORT']
+  cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
+  codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const CHROME_DEVTOOLS_FIELDS = ['CHATCCC_CHROME_DEVTOOLS_ENABLED','CHATCCC_CHROME_DEVTOOLS_PORT','CHATCCC_CHROME_DEVTOOLS_PATH'];
@@ -1217,8 +1234,8 @@ function isAgentEnabled(node, keys) {
 }
 
 var CLAUDE_FALLBACK_KEYS = ['model','subagentModel','effort','maxTurn'];
-var CURSOR_FALLBACK_KEYS = ['path','command','model'];
-var CODEX_FALLBACK_KEYS = ['path','command','model','effort'];
+var CURSOR_FALLBACK_KEYS = ['path','command','model','alternativeModel'];
+var CODEX_FALLBACK_KEYS = ['path','command','model','alternativeModel','effort'];
 
 function renderStep2() {
   var c = state.config || {};
@@ -1230,6 +1247,7 @@ function renderStep2() {
   if (c.cursor) {
     prefillNested('field-CHATCCC_CURSOR_PATH', c.cursor.path || c.cursor.command);
     prefillNested('field-CHATCCC_CURSOR_MODEL', c.cursor.model);
+    prefillNested('field-CHATCCC_CURSOR_ALTERNATIVE_MODEL', c.cursor.alternativeModel);
     var cursorMode = c.cursor.avatarBatteryMode || 'apiPercent';
     var cursorModeInput = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
     if (cursorModeInput) cursorModeInput.value = cursorMode;
@@ -1245,6 +1263,7 @@ function renderStep2() {
   if (c.codex) {
     prefillNested('field-CHATCCC_CODEX_PATH', c.codex.path || c.codex.command);
     prefillNested('field-CHATCCC_CODEX_MODEL', c.codex.model);
+    prefillNested('field-CHATCCC_CODEX_ALTERNATIVE_MODEL', c.codex.alternativeModel);
     prefillNested('field-CHATCCC_CODEX_EFFORT', c.codex.effort);
   }
 
@@ -1385,6 +1404,7 @@ function renderStep3() {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Cursor</h4>');
       if (vars.CHATCCC_CURSOR_PATH) lines.push('<div class="config-row"><span class="key">CLI 路径</span><span class="val">' + vars.CHATCCC_CURSOR_PATH + '</span></div>');
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CURSOR_MODEL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CURSOR_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">头像电池电量</span><span class="val">' + cursorBatteryModeLabel(vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE) + '</span></div>');
       if (vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse') {
         lines.push('<div class="config-row"><span class="key">每月On demand use预算</span><span class="val">' + (vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET || '1000') + '</span></div>');
@@ -1393,6 +1413,7 @@ function renderStep3() {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Codex</h4>');
       if (vars.CHATCCC_CODEX_PATH) lines.push('<div class="config-row"><span class="key">CLI 路径</span><span class="val">' + vars.CHATCCC_CODEX_PATH + '</span></div>');
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CODEX_MODEL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CODEX_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CODEX_EFFORT || '(留空)') + '</span></div>');
     }
   });
@@ -1578,6 +1599,7 @@ function updateDashboardUI() {
   document.getElementById('cfg-ANTHROPIC_MAX_TURN').textContent = (c.claude && c.claude.maxTurn != null) ? String(c.claude.maxTurn) : '0';
   document.getElementById('cfg-CURSOR_PATH').textContent = (c.cursor && (c.cursor.path || c.cursor.command)) || '-';
   document.getElementById('cfg-CURSOR_MODEL').textContent = (c.cursor && c.cursor.model) || '(留空)';
+  document.getElementById('cfg-CURSOR_ALTERNATIVE_MODEL').textContent = (c.cursor && c.cursor.alternativeModel) || '(留空)';
   var cursorBatteryMode = (c.cursor && c.cursor.avatarBatteryMode) || 'apiPercent';
   document.getElementById('cfg-CURSOR_AVATAR_BATTERY_MODE').textContent = cursorBatteryModeLabel(cursorBatteryMode);
   var cursorBudgetRow = document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW');
@@ -1585,6 +1607,7 @@ function updateDashboardUI() {
   document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET').textContent = String((c.cursor && c.cursor.onDemandMonthlyBudget) || 1000);
   document.getElementById('cfg-CODEX_PATH').textContent = (c.codex && (c.codex.path || c.codex.command)) || 'codex';
   document.getElementById('cfg-CODEX_MODEL').textContent = (c.codex && c.codex.model) || '(留空)';
+  document.getElementById('cfg-CODEX_ALTERNATIVE_MODEL').textContent = (c.codex && c.codex.alternativeModel) || '(留空)';
   document.getElementById('cfg-CODEX_EFFORT').textContent = (c.codex && c.codex.effort) || '(留空)';
 }
 
@@ -1651,10 +1674,10 @@ function editSection(section) {
     'CHATCCC_CHROME_DEVTOOLS_PATH': 'Chrome 路径（选填）',
     'CHATCCC_ANTHROPIC_MODEL': '模型', 'CHATCCC_ANTHROPIC_SUBAGENT_MODEL': 'Subagent 模型', 'CHATCCC_ANTHROPIC_EFFORT': 'Effort',
     'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL', 'CHATCCC_ANTHROPIC_MAX_TURN': 'Max Turns (0=无限制)',
-    'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型',
+    'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型', 'CHATCCC_CURSOR_ALTERNATIVE_MODEL': '备选模型',
     'CHATCCC_CURSOR_AVATAR_BATTERY_MODE': '头像电池电量',
     'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月On demand use预算',
-    'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
+    'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
   var hintMap = {
     'CHATCCC_CHROME_DEVTOOLS_ENABLED': '依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。',
@@ -1687,11 +1710,13 @@ function editSection(section) {
       } else if (section === 'cursor' && state.config.cursor) {
         if (key === 'CHATCCC_CURSOR_PATH') val = state.config.cursor.path || state.config.cursor.command || '';
         else if (key === 'CHATCCC_CURSOR_MODEL') val = state.config.cursor.model || '';
+        else if (key === 'CHATCCC_CURSOR_ALTERNATIVE_MODEL') val = state.config.cursor.alternativeModel || '';
         else if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') val = state.config.cursor.avatarBatteryMode || 'apiPercent';
         else if (key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET') val = (state.config.cursor.onDemandMonthlyBudget != null) ? String(state.config.cursor.onDemandMonthlyBudget) : '1000';
       } else if (section === 'codex' && state.config.codex) {
         if (key === 'CHATCCC_CODEX_PATH') val = state.config.codex.path || state.config.codex.command || '';
         else if (key === 'CHATCCC_CODEX_MODEL') val = state.config.codex.model || '';
+        else if (key === 'CHATCCC_CODEX_ALTERNATIVE_MODEL') val = state.config.codex.alternativeModel || '';
         else if (key === 'CHATCCC_CODEX_EFFORT') val = state.config.codex.effort || '';
       }
     }

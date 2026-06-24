@@ -50,6 +50,7 @@
     "defaultAgent": false,
     "path": "",
     "model": "",
+    "alternativeModel": "",
     "avatarBatteryMode": "apiPercent",
     "onDemandMonthlyBudget": 1000
   },
@@ -58,6 +59,7 @@
     "defaultAgent": false,
     "path": "",
     "model": "",
+    "alternativeModel": "",
     "effort": ""
   }
 }
