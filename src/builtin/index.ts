@@ -4,7 +4,10 @@
  * ChatSession 是程序化入口，既可以被 CLI 调用，也可以被其他模块（如 ToolAdapter）调用。
  */
 
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { streamText } from "ai";
+
+import { config as appConfig } from "../config.ts";
 
 // ---------------------------------------------------------------------------
 // 系统提示词 — 编译期冻结常量
@@ -25,11 +28,11 @@ const SYSTEM_PROMPT = [
 // ---------------------------------------------------------------------------
 
 export interface ChatSessionConfig {
-  /** DeepSeek API 兼容的服务地址，默认 https://api.deepseek.com/v1 */
+  /** DeepSeek API 兼容的服务地址；传入时覆盖 config.ccc.DEEPSEEK_BASE_URL */
   baseURL?: string;
-  /** API Key（优先用 DEEPSEEK_API_KEY 环境变量） */
+  /** API Key；传入时覆盖 config.ccc.DEEPSEEK_API_KEY */
   apiKey?: string;
-  /** 模型名称，默认 deepseek-chat */
+  /** 模型名称；传入时覆盖 config.ccc.model */
   model?: string;
 }
 
@@ -66,21 +69,19 @@ export class ChatSession {
   private messages: ChatMessage[];
 
   constructor(
-    config: ChatSessionConfig = {},
+    overrides: ChatSessionConfig = {},
     options: ChatSessionOptions = {},
   ) {
-    const apiKey = config.apiKey ?? process.env.DEEPSEEK_API_KEY;
+    const apiKey = overrides.apiKey ?? appConfig.ccc.DEEPSEEK_API_KEY;
     if (!apiKey) {
       throw new Error(
-        "DEEPSEEK_API_KEY 未设置。请设置环境变量 DEEPSEEK_API_KEY 或传入 apiKey",
+        "ccc.DEEPSEEK_API_KEY 未设置。请在 config.json 中配置，或通过 --api-key 临时传入",
       );
     }
 
-    const baseURL = config.baseURL ?? "https://api.deepseek.com/v1";
-    const modelId = config.model ?? "deepseek-chat";
+    const baseURL = overrides.baseURL ?? appConfig.ccc.DEEPSEEK_BASE_URL;
+    const modelId = overrides.model ?? appConfig.ccc.model;
 
-    // 动态 import 以支持 ESM 包在 CJS 环境下的加载（tsx 处理）
-    const { createOpenAICompatible } = require("@ai-sdk/openai-compatible");
     const provider = createOpenAICompatible({
       name: "deepseek",
       baseURL,

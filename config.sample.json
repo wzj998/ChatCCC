@@ -61,5 +61,10 @@
     "model": "",
     "alternativeModel": "",
     "effort": ""
+  },
+  "ccc": {
+    "DEEPSEEK_API_KEY": "",
+    "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-pro[1m]"
   }
 }

@@ -95,6 +95,7 @@ import {
   _resetProcessAliveForTest,
   _setProcessMonitorIntervalForTest,
   _resetProcessMonitorIntervalForTest,
+  setSessionEffortOverride,
 } from "../session.ts";
 import {
   activePrompts,
@@ -896,6 +897,15 @@ describe("getSessionStatus", () => {
     // model 必为字符串（留空时显示 '(留空)'，否则为环境变量值）；不应是占位符
     expect(typeof status!.model).toBe("string");
     expect(status!.model.length).toBeGreaterThan(0);
+  });
+
+  it("Codex session status uses the per-session effort override", async () => {
+    mockSessionInfo("chat-codex", { sessionId: "sid-codex-effort", tool: "codex" });
+    setSessionEffortOverride("sid-codex-effort", "xhigh");
+
+    const status = await getSessionStatus("chat-codex");
+
+    expect(status!.effort).toBe("xhigh");
   });
 
   it("Cursor 会话：effort 恒为 null（卡片渲染时隐藏该行，避免显示无意义的 effort）", async () => {

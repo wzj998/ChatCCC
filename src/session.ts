@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import {
   CLAUDE_API_KEY,
   CLAUDE_BASE_URL,
-  CLAUDE_EFFORT,
   CLAUDE_MAX_TURN,
   CLAUDE_MODEL,
   CLAUDE_SUBAGENT_MODEL,
@@ -17,6 +16,7 @@ import {
   config,
   fileLog,
   getDefaultCwd,
+  getDefaultEffortForTool,
   isAnthropicConfigEmpty,
   toolDisplayName,
   ts,
@@ -335,6 +335,9 @@ export function resetState(): void {
   }
   activePrompts.clear();
   displayCards.clear();
+  sessionModelOverrides.clear();
+  sessionEffortOverrides.clear();
+  adapterCache.clear();
   stopUnifiedDisplayLoop();
   console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions + bindings)`);
 }
@@ -350,6 +353,7 @@ const adapterCache = new Map<string, ToolAdapter>();
 
 // Per-session 模型覆盖（/model 命令设置，不持久化）
 const sessionModelOverrides = new Map<string, string>();
+const sessionEffortOverrides = new Map<string, string>();
 
 /** 返回 session 的生效模型：优先 per-session 覆盖，其次全局配置（Claude） */
 function getModelForSession(sessionId?: string): string {
@@ -371,6 +375,17 @@ export function getEffectiveModelForTool(tool: string, sessionId?: string): stri
   return CLAUDE_MODEL;
 }
 
+export function getEffectiveEffortForTool(tool: string, sessionId?: string): string {
+  if (sessionId) {
+    const override = sessionEffortOverrides.get(sessionId);
+    if (override) return override;
+  }
+  if (tool === "claude" || tool === "codex") {
+    return getDefaultEffortForTool(tool);
+  }
+  return "";
+}
+
 /** 为指定 session 设置模型覆盖（/model <name>） */
 export function setSessionModelOverride(sessionId: string, model: string): void {
   sessionModelOverrides.set(sessionId, model);
@@ -383,9 +398,20 @@ export function clearSessionModelOverride(sessionId: string): void {
   adapterCache.clear();
 }
 
+export function setSessionEffortOverride(sessionId: string, effort: string): void {
+  sessionEffortOverrides.set(sessionId, effort);
+  adapterCache.clear();
+}
+
+export function clearSessionEffortOverride(sessionId: string): void {
+  sessionEffortOverrides.delete(sessionId);
+  adapterCache.clear();
+}
+
 export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter {
   const effectiveModel = getEffectiveModelForTool(tool, sessionId);
-  const cacheKey = effectiveModel ? `${tool}:${effectiveModel}` : tool;
+  const effectiveEffort = getEffectiveEffortForTool(tool, sessionId);
+  const cacheKey = `${tool}:${effectiveModel || ""}:${effectiveEffort || ""}`;
   const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
@@ -393,12 +419,12 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
   if (tool === "cursor") {
     adapter = createCursorAdapter({ model: effectiveModel || undefined });
   } else if (tool === "codex") {
-    adapter = createCodexAdapter({ model: effectiveModel || undefined });
+    adapter = createCodexAdapter({ model: effectiveModel || undefined, effort: effectiveEffort || undefined });
   } else {
     adapter = createClaudeAdapter({
       model: effectiveModel,
       subagentModel: CLAUDE_SUBAGENT_MODEL,
-      effort: CLAUDE_EFFORT,
+      effort: effectiveEffort,
       apiKey: CLAUDE_API_KEY,
       baseUrl: CLAUDE_BASE_URL,
       isEmpty: isAnthropicConfigEmpty,
@@ -831,15 +857,15 @@ function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?:
     return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
   }
   if (tool === "codex") {
-    const m = config.codex.model;
-    const e = config.codex.effort;
+    const m = getEffectiveModelForTool(tool, sessionId);
+    const e = getEffectiveEffortForTool(tool, sessionId);
     const modelStr = m.trim() !== "" ? m : "(由 codex config.toml 决定)";
     const effortStr = e.trim() !== ""
       ? `effort=${e}`
       : "effort=(由 codex config.toml 决定)";
     return `model=${modelStr}, ${effortStr}`;
   }
-  return `model=${anthropicConfigDisplay(getModelForSession(sessionId))}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(CLAUDE_EFFORT)}`;
+  return `model=${anthropicConfigDisplay(getModelForSession(sessionId))}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(getEffectiveEffortForTool(tool, sessionId))}`;
 }
 
 export async function initClaudeSession(tool: string, overrideCwd?: string, chatId?: string): Promise<{ sessionId: string; cwd: string }> {
@@ -1756,8 +1782,8 @@ async function resolveModelEffort(
     return { model, effort: null };
   }
   if (tool === "codex") {
-    const m = config.codex.model;
-    const e = config.codex.effort;
+    const m = getEffectiveModelForTool(tool, sessionId);
+    const e = getEffectiveEffortForTool(tool, sessionId);
     return {
       model: m.trim() !== "" ? m : UNKNOWN_MODEL_PLACEHOLDER,
       effort: e.trim() !== "" ? e : UNKNOWN_MODEL_PLACEHOLDER,
@@ -1765,7 +1791,7 @@ async function resolveModelEffort(
   }
   return {
     model: anthropicConfigDisplay(getModelForSession(sessionId)),
-    effort: anthropicConfigDisplay(CLAUDE_EFFORT),
+    effort: anthropicConfigDisplay(getEffectiveEffortForTool(tool, sessionId)),
   };
 }
 
@@ -1873,6 +1899,8 @@ export function _setAdapterForToolForTest(tool: string, adapter: ToolAdapter): v
   adapterCache.set(tool, adapter);
   // 同时设置当前配置模型对应的 key（getAdapterForTool 会优先 lookup 含 model 的 key）
   const effective = getEffectiveModelForTool(tool);
+  const effort = getEffectiveEffortForTool(tool);
+  adapterCache.set(`${tool}:${effective || ""}:${effort || ""}`, adapter);
   if (effective) adapterCache.set(`${tool}:${effective}`, adapter);
 }
 

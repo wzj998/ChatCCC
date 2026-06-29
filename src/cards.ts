@@ -539,3 +539,44 @@ export function buildModelCard(
   });
 }
 
+export function buildEffortCard(
+  currentEffort: string,
+  efforts: string[],
+  tool?: string,
+): string {
+  const toolLabel = tool ? ` (${tool})` : "";
+  const currentLine = currentEffort
+    ? `**当前 effort:** \`${currentEffort}\``
+    : "**当前 effort:** 未指定";
+
+  const lines: string[] = [currentLine];
+  if (efforts.length > 0) {
+    lines.push("", "**可切换 effort**");
+    for (const effort of efforts) {
+      lines.push(`- \`${effort}\``);
+    }
+    lines.push("", "点击按钮切换 effort，或输入 `/effort clear` 恢复默认");
+  } else {
+    lines.push("", "当前 agent 不支持 effort 切换。");
+  }
+
+  const buttons: ButtonDef[] = [];
+  for (const effort of efforts.slice(0, 20)) {
+    buttons.push({
+      text: `/effort ${effort}`,
+      value: JSON.stringify({ cmd: `/effort ${effort}` }),
+      type: "primary",
+    });
+  }
+
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "blue", title: { content: `Effort 切换${toolLabel}`, tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
+      { tag: "hr" },
+      buildButtons(buttons),
+    ],
+  });
+}
+

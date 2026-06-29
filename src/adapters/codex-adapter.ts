@@ -189,6 +189,7 @@ function spawnCodex(
   cwd?: string,
   stdinText?: string,
   modelOverride?: string,
+  effortOverride?: string,
 ): ChildProcess {
   const allArgs = [...args];
   const model = modelOverride ?? resolveCodexModel();
@@ -197,7 +198,7 @@ function spawnCodex(
     const execIdx = allArgs.indexOf("exec");
     allArgs.splice(execIdx + 1, 0, "-m", model);
   }
-  const effort = resolveCodexEffort();
+  const effort = effortOverride ?? resolveCodexEffort();
   if (effort) {
     allArgs.push("-c", `model_reasoning_effort="${effort}"`);
   }
@@ -262,10 +263,12 @@ class CodexAdapter implements ToolAdapter {
   readonly sessionDescPrefix = "Codex Session:";
   private metaStore: CodexSessionMetaStore;
   private modelOverride: string | undefined;
+  private effortOverride: string | undefined;
 
-  constructor(metaStore: CodexSessionMetaStore, modelOverride?: string) {
+  constructor(metaStore: CodexSessionMetaStore, modelOverride?: string, effortOverride?: string) {
     this.metaStore = metaStore;
     this.modelOverride = modelOverride;
+    this.effortOverride = effortOverride;
   }
 
   // createSession: 生成 sessionId，记录 cwd，不创建 Codex 线程（延迟到首次 prompt）
@@ -296,7 +299,7 @@ class CodexAdapter implements ToolAdapter {
       ? [...baseArgs, "-C", cwd, "-"]
       : [...baseArgs, "resume", threadId, "-"];
 
-    const proc = spawnCodex(args, cwd, buildCodexPromptText(userText), this.modelOverride);
+    const proc = spawnCodex(args, cwd, buildCodexPromptText(userText), this.modelOverride, this.effortOverride);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     // 关键：spawn 用了 shell:true，proc.pid 指向的是壳进程（cmd.exe / sh）。
@@ -351,6 +354,7 @@ export interface CreateCodexAdapterOptions {
   metaStore?: CodexSessionMetaStore;
   /** per-session 模型覆盖（/model 命令）；传了就用，不传走全局 codex.model */
   model?: string;
+  effort?: string;
 }
 
 export function createCodexAdapter(
@@ -359,5 +363,6 @@ export function createCodexAdapter(
   return new CodexAdapter(
     options.metaStore ?? defaultCodexSessionMetaStore,
     options.model,
+    options.effort,
   );
 }
