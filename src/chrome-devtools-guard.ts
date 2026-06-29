@@ -33,6 +33,18 @@ export interface ChromeCdpEnsureResult {
 
 export type ChromeCdpProbeStatus = "healthy" | "occupied" | "unreachable";
 
+interface ChromeCdpPage {
+  id?: string;
+  type?: string;
+  url?: string;
+}
+
+export interface EnsureChatcccPageResult {
+  ok: boolean;
+  opened: boolean;
+  error?: string;
+}
+
 let guardTimer: ReturnType<typeof setInterval> | null = null;
 let ensureInFlight: Promise<ChromeCdpEnsureResult> | null = null;
 
@@ -81,11 +93,11 @@ export function resolveChromeUserDataDir(port: number, env: NodeJS.ProcessEnv = 
   return join(root, `chrome-cdp-${port}`);
 }
 
-async function fetchWithTimeout(url: string, fetchImpl: FetchLike, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(url: string, fetchImpl: FetchLike, timeoutMs: number, init: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetchImpl(url, { signal: controller.signal });
+    return await fetchImpl(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -163,6 +175,61 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cdpBaseUrl(port: number): string {
+  return `http://${CDP_HOST}:${port}`;
+}
+
+function isChatcccPageUrl(value: string | undefined, chatcccPort: number): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" &&
+      (url.hostname === "localhost" || url.hostname === CDP_HOST) &&
+      url.port === String(chatcccPort);
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureChatcccPageOpen(
+  cdpPort: number,
+  chatcccPort: number,
+  deps: Pick<ChromeDevtoolsGuardDeps, "fetchImpl"> = {},
+): Promise<EnsureChatcccPageResult> {
+  const normalizedCdpPort = normalizePort(cdpPort);
+  const normalizedChatcccPort = normalizePort(chatcccPort);
+  const fetchImpl = deps.fetchImpl ?? fetch;
+
+  try {
+    const listResponse = await fetchWithTimeout(
+      `${cdpBaseUrl(normalizedCdpPort)}/json/list`,
+      fetchImpl,
+      HEALTH_TIMEOUT_MS,
+    );
+    if (!listResponse.ok) {
+      return { ok: false, opened: false, error: `Cannot list Chrome CDP pages: HTTP ${listResponse.status}` };
+    }
+    const pages = await listResponse.json() as unknown;
+    if (Array.isArray(pages) && pages.some((page: ChromeCdpPage) => isChatcccPageUrl(page?.url, normalizedChatcccPort))) {
+      return { ok: true, opened: false };
+    }
+
+    const targetUrl = `http://localhost:${normalizedChatcccPort}/`;
+    const openResponse = await fetchWithTimeout(
+      `${cdpBaseUrl(normalizedCdpPort)}/json/new?${encodeURIComponent(targetUrl)}`,
+      fetchImpl,
+      HEALTH_TIMEOUT_MS,
+      { method: "PUT" },
+    );
+    if (!openResponse.ok) {
+      return { ok: false, opened: false, error: `Cannot open ${targetUrl}: HTTP ${openResponse.status}` };
+    }
+    return { ok: true, opened: true };
+  } catch (err) {
+    return { ok: false, opened: false, error: (err as Error).message };
+  }
+}
+
 export async function ensureChromeCdpRunning(
   cfg: ChromeDevtoolsConfig = config.chromeDevtools,
   deps: ChromeDevtoolsGuardDeps = {},
@@ -202,6 +269,9 @@ async function runGuardOnce(reason: string, deps: ChromeDevtoolsGuardDeps = {}):
   ensureInFlight = ensureChromeCdpRunning(config.chromeDevtools, deps);
   try {
     const result = await ensureInFlight;
+    const chatcccPage = config.chromeDevtools.enabled && result.ok
+      ? await ensureChatcccPageOpen(result.port, config.port, deps)
+      : null;
     appendStartupTrace("chrome-devtools-guard: ensure result", {
       reason,
       enabled: config.chromeDevtools.enabled,
@@ -209,12 +279,18 @@ async function runGuardOnce(reason: string, deps: ChromeDevtoolsGuardDeps = {}):
       ok: result.ok,
       started: result.started,
       error: result.error,
+      chatcccPage,
     });
     if (!config.chromeDevtools.enabled) return;
     if (result.ok && result.started) {
       log(`[${ts()}] [Chrome CDP] Started Chrome for http://${CDP_HOST}:${result.port}/json/version`);
     } else if (!result.ok) {
       log(`[${ts()}] [Chrome CDP] Guard failed: ${result.error}`);
+    }
+    if (chatcccPage?.opened) {
+      log(`[${ts()}] [Chrome CDP] Opened ChatCCC page http://localhost:${config.port}/`);
+    } else if (chatcccPage && !chatcccPage.ok) {
+      log(`[${ts()}] [Chrome CDP] Failed to ensure ChatCCC page: ${chatcccPage.error}`);
     }
   } finally {
     ensureInFlight = null;

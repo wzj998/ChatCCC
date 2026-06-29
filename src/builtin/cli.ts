@@ -5,14 +5,11 @@
  *   npx tsx src/builtin/cli.ts
  *   npx tsx src/builtin/cli.ts --model deepseek-chat
  *   npx tsx src/builtin/cli.ts --cwd /path/to/project
- *
- * 环境变量:
- *   DEEPSEEK_API_KEY — DeepSeek API Key（必需）
- *   DEEPSEEK_BASE_URL — API 地址（可选，默认 https://api.deepseek.com/v1）
  */
 
 import * as readline from "node:readline";
 import * as process from "node:process";
+import { config as appConfig } from "../config.ts";
 import { ChatSession, type ChatSessionConfig, type ChatSessionOptions } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -55,15 +52,14 @@ function printHelp(): void {
     "用法: npx tsx src/builtin/cli.ts [选项]",
     "",
     "选项:",
-    "  --model <name>   模型名称（默认 deepseek-chat）",
-    "  --base-url <url> API 地址（默认 https://api.deepseek.com/v1）",
-    "  --api-key <key>  API Key（默认读 DEEPSEEK_API_KEY 环境变量）",
+    `  --model <name>   模型名称（覆盖 config.ccc.model，当前默认 ${appConfig.ccc.model}）`,
+    `  --base-url <url> API 地址（覆盖 config.ccc.DEEPSEEK_BASE_URL，当前默认 ${appConfig.ccc.DEEPSEEK_BASE_URL}）`,
+    "  --api-key <key>  API Key（覆盖 config.ccc.DEEPSEEK_API_KEY）",
     "  --cwd <path>     工作目录",
     "  --help, -h       显示帮助",
     "",
-    "环境变量:",
-    "  DEEPSEEK_API_KEY   DeepSeek API Key",
-    "  DEEPSEEK_BASE_URL  API 地址",
+    "默认配置来源:",
+    "  ~/.chatccc/config.json 的 ccc.DEEPSEEK_API_KEY / ccc.DEEPSEEK_BASE_URL / ccc.model",
     "",
   ].join("\n"));
 }
@@ -87,12 +83,8 @@ const C = {
 async function main(): Promise<void> {
   const { config, options } = parseArgs();
 
-  // 环境变量回退
-  if (!config.baseURL) config.baseURL = process.env.DEEPSEEK_BASE_URL;
-  if (!config.apiKey) config.apiKey = process.env.DEEPSEEK_API_KEY;
-
   console.log(`${C.dim}ChatCCC 内置 Agent 原型${C.reset}`);
-  console.log(`${C.dim}模型: ${config.model ?? "deepseek-chat"}${C.reset}`);
+  console.log(`${C.dim}模型: ${config.model ?? appConfig.ccc.model}${C.reset}`);
   if (options.cwd) {
     console.log(`${C.dim}目录: ${options.cwd}${C.reset}`);
   }

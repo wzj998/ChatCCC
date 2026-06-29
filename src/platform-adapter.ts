@@ -5,6 +5,14 @@
  * 每个方法内部自行管理认证，消费者不感知 token 等认证细节。
  */
 
+import type { CursorUsageSummary } from "./cursor-usage.ts";
+import type { CodexUsageSummary } from "./feishu-api.ts";
+
+export interface ChatAvatarUsageHints {
+  codexUsage?: CodexUsageSummary | null;
+  cursorUsage?: CursorUsageSummary | null;
+}
+
 export interface PlatformAdapter {
   /** 平台标识，用于区分不同平台的行为（如 wechat、feishu 等） */
   kind?: string;
@@ -40,7 +48,7 @@ export interface PlatformAdapter {
   disbandChat(chatId: string): Promise<void>;
 
   /** 设置群头像 */
-  setChatAvatar(chatId: string, tool: string, status: string): Promise<void>;
+  setChatAvatar(chatId: string, tool: string, status: string, usageHints?: ChatAvatarUsageHints): Promise<void>;
 
   /** 从群描述中提取 session 信息 */
   extractSessionInfo(

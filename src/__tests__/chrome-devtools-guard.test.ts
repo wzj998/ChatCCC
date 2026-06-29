@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 
 import {
   ensureChromeCdpRunning,
+  ensureChatcccPageOpen,
   isChromeCdpHealthy,
   probeChromeCdp,
   resolveChromeExecutable,
@@ -121,5 +122,44 @@ describe("Chrome CDP guard", () => {
   it("uses LocalAppData for the Chrome CDP user data directory", () => {
     expect(resolveChromeUserDataDir(15166, { LOCALAPPDATA: "C:/Users/me/AppData/Local" }))
       .toBe("C:\\Users\\me\\AppData\\Local\\chatccc\\chrome-cdp-15166");
+  });
+
+  it("opens the configured ChatCCC page when no localhost or loopback page is present", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:15166/json/list") {
+        return new Response(JSON.stringify([
+          { id: "chatgpt", type: "page", url: "https://chatgpt.com/", webSocketDebuggerUrl: "ws://page" },
+        ]), { status: 200 });
+      }
+      if (url === "http://127.0.0.1:15166/json/new?http%3A%2F%2Flocalhost%3A18081%2F") {
+        expect(init?.method).toBe("PUT");
+        return new Response(JSON.stringify({ id: "chatccc" }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await expect(ensureChatcccPageOpen(15166, 18081, { fetchImpl })).resolves.toEqual({
+      ok: true,
+      opened: true,
+    });
+  });
+
+  it("does not open another ChatCCC page when localhost or 127.0.0.1 is already present", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:15166/json/list") {
+        return new Response(JSON.stringify([
+          { id: "chatccc", type: "page", url: "http://127.0.0.1:18080/", webSocketDebuggerUrl: "ws://page" },
+        ]), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await expect(ensureChatcccPageOpen(15166, 18080, { fetchImpl })).resolves.toEqual({
+      ok: true,
+      opened: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

@@ -23,7 +23,9 @@ import {
   anthropicConfigDisplay,
   config,
   fileLog,
+  getAllEffortsForTool,
   getAllModelsForTool,
+  getDefaultEffortForTool,
   getDefaultCwd,
   setDefaultCwd,
   getRecentDirs,
@@ -37,6 +39,7 @@ import {
 } from "./config.ts";
 import {
   buildHelpCard,
+  buildEffortCard,
   buildModelCard,
   buildStatusCard,
   buildCdContent,
@@ -53,6 +56,7 @@ import {
 } from "./git-command.ts";
 import {
   clearSessionModelOverride,
+  clearSessionEffortOverride,
   getSessionStatus,
   getAllSessionsStatus,
   initClaudeSession,
@@ -60,10 +64,12 @@ import {
   resumeAndPrompt,
   sessionInfoMap,
   setSessionModelOverride,
+  setSessionEffortOverride,
   switchChatBinding,
   recordSessionRegistry,
   getAdapterForTool,
   getEffectiveModelForTool,
+  getEffectiveEffortForTool,
   stopSession,
   loadSessionRegistryForBinding,
   removeSessionRegistryRecord,
@@ -86,7 +92,7 @@ import { delegateAgentTask } from "./agent-delegate-task.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
-import type { PlatformAdapter } from "./platform-adapter.ts";
+import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
 
 // ---------------------------------------------------------------------------
@@ -186,6 +192,39 @@ function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: 
     return lines.join("\n");
   };
 
+  const formatSubscriptionFailureReason = (result: ChatGptSubscriptionResult) => {
+    const port = result.chromeCdp.port;
+    switch (result.code) {
+      case "chrome_cdp_unreachable":
+        return `Chrome CDP 端口 ${port} 不可访问。请确认常驻 Chrome 已启动，或重启 ChatCCC。`;
+      case "chrome_cdp_occupied":
+        return `${port} 端口可访问，但不是健康的 Chrome CDP。请释放该端口或修改 chromeDevtools.port。`;
+      case "chatgpt_page_missing":
+        return `没有可用的 ChatGPT 页面。请在 ${port} 端口对应的 Chrome 浏览器中打开 https://chatgpt.com/ 并登录。`;
+      case "chatgpt_session_missing":
+        return `请在 ${port} 端口对应的 Chrome 浏览器中登录 ChatGPT。`;
+      case "chatgpt_subscription_failed":
+        return "ChatGPT 订阅接口探测失败。可能是页面未加载完成、ChatGPT 接口变更或网络异常。";
+      case "chrome_cdp_disabled":
+        return "";
+      case "ok":
+        return "";
+    }
+  };
+
+  const formatChatGptSubscriptionFailure = () => {
+    if (!chatGptSubscription || chatGptSubscription.ok || !chatGptSubscription.chromeCdp.enabled) return "";
+    const lines = [
+      "**ChatGPT 订阅查询失败:**",
+      `- 原因: ${formatSubscriptionFailureReason(chatGptSubscription) || "暂无数据"}`,
+    ];
+    const detail = chatGptSubscription.reason?.replace(/\s+/g, " ").trim();
+    if (detail) {
+      lines.push(`- 详情: ${detail.length > 240 ? `${detail.slice(0, 240)}...` : detail}`);
+    }
+    return lines.join("\n");
+  };
+
   const formatChatGptSubscription = () => {
     if (!chatGptSubscription?.ok || !chatGptSubscription.subscription) return "";
     const subscription = chatGptSubscription.subscription;
@@ -221,7 +260,7 @@ function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: 
     "Codex 用量：",
     "",
     formatChatGptSubscription(),
-    chatGptSubscription?.ok ? "" : "",
+    formatChatGptSubscriptionFailure(),
     formatResetCredits(),
     "",
     formatWindow("5h", usage.fiveHour),
@@ -291,23 +330,46 @@ function usageHelpLine(tool: string): string {
   return "";
 }
 
-async function resolveUsageTool(chatId: string): Promise<"codex" | "cursor"> {
+async function resolveUsageTarget(chatId: string): Promise<{ tool: "codex" | "cursor"; sessionId?: string }> {
   try {
     const registry = await loadSessionRegistryForBinding();
-    return registry[chatId]?.tool === "cursor" ? "cursor" : "codex";
+    const record = registry[chatId];
+    return {
+      tool: record?.tool === "cursor" ? "cursor" : "codex",
+      sessionId: record?.sessionId,
+    };
   } catch {
-    return "codex";
+    return { tool: "codex" };
   }
 }
 
-async function sendUsageSummary(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor"): Promise<void> {
+function refreshUsageAvatar(
+  platform: PlatformAdapter,
+  chatId: string,
+  tool: "codex" | "cursor",
+  status: "busy" | "idle",
+  usageHints: ChatAvatarUsageHints,
+): void {
+  platform.setChatAvatar(chatId, tool, status, usageHints).catch((err) => {
+    console.warn(`[${ts()}] [AVATAR] usage refresh failed: chatId=${chatId} tool=${tool} ${(err as Error).message}`);
+  });
+}
+
+async function sendUsageSummary(
+  platform: PlatformAdapter,
+  chatId: string,
+  tool: "codex" | "cursor",
+  avatarStatus: "busy" | "idle" = "idle",
+): Promise<void> {
   if (tool === "cursor") {
-    const content = formatCursorUsageSummary(await getCursorUsageSummary());
+    const usage = await getCursorUsageSummary();
+    const content = formatCursorUsageSummary(usage);
     if (platform.kind === "wechat") {
       await platform.sendText(chatId, content).catch(() => {});
     } else {
       await platform.sendCard(chatId, "Cursor Usage", content, "blue");
     }
+    refreshUsageAvatar(platform, chatId, tool, avatarStatus, { cursorUsage: usage });
     return;
   }
 
@@ -323,6 +385,7 @@ async function sendUsageSummary(platform: PlatformAdapter, chatId: string, tool:
   } else {
     await platform.sendCard(chatId, "Codex Usage", content, "blue");
   }
+  refreshUsageAvatar(platform, chatId, tool, avatarStatus, { codexUsage: usage });
 }
 
 async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor", err: unknown): Promise<void> {
@@ -538,10 +601,12 @@ export async function handleCommand(
   }
 
   if (isCommandText && textLower === "/usage") {
-    const usageTool = await resolveUsageTool(chatId);
+    const usageTarget = await resolveUsageTarget(chatId);
+    const usageTool = usageTarget.tool;
+    const avatarStatus = usageTarget.sessionId && isSessionRunning(usageTarget.sessionId) ? "busy" : "idle";
     logTrace(tid, "BRANCH", { cmd: "/usage", tool: usageTool });
     try {
-      await sendUsageSummary(platform, chatId, usageTool);
+      await sendUsageSummary(platform, chatId, usageTool, avatarStatus);
       logTrace(tid, "DONE", { outcome: "usage", tool: usageTool });
     } catch (err) {
       await sendUsageError(platform, chatId, usageTool, err);
@@ -1469,6 +1534,95 @@ export async function handleCommand(
     }
 
     // /git <args>：在「当前会话工作目录」执行 git 命令
+    if (isCommandText && textLower === "/effort clear") {
+      logTrace(tid, "BRANCH", { cmd: "/effort clear", sessionId, tool: descriptionTool });
+      const efforts = getAllEffortsForTool(descriptionTool as AgentTool);
+      const toolLabel = toolDisplayName(descriptionTool);
+      if (efforts.length === 0) {
+        const msg = `当前 ${toolLabel} 不支持 effort 切换。`;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "Effort 切换", msg, "red")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "effort_unsupported", tool: descriptionTool });
+        return;
+      }
+
+      clearSessionEffortOverride(sessionId);
+      const defaultEffort = getDefaultEffortForTool(descriptionTool as AgentTool);
+      const msg = `已清除当前 ${toolLabel} 会话的 effort 覆盖，恢复使用: \`${defaultEffort || "(未指定)"}\``;
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "Effort 切换", msg, "green")
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "effort_cleared", sessionId, tool: descriptionTool });
+      return;
+    }
+
+    if (isCommandText && textLower.startsWith("/effort ")) {
+      const effortArg = text.slice(8).trim();
+      if (!effortArg) return;
+      logTrace(tid, "BRANCH", { cmd: "/effort", arg: effortArg, sessionId, tool: descriptionTool });
+
+      const efforts = getAllEffortsForTool(descriptionTool as AgentTool);
+      const toolLabel = toolDisplayName(descriptionTool);
+      if (efforts.length === 0) {
+        const msg = `当前 ${toolLabel} 不支持 effort 切换。`;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "Effort 切换", msg, "red")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "effort_unsupported", tool: descriptionTool });
+        return;
+      }
+
+      const target = findModelMatch(effortArg, efforts);
+      if (!target) {
+        const msg = `未找到匹配 "${effortArg}" 的 effort。当前 ${toolLabel} 可选 effort:\n${efforts.map(e => `  \`${e}\``).join("\n")}`;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "Effort 切换", msg, "red")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "effort_not_found", arg: effortArg, tool: descriptionTool });
+        return;
+      }
+
+      setSessionEffortOverride(sessionId, target);
+      const msg = `已切换当前 ${toolLabel} 会话 effort 为: \`${target}\``;
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "Effort 切换", msg, "green")
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "effort_switched", arg: effortArg, target, sessionId, tool: descriptionTool });
+      return;
+    }
+
+    if (isCommandText && textLower === "/effort") {
+      logTrace(tid, "BRANCH", { cmd: "/effort", sessionId, tool: descriptionTool });
+      const efforts = getAllEffortsForTool(descriptionTool as AgentTool);
+      const currentEffort = getEffectiveEffortForTool(descriptionTool, sessionId);
+      const toolLabel = toolDisplayName(descriptionTool);
+
+      if (efforts.length === 0) {
+        const msg = `当前 ${toolLabel} 不支持 effort 切换。`;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "Effort 切换", msg, "red")
+        ).catch(() => {});
+      } else if (platform.kind === "wechat") {
+        const lines = [currentEffort ? `当前 effort (${toolLabel}): ${currentEffort}` : `当前 effort (${toolLabel}): 未指定`];
+        lines.push("", "可切换 effort:");
+        for (const e of efforts) lines.push(`  ${e}`);
+        lines.push("", "输入 /effort <effort> 切换 effort");
+        await platform.sendText(chatId, lines.join("\n")).catch(() => {});
+      } else {
+        const card = buildEffortCard(currentEffort, efforts, descriptionTool);
+        await platform.sendRawCard(chatId, card);
+      }
+      logTrace(tid, "DONE", { outcome: "effort_query", tool: descriptionTool });
+      return;
+    }
+
     if (isCommandText && (textLower.startsWith("/git ") || textLower === "/git")) {
       const args = text === "/git" ? "" : text.slice(5).trim();
       logTrace(tid, "BRANCH", { cmd: "/git", args: args || "(none)" });
@@ -1627,6 +1781,44 @@ export async function handleCommand(
   }
 
   // 无会话上下文 → /sessions 仍是有效指令，不触发飞书私聊自动建群。
+  if (isCommandText && textLower === "/effort") {
+    const defaultTool = resolveDefaultAgentTool();
+    const efforts = getAllEffortsForTool(defaultTool);
+    const currentEffort = getDefaultEffortForTool(defaultTool);
+    const toolLabel = toolDisplayName(defaultTool);
+
+    if (efforts.length === 0) {
+      const msg = `当前默认 agent (${toolLabel}) 不支持 effort 切换。`;
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "Effort 切换", msg, "red")
+      ).catch(() => {});
+    } else if (platform.kind === "wechat") {
+      const lines = [currentEffort ? `当前默认 effort (${toolLabel}): ${currentEffort}` : `当前默认 effort (${toolLabel}): 未指定`];
+      lines.push("", "可切换 effort:");
+      for (const e of efforts) lines.push(`  ${e}`);
+      lines.push("", "在会话中输入 /effort <effort> 切换 effort");
+      await platform.sendText(chatId, lines.join("\n")).catch(() => {});
+    } else {
+      const card = buildEffortCard(currentEffort, efforts, defaultTool);
+      await platform.sendRawCard(chatId, card);
+    }
+    logTrace(tid, "DONE", { outcome: "effort_query", defaultTool });
+    return;
+  }
+
+  if (isCommandText && textLower.startsWith("/effort ")) {
+    const defaultTool = resolveDefaultAgentTool();
+    const toolLabel = toolDisplayName(defaultTool);
+    const msg = `当前没有绑定会话。请先进入 Claude/Codex 会话，再输入 /effort <effort> 切换当前会话的 effort。当前默认 agent: ${toolLabel}`;
+    await (platform.kind === "wechat"
+      ? platform.sendText(chatId, msg)
+      : platform.sendCard(chatId, "Effort 切换", msg, "yellow")
+    ).catch(() => {});
+    logTrace(tid, "DONE", { outcome: "effort_no_session", defaultTool });
+    return;
+  }
+
   if (isCommandText && textLower === "/sessions") {
     logTrace(tid, "BRANCH", { cmd: "/sessions", scope: "global" });
     const allSessions = await getAllSessionsStatus();

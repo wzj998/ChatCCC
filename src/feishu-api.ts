@@ -20,6 +20,7 @@ import {
   config,
 } from "./config.ts";
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
+import type { ChatAvatarUsageHints } from "./platform-adapter.ts";
 import { applyPrivacy } from "./privacy.ts";
 
 // ---------------------------------------------------------------------------
@@ -587,7 +588,12 @@ export async function consumeCodexRateLimitResetCredit(redeemRequestId: string):
   };
 }
 
-async function fetchCodexAvatarUsage(): Promise<CodexUsageSummary | null> {
+async function resolveCodexAvatarUsage(usageHint?: CodexUsageSummary | null): Promise<CodexUsageSummary | null> {
+  if (usageHint !== undefined) {
+    if (!usageHint?.weekly) return null;
+    return usageHint;
+  }
+
   try {
     const summary = await getCodexUsageSummary();
     if (!summary.weekly) throw new Error("missing weekly usage window");
@@ -611,7 +617,17 @@ function cursorAvatarBatteryPercentFromUsage(summary: CursorUsageSummary): numbe
   return clampPercent(100 - apiPercentUsed);
 }
 
-async function fetchCursorAvatarBatteryPercent(): Promise<number | null> {
+async function resolveCursorAvatarBatteryPercent(usageHint?: CursorUsageSummary | null): Promise<number | null> {
+  if (usageHint !== undefined) {
+    if (!usageHint) return null;
+    try {
+      return cursorAvatarBatteryPercentFromUsage(usageHint);
+    } catch (err) {
+      console.warn(`[${ts()}] [AVATAR] Cursor usage unavailable, using plain avatar: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
   try {
     return cursorAvatarBatteryPercentFromUsage(await getCursorUsageSummary());
   } catch (err) {
@@ -814,12 +830,19 @@ async function uploadImage(
   return data.data!.image_key!;
 }
 
-async function getOrUploadAvatarKey(token: string, tool: string, status: string): Promise<string> {
+async function getOrUploadAvatarKey(
+  token: string,
+  tool: string,
+  status: string,
+  usageHints: ChatAvatarUsageHints = {},
+): Promise<string> {
   await loadAvatarKeyCache();
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
-  const codexUsage = normalizedTool === "codex" ? await fetchCodexAvatarUsage() : null;
-  const cursorBatteryPercent = normalizedTool === "cursor" ? await fetchCursorAvatarBatteryPercent() : null;
+  const codexUsage = normalizedTool === "codex" ? await resolveCodexAvatarUsage(usageHints.codexUsage) : null;
+  const cursorBatteryPercent = normalizedTool === "cursor"
+    ? await resolveCursorAvatarBatteryPercent(usageHints.cursorUsage)
+    : null;
   const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent);
   const cached = avatarKeyCache.get(keyName);
   if (cached) return cached;
@@ -832,9 +855,15 @@ async function getOrUploadAvatarKey(token: string, tool: string, status: string)
   return key;
 }
 
-export async function setChatAvatar(token: string, chatId: string, tool: string, status: string): Promise<void> {
+export async function setChatAvatar(
+  token: string,
+  chatId: string,
+  tool: string,
+  status: string,
+  usageHints: ChatAvatarUsageHints = {},
+): Promise<void> {
   try {
-    const avatarKey = await getOrUploadAvatarKey(token, tool, status);
+    const avatarKey = await getOrUploadAvatarKey(token, tool, status, usageHints);
     const resp = await fetch(`${BASE_URL}/im/v1/chats/${chatId}`, {
       method: "PUT",
       headers: {

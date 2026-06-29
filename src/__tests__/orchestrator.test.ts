@@ -80,6 +80,7 @@ import {
   loadSessionRegistryForBinding,
   recordSessionRegistry,
   resetState,
+  sessionInfoMap,
 } from "../session.ts";
 import { activePrompts, resetBindingState } from "../session-chat-binding.ts";
 import { ABD_APPEND_PROMPT } from "../shared-prefix.ts";
@@ -380,9 +381,105 @@ describe("handleCommand WeChat processing ack", () => {
     expect(registry["feishu-p2p"]).toBeUndefined();
   });
 
+  it("shows Claude effort switch card in an active Feishu session", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockResolvedValue({ name: "claude-session", description: "Claude Session: sid-claude-effort" });
+    vi.mocked(platform.extractSessionInfo).mockReturnValue({ sessionId: "sid-claude-effort", tool: "claude" });
+    await recordSessionRegistry({
+      chatId: "feishu-chat",
+      sessionId: "sid-claude-effort",
+      tool: "claude",
+      chatName: "claude-session",
+      running: false,
+    });
+    sessionInfoMap.set("feishu-chat", {
+      sessionId: "sid-claude-effort",
+      tool: "claude",
+      turnCount: 0,
+      lastContextTokens: 0,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/effort", "feishu-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.sendRawCard).toHaveBeenCalled();
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    const raw = JSON.stringify(card);
+    expect(raw).toContain("/effort low");
+    expect(raw).toContain("/effort xhigh");
+    expect(raw).toContain("/effort max");
+  });
+
+  it("switches Codex effort for the current session and reflects it in /state", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockResolvedValue({ name: "codex-session", description: "Codex Session: sid-codex-effort" });
+    vi.mocked(platform.extractSessionInfo).mockReturnValue({ sessionId: "sid-codex-effort", tool: "codex" });
+    _setAdapterForToolForTest("codex", mockAdapter("sid-codex-effort"));
+    await recordSessionRegistry({
+      chatId: "codex-chat",
+      sessionId: "sid-codex-effort",
+      tool: "codex",
+      chatName: "codex-session",
+      running: false,
+    });
+    sessionInfoMap.set("codex-chat", {
+      sessionId: "sid-codex-effort",
+      tool: "codex",
+      turnCount: 0,
+      lastContextTokens: 0,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/effort xhigh", "codex-chat", "ou-user", Date.now(), "group");
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "codex-chat",
+      "Effort 切换",
+      expect.stringContaining("xhigh"),
+      "green",
+    );
+
+    vi.mocked(platform.sendCard).mockClear();
+    vi.mocked(platform.sendRawCard).mockClear();
+    await handleCommand(platform, "/state", "codex-chat", "ou-user", Date.now() + 1, "group");
+
+    expect(platform.sendRawCard).toHaveBeenCalled();
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    expect(JSON.stringify(card)).toContain("xhigh");
+  });
+
+  it("rejects /effort in Cursor sessions", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockResolvedValue({ name: "cursor-session", description: "Cursor Session: sid-cursor-effort" });
+    vi.mocked(platform.extractSessionInfo).mockReturnValue({ sessionId: "sid-cursor-effort", tool: "cursor" });
+    _setAdapterForToolForTest("cursor", mockAdapter("sid-cursor-effort"));
+    await recordSessionRegistry({
+      chatId: "cursor-chat",
+      sessionId: "sid-cursor-effort",
+      tool: "cursor",
+      chatName: "cursor-session",
+      running: false,
+    });
+    sessionInfoMap.set("cursor-chat", {
+      sessionId: "sid-cursor-effort",
+      tool: "cursor",
+      turnCount: 0,
+      lastContextTokens: 0,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/effort high", "cursor-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "cursor-chat",
+      "Effort 切换",
+      expect.stringContaining("不支持 effort"),
+      "red",
+    );
+  });
+
   it("handles /usage without creating a new Feishu group", async () => {
     const platform = mockPlatform("feishu");
-    mockGetCodexUsageSummary.mockResolvedValue({
+    const usage = {
       fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: 1781528212, resetAfterSeconds: 10349 },
       weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
       rateLimitResetCreditsAvailable: 2,
@@ -390,7 +487,8 @@ describe("handleCommand WeChat processing ack", () => {
         { grantedAt: "2026-06-12T04:01:47.770016Z", expiresAt: "2026-07-12T04:01:47.770016Z" },
         { grantedAt: "2026-06-18T00:44:23.904386Z", expiresAt: "2026-07-18T00:44:23.904386Z" },
       ],
-    });
+    };
+    mockGetCodexUsageSummary.mockResolvedValue(usage);
 
     await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
@@ -411,6 +509,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(card.elements[0].text.content).toContain("[██░░░░░░░░░░░░░░░░░░]");
     expect(card.elements[2].actions[0].text.content).toBe("发起重置");
     expect(card.elements[2].actions[0].value).toEqual({ action: "codex_reset_request", availableCount: 2 });
+    expect(platform.setChatAvatar).toHaveBeenCalledWith("feishu-p2p", "codex", "idle", { codexUsage: usage });
   });
 
   it("adds ChatGPT subscription expiry to Codex /usage when CDP lookup succeeds", async () => {
@@ -445,6 +544,24 @@ describe("handleCommand WeChat processing ack", () => {
     expect(card.elements[0].text.content).toContain("- 自动续费: 否");
   });
 
+  it("shows an actionable ChatGPT subscription failure reason when Chrome CDP is enabled", async () => {
+    const platform = mockPlatform("feishu");
+    mockGetChatGptSubscriptionStatus.mockResolvedValue({
+      ok: false,
+      code: "chatgpt_session_missing",
+      reason: "ChatGPT browser session has no access token.",
+      chromeCdp: { enabled: true, port: 15166, status: "healthy" },
+      chatgpt: { sessionOk: true },
+    });
+
+    await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    expect(card.elements[0].text.content).toContain("**ChatGPT 订阅查询失败:**");
+    expect(card.elements[0].text.content).toContain("请在 15166 端口对应的 Chrome 浏览器中登录 ChatGPT");
+    expect(card.elements[0].text.content).toContain("ChatGPT browser session has no access token.");
+  });
+
   it("handles /usage as Cursor usage in Cursor chats", async () => {
     const platform = mockPlatform("feishu");
     await recordSessionRegistry({
@@ -471,6 +588,37 @@ describe("handleCommand WeChat processing ack", () => {
       "Cursor Usage",
       expect.stringContaining("Pool remaining: $171417.76"),
       "blue",
+    );
+    expect(platform.setChatAvatar).toHaveBeenCalledWith(
+      "cursor-chat",
+      "cursor",
+      "idle",
+      { cursorUsage: expect.objectContaining({ displayMessage: "You've hit your usage limit" }) },
+    );
+  });
+
+  it("keeps the busy avatar status when /usage runs for an active Cursor session", async () => {
+    const platform = mockPlatform("feishu");
+    await recordSessionRegistry({
+      chatId: "cursor-chat",
+      sessionId: "sid-cursor",
+      tool: "cursor",
+      chatName: "cursor-session",
+      running: true,
+    });
+    activePrompts.set("sid-cursor", {
+      controller: new AbortController(),
+      stopped: false,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/usage", "cursor-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.setChatAvatar).toHaveBeenCalledWith(
+      "cursor-chat",
+      "cursor",
+      "busy",
+      { cursorUsage: expect.objectContaining({ displayMessage: "You've hit your usage limit" }) },
     );
   });
 

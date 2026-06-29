@@ -68,6 +68,24 @@ function mockAvatarFetch(uploadedNames: string[], usageResponse: Response): void
   }));
 }
 
+function mockAvatarUploadOnlyFetch(uploadedNames: string[]): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const urlText = String(url);
+    if (urlText === "https://open.feishu.test/im/v1/images") {
+      const form = init?.body as FormData;
+      const image = form.get("image") as File;
+      uploadedNames.push(image.name);
+      return new Response(JSON.stringify({ code: 0, data: { image_key: "img_test" } }), { status: 200 });
+    }
+    if (urlText === "https://open.feishu.test/im/v1/chats/chat_1") {
+      return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+    }
+    throw new Error(`unexpected fetch: ${urlText}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 describe("Codex avatar usage battery", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -97,6 +115,31 @@ describe("Codex avatar usage battery", () => {
       await setChatAvatar("tenant-token", "chat_1", "codex", "busy");
 
       expect(uploadedNames).toEqual(["avatar_codex_busy_week_88_5h_63.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses provided Codex usage without fetching usage again", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    const fetchMock = mockAvatarUploadOnlyFetch(uploadedNames);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "codex", "busy", {
+        codexUsage: {
+          fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: null, resetAfterSeconds: null },
+          weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: null, resetAfterSeconds: null },
+          rateLimitResetCreditsAvailable: null,
+          rateLimitResetCredits: null,
+        },
+      });
+
+      expect(uploadedNames).toEqual(["avatar_codex_busy_week_88_5h_63.jpg"]);
+      expect(fetchMock).not.toHaveBeenCalledWith("https://chatgpt.com/backend-api/wham/usage", expect.anything());
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });
@@ -251,6 +294,28 @@ describe("Cursor avatar usage battery", () => {
       await setChatAvatar("tenant-token", "chat_1", "cursor", "busy");
 
       expect(uploadedNames).toEqual(["avatar_cursor_busy_battery_60.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses provided Cursor usage without fetching usage again", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    mockAvatarUploadOnlyFetch(uploadedNames);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "cursor", "idle", {
+        cursorUsage: {
+          planUsage: { apiPercentUsed: 30 },
+        },
+      });
+
+      expect(uploadedNames).toEqual(["avatar_cursor_idle_battery_70.jpg"]);
+      expect(getCursorUsageSummaryMock).not.toHaveBeenCalled();
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });

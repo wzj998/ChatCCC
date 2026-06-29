@@ -101,6 +101,15 @@ export interface CodexConfig {
   effort: string;
 }
 
+export interface CccConfig {
+  /** DeepSeek API Key for the ChatCCC self-developed agent. */
+  DEEPSEEK_API_KEY: string;
+  /** DeepSeek-compatible API Base URL for the ChatCCC self-developed agent. */
+  DEEPSEEK_BASE_URL: string;
+  /** Model used by the ChatCCC self-developed agent. */
+  model: string;
+}
+
 export interface FeishuConfig {
   appId: string;
   appSecret: string;
@@ -152,6 +161,7 @@ export interface AppConfig {
   claude: ClaudeConfig;
   cursor: CursorConfig;
   codex: CodexConfig;
+  ccc: CccConfig;
 }
 
 export type AgentTool = "claude" | "cursor" | "codex";
@@ -179,8 +189,25 @@ export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): s
   return Array.from(seen).slice(0, 100);
 }
 
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const CODEX_EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+export function getAllEffortsForTool(tool: AgentTool): string[] {
+  if (tool === "claude") return [...CLAUDE_EFFORT_LEVELS];
+  if (tool === "codex") return [...CODEX_EFFORT_LEVELS];
+  return [];
+}
+
+export function getDefaultEffortForTool(tool: AgentTool, cfg: AppConfig = config): string {
+  if (tool === "claude") return cfg.claude.effort;
+  if (tool === "codex") return cfg.codex.effort;
+  return "";
+}
+
 const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
+export const DEFAULT_CCC_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
+export const DEFAULT_CCC_MODEL = "deepseek-v4-pro[1m]";
 
 /**
  * 将旧位置（PROJECT_ROOT）的持久化数据一次性迁移到 USER_DATA_DIR。
@@ -410,6 +437,7 @@ function loadConfig(): AppConfig {
       onDemandMonthlyBudget: 1000,
     },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", alternativeModel: "", effort: "" },
+    ccc: { DEEPSEEK_API_KEY: "", DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL, model: DEFAULT_CCC_MODEL },
   };
 
   if (!IS_TEST_ENV) {
@@ -462,6 +490,7 @@ function loadConfig(): AppConfig {
       onDemandMonthlyBudget?: unknown;
     };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown };
+    ccc?: { DEEPSEEK_API_KEY?: unknown; DEEPSEEK_BASE_URL?: unknown; model?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
     rawStreamLogs?: unknown;
   };
@@ -476,6 +505,7 @@ function loadConfig(): AppConfig {
   const claude = parsed.claude ?? {} as Partial<ClaudeConfig>;
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
+  const cccRaw = (parsed.ccc ?? {}) as NonNullable<typeof parsed.ccc>;
   const chromeDevtoolsRaw = (parsed.chromeDevtools ?? {}) as NonNullable<typeof parsed.chromeDevtools>;
   const rawStreamLogsRaw = typeof parsed.rawStreamLogs === "object" && parsed.rawStreamLogs !== null
     ? parsed.rawStreamLogs as unknown as Record<string, unknown>
@@ -606,6 +636,14 @@ function loadConfig(): AppConfig {
       model: normalizeOptionalConfigField(codexRaw.model, { label: "codex.model" }),
       alternativeModel: normalizeOptionalConfigField(codexRaw.alternativeModel, { label: "codex.alternativeModel" }),
       effort: normalizeOptionalConfigField(codexRaw.effort, { label: "codex.effort" }),
+    },
+    ccc: {
+      DEEPSEEK_API_KEY: normalizeOptionalConfigField(cccRaw.DEEPSEEK_API_KEY, { label: "ccc.DEEPSEEK_API_KEY" }),
+      DEEPSEEK_BASE_URL: normalizeOptionalConfigField(cccRaw.DEEPSEEK_BASE_URL, {
+        label: "ccc.DEEPSEEK_BASE_URL",
+        fallback: DEFAULT_CCC_DEEPSEEK_BASE_URL,
+      }),
+      model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
     },
   };
 }

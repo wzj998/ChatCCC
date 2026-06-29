@@ -142,8 +142,8 @@ function createFeishuAdapter(): PlatformAdapter {
     async disbandChat(chatId) {
       return disbandChat(await auth(), chatId);
     },
-    async setChatAvatar(chatId, tool, status) {
-      return setChatAvatar(await auth(), chatId, tool, status);
+    async setChatAvatar(chatId, tool, status, usageHints) {
+      return setChatAvatar(await auth(), chatId, tool, status, usageHints);
     },
 
     extractSessionInfo(description) {
