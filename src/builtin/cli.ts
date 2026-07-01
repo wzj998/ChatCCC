@@ -76,6 +76,8 @@ const C = {
   yellow: "\x1b[33m",
 };
 
+const DOUBLE_CTRL_C_EXIT_WINDOW_MS = 2000;
+
 // ---------------------------------------------------------------------------
 // 主程序
 // ---------------------------------------------------------------------------
@@ -88,7 +90,7 @@ async function main(): Promise<void> {
   if (options.cwd) {
     console.log(`${C.dim}目录: ${options.cwd}${C.reset}`);
   }
-  console.log(`${C.dim}输入消息开始对话，Ctrl+C 中断当前回复，/exit 退出${C.reset}`);
+  console.log(`${C.dim}输入消息开始对话，Ctrl+C 中断当前回复，exit 退出${C.reset}`);
   console.log("");
 
   let session: ChatSession;
@@ -107,10 +109,12 @@ async function main(): Promise<void> {
 
   // 用于中断当前 LLM 调用的 AbortController
   let currentAbort: AbortController | null = null;
+  let lastCtrlCAt = 0;
 
   rl.prompt();
 
   rl.on("line", async (line: string) => {
+    lastCtrlCAt = 0;
     const input = line.trim();
     if (!input) {
       rl.prompt();
@@ -118,7 +122,7 @@ async function main(): Promise<void> {
     }
 
     // 特殊命令
-    if (input === "/exit" || input === "/quit") {
+    if (input === "exit") {
       console.log(`${C.dim}再见${C.reset}`);
       rl.close();
       return;
@@ -165,14 +169,25 @@ async function main(): Promise<void> {
     rl.prompt();
   });
 
-  // Ctrl+C → 中断当前 LLM 调用（不退出程序）
+  // Ctrl+C → 生成中中断；空闲或连续按下时退出
   rl.on("SIGINT", () => {
+    const now = Date.now();
+    const shouldExit = now - lastCtrlCAt <= DOUBLE_CTRL_C_EXIT_WINDOW_MS;
+
+    if (shouldExit) {
+      console.log(`\n${C.dim}再见${C.reset}`);
+      rl.close();
+      return;
+    }
+
+    lastCtrlCAt = now;
+
     if (currentAbort) {
-      console.log(`\n${C.yellow}[中断中...]${C.reset}`);
+      console.log(`\n${C.yellow}[中断中...]${C.reset} ${C.dim}再次 Ctrl+C 退出${C.reset}`);
       currentAbort.abort();
       currentAbort = null;
     } else {
-      console.log(`\n${C.dim}输入 /exit 退出${C.reset}`);
+      console.log(`\n${C.dim}再次 Ctrl+C 退出，或输入 exit 退出${C.reset}`);
       rl.prompt();
     }
   });
