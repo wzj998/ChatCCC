@@ -20,7 +20,7 @@ describe("builtin ChatSession config", () => {
     config.ccc = {
       DEEPSEEK_API_KEY: "",
       DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
-      model: "deepseek-v4-pro[1m]",
+      model: "deepseek-v4-pro",
     };
     process.env.DEEPSEEK_API_KEY = "sk-env-should-not-be-used";
 

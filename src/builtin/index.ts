@@ -66,6 +66,7 @@ interface ChatMessage {
 
 export class ChatSession {
   private model: any;
+  private systemPrompt: string;
   private messages: ChatMessage[];
 
   constructor(
@@ -98,7 +99,8 @@ export class ChatSession {
       systemContent.push("", `当前工作目录: ${options.cwd}`);
     }
 
-    this.messages = [{ role: "system", content: systemContent.join("\n") }];
+    this.systemPrompt = systemContent.join("\n");
+    this.messages = [];
   }
 
   /**
@@ -124,6 +126,7 @@ export class ChatSession {
     try {
       const result = streamText({
         model: this.model,
+        system: this.systemPrompt,
         messages: this.messages as any,
         abortSignal: signal,
       });
@@ -152,17 +155,16 @@ export class ChatSession {
 
   /** 返回当前的会话历史（只读） */
   get history(): ReadonlyArray<ChatMessage> {
-    return this.messages;
+    return [{ role: "system", content: this.systemPrompt }, ...this.messages];
   }
 
   /** 返回当前轮数（不含 system 消息） */
   get turnCount(): number {
-    return this.messages.length - 1;
+    return this.messages.length;
   }
 
   /** 清空会话历史，保留 system 消息 */
   reset(): void {
-    const system = this.messages[0];
-    this.messages = [system];
+    this.messages = [];
   }
 }

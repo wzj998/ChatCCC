@@ -207,7 +207,7 @@ export function getDefaultEffortForTool(tool: AgentTool, cfg: AppConfig = config
 const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
 export const DEFAULT_CCC_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
-export const DEFAULT_CCC_MODEL = "deepseek-v4-pro[1m]";
+export const DEFAULT_CCC_MODEL = "deepseek-v4-pro";
 
 /**
  * 将旧位置（PROJECT_ROOT）的持久化数据一次性迁移到 USER_DATA_DIR。

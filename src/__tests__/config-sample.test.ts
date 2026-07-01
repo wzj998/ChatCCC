@@ -47,7 +47,7 @@ describe("config.sample.json", () => {
 
     expect(sample.ccc?.DEEPSEEK_API_KEY).toBe("");
     expect(sample.ccc?.DEEPSEEK_BASE_URL).toBe("https://api.deepseek.com/v1");
-    expect(sample.ccc?.model).toBe("deepseek-v4-pro[1m]");
+    expect(sample.ccc?.model).toBe("deepseek-v4-pro");
   });
 
   it("keeps Chrome CDP guard disabled by default with port 15166", () => {
