@@ -72,7 +72,6 @@ function buildCodexPromptText(userText: string): string {
 function detectCodexCommand(): string {
   return config.codex.path || "codex";
 }
-const CODEX_COMMAND = detectCodexCommand();
 
 /** exec 模式共用参数：JSONL 输出、绕过沙盒和确认、跳过 git 仓库检查 */
 const CODEX_BASE_ARGS = [
@@ -203,7 +202,7 @@ function spawnCodex(
     allArgs.push("-c", `model_reasoning_effort="${effort}"`);
   }
 
-  const proc = spawn(CODEX_COMMAND, allArgs, {
+  const proc = spawn(detectCodexCommand(), allArgs, {
     cwd,
     stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     windowsHide: true,

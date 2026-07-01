@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   PAGE_HTML,
   chooseStartPath,
+  getRestartRequiredReasons,
   unflattenConfig,
 } from "../web-ui.ts";
 
@@ -67,6 +68,79 @@ describe("unflattenConfig", () => {
   });
 });
 
+describe("getRestartRequiredReasons", () => {
+  const baseConfig = {
+    feishu: { appId: "cli_old", appSecret: "secret_old" },
+    platforms: {
+      feishu: { enabled: true, platformType: "feishu" },
+      ilink: { enabled: true, reuseTokenOnStart: true },
+    },
+    chromeDevtools: { enabled: false, port: 15166, chromePath: "" },
+    port: 18080,
+    claude: {
+      enabled: true,
+      defaultAgent: true,
+      model: "",
+      subagentModel: "",
+      effort: "",
+      apiKey: "",
+      baseUrl: "",
+      maxTurn: 0,
+    },
+    cursor: {
+      enabled: true,
+      defaultAgent: false,
+      path: "",
+      model: "",
+      alternativeModel: "",
+      avatarBatteryMode: "apiPercent",
+      onDemandMonthlyBudget: 1000,
+    },
+    codex: {
+      enabled: true,
+      defaultAgent: false,
+      path: "",
+      model: "",
+      alternativeModel: "",
+      effort: "",
+    },
+  };
+
+  it("does not require restart for agent and Chrome runtime settings", () => {
+    expect(
+      getRestartRequiredReasons(baseConfig, {
+        ...baseConfig,
+        chromeDevtools: { enabled: true, port: 15167, chromePath: "C:/Chrome/chrome.exe" },
+        claude: { ...baseConfig.claude, model: "claude-sonnet", apiKey: "sk-test", maxTurn: 8 },
+        cursor: { ...baseConfig.cursor, path: "C:/cursor-agent.cmd", model: "cursor-model" },
+        codex: { ...baseConfig.codex, path: "C:/codex.cmd", model: "gpt-5.3-codex", effort: "high" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("requires restart for port, Feishu credentials, platform type, and platform lifecycle", () => {
+    expect(
+      getRestartRequiredReasons(baseConfig, {
+        ...baseConfig,
+        feishu: { appId: "cli_new", appSecret: "secret_new" },
+        platforms: {
+          feishu: { enabled: false, platformType: "lark" },
+          ilink: { enabled: false, reuseTokenOnStart: false },
+        },
+        port: 18081,
+      }),
+    ).toEqual([
+      "port",
+      "feishu.appId",
+      "feishu.appSecret",
+      "platforms.feishu.platformType",
+      "platforms.feishu.enabled",
+      "platforms.ilink.enabled",
+      "platforms.ilink.reuseTokenOnStart",
+    ]);
+  });
+});
+
 describe("dashboard edit modal", () => {
   it("shows the edit modal and overlay when a section edit button is clicked", () => {
     expect(PAGE_HTML).toContain("function editSection(section)");
@@ -78,6 +152,11 @@ describe("dashboard edit modal", () => {
     expect(PAGE_HTML).toContain("field-CHATCCC_CURSOR_ALTERNATIVE_MODEL");
     expect(PAGE_HTML).toContain("field-CHATCCC_CODEX_ALTERNATIVE_MODEL");
     expect(PAGE_HTML).toContain("备选模型");
+  });
+
+  it("shows config effect scope hints", () => {
+    expect(PAGE_HTML).toContain("生效范围：保存后下一条消息或下个新会话生效");
+    expect(PAGE_HTML).toContain("生效范围：飞书开关、App ID、App Secret 或平台类型变更需要重启 ChatCCC");
   });
 });
 

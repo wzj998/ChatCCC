@@ -28,7 +28,10 @@ const ILINK_AUTH_PATH = join(USER_DATA_DIR, "state", "ilink-auth.json");
 
 interface AppConfig {
   feishu?: { appId?: string; appSecret?: string };
-  platforms?: { feishu?: { enabled?: boolean }; ilink?: { enabled?: boolean } };
+  platforms?: {
+    feishu?: { enabled?: boolean; platformType?: string };
+    ilink?: { enabled?: boolean; reuseTokenOnStart?: boolean };
+  };
   chromeDevtools?: { enabled?: boolean; port?: number; chromePath?: string };
   port?: number;
   gitTimeoutSeconds?: number;
@@ -103,6 +106,73 @@ function loadConfig(): AppConfig {
 
 function saveConfig(cfg: AppConfig): void {
   writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf8");
+}
+
+type ConfigApplyMode = "saved" | "reload" | "restart-required";
+
+interface ConfigApplyResult {
+  mode: ConfigApplyMode;
+  restartRequired: boolean;
+  restartReasons: string[];
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function portValue(cfg: AppConfig): number {
+  return Number.isInteger(cfg.port) && cfg.port! >= 1 && cfg.port! <= 65535 ? cfg.port! : 18080;
+}
+
+function platformEnabled(cfg: AppConfig, platform: "feishu" | "ilink"): boolean {
+  return cfg.platforms?.[platform]?.enabled !== false;
+}
+
+function feishuPlatformType(cfg: AppConfig): string {
+  return cfg.platforms?.feishu?.platformType === "lark" ? "lark" : "feishu";
+}
+
+function ilinkReuseTokenOnStart(cfg: AppConfig): boolean {
+  return cfg.platforms?.ilink?.reuseTokenOnStart !== false;
+}
+
+export function getRestartRequiredReasons(before: AppConfig, after: AppConfig): string[] {
+  const reasons: string[] = [];
+
+  if (portValue(before) !== portValue(after)) reasons.push("port");
+  if (stringValue(before.feishu?.appId) !== stringValue(after.feishu?.appId)) reasons.push("feishu.appId");
+  if (stringValue(before.feishu?.appSecret) !== stringValue(after.feishu?.appSecret)) reasons.push("feishu.appSecret");
+  if (feishuPlatformType(before) !== feishuPlatformType(after)) reasons.push("platforms.feishu.platformType");
+  if (platformEnabled(before, "feishu") !== platformEnabled(after, "feishu")) reasons.push("platforms.feishu.enabled");
+  if (platformEnabled(before, "ilink") !== platformEnabled(after, "ilink")) reasons.push("platforms.ilink.enabled");
+  if (ilinkReuseTokenOnStart(before) !== ilinkReuseTokenOnStart(after)) {
+    reasons.push("platforms.ilink.reuseTokenOnStart");
+  }
+
+  return reasons;
+}
+
+async function applySavedConfigIfPossible(before: AppConfig, after: AppConfig): Promise<ConfigApplyResult> {
+  const setupMode = Boolean(setupActivateHook && setupHttpServer);
+  if (setupMode) {
+    return { mode: "saved", restartRequired: false, restartReasons: [] };
+  }
+
+  const running = isServiceRunning();
+  if (!running) {
+    return { mode: "saved", restartRequired: false, restartReasons: [] };
+  }
+
+  const restartReasons = getRestartRequiredReasons(before, after);
+  if (restartReasons.length > 0) {
+    return { mode: "restart-required", restartRequired: true, restartReasons };
+  }
+  if (!reloadConfigHook) {
+    return { mode: "saved", restartRequired: false, restartReasons: [] };
+  }
+
+  await reloadConfigHook();
+  return { mode: "reload", restartRequired: false, restartReasons: [] };
 }
 
 function maskSecret(value: string | undefined): string {
@@ -298,9 +368,10 @@ async function handlePostConfig(req: IncomingMessage, res: ServerResponse): Prom
   ) as AppConfig;
   try {
     saveConfig(merged);
-    jsonReply(res, 200, { ok: true });
+    const applyResult = await applySavedConfigIfPossible(existing, merged);
+    jsonReply(res, 200, { ok: true, ...applyResult });
   } catch (err) {
-    jsonReply(res, 500, { ok: false, error: (err as Error).message });
+    jsonReply(res, 500, { ok: false, saved: true, error: (err as Error).message });
   }
 }
 
@@ -451,10 +522,17 @@ async function handleStartService(_req: IncomingMessage, res: ServerResponse): P
   }
 
   if (path === "reload") {
-    // service 已经在跑，执行真正的进程重启让所有配置（含 WSClient domain）生效
-    jsonReply(res, 200, { ok: true, pid: process.pid, mode: "restart" });
-    scheduleRestart();
-    process.exit(0);
+    // service 已经在跑：只刷新进程内配置，让后续消息/新会话使用新值。
+    if (!reloadConfigHook) {
+      jsonReply(res, 200, { ok: true, pid: process.pid, mode: "saved" });
+      return;
+    }
+    try {
+      await reloadConfigHook();
+      jsonReply(res, 200, { ok: true, pid: process.pid, mode: "reload" });
+    } catch (err) {
+      jsonReply(res, 500, { ok: false, error: (err as Error).message });
+    }
     return;
   }
 
@@ -855,6 +933,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">App ID</span><span class="val" id="cfg-APP_ID">-</span></div>
         <div class="config-row"><span class="key">App Secret</span><span class="val" id="cfg-APP_SECRET">-</span></div>
         <div class="config-row"><span class="key">平台类型</span><span class="val" id="cfg-FEISHU_PLATFORM_TYPE">-</span></div>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：飞书开关、App ID、App Secret 或平台类型变更需要重启 ChatCCC。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('feishu')">编辑</button>
       </div>
     </details>
@@ -873,6 +952,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
           <button class="btn btn-outline" style="font-size:12px" onclick="forgetIlink()">忘记扫码</button>
           <span style="font-size:11px;color:#94a3b8;margin-left:8px">清除登录状态，重启后重新扫码</span>
         </div>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：微信 iLink 开关变更需要重启 ChatCCC。</div>
       </div>
     </details>
 
@@ -882,7 +962,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">状态</span><span class="val" id="cfg-CHROME_DEVTOOLS_ENABLED">-</span></div>
         <div class="config-row" id="cfg-CHROME_DEVTOOLS_PORT_ROW"><span class="key">CDP 端口</span><span class="val" id="cfg-CHROME_DEVTOOLS_PORT">-</span></div>
         <div class="config-row" id="cfg-CHROME_DEVTOOLS_PATH_ROW"><span class="key">Chrome 路径</span><span class="val" id="cfg-CHROME_DEVTOOLS_PATH">-</span></div>
-        <div class="hint" style="margin-top:6px;line-height:1.6">依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。</div>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：保存后立即应用到 Chrome CDP 守护进程。依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('chromeDevtools')">编辑</button>
       </div>
     </details>
@@ -897,6 +977,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-ANTHROPIC_BASE_URL">-</span></div>
         <div class="config-row"><span class="key">Max Turns</span><span class="val" id="cfg-ANTHROPIC_MAX_TURN">-</span><span class="hint">(0=无限制)</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-claude" onchange="setDashboardDefaultAgent('claude', this.checked)"> 设为默认 Agent</label>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('claude')">编辑</button>
       </div>
     </details>
@@ -910,6 +991,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">头像电池电量</span><span class="val" id="cfg-CURSOR_AVATAR_BATTERY_MODE">-</span></div>
         <div class="config-row" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW"><span class="key">每月On demand use预算</span><span class="val" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-cursor" onchange="setDashboardDefaultAgent('cursor', this.checked)"> 设为默认 Agent</label>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('cursor')">编辑</button>
       </div>
     </details>
@@ -922,6 +1004,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CODEX_ALTERNATIVE_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-CODEX_EFFORT">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-codex" onchange="setDashboardDefaultAgent('codex', this.checked)"> 设为默认 Agent</label>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('codex')">编辑</button>
       </div>
     </details>
@@ -938,6 +1021,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
   <!-- Edit Modal -->
   <div id="edit-modal" class="card hidden" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:90%;max-width:480px;z-index:200;max-height:80vh;overflow-y:auto">
     <h2 id="edit-modal-title">编辑配置</h2>
+    <div id="edit-modal-effect" class="hint" style="margin-bottom:12px;line-height:1.6"></div>
     <div id="edit-modal-fields"></div>
     <div class="btn-group" style="justify-content:flex-end;margin-top:16px">
       <button class="btn btn-outline" onclick="closeEditModal()">取消</button>
@@ -977,6 +1061,26 @@ function cursorBatteryModeLabel(value) {
   return value === 'onDemandUse' ? 'On demand use 金额' : 'API 使用比例';
 }
 
+function configEffectHint(section) {
+  if (section === 'feishu') return '生效范围：App ID、App Secret、平台类型或飞书开关变更需要重启 ChatCCC；其它未变更项仅保存。';
+  if (section === 'chromeDevtools') return '生效范围：保存后立即应用到 Chrome CDP 守护进程。';
+  if (section === 'claude') return '生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。';
+  if (section === 'cursor') return '生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。';
+  if (section === 'codex') return '生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。';
+  return '生效范围：保存后按配置类型应用。';
+}
+
+function toastConfigApplyResult(result, savedText) {
+  var text = savedText || '配置已保存';
+  if (result && result.mode === 'reload') {
+    toast(text + '，后续消息/新会话已生效。');
+  } else if (result && result.mode === 'restart-required') {
+    toast(text + '，需重启服务生效。');
+  } else {
+    toast(text);
+  }
+}
+
 function onCursorBatteryModeChange(prefix, value) {
   var rowId = prefix === 'edit-' ? 'edit-cursor-on-demand-budget-row' : 'field-cursor-on-demand-budget-row';
   var row = document.getElementById(rowId);
@@ -1014,7 +1118,7 @@ async function onPlatformToggle(platform, enabled) {
     state.config.platforms[platform].enabled = enabled;
     var label = document.getElementById('dash-platform-' + platform + '-label');
     if (label) label.textContent = enabled ? '已启用' : '未启用';
-    toast((platform === 'feishu' ? '飞书' : '微信 iLink') + (enabled ? ' 已启用' : ' 已禁用') + '。需重启服务生效。');
+    toastConfigApplyResult(result, (platform === 'feishu' ? '飞书' : '微信 iLink') + (enabled ? ' 已启用' : ' 已禁用'));
   } else {
     toast('保存失败: ' + (result.error || '未知错误'), 'error');
     // 还原 toggle
@@ -1420,15 +1524,16 @@ function renderStep3() {
   document.getElementById('review-content').innerHTML = lines.join('');
 }
 
-async function saveConfig(vars) {
+async function saveConfig(vars, options) {
+  options = options || {};
   var result = await api('/api/config', 'POST', { vars: vars });
   if (result.ok) {
     state.config = Object.assign({}, state.config, vars);
-    toast('配置已保存');
+    if (!options.quiet) toastConfigApplyResult(result, '配置已保存');
   } else {
     toast('保存失败: ' + (result.error || '未知错误'), 'error');
   }
-  return result.ok;
+  return result;
 }
 
 async function setDashboardDefaultAgent(agent, enabled) {
@@ -1451,7 +1556,7 @@ async function setDashboardDefaultAgent(agent, enabled) {
     state.config.cursor.defaultAgent = agent === 'cursor';
     state.config.codex.defaultAgent = agent === 'codex';
     updateDefaultAgentToggles();
-    toast('默认 Agent 已更新');
+    toastConfigApplyResult(result, '默认 Agent 已更新');
   } else {
     toast('保存失败: ' + (result.error || '未知错误'), 'error');
     updateDefaultAgentToggles();
@@ -1464,26 +1569,36 @@ async function saveAndStart() {
     toast('飞书已启用，请先填写 App ID 和 App Secret', 'error');
     return;
   }
-  var ok = await saveConfig(vars);
-  if (!ok) return;
+  var saved = await saveConfig(vars, { quiet: true });
+  if (saved.ok !== true) return;
   document.getElementById('btn-save-start').disabled = true;
   document.getElementById('btn-save-start').innerHTML = '<span class="spinner"></span> 应用中...';
+
+  if (state.running && saved.restartRequired === true) {
+    await api('/api/restart', 'POST');
+    toast('配置已保存，服务正在重启…');
+    pollUntilRunning();
+    return;
+  }
+
+  if (state.running && saved.mode === 'reload') {
+    toastConfigApplyResult(saved, '配置已保存');
+    setTimeout(function(){ location.reload(); }, 1000);
+    return;
+  }
+
   var result = await api('/api/start', 'POST');
   if (result.ok) {
     var msg;
-    if (result.mode === 'restart') {
-      msg = '配置已保存，服务正在重启…';
+    if (result.mode === 'reload') {
+      msg = '配置已保存，后续消息/新会话已生效。';
     } else if (result.mode === 'inplace') {
       msg = '服务已启动! PID: ' + result.pid;
     } else {
       msg = '服务已启动! PID: ' + (result.pid || '?');
     }
     toast(msg);
-    if (result.mode === 'restart') {
-      pollUntilRunning();
-    } else {
-      setTimeout(function(){ location.reload(); }, 1500);
-    }
+    setTimeout(function(){ location.reload(); }, 1500);
   } else {
     toast('保存失败: ' + (result.error || '未知错误'), 'error');
     document.getElementById('btn-save-start').disabled = false;
@@ -1666,6 +1781,8 @@ function editSection(section) {
   var titleMap = { feishu: '飞书', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
   document.getElementById('edit-modal-title').textContent = '编辑 ' + (titleMap[section] || section);
 
+  document.getElementById('edit-modal-effect').textContent = configEffectHint(section);
+
   var html = '';
   var labelMap = {
     'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
@@ -1801,14 +1918,15 @@ async function saveEdit() {
     var ptEl = document.getElementById('edit-CHATCCC_FEISHU_PLATFORM_TYPE');
     if (ptEl && ptEl.value.trim()) vars['CHATCCC_FEISHU_PLATFORM_TYPE'] = ptEl.value.trim();
   }
-  await saveConfig(vars);
+  var result = await saveConfig(vars, { quiet: true });
+  if (result.ok !== true) return;
   try {
     var fresh = await api('/api/config');
     state.config = fresh.vars || state.config;
   } catch(e) {}
   closeEditModal();
   updateDashboardUI();
-  toast('修改已保存。若服务正在运行，需重启生效。');
+  toastConfigApplyResult(result, '修改已保存');
 }
 
 // ---- Other actions ----
