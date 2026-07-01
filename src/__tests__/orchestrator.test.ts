@@ -84,6 +84,7 @@ import {
 } from "../session.ts";
 import { activePrompts, resetBindingState } from "../session-chat-binding.ts";
 import { ABD_APPEND_PROMPT } from "../shared-prefix.ts";
+import { config } from "../config.ts";
 
 function mockPlatform(kind: "wechat" | "feishu" = "wechat"): PlatformAdapter {
   return {
@@ -132,6 +133,9 @@ describe("handleCommand WeChat processing ack", () => {
     _setSessionToolsFileForTest(join(tempDir, "sessions.json"));
     resetState();
     resetBindingState();
+    config.claude.defaultAgent = true;
+    config.cursor.defaultAgent = false;
+    config.codex.defaultAgent = false;
     mockStreamStates.clear();
     mockGetCodexUsageSummary.mockReset();
     mockGetCursorUsageSummary.mockReset();
