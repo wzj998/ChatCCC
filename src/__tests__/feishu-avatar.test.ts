@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +85,40 @@ function mockAvatarUploadOnlyFetch(uploadedNames: string[]): ReturnType<typeof v
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
+
+describe("Plain avatar fallback", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock("node:os");
+    vi.doUnmock("../config.ts");
+    vi.doUnmock("../cursor-usage.ts");
+    vi.restoreAllMocks();
+    getCursorUsageSummaryMock.mockReset();
+    mockConfig.cursor.avatarBatteryMode = "apiPercent";
+    mockConfig.cursor.onDemandMonthlyBudget = 1000;
+  });
+
+  it("uses a status-only avatar for unknown tools instead of falling back to Claude", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    mockAvatarUploadOnlyFetch(uploadedNames);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "ccc", "new");
+
+      expect(uploadedNames).toEqual(["avatar_plain_new.jpg"]);
+      const cacheRaw = await readFile(join(userDataDir, "state", "avatar-image-keys.json"), "utf-8");
+      const cache = JSON.parse(cacheRaw) as Record<string, string>;
+      expect(cache["plain:new"]).toBe("img_test");
+      expect(cache["claude:new"]).toBeUndefined();
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("Codex avatar usage battery", () => {
   afterEach(() => {

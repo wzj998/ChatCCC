@@ -322,6 +322,7 @@ const AVATAR_BADGES: Record<string, string> = {
 const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
+const PLAIN_AVATAR_TOOL = "plain";
 const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v13";
 const CURSOR_AVATAR_USAGE_STYLE_VERSION = "usage-battery-v1";
 
@@ -355,7 +356,7 @@ const avatarKeyCache = new Map<string, string>();
 let avatarKeyCacheLoaded = false;
 
 function normalizeAvatarTool(tool: string): string {
-  return AVATAR_BADGES[tool] ? tool : "claude";
+  return AVATAR_BADGES[tool] ? tool : PLAIN_AVATAR_TOOL;
 }
 
 function normalizeAvatarStatus(status: string): string {
@@ -760,13 +761,16 @@ async function renderAvatar(
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   const composites: sharp.OverlayOptions[] = [];
+  const hasAgentBadge = normalizedTool !== PLAIN_AVATAR_TOOL;
 
   const codexWeeklyUsage = normalizedTool === "codex" ? codexUsage?.weekly : null;
   const useDynamicCodexAvatar = codexUsage && codexWeeklyUsage;
   const useDynamicCursorAvatar = normalizedTool === "cursor" && cursorBatteryPercent !== null;
   const basePath = useDynamicCodexAvatar || useDynamicCursorAvatar
     ? AVATAR_SOURCES[normalizedStatus]
-    : avatarCombinationPath(normalizedTool, normalizedStatus);
+    : hasAgentBadge
+      ? avatarCombinationPath(normalizedTool, normalizedStatus)
+      : AVATAR_SOURCES[normalizedStatus];
 
   if (useDynamicCodexAvatar) {
     composites.push(
@@ -796,9 +800,9 @@ async function renderAvatar(
   return {
     buffer: jpeg,
     contentType: "image/jpeg",
-    filename: codexUsage?.weekly
+    filename: normalizedTool === "codex" && codexUsage?.weekly
       ? `avatar_${normalizedTool}_${normalizedStatus}_week_${codexUsage.weekly.remainingPercent}_5h_${codexUsage.fiveHour.remainingPercent}.jpg`
-      : cursorBatteryPercent !== null
+      : normalizedTool === "cursor" && cursorBatteryPercent !== null
         ? `avatar_${normalizedTool}_${normalizedStatus}_battery_${cursorBatteryPercent}.jpg`
       : `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
   };
