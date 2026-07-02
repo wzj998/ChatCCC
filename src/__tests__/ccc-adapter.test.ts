@@ -14,10 +14,17 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 vi.mock("ai", () => ({
   streamText: streamTextMock,
   generateText: generateTextMock,
+  stepCountIs: vi.fn((count: number) => ({ count })),
+  jsonSchema: vi.fn((schema: unknown) => schema),
+  tool: vi.fn((definition: unknown) => definition),
 }));
 
 async function* textStream(...chunks: string[]): AsyncIterable<string> {
   for (const chunk of chunks) yield chunk;
+}
+
+async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
+  for (const part of parts) yield part;
 }
 
 afterEach(() => {
@@ -69,5 +76,38 @@ describe("createCccAdapter", () => {
     expect(streamTextMock).toHaveBeenCalledWith(expect.objectContaining({
       model: { modelId: "deepseek-v4-flash" },
     }));
+  });
+
+  it("maps ChatSession tool events to unified tool blocks", async () => {
+    const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
+    const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-tools-"));
+    const adapter = createCccAdapter({
+      apiKey: "sk-test",
+      contextDir,
+      model: "deepseek-v4-flash",
+    });
+    const { sessionId } = await adapter.createSession("F:\\repo");
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "README.md" } },
+        { type: "tool-result", toolCallId: "call-1", toolName: "read_file", output: { content: "hello" } },
+      ),
+    });
+
+    const messages = [];
+    for await (const message of adapter.prompt(sessionId, "read", "F:\\repo")) {
+      messages.push(message);
+    }
+
+    expect(messages).toEqual([
+      {
+        type: "assistant",
+        blocks: [{ type: "tool_use", id: "call-1", name: "read_file", input: { path: "README.md" } }],
+      },
+      {
+        type: "assistant",
+        blocks: [{ type: "tool_result", tool_use_id: "call-1", content: { content: "hello" }, is_error: false }],
+      },
+    ]);
   });
 });

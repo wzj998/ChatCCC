@@ -74,6 +74,26 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
             type: "assistant",
             blocks: [{ type: "text", text: event.text }],
           };
+        } else if (event.type === "tool_use") {
+          yield {
+            type: "assistant",
+            blocks: [{
+              type: "tool_use",
+              id: event.id,
+              name: event.name,
+              input: event.input,
+            }],
+          };
+        } else if (event.type === "tool_result") {
+          yield {
+            type: "assistant",
+            blocks: [{
+              type: "tool_result",
+              tool_use_id: event.tool_use_id,
+              content: event.content,
+              is_error: event.is_error,
+            }],
+          };
         } else if (event.type === "error") {
           throw new Error(event.message);
         }

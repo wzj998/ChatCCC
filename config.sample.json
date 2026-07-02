@@ -33,6 +33,12 @@
       "maxBytesPerTurn": 52428800,
       "retentionDays": 7,
       "keepCompleted": false
+    },
+    "ccc": {
+      "enabled": false,
+      "maxBytesPerTurn": 52428800,
+      "retentionDays": 7,
+      "keepCompleted": false
     }
   },
   "claude": {
