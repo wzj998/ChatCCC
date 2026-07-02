@@ -67,6 +67,11 @@ describe("SimulatedPlatform", () => {
     expect(result).toEqual({ sessionId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", tool: "claude" });
   });
 
+  it("pure extractSessionInfo recognizes ccc session ids", () => {
+    const result = SimulatedPlatform.extractSessionInfo("CCC Session: session-20260702-121530-a1b2c3");
+    expect(result).toEqual({ sessionId: "session-20260702-121530-a1b2c3", tool: "ccc" });
+  });
+
   it("纯函数 formatDelayNotice 正常工作", () => {
     const notice = SimulatedPlatform.formatDelayNotice(Date.now() - 20 * 60 * 1000, "测试消息");
     expect(notice).toBeDefined();

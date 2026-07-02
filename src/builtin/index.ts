@@ -126,6 +126,7 @@ export class ChatSession {
       persist: options.persist ?? false,
       contextDir: options.contextDir,
       sessionId: options.sessionId ?? defaultBuiltinSessionId(options.cwd ?? process.cwd()),
+      cwd: options.cwd ?? process.cwd(),
       compactAtTokens: options.compactAtTokens,
       keepRecentMessages: options.keepRecentMessages,
     });

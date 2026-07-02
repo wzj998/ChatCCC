@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -12,12 +12,25 @@ export interface BuiltinContextMessage {
 
 export interface BuiltinContextState {
   version: 1;
+  createdAt: number;
   updatedAt: number;
   sessionId: string;
+  cwd?: string;
   summary: string;
   messages: BuiltinContextMessage[];
   totalMessages: number;
   compactedMessages: number;
+}
+
+export interface BuiltinContextSessionInfo {
+  sessionId: string;
+  createdAt: number;
+  updatedAt: number;
+  cwd?: string;
+  totalMessages: number;
+  compactedMessages: number;
+  hasSummary: boolean;
+  contextFilePath: string;
 }
 
 export interface BuiltinCompactionPlan {
@@ -30,6 +43,7 @@ export interface BuiltinContextOptions {
   persist?: boolean;
   contextDir?: string;
   sessionId?: string;
+  cwd?: string;
   compactAtTokens?: number;
   keepRecentMessages?: number;
 }
@@ -38,13 +52,30 @@ export const DEFAULT_BUILTIN_CONTEXT_DIR = join(homedir(), ".chatccc", "builtin"
 export const DEFAULT_COMPACT_AT_TOKENS = 48_000;
 export const DEFAULT_KEEP_RECENT_MESSAGES = 16;
 
-function sanitizeSessionId(value: string): string {
+export function normalizeBuiltinSessionId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "default";
 }
 
 export function defaultBuiltinSessionId(cwd: string = process.cwd()): string {
   const hash = createHash("sha1").update(cwd).digest("hex").slice(0, 12);
   return `cwd-${hash}`;
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+export function newBuiltinSessionId(now: Date = new Date(), suffix: string = randomBytes(3).toString("hex")): string {
+  const timestamp = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+    "-",
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+  ].join("");
+  return normalizeBuiltinSessionId(`session-${timestamp}-${suffix}`);
 }
 
 function normalizeMessage(value: unknown): BuiltinContextMessage | null {
@@ -55,11 +86,14 @@ function normalizeMessage(value: unknown): BuiltinContextMessage | null {
   return { role: raw.role, content: raw.content };
 }
 
-function emptyState(sessionId: string): BuiltinContextState {
+function emptyState(sessionId: string, cwd?: string): BuiltinContextState {
+  const now = Date.now();
   return {
     version: 1,
-    updatedAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
     sessionId,
+    ...(cwd ? { cwd } : {}),
     summary: "",
     messages: [],
     totalMessages: 0,
@@ -67,22 +101,84 @@ function emptyState(sessionId: string): BuiltinContextState {
   };
 }
 
-function normalizeState(value: unknown, sessionId: string): BuiltinContextState {
-  if (!value || typeof value !== "object") return emptyState(sessionId);
+function normalizeState(value: unknown, sessionId: string, cwd?: string): BuiltinContextState {
+  if (!value || typeof value !== "object") return emptyState(sessionId, cwd);
   const raw = value as Partial<BuiltinContextState>;
   const messages = Array.isArray(raw.messages)
     ? raw.messages.map(normalizeMessage).filter((m): m is BuiltinContextMessage => !!m)
     : [];
+  const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
 
   return {
     version: 1,
-    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
+    createdAt: typeof raw.createdAt === "number" ? raw.createdAt : updatedAt,
+    updatedAt,
     sessionId,
+    ...(typeof raw.cwd === "string" ? { cwd: raw.cwd } : cwd ? { cwd } : {}),
     summary: typeof raw.summary === "string" ? raw.summary : "",
     messages,
     totalMessages: typeof raw.totalMessages === "number" ? raw.totalMessages : messages.length,
     compactedMessages: typeof raw.compactedMessages === "number" ? raw.compactedMessages : 0,
   };
+}
+
+function contextFilePath(contextDir: string, sessionId: string): string {
+  return join(contextDir, sessionId, "context.json");
+}
+
+function readSessionInfo(contextDir: string, sessionId: string): BuiltinContextSessionInfo | null {
+  const normalizedSessionId = normalizeBuiltinSessionId(sessionId);
+  const filePath = contextFilePath(contextDir, normalizedSessionId);
+  if (!existsSync(filePath)) return null;
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    const state = normalizeState(JSON.parse(raw), normalizedSessionId);
+    return {
+      sessionId: normalizedSessionId,
+      createdAt: state.createdAt,
+      updatedAt: state.updatedAt,
+      ...(state.cwd ? { cwd: state.cwd } : {}),
+      totalMessages: state.totalMessages,
+      compactedMessages: state.compactedMessages,
+      hasSummary: state.summary.trim().length > 0,
+      contextFilePath: filePath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getBuiltinContextSession(
+  sessionId: string,
+  contextDir: string = DEFAULT_BUILTIN_CONTEXT_DIR,
+): BuiltinContextSessionInfo | null {
+  return readSessionInfo(contextDir, sessionId);
+}
+
+export function listBuiltinContextSessions(
+  contextDir: string = DEFAULT_BUILTIN_CONTEXT_DIR,
+): BuiltinContextSessionInfo[] {
+  if (!existsSync(contextDir)) return [];
+  const sessions: BuiltinContextSessionInfo[] = [];
+  for (const entry of readdirSync(contextDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const info = readSessionInfo(contextDir, entry.name);
+    if (info) sessions.push(info);
+  }
+  return sessions.sort((a, b) => {
+    if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt;
+    return a.sessionId.localeCompare(b.sessionId);
+  });
+}
+
+export function latestBuiltinSessionForCwd(
+  cwd: string,
+  contextDir: string = DEFAULT_BUILTIN_CONTEXT_DIR,
+): BuiltinContextSessionInfo | null {
+  const legacySessionId = defaultBuiltinSessionId(cwd);
+  return listBuiltinContextSessions(contextDir).find((session) =>
+    session.cwd === cwd || session.sessionId === legacySessionId
+  ) ?? null;
 }
 
 export function estimateBuiltinContextTokens(summary: string, messages: readonly BuiltinContextMessage[]): number {
@@ -123,12 +219,14 @@ export class BuiltinContextManager {
   readonly compactAtTokens: number;
   readonly keepRecentMessages: number;
 
+  private readonly cwd?: string;
   private state: BuiltinContextState;
 
   constructor(options: BuiltinContextOptions = {}) {
     this.persist = options.persist ?? false;
     this.contextDir = options.contextDir ?? DEFAULT_BUILTIN_CONTEXT_DIR;
-    this.sessionId = sanitizeSessionId(options.sessionId ?? defaultBuiltinSessionId());
+    this.sessionId = normalizeBuiltinSessionId(options.sessionId ?? defaultBuiltinSessionId());
+    this.cwd = options.cwd;
     this.compactAtTokens = options.compactAtTokens ?? DEFAULT_COMPACT_AT_TOKENS;
     this.keepRecentMessages = Math.max(1, options.keepRecentMessages ?? DEFAULT_KEEP_RECENT_MESSAGES);
     this.state = this.load();
@@ -147,7 +245,7 @@ export class BuiltinContextManager {
   }
 
   get contextFilePath(): string {
-    return join(this.contextDir, this.sessionId, "context.json");
+    return contextFilePath(this.contextDir, this.sessionId);
   }
 
   appendMessage(message: BuiltinContextMessage): void {
@@ -199,7 +297,7 @@ export class BuiltinContextManager {
   }
 
   reset(): void {
-    this.state = emptyState(this.sessionId);
+    this.state = emptyState(this.sessionId, this.cwd);
     this.save();
   }
 
@@ -214,12 +312,12 @@ export class BuiltinContextManager {
   }
 
   private load(): BuiltinContextState {
-    if (!this.persist || !existsSync(this.contextFilePath)) return emptyState(this.sessionId);
+    if (!this.persist || !existsSync(this.contextFilePath)) return emptyState(this.sessionId, this.cwd);
     try {
       const raw = readFileSync(this.contextFilePath, "utf8");
-      return normalizeState(JSON.parse(raw), this.sessionId);
+      return normalizeState(JSON.parse(raw), this.sessionId, this.cwd);
     } catch {
-      return emptyState(this.sessionId);
+      return emptyState(this.sessionId, this.cwd);
     }
   }
 }

@@ -274,6 +274,46 @@ export function buildCdCard(
   });
 }
 
+function sessionToolLabel(tool: string): string {
+  if (tool === "cursor") return "Cursor";
+  if (tool === "codex") return "Codex";
+  if (tool === "ccc") return "CCC Agent";
+  return "Claude Code";
+}
+
+function pushSessionGroup(
+  lines: string[],
+  title: string,
+  sessions: Array<{
+    sessionId: string;
+    chatName: string;
+    chatId: string;
+    active: boolean;
+    turnCount: number;
+    elapsedSeconds: number | null;
+    model: string;
+    tool: string;
+  }>,
+  formatSession: (session: {
+    sessionId: string;
+    chatName: string;
+    chatId: string;
+    active: boolean;
+    turnCount: number;
+    elapsedSeconds: number | null;
+    model: string;
+    tool: string;
+  }, index: number) => string,
+  index: { value: number },
+): void {
+  if (sessions.length === 0) return;
+  if (index.value > 0) lines.push("", `**${title}:**`, "");
+  else lines.push(`**${title}:**`, "");
+  for (const session of sessions) {
+    lines.push(formatSession(session, index.value++));
+  }
+}
+
 // 所有会话列表卡片（Claude Code 优先，然后 Cursor）
 export function buildSessionsCard(sessions: Array<{
   sessionId: string;
@@ -287,12 +327,14 @@ export function buildSessionsCard(sessions: Array<{
 }>, opts: { defaultToolLabel?: string } = {}): string {
   const defaultToolLabel = opts.defaultToolLabel ?? "Claude Code";
   // 按 tool 分组排序：Claude Code 在前，Cursor 其次，Codex 最后
-  const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor" && s.tool !== "codex");
+  const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor" && s.tool !== "codex" && s.tool !== "ccc");
   const cursorSessions = sessions.filter(s => s.tool === "cursor");
   const codexSessions = sessions.filter(s => s.tool === "codex");
+  const cccSessions = sessions.filter(s => s.tool === "ccc");
   const hasClaudeCode = claudeCodeSessions.length > 0;
   const hasCursor = cursorSessions.length > 0;
   const hasCodex = codexSessions.length > 0;
+  const hasCcc = cccSessions.length > 0;
 
   if (sessions.length === 0) {
     return JSON.stringify({
@@ -315,37 +357,18 @@ export function buildSessionsCard(sessions: Array<{
       const secs = s.elapsedSeconds % 60;
       extra = ` | 本轮: ${mins}分${secs}秒`;
     }
-    const toolLabel = s.tool === "cursor" ? "Cursor" : s.tool === "codex" ? "Codex" : "Claude Code";
+    const toolLabel = sessionToolLabel(s.tool);
     const namePart = s.chatName ? `**${s.chatName}** ` : "";
     const chatTag = !s.chatId ? " (chat id缺失)" : s.chatId.startsWith("oc_") ? " (群聊)" : "";
     return `**${i + 1}.** ${namePart}${chatTag} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
   const lines: string[] = [`共 **${sessions.length}** 个会话:`, ""];
-  let idx = 0;
-
-  if (hasClaudeCode) {
-    lines.push("**Claude Code 会话:**", "");
-    for (const s of claudeCodeSessions) {
-      lines.push(formatSession(s, idx++));
-    }
-  }
-
-  if (hasCursor) {
-    if (hasClaudeCode) lines.push("", "**Cursor 会话:**", "");
-    else lines.push("**Cursor 会话:**", "");
-    for (const s of cursorSessions) {
-      lines.push(formatSession(s, idx++));
-    }
-  }
-
-  if (hasCodex) {
-    if (hasClaudeCode || hasCursor) lines.push("", "**Codex 会话:**", "");
-    else lines.push("**Codex 会话:**", "");
-    for (const s of codexSessions) {
-      lines.push(formatSession(s, idx++));
-    }
-  }
+  const idx = { value: 0 };
+  if (hasClaudeCode) pushSessionGroup(lines, "Claude Code 会话", claudeCodeSessions, formatSession, idx);
+  if (hasCursor) pushSessionGroup(lines, "Cursor 会话", cursorSessions, formatSession, idx);
+  if (hasCodex) pushSessionGroup(lines, "Codex 会话", codexSessions, formatSession, idx);
+  if (hasCcc) pushSessionGroup(lines, "CCC Agent 会话", cccSessions, formatSession, idx);
 
   return JSON.stringify({
     config: { wide_screen_mode: true },

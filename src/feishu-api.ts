@@ -14,6 +14,7 @@ import {
   CLAUDE_SESSION_PREFIX,
   CURSOR_SESSION_PREFIX,
   CODEX_SESSION_PREFIX,
+  CCC_SESSION_PREFIX,
   ts,
   resolveDefaultAgentTool,
   toolDisplayName,
@@ -279,12 +280,13 @@ export function extractSessionInfo(description: string): { sessionId: string; to
     { prefix: CLAUDE_SESSION_PREFIX, tool: "claude" },
     { prefix: CURSOR_SESSION_PREFIX, tool: "cursor" },
     { prefix: CODEX_SESSION_PREFIX, tool: "codex" },
+    { prefix: CCC_SESSION_PREFIX, tool: "ccc" },
   ];
   for (const { prefix, tool } of PREFIXES) {
     const idx = description.indexOf(prefix);
     if (idx === -1) continue;
     const after = description.slice(idx + prefix.length).trim();
-    const match = after.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+    const match = after.match(/^([a-zA-Z0-9_.-]+)/);
     if (match) return { sessionId: match[1], tool };
   }
   return null;

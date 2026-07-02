@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import {
   BuiltinContextManager,
   estimateBuiltinContextTokens,
+  listBuiltinContextSessions,
+  newBuiltinSessionId,
   serializeMessagesForSummary,
 } from "../builtin/context.ts";
 
@@ -109,9 +111,44 @@ describe("BuiltinContextManager", () => {
     expect(persisted.messages).toEqual([]);
     expect(persisted.totalMessages).toBe(0);
   });
+
+  it("persists cwd metadata and lists saved sessions newest first", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-builtin-context-list-"));
+
+    const first = new BuiltinContextManager({
+      persist: true,
+      contextDir: dir,
+      sessionId: "older",
+      cwd: "C:\\repo-a",
+    });
+    first.appendMessage({ role: "user", content: "old" });
+
+    const second = new BuiltinContextManager({
+      persist: true,
+      contextDir: dir,
+      sessionId: "newer",
+      cwd: "C:\\repo-b",
+    });
+    second.appendMessage({ role: "user", content: "new" });
+
+    const sessions = listBuiltinContextSessions(dir);
+
+    expect(sessions.map((s) => s.sessionId)).toEqual(["newer", "older"]);
+    expect(sessions[0]).toEqual(expect.objectContaining({
+      cwd: "C:\\repo-b",
+      totalMessages: 1,
+      hasSummary: false,
+    }));
+  });
 });
 
 describe("builtin context helpers", () => {
+  it("creates readable timestamp-based session ids", () => {
+    const id = newBuiltinSessionId(new Date(2026, 6, 2, 12, 15, 30), "a1b2c3");
+
+    expect(id).toBe("session-20260702-121530-a1b2c3");
+  });
+
   it("estimates tokens from summary and messages", () => {
     expect(estimateBuiltinContextTokens("abc", [{ role: "user", content: "abcdef" }]))
       .toBeGreaterThanOrEqual(3);

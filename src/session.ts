@@ -30,6 +30,7 @@ import type { ToolProcessInfo } from "./adapters/adapter-interface.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
+import { createCccAdapter } from "./adapters/ccc-adapter.ts";
 import { resourceMonitor, registerProcess, unregisterProcess } from "./adapters/resource-monitor.ts";
 import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
@@ -372,6 +373,7 @@ export function getEffectiveModelForTool(tool: string, sessionId?: string): stri
   }
   if (tool === "cursor") return config.cursor.model;
   if (tool === "codex") return config.codex.model;
+  if (tool === "ccc") return config.ccc.model;
   return CLAUDE_MODEL;
 }
 
@@ -420,6 +422,8 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
     adapter = createCursorAdapter({ model: effectiveModel || undefined });
   } else if (tool === "codex") {
     adapter = createCodexAdapter({ model: effectiveModel || undefined, effort: effectiveEffort || undefined });
+  } else if (tool === "ccc") {
+    adapter = createCccAdapter({ model: effectiveModel || undefined });
   } else {
     adapter = createClaudeAdapter({
       model: effectiveModel,
@@ -864,6 +868,11 @@ function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?:
       ? `effort=${e}`
       : "effort=(由 codex config.toml 决定)";
     return `model=${modelStr}, ${effortStr}`;
+  }
+  if (tool === "ccc") {
+    const m = getEffectiveModelForTool(tool, sessionId);
+    const modelStr = m.trim() !== "" ? m : "(not configured)";
+    return `model=${modelStr}, baseURL=${config.ccc.DEEPSEEK_BASE_URL}`;
   }
   return `model=${anthropicConfigDisplay(getModelForSession(sessionId))}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(getEffectiveEffortForTool(tool, sessionId))}`;
 }
@@ -1787,6 +1796,13 @@ async function resolveModelEffort(
     return {
       model: m.trim() !== "" ? m : UNKNOWN_MODEL_PLACEHOLDER,
       effort: e.trim() !== "" ? e : UNKNOWN_MODEL_PLACEHOLDER,
+    };
+  }
+  if (tool === "ccc") {
+    const m = getEffectiveModelForTool(tool, sessionId);
+    return {
+      model: m.trim() !== "" ? m : UNKNOWN_MODEL_PLACEHOLDER,
+      effort: null,
     };
   }
   return {

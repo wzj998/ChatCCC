@@ -169,7 +169,7 @@ export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
 export type CursorAvatarBatteryMode = "apiPercent" | "onDemandUse";
 
 /** 获取指定 agent 配置中所有模型相关的值（最多 100 个，去重） */
-export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): string[] {
+export function getAllModelsForTool(tool: string, cfg: AppConfig = config): string[] {
   const seen = new Set<string>();
   const collect = (v: unknown) => {
     if (typeof v === "string" && v.trim()) seen.add(v.trim());
@@ -184,6 +184,8 @@ export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): s
   } else if (tool === "codex") {
     collect(cfg.codex.model);
     collect(cfg.codex.alternativeModel);
+  } else if (tool === "ccc") {
+    collect(cfg.ccc.model);
   }
 
   return Array.from(seen).slice(0, 100);
@@ -192,7 +194,7 @@ export function getAllModelsForTool(tool: AgentTool, cfg: AppConfig = config): s
 export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const CODEX_EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
-export function getAllEffortsForTool(tool: AgentTool): string[] {
+export function getAllEffortsForTool(tool: string): string[] {
   if (tool === "claude") return [...CLAUDE_EFFORT_LEVELS];
   if (tool === "codex") return [...CODEX_EFFORT_LEVELS];
   return [];
@@ -964,11 +966,14 @@ export const CLAUDE_SESSION_PREFIX = "Claude Code Session:";
 export const CURSOR_SESSION_PREFIX = "Cursor Session:";
 /** 群描述中用于识别 Codex 会话的前缀 */
 export const CODEX_SESSION_PREFIX = "Codex Session:";
+/** 群描述中用于识别 hidden ccc agent 会话的前缀 */
+export const CCC_SESSION_PREFIX = "CCC Session:";
 
 /** 根据 tool 名称返回对应的群描述前缀 */
 export function sessionPrefixForTool(tool: string): string {
   if (tool === "cursor") return CURSOR_SESSION_PREFIX;
   if (tool === "codex") return CODEX_SESSION_PREFIX;
+  if (tool === "ccc") return CCC_SESSION_PREFIX;
   return CLAUDE_SESSION_PREFIX;
 }
 
@@ -976,6 +981,7 @@ export function sessionPrefixForTool(tool: string): string {
 export function toolDisplayName(tool: string): string {
   if (tool === "cursor") return "Cursor";
   if (tool === "codex") return "Codex";
+  if (tool === "ccc") return "CCC Agent";
   return "Claude Code";
 }
 
