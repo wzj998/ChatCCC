@@ -11,6 +11,7 @@ import * as readline from "node:readline";
 import * as process from "node:process";
 import { config as appConfig } from "../config.ts";
 import { ChatSession, type ChatSessionConfig, type ChatSessionOptions } from "./index.js";
+import { createCtrlCState } from "./sigint.js";
 
 // ---------------------------------------------------------------------------
 // 命令行参数解析
@@ -76,8 +77,6 @@ const C = {
   yellow: "\x1b[33m",
 };
 
-const DOUBLE_CTRL_C_EXIT_WINDOW_MS = 2000;
-
 // ---------------------------------------------------------------------------
 // 主程序
 // ---------------------------------------------------------------------------
@@ -90,12 +89,12 @@ async function main(): Promise<void> {
   if (options.cwd) {
     console.log(`${C.dim}目录: ${options.cwd}${C.reset}`);
   }
-  console.log(`${C.dim}输入消息开始对话，Ctrl+C 中断当前回复，exit 退出${C.reset}`);
+  console.log(`${C.dim}输入消息开始对话，连续 Ctrl+C 中断当前回复或退出，exit 退出${C.reset}`);
   console.log("");
 
   let session: ChatSession;
   try {
-    session = new ChatSession(config, options);
+    session = new ChatSession(config, { ...options, persist: true });
   } catch (err) {
     console.error(`${C.yellow}${(err as Error).message}${C.reset}`);
     process.exit(1);
@@ -109,12 +108,12 @@ async function main(): Promise<void> {
 
   // 用于中断当前 LLM 调用的 AbortController
   let currentAbort: AbortController | null = null;
-  let lastCtrlCAt = 0;
+  const ctrlCState = createCtrlCState();
 
   rl.prompt();
 
   rl.on("line", async (line: string) => {
-    lastCtrlCAt = 0;
+    ctrlCState.reset();
     const input = line.trim();
     if (!input) {
       rl.prompt();
@@ -156,6 +155,8 @@ async function main(): Promise<void> {
         } else if (event.type === "done") {
           if (lastAccumulated) console.log("");
           console.log(`${C.dim}[完成]${C.reset}`);
+        } else if (event.type === "compact") {
+          console.log(`${C.dim}[上下文已压缩：${event.compactedMessages} 条旧消息]${C.reset}`);
         } else if (event.type === "error") {
           console.log(`\n${C.yellow}[错误] ${event.message}${C.reset}`);
         }
@@ -164,29 +165,35 @@ async function main(): Promise<void> {
       console.log(`\n${C.yellow}[错误] ${(err as Error).message}${C.reset}`);
     } finally {
       currentAbort = null;
+      ctrlCState.reset();
     }
 
     rl.prompt();
   });
 
-  // Ctrl+C → 生成中中断；空闲或连续按下时退出
+  // Ctrl+C -> generating requires confirmation to interrupt; idle requires confirmation to exit.
   rl.on("SIGINT", () => {
-    const now = Date.now();
-    const shouldExit = now - lastCtrlCAt <= DOUBLE_CTRL_C_EXIT_WINDOW_MS;
+    const action = ctrlCState.press(currentAbort !== null);
 
-    if (shouldExit) {
+    if (action === "exit") {
       console.log(`\n${C.dim}再见${C.reset}`);
       rl.close();
       return;
     }
 
-    lastCtrlCAt = now;
-
-    if (currentAbort) {
-      console.log(`\n${C.yellow}[中断中...]${C.reset} ${C.dim}再次 Ctrl+C 退出${C.reset}`);
-      currentAbort.abort();
+    if (action === "interrupt") {
+      console.log(`\n${C.yellow}[中断中...]${C.reset}`);
+      currentAbort?.abort();
       currentAbort = null;
-    } else {
+      return;
+    }
+
+    if (action === "arm-interrupt") {
+      console.log(`\n${C.dim}再次 Ctrl+C 中断当前回复${C.reset}`);
+      return;
+    }
+
+    if (action === "arm-exit") {
       console.log(`\n${C.dim}再次 Ctrl+C 退出，或输入 exit 退出${C.reset}`);
       rl.prompt();
     }
