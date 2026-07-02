@@ -657,4 +657,29 @@ describe("handleCommand WeChat processing ack", () => {
     );
     expect(claudeReadyCall?.[2]).not.toContain("/usage");
   });
+
+  it("allows the hidden /new ccc entry without advertising it in normal help", async () => {
+    const platform = mockPlatform("feishu");
+    _setAdapterForToolForTest("ccc", mockAdapter("session-20260702-121530-a1b2c3"));
+
+    await handleCommand(platform, "/new ccc", "feishu-p2p-ccc", "ou-user", Date.now(), "p2p");
+
+    expect(platform.updateChatInfo).toHaveBeenCalledWith(
+      "feishu-group",
+      expect.any(String),
+      "CCC Session: session-20260702-121530-a1b2c3",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-group",
+      "CCC Agent Session Ready",
+      expect.stringContaining("CCC Agent"),
+      "green",
+    );
+
+    const helpPlatform = mockPlatform("feishu");
+    await handleCommand(helpPlatform, "hello", "feishu-group-help", "ou-user", Date.now(), "group");
+    const helpCard = vi.mocked(helpPlatform.sendRawCard).mock.calls.at(-1)?.[1] as string;
+    expect(helpCard).not.toContain("/new ccc");
+    expect(helpCard).not.toContain("CCC Agent");
+  });
 });

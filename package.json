@@ -6,7 +6,8 @@
   "type": "module",
   "main": "./src/index.ts",
   "bin": {
-    "chatccc": "bin/chatccc.mjs"
+    "chatccc": "bin/chatccc.mjs",
+    "cccagent": "bin/cccagent.mjs"
   },
   "files": [
     "src/",

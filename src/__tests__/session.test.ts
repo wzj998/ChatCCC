@@ -954,6 +954,16 @@ describe("getSessionStatus", () => {
     expect(status!.model).toBe(UNKNOWN_MODEL_PLACEHOLDER);
     expect(status!.effort).toBeNull();
   });
+
+  it("CCC Agent 会话：model 来自 ccc 配置且 effort 恒为 null", async () => {
+    mockSessionInfo("chat-ccc", { sessionId: "session-ccc", tool: "ccc" });
+
+    const status = await getSessionStatus("chat-ccc");
+
+    expect(status!.model).toBeTruthy();
+    expect(status!.model).not.toBe(UNKNOWN_MODEL_PLACEHOLDER);
+    expect(status!.effort).toBeNull();
+  });
 });
 
 describe("getAllSessionsStatus", () => {

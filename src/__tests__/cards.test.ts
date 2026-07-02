@@ -170,6 +170,15 @@ describe("buildHelpCard", () => {
     expect(lines).toContain("发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡");
     expect(lines.at(-1)).toBe(ABD_HELP_LINE);
   });
+
+  it("does not advertise the hidden ccc agent", () => {
+    const card = buildHelpCard("test");
+    const parsed = JSON.parse(card);
+    const text = JSON.stringify(parsed);
+
+    expect(text).not.toContain("/new ccc");
+    expect(text).not.toContain("CCC Agent");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -372,6 +381,18 @@ describe("buildSessionsCard", () => {
     const content: string = parsed.elements[0].text.content;
     expect(content).toContain("Claude Code 会话");
     expect(content).not.toContain("Cursor 会话");
+  });
+
+  it("labels hidden ccc sessions without grouping them as Claude Code", () => {
+    const card = buildSessionsCard([
+      { sessionId: "session-20260702-121530-a1b2c3", chatName: "", chatId: "oc_ccc", active: false, turnCount: 1, elapsedSeconds: null, model: "deepseek-v4-pro", tool: "ccc" },
+    ]);
+    const parsed = JSON.parse(card);
+    const content: string = parsed.elements[0].text.content;
+
+    expect(content).toContain("CCC Agent 会话");
+    expect(content).toContain("工具: CCC Agent");
+    expect(content).not.toContain("Claude Code 会话");
   });
 
   it("displays chatName when provided", () => {

@@ -742,7 +742,7 @@ export async function handleCommand(
     const toolArg = text.slice(5).trim().toLowerCase();
     const tool = toolArg || resolveDefaultAgentTool();
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
-    const validTools = ["claude", "cursor", "codex"];
+    const validTools = ["claude", "cursor", "codex", "ccc"];
     if (!validTools.includes(tool)) {
       logTrace(tid, "DONE", { outcome: "new_invalid_tool", tool });
       await platform.sendCard(
