@@ -1171,6 +1171,7 @@ export async function runAgentSession(
   let lastFileWrite = Date.now();
   const FILE_WRITE_INTERVAL_MS = 2000;
   const toolCallMap = new Map<string, { name: string; input: unknown }>();
+  let streamErrored = false;
 
   try {
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
@@ -1224,6 +1225,7 @@ export async function runAgentSession(
       }
     }
   } catch (streamErr) {
+    streamErrored = true;
     console.error(`[${ts()}] [STREAM] Error in stream loop for ${sessionId}: ${(streamErr as Error).message}`);
   } finally {
     // 标记 prompt 结束
@@ -1239,7 +1241,7 @@ export async function runAgentSession(
     // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
     // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
     // 运行中并更新旧卡片，而不是新建卡片。
-    const finalStatus = (wasAbnormalExit || wasResourceStuck) ? "error" : wasStopped ? "stopped" : "done";
+    const finalStatus = (streamErrored || wasAbnormalExit || wasResourceStuck) ? "error" : wasStopped ? "stopped" : "done";
     const finalReply = pickFinalReply(state).trim();
 
     // stop-stuck-loop 接口可能在 fire-and-forget 中已写入带 final_reply 的
