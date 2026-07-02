@@ -118,6 +118,67 @@ interface CursorContentBlock {
   [key: string]: unknown;
 }
 
+interface CursorProcessCloseInfo {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+}
+
+interface CursorProcessHandle {
+  proc: ChildProcess;
+  getStderr(): string;
+  waitForClose(): Promise<CursorProcessCloseInfo>;
+}
+
+interface CursorStreamStats {
+  stdoutLength: number;
+  rawLineCount: number;
+  parsedLineCount: number;
+}
+
+type CursorSpawn = typeof spawn;
+
+function createCursorStreamStats(): CursorStreamStats {
+  return { stdoutLength: 0, rawLineCount: 0, parsedLineCount: 0 };
+}
+
+function isCursorAuthRelatedError(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  return (
+    text.includes("authentication required") ||
+    text.includes("not logged in") ||
+    text.includes("login") ||
+    text.includes("sign in") ||
+    text.includes("unauthorized") ||
+    text.includes("401") ||
+    text.includes("cursor_api_key") ||
+    text.includes("api key")
+  );
+}
+
+export function formatCursorAgentEmptyOutputMessage(args: {
+  exitCode: number | null;
+  stdoutLength: number;
+  stderr: string;
+}): string | null {
+  if (args.exitCode === 0) return null;
+  if (args.stdoutLength !== 0) return null;
+  if (args.stderr.trim().length === 0) return null;
+
+  if (isCursorAuthRelatedError(args.stderr)) {
+    return "Cursor Agent 没有返回内容。检测到认证相关错误，可能需要重新登录 Cursor Agent，或配置 CURSOR_API_KEY。请在本机运行 agent status 检查状态；如未登录，请运行 agent login 后重试。";
+  }
+
+  return "Cursor Agent 没有返回内容。底层命令异常退出，请检查本机 Cursor Agent 状态后重试。";
+}
+
+function createCursorAgentFailureError(info: CursorProcessCloseInfo): Error {
+  const stderr = info.stderr.trim().slice(0, 500);
+  return new Error(
+    `Cursor Agent exited without stream-json output (exit=${info.code ?? "unknown"}, stderr=${stderr})`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // normalizeCursorMessage — Cursor 消息 → UnifiedStreamMessage | null
 // ---------------------------------------------------------------------------
@@ -304,7 +365,8 @@ function spawnAgent(
   stdinText?: string,
   modelOverride?: string,
   mode?: "plan" | "ask",
-): ChildProcess {
+  spawnImpl: CursorSpawn = spawn,
+): CursorProcessHandle {
   let allArgs: string[];
   if (mode) {
     // plan/ask 模式：移除 --force/--yolo，添加 --mode plan/ask
@@ -323,7 +385,7 @@ function spawnAgent(
       allArgs.push("--model", modelOverride);
     }
   }
-  const proc = spawn(CURSOR_AGENT_COMMAND, allArgs, {
+  const proc = spawnImpl(CURSOR_AGENT_COMMAND, allArgs, {
     cwd,
     stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -334,18 +396,39 @@ function spawnAgent(
 
   // 收集 stderr，子进程异常退出时输出到日志，方便排查静默失败
   let stderr = "";
-  proc.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-  proc.on("close", (code) => {
+  let closeInfo: CursorProcessCloseInfo | null = null;
+  let resolveClose: (info: CursorProcessCloseInfo) => void = () => {};
+  const closePromise = new Promise<CursorProcessCloseInfo>((resolve) => {
+    resolveClose = resolve;
+  });
+  const settleClose = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (closeInfo) return;
+    closeInfo = { code, signal, stderr };
     if (stderr.trim()) {
       console.error(`[Cursor stderr] exit=${code}: ${stderr.trim().slice(0, 2000)}`);
     }
+    resolveClose(closeInfo);
+  };
+  proc.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  proc.once("error", (err) => {
+    stderr += `${stderr ? "\n" : ""}${(err as Error).message}`;
+    settleClose(null, null);
   });
+  proc.once("close", (code, signal) => { settleClose(code, signal); });
 
   if (stdinText !== undefined) {
     proc.stdin!.write(stdinText);
     proc.stdin!.end();
   }
-  return proc;
+  return {
+    proc,
+    getStderr: () => stderr,
+    waitForClose: async () => {
+      if (closeInfo) return { ...closeInfo, stderr };
+      const info = await closePromise;
+      return { ...info, stderr };
+    },
+  };
 }
 
 async function* readJsonLines(
@@ -353,6 +436,7 @@ async function* readJsonLines(
   signal?: AbortSignal,
   debugTag?: string,
   rawLog?: RawStreamLogHandle | null,
+  stats?: CursorStreamStats,
 ): AsyncGenerator<CursorMessageLine> {
   const tag = debugTag ?? "cursor";
   const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
@@ -364,11 +448,17 @@ async function* readJsonLines(
     for await (const line of rl) {
       if (signal?.aborted) break;
       lineCount++;
+      if (stats) {
+        stats.rawLineCount++;
+        stats.stdoutLength += Buffer.byteLength(line, "utf-8") + 1;
+      }
       const trimmed = line.trim();
       if (!trimmed) continue;
       rawLog?.writeLine(trimmed);
       try {
-        yield JSON.parse(trimmed) as CursorMessageLine;
+        const parsed = JSON.parse(trimmed) as CursorMessageLine;
+        if (stats) stats.parsedLineCount++;
+        yield parsed;
       } catch { /* 非 JSON 行静默跳过 */ }
     }
   } finally {
@@ -388,17 +478,21 @@ class CursorAdapter implements ToolAdapter {
   private activeProcs = new Set<ChildProcess>();
   private metaStore: CursorSessionMetaStore;
   private modelOverride: string | undefined;
+  private spawnImpl: CursorSpawn;
 
-  constructor(metaStore: CursorSessionMetaStore, modelOverride?: string) {
+  constructor(metaStore: CursorSessionMetaStore, modelOverride?: string, spawnImpl: CursorSpawn = spawn) {
     this.metaStore = metaStore;
     this.modelOverride = modelOverride;
+    this.spawnImpl = spawnImpl;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
-    const proc = spawnAgent(["ok"], cwd, undefined, this.modelOverride);
+    const handle = spawnAgent(["ok"], cwd, undefined, this.modelOverride, undefined, this.spawnImpl);
+    const proc = handle.proc;
+    const stats = createCursorStreamStats();
     this.activeProcs.add(proc);
 
-    for await (const msg of readJsonLines(proc, undefined, "createSession")) {
+    for await (const msg of readJsonLines(proc, undefined, "createSession", null, stats)) {
       if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
         const sessionId = msg.session_id;
         await this.metaStore
@@ -412,6 +506,13 @@ class CursorAdapter implements ToolAdapter {
 
     await killProcessTree(proc.pid);
     this.activeProcs.delete(proc);
+    const closeInfo = await handle.waitForClose();
+    const visibleMessage = formatCursorAgentEmptyOutputMessage({
+      exitCode: closeInfo.code,
+      stdoutLength: stats.stdoutLength,
+      stderr: closeInfo.stderr,
+    });
+    if (visibleMessage) throw new Error(visibleMessage);
     throw new Error("No session ID in Cursor init event");
   }
 
@@ -424,13 +525,15 @@ class CursorAdapter implements ToolAdapter {
   ): AsyncIterable<UnifiedStreamMessage> {
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
     const cmd = parseUserCommand(userText);
-    const proc = spawnAgent(
+    const handle = spawnAgent(
       ["--resume", sessionId],
       cwd,
       buildCursorPromptText(userText),
       this.modelOverride,
       cmd.mode ?? undefined,
+      this.spawnImpl,
     );
+    const proc = handle.proc;
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
@@ -455,9 +558,10 @@ class CursorAdapter implements ToolAdapter {
     const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
     let sawResult = false;
+    const stats = createCursorStreamStats();
 
     try {
-      for await (const raw of readJsonLines(proc, signal, sessionId, rawLog)) {
+      for await (const raw of readJsonLines(proc, signal, sessionId, rawLog, stats)) {
         if (signal?.aborted) break;
         if (
           raw.type === "system" &&
@@ -477,6 +581,21 @@ class CursorAdapter implements ToolAdapter {
           sawResult = true;
           void killProcessTree(proc.pid);
           break;
+        }
+      }
+      if (!signal?.aborted && !sawResult) {
+        const closeInfo = await handle.waitForClose();
+        const visibleMessage = formatCursorAgentEmptyOutputMessage({
+          exitCode: closeInfo.code,
+          stdoutLength: stats.stdoutLength,
+          stderr: closeInfo.stderr,
+        });
+        if (visibleMessage) {
+          yield {
+            type: "assistant",
+            blocks: [{ type: "text_final", text: visibleMessage }],
+          };
+          throw createCursorAgentFailureError(closeInfo);
         }
       }
     } finally {
@@ -513,10 +632,16 @@ export interface CreateCursorAdapterOptions {
   metaStore?: CursorSessionMetaStore;
   /** per-session 模型覆盖（/model 命令）；传了就用，不传走全局 cursor.model */
   model?: string;
+  /** 注入自定义 spawn 实现（测试用）。 */
+  spawn?: CursorSpawn;
 }
 
 export function createCursorAdapter(
   options: CreateCursorAdapterOptions = {},
 ): ToolAdapter {
-  return new CursorAdapter(options.metaStore ?? defaultCursorSessionMetaStore, options.model);
+  return new CursorAdapter(
+    options.metaStore ?? defaultCursorSessionMetaStore,
+    options.model,
+    options.spawn,
+  );
 }

@@ -1,8 +1,15 @@
 import { describe, it, expect } from "vitest";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { PassThrough } from "node:stream";
+import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { normalizeCursorMessage, createCursorAdapter } from "../adapters/cursor-adapter.ts";
+import {
+  normalizeCursorMessage,
+  createCursorAdapter,
+  formatCursorAgentEmptyOutputMessage,
+} from "../adapters/cursor-adapter.ts";
 import type { UnifiedStreamMessage } from "../adapters/adapter-interface.ts";
 import type {
   CursorSessionMeta,
@@ -39,9 +46,40 @@ function createInMemoryMetaStore(
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+type CursorSpawnForTest = NonNullable<
+  NonNullable<Parameters<typeof createCursorAdapter>[0]>["spawn"]
+>;
+
 function readFixture(name: string): unknown[] {
   const raw = readFileSync(join(__dirname, "fixtures", name), "utf-8");
   return raw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function createMockCursorProcess(args: {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+}): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stdin = new PassThrough();
+  Object.assign(child, {
+    stdout,
+    stderr,
+    stdin,
+    pid: undefined,
+  });
+
+  setImmediate(() => {
+    if (args.stdout) stdout.write(args.stdout);
+    if (args.stderr) stderr.write(args.stderr);
+    stdout.end();
+    stderr.end();
+    child.emit("close", args.exitCode ?? 0, null);
+  });
+
+  return child;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,5 +697,64 @@ describe("Cursor stream fixture - 端到端不重复", () => {
       } as Parameters<typeof normalizeCursorMessage>[0]);
       expect(r!.blocks[0]).toMatchObject({ type: "tool_use", name: expected });
     }
+  });
+});
+
+describe("Cursor adapter process failures", () => {
+  it("formats empty stdout auth stderr as a cautious visible message", () => {
+    const message = formatCursorAgentEmptyOutputMessage({
+      exitCode: 1,
+      stdoutLength: 0,
+      stderr: "Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.\n",
+    });
+
+    expect(message).toContain("检测到认证相关错误");
+    expect(message).toContain("可能需要重新登录 Cursor Agent");
+    expect(message).toContain("CURSOR_API_KEY");
+    expect(message).toContain("agent status");
+    expect(message).toContain("agent login");
+    expect(message).not.toContain("登录态已失效");
+  });
+
+  it("does not format a message when stdout is non-empty", () => {
+    expect(
+      formatCursorAgentEmptyOutputMessage({
+        exitCode: 1,
+        stdoutLength: 10,
+        stderr: "Error: Authentication required",
+      }),
+    ).toBeNull();
+  });
+
+  it("prompt surfaces auth-related empty output before failing the stream", async () => {
+    const store = createInMemoryMetaStore({ sid: { cwd: "F:/repo" } });
+    const spawnImpl = (() =>
+      createMockCursorProcess({
+        exitCode: 1,
+        stderr: "Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.\n",
+      })) as CursorSpawnForTest;
+    const adapter = createCursorAdapter({ metaStore: store, spawn: spawnImpl });
+    const iterator = adapter.prompt(
+      "sid",
+      "[User message]\nhello\n[/User message]",
+      "F:/repo",
+    )[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value.blocks).toHaveLength(1);
+    expect(first.value.blocks[0]).toMatchObject({ type: "text_final" });
+    expect(first.value.blocks[0]).toHaveProperty(
+      "text",
+      expect.stringContaining("可能需要重新登录 Cursor Agent"),
+    );
+    expect(first.value.blocks[0]).toHaveProperty(
+      "text",
+      expect.not.stringContaining("登录态已失效"),
+    );
+
+    await expect(iterator.next()).rejects.toThrow(
+      /Cursor Agent exited without stream-json output/,
+    );
   });
 });
