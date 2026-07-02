@@ -182,6 +182,21 @@ function streamJsonEvent(event: ChatEvent): void {
       type: "compact",
       compacted_messages: event.compactedMessages,
     });
+  } else if (event.type === "tool_use") {
+    writeJsonLine({
+      type: "tool_call",
+      id: event.id,
+      name: event.name,
+      input: event.input,
+    });
+  } else if (event.type === "tool_result") {
+    writeJsonLine({
+      type: "tool_result",
+      tool_call_id: event.tool_use_id,
+      name: event.name,
+      content: event.content,
+      is_error: event.is_error,
+    });
   } else if (event.type === "done") {
     writeJsonLine({
       type: "done",
@@ -358,6 +373,11 @@ async function runRepl(args: ParsedArgs): Promise<void> {
           console.log(`${C.dim}[done]${C.reset}`);
         } else if (event.type === "compact") {
           console.log(`${C.dim}[context compacted: ${event.compactedMessages} old messages]${C.reset}`);
+        } else if (event.type === "tool_use") {
+          console.log(`\n${C.dim}[tool] ${event.name} ${stringifyConsoleArg(event.input)}${C.reset}`);
+        } else if (event.type === "tool_result") {
+          const status = event.is_error ? "error" : "ok";
+          console.log(`${C.dim}[tool result] ${event.name ?? event.tool_use_id} ${status}${C.reset}`);
         } else if (event.type === "error") {
           console.log(`\n${C.yellow}[error] ${event.message}${C.reset}`);
         }

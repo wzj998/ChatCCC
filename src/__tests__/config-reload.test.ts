@@ -49,6 +49,7 @@ const baseAppConfig: AppConfig = {
     claude: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
     cursor: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
     codex: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
+    ccc: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
   },
   claude: {
     enabled: true,

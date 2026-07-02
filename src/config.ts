@@ -147,6 +147,7 @@ export interface RawStreamLogsConfig {
   claude: RawStreamAgentLogConfig;
   cursor: RawStreamAgentLogConfig;
   codex: RawStreamAgentLogConfig;
+  ccc: RawStreamAgentLogConfig;
 }
 
 export interface AppConfig {
@@ -427,6 +428,7 @@ function loadConfig(): AppConfig {
       claude: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
       cursor: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
       codex: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
+      ccc: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
     },
     claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 0 },
     cursor: {
@@ -609,6 +611,7 @@ function loadConfig(): AppConfig {
       claude: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.claude),
       cursor: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.cursor),
       codex: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.codex),
+      ccc: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.ccc),
     },
     claude: {
       enabled: claudeEnabled,

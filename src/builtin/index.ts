@@ -5,14 +5,19 @@
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, streamText } from "ai";
+import { generateText, stepCountIs, streamText, type TextStreamPart } from "ai";
 
-import { config as appConfig } from "../config.ts";
+import { config as appConfig, RAW_STREAM_LOGS_DIR } from "../config.ts";
+import {
+  createRawStreamLog,
+  type RawStreamLogHandle,
+} from "../adapters/raw-stream-log.ts";
 import {
   BuiltinContextManager,
   buildSummaryPrompt,
   defaultBuiltinSessionId,
 } from "./context.ts";
+import { createBuiltinFileTools } from "./file-tools.ts";
 
 // ---------------------------------------------------------------------------
 // 系统提示词 — 编译期冻结常量
@@ -69,6 +74,8 @@ export interface ChatSessionOptions {
  */
 export type ChatEvent =
   | { type: "compact"; compactedMessages: number }
+  | { type: "tool_use"; id?: string; name: string; input: unknown }
+  | { type: "tool_result"; tool_use_id: string; name?: string; content: unknown; is_error?: boolean }
   | { type: "text"; text: string; accumulated: string }
   | { type: "done"; text: string }
   | { type: "error"; message: string };
@@ -89,6 +96,7 @@ interface ChatMessage {
 export class ChatSession {
   private model: any;
   private systemPrompt: string;
+  private cwd: string;
   private context: BuiltinContextManager;
 
   constructor(
@@ -111,6 +119,7 @@ export class ChatSession {
       apiKey,
     });
     this.model = provider(modelId);
+    this.cwd = options.cwd ?? process.cwd();
 
     // 构建系统提示词
     const systemContent = [SYSTEM_PROMPT];
@@ -119,14 +128,19 @@ export class ChatSession {
     }
     if (options?.cwd) {
       systemContent.push("", `当前工作目录: ${options.cwd}`);
+      systemContent.push(
+        "你可以在需要理解代码、配置或项目结构时主动使用 read_file、list_dir、search_code 工具读取本地文件。",
+        "需要修改文件时，优先使用 edit_file 进行精确替换；新建用 create_file，删除用 delete_file，移动用 move_file，多文件 diff 可使用 apply_patch。",
+        "文件工具由 ChatCCC 在本机执行；编辑前先读取相关片段，尽量使用 SHA-256 前置条件，避免覆盖用户并发改动。",
+      );
     }
 
     this.systemPrompt = systemContent.join("\n");
     this.context = new BuiltinContextManager({
       persist: options.persist ?? false,
       contextDir: options.contextDir,
-      sessionId: options.sessionId ?? defaultBuiltinSessionId(options.cwd ?? process.cwd()),
-      cwd: options.cwd ?? process.cwd(),
+      sessionId: options.sessionId ?? defaultBuiltinSessionId(this.cwd),
+      cwd: this.cwd,
       compactAtTokens: options.compactAtTokens,
       keepRecentMessages: options.keepRecentMessages,
     });
@@ -151,26 +165,85 @@ export class ChatSession {
     this.context.appendMessage({ role: "user", content: userMessage });
 
     let fullText = "";
+    let rawLog: RawStreamLogHandle | null = null;
+    let completed = false;
 
     try {
       const compactedMessages = await this.compactIfNeeded(signal);
       if (compactedMessages > 0) {
-        yield { type: "compact", compactedMessages };
+          yield { type: "compact", compactedMessages };
       }
 
+      const rawLogConfig = appConfig.rawStreamLogs.ccc;
+      try {
+        rawLog = await createRawStreamLog({
+          enabled: rawLogConfig.enabled,
+          rootDir: RAW_STREAM_LOGS_DIR,
+          tool: "ccc",
+          sessionId: this.context.sessionId,
+          label: "prompt",
+          maxBytesPerTurn: rawLogConfig.maxBytesPerTurn,
+          retentionDays: rawLogConfig.retentionDays,
+        });
+      } catch (err) {
+        console.error(`[CCC raw stream log] create failed: ${errorMessage(err)}`);
+      }
+
+      const toolContext: string[] = [];
       const result = streamText({
         model: this.model,
         system: this.systemPrompt,
         messages: this.context.buildModelMessages() as any,
+        tools: createBuiltinFileTools(this.cwd),
+        stopWhen: stepCountIs(8),
         abortSignal: signal,
       });
 
-      for await (const chunk of result.textStream) {
-        fullText += chunk;
-        yield { type: "text", text: chunk, accumulated: fullText };
+      const stream = result.fullStream ?? textStreamToFullStream(result.textStream);
+      for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
+        rawLog?.writeLine(safeRawStreamJson(part));
+        if (part.type === "text-delta") {
+          fullText += part.text;
+          yield { type: "text", text: part.text, accumulated: fullText };
+        } else if (part.type === "tool-call") {
+          toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
+          yield {
+            type: "tool_use",
+            id: part.toolCallId,
+            name: part.toolName,
+            input: part.input,
+          };
+        } else if (part.type === "tool-result") {
+          toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
+          yield {
+            type: "tool_result",
+            tool_use_id: part.toolCallId,
+            name: part.toolName,
+            content: part.output,
+            is_error: false,
+          };
+        } else if (part.type === "tool-error") {
+          const message = errorMessage(part.error);
+          toolContext.push(`tool_error ${part.toolName}: ${message}`);
+          yield {
+            type: "tool_result",
+            tool_use_id: part.toolCallId,
+            name: part.toolName,
+            content: message,
+            is_error: true,
+          };
+        } else if (part.type === "error") {
+          const message = errorMessage(part.error);
+          yield { type: "error", message };
+          throw new Error(message);
+        }
       }
+      completed = true;
 
-      this.context.appendMessage({ role: "assistant", content: fullText });
+      const persistedText = toolContext.length > 0
+        ? `${fullText}\n\n[Tool transcript]\n${toolContext.join("\n")}`
+        : fullText;
+      this.context.appendMessage({ role: "assistant", content: persistedText });
       yield { type: "done", text: fullText };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -184,6 +257,11 @@ export class ChatSession {
       }
       yield { type: "error", message };
       throw err;
+    } finally {
+      const rawLogConfig = appConfig.rawStreamLogs.ccc;
+      await rawLog?.close({
+        keep: rawLogConfig.keepCompleted || signal?.aborted === true || !completed,
+      });
     }
   }
 
@@ -230,4 +308,46 @@ export class ChatSession {
     this.context.applyCompaction(result.text, plan);
     return plan.oldMessages.length;
   }
+}
+
+async function* textStreamToFullStream(stream: AsyncIterable<string>): AsyncIterable<{ type: "text-delta"; text: string }> {
+  for await (const text of stream) {
+    yield { type: "text-delta", text };
+  }
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function safeRawStreamJson(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value, (_key, nested) => {
+      if (nested instanceof Error) {
+        return {
+          name: nested.name,
+          message: nested.message,
+        };
+      }
+      return nested;
+    });
+    return serialized ?? "null";
+  } catch (err) {
+    return JSON.stringify({
+      type: "chatccc_raw_stream_log_serialize_error",
+      message: errorMessage(err),
+    });
+  }
+}
+
+function truncateToolContext(value: string): string {
+  return value.length > 8000 ? `${value.slice(0, 8000)}...[truncated]` : value;
+}
+
+function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
 }

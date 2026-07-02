@@ -72,7 +72,7 @@ describe("config.sample.json", () => {
       }>;
     };
 
-    for (const tool of ["claude", "cursor", "codex"]) {
+    for (const tool of ["claude", "cursor", "codex", "ccc"]) {
       expect(sample.rawStreamLogs?.[tool]?.enabled).toBe(false);
       expect(sample.rawStreamLogs?.[tool]?.maxBytesPerTurn).toBe(52_428_800);
       expect(sample.rawStreamLogs?.[tool]?.retentionDays).toBe(7);
