@@ -34,7 +34,6 @@ import {
   sessionPrefixForTool,
   toolDisplayName,
   ts,
-  reloadConfigFromDisk,
   type AgentTool,
 } from "./config.ts";
 import {
@@ -91,6 +90,7 @@ import { getChatGptSubscriptionStatus, type ChatGptSubscriptionResult } from "./
 import { delegateAgentTask } from "./agent-delegate-task.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
+import { reloadRuntimeConfig } from "./runtime-reload.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -547,6 +547,27 @@ export async function handleCommand(
   const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
   recordChatPlatform(chatId, platform);
   await cleanupNonWechatP2pBinding(platform, chatId, chatType, tid);
+
+  if (isCommandText && textLower === "/reload") {
+    logTrace(tid, "BRANCH", { cmd: "/reload" });
+    try {
+      const result = await reloadRuntimeConfig("chat-command");
+      await platform.sendText(
+        chatId,
+        [
+          "配置已重新加载。",
+          `默认 Agent: ${toolDisplayName(result.defaultAgent)}`,
+          `配置文件: ${result.configPath}`,
+          "后续新会话会使用最新配置；正在生成的会话不会被中断。",
+        ].join("\n"),
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "reload", defaultAgent: result.defaultAgent });
+    } catch (err) {
+      await platform.sendText(chatId, `配置重载失败：${(err as Error).message}`).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "reload_fail", error: (err as Error).message });
+    }
+    return;
+  }
 
   if (isCommandText && textLower === "/restart") {
     logTrace(tid, "BRANCH", { cmd: "/restart" });

@@ -22,11 +22,15 @@ import type {
   UnifiedStreamMessage,
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
-import { CHATCCC_PORT } from "../config.ts";
+import { CHATCCC_PORT, config, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultClaudeSessionMetaStore,
   type ClaudeSessionMetaStore,
 } from "./claude-session-meta-store.ts";
+import {
+  createRawStreamLog,
+  type RawStreamLogHandle,
+} from "./raw-stream-log.ts";
 
 const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CLAUDE_SPECIFIC_PROMPT_PATH = join(
@@ -381,6 +385,17 @@ function toMessageLike(message: SDKMessage): SdkMessageLike {
   return message as unknown as SdkMessageLike;
 }
 
+function safeRawStreamJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "null";
+  } catch (err) {
+    return JSON.stringify({
+      type: "chatccc_raw_stream_log_serialize_error",
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 function bridgeAbortSignal(
   signal: AbortSignal | undefined,
   controller: AbortController,
@@ -478,6 +493,9 @@ class ClaudeAdapter implements ToolAdapter {
     const removeAbortListener = bridgeAbortSignal(signal, abortController);
     if (abortController.signal.aborted) return;
     let aborted = false;
+    let completed = false;
+    const rawLogConfig = config.rawStreamLogs.claude;
+    let rawLog: RawStreamLogHandle | null = null;
 
     const session = unstable_v2_resumeSession(
       sessionId,
@@ -498,6 +516,20 @@ class ClaudeAdapter implements ToolAdapter {
     options?.onSessionCreated?.(() => session.close());
 
     try {
+      try {
+        rawLog = await createRawStreamLog({
+          enabled: rawLogConfig.enabled,
+          rootDir: RAW_STREAM_LOGS_DIR,
+          tool: "claude",
+          sessionId,
+          label: "prompt",
+          maxBytesPerTurn: rawLogConfig.maxBytesPerTurn,
+          retentionDays: rawLogConfig.retentionDays,
+        });
+      } catch (err) {
+        console.error(`[Claude raw stream log] create failed: ${(err as Error).message}`);
+      }
+
       await session.send(buildClaudePromptText(userText, undefined, sessionId));
       for await (const raw of session.stream()) {
         if (abortController.signal.aborted) {
@@ -506,6 +538,7 @@ class ClaudeAdapter implements ToolAdapter {
         }
 
         const msg = toMessageLike(raw);
+        rawLog?.writeLine(safeRawStreamJson(msg));
         if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
           const meta: { cwd?: string; model?: string } = {};
           if (msg.cwd) meta.cwd = msg.cwd;
@@ -518,12 +551,16 @@ class ClaudeAdapter implements ToolAdapter {
         const normalized = normalizeSdkMessage(msg);
         if (normalized) yield normalized;
       }
+      completed = !aborted && !abortController.signal.aborted;
     } finally {
       removeAbortListener?.();
       if (aborted || abortController.signal.aborted) {
         abortController.abort();
       }
       closeSdkSession(session);
+      await rawLog?.close({
+        keep: rawLogConfig.keepCompleted || abortController.signal.aborted || !completed,
+      });
     }
   }
 

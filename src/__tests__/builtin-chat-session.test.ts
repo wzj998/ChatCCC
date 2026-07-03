@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -53,6 +53,81 @@ afterEach(() => {
 });
 
 describe("ChatSession context management", () => {
+  it("injects cwd project instruction files before runtime workspace details", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-instructions-"));
+    await writeFile(join(dir, "AGENTS.md"), "agents root guidance", "utf-8");
+    await writeFile(join(dir, "AGENTS.local.md"), "agents local guidance", "utf-8");
+    await writeFile(join(dir, "CLAUDE.md"), "claude root guidance", "utf-8");
+    await writeFile(join(dir, "CLAUDE.local.md"), "claude local guidance", "utf-8");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "project-instructions",
+      },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("## Project Instructions");
+    expect(system).toContain("### AGENTS.md");
+    expect(system).toContain("agents root guidance");
+    expect(system).toContain("### AGENTS.local.md");
+    expect(system).toContain("agents local guidance");
+    expect(system).toContain("### CLAUDE.md");
+    expect(system).toContain("claude root guidance");
+    expect(system).toContain("### CLAUDE.local.md");
+    expect(system).toContain("claude local guidance");
+
+    expect(system.indexOf("agents root guidance")).toBeLessThan(system.indexOf("agents local guidance"));
+    expect(system.indexOf("agents local guidance")).toBeLessThan(system.indexOf("claude root guidance"));
+    expect(system.indexOf("claude root guidance")).toBeLessThan(system.indexOf("claude local guidance"));
+    expect(system.indexOf("claude local guidance")).toBeLessThan(system.indexOf(dir));
+  });
+
+  it("does not read project instruction files from parent directories", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const parent = await mkdtemp(join(tmpdir(), "chatccc-session-parent-instructions-"));
+    const child = join(parent, "child");
+    await mkdir(child);
+    await writeFile(join(parent, "AGENTS.md"), "parent-only guidance", "utf-8");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: child,
+        sessionId: "no-parent-instructions",
+      },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).not.toContain("parent-only guidance");
+  });
+
+  it("keeps enough tool steps for multi-stage workflows", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-step-budget-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "step-budget",
+      },
+    );
+    await collect(session.chat("run a multi-stage workflow"));
+
+    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      stopWhen: { count: 24 },
+    }));
+  });
+
   it("loads persisted context, compacts older messages, and persists the new assistant reply", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
     const dir = await mkdtemp(join(tmpdir(), "chatccc-session-context-"));

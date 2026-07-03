@@ -28,7 +28,11 @@ import {
   type CodexSessionMetaStore,
 } from "./codex-session-meta-store.ts";
 import { killProcessTree } from "./proc-tree-kill.ts";
-import { config } from "../config.ts";
+import { config, RAW_STREAM_LOGS_DIR } from "../config.ts";
+import {
+  createRawStreamLog,
+  type RawStreamLogHandle,
+} from "./raw-stream-log.ts";
 
 // ---------------------------------------------------------------------------
 // 特殊注入提示
@@ -231,6 +235,7 @@ function spawnCodex(
 async function* readJsonLines(
   proc: ChildProcess,
   signal?: AbortSignal,
+  rawLog?: RawStreamLogHandle | null,
 ): AsyncGenerator<CodexEvent> {
   const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
   // abort 时主动 close readline，避免等待 Windows 管道自然关闭（可能延迟数分钟）
@@ -241,6 +246,7 @@ async function* readJsonLines(
       if (signal?.aborted) break;
       const trimmed = line.trim();
       if (!trimmed) continue;
+      rawLog?.writeLine(trimmed);
       try {
         yield JSON.parse(trimmed) as CodexEvent;
       } catch {
@@ -301,16 +307,34 @@ class CodexAdapter implements ToolAdapter {
     const proc = spawnCodex(args, cwd, buildCodexPromptText(userText), this.modelOverride, this.effortOverride);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
+    const rawLogConfig = config.rawStreamLogs.codex;
+    let rawLog: RawStreamLogHandle | null = null;
+    try {
+      rawLog = await createRawStreamLog({
+        enabled: rawLogConfig.enabled,
+        rootDir: RAW_STREAM_LOGS_DIR,
+        tool: "codex",
+        sessionId,
+        label: "prompt",
+        maxBytesPerTurn: rawLogConfig.maxBytesPerTurn,
+        retentionDays: rawLogConfig.retentionDays,
+      });
+    } catch (err) {
+      console.error(`[Codex raw stream log] create failed: ${(err as Error).message}`);
+    }
+
     // 关键：spawn 用了 shell:true，proc.pid 指向的是壳进程（cmd.exe / sh）。
     // 真正干活的是壳的孙子 codex.exe。普通 proc.kill() 在 Windows 上只杀第一层，
     // 会留下幽灵 node + codex.exe 继续烧 token、stream-state 永远停在 running。
     // 因此 abort 与 finally 都必须用 killProcessTree 整棵进程树一起收尸。
     const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
+    let completed = false;
 
     try {
-      for await (const raw of readJsonLines(proc, signal)) {
+      for await (const raw of readJsonLines(proc, signal, rawLog)) {
         if (signal?.aborted) break;
+        if (raw.type === "turn.completed") completed = true;
 
         if (
           isFirstPrompt &&
@@ -328,6 +352,7 @@ class CodexAdapter implements ToolAdapter {
     } finally {
       signal?.removeEventListener("abort", onAbort);
       await killProcessTree(proc.pid);
+      await rawLog?.close({ keep: rawLogConfig.keepCompleted || signal?.aborted === true || !completed });
       if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
     }
   }

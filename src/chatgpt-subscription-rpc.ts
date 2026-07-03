@@ -17,8 +17,8 @@ export async function handleChatGptSubscriptionRequest(
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (url.pathname !== CHATGPT_SUBSCRIPTION_PATH) return false;
 
-  if (method !== "GET") {
-    jsonReply(res, 405, { ok: false, code: "method_not_allowed", reason: "Use GET." });
+  if (method !== "POST") {
+    jsonReply(res, 405, { ok: false, code: "method_not_allowed", reason: "Use POST." });
     return true;
   }
 

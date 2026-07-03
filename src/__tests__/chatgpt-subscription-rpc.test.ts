@@ -12,7 +12,7 @@ import {
   handleChatGptSubscriptionRequest,
 } from "../chatgpt-subscription-rpc.ts";
 
-function request(path = CHATGPT_SUBSCRIPTION_PATH, method = "GET"): Readable & {
+function request(path = CHATGPT_SUBSCRIPTION_PATH, method = "POST"): Readable & {
   url?: string;
   method?: string;
   headers: Record<string, string>;
@@ -79,10 +79,10 @@ describe("ChatGPT subscription RPC", () => {
     expect(res.body).toBe("");
   });
 
-  it("rejects non-GET methods", async () => {
+  it("rejects non-POST methods", async () => {
     const res = response();
 
-    await expect(handleChatGptSubscriptionRequest(request(CHATGPT_SUBSCRIPTION_PATH, "POST") as never, res as never)).resolves.toBe(true);
+    await expect(handleChatGptSubscriptionRequest(request(CHATGPT_SUBSCRIPTION_PATH, "GET") as never, res as never)).resolves.toBe(true);
     expect(res.statusCode).toBe(405);
     expect(JSON.parse(res.body)).toMatchObject({ ok: false, code: "method_not_allowed" });
   });

@@ -6,6 +6,8 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
 
+import { killProcessTree } from "../adapters/proc-tree-kill.ts";
+
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_LIST_ENTRIES = 200;
 const MAX_SEARCH_RESULTS = 100;
@@ -14,6 +16,9 @@ const MAX_EDIT_BYTES = 2 * 1024 * 1024;
 const MAX_CREATE_BYTES = 2 * 1024 * 1024;
 const MAX_PATCH_BYTES = 512 * 1024;
 const SEARCH_TIMEOUT_MS = 15_000;
+const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const MAX_COMMAND_TIMEOUT_MS = 900_000;
 
 export interface ReadFileInput {
   path: string;
@@ -70,6 +75,24 @@ export interface SearchCodeOutput {
   glob?: string;
   matches: SearchCodeMatch[];
   truncated: boolean;
+}
+
+export interface RunCommandInput {
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+}
+
+export interface RunCommandOutput {
+  command: string;
+  cwd: string;
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  truncated: boolean;
+  durationMs: number;
 }
 
 export interface FileEdit {
@@ -257,6 +280,32 @@ function replaceAllLiteral(text: string, oldText: string, newText: string): stri
 
 function detectEol(text: string): "\r\n" | "\n" {
   return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function normalizeCommandTimeoutMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return DEFAULT_COMMAND_TIMEOUT_MS;
+  return Math.min(Math.max(Math.floor(value), 1_000), MAX_COMMAND_TIMEOUT_MS);
+}
+
+function appendLimitedOutput(
+  target: { chunks: string[]; bytes: number; truncated: boolean },
+  chunk: Buffer,
+): void {
+  const remaining = MAX_COMMAND_OUTPUT_BYTES - target.bytes;
+  if (remaining <= 0) {
+    target.truncated = true;
+    return;
+  }
+
+  if (chunk.byteLength <= remaining) {
+    target.chunks.push(chunk.toString("utf8"));
+    target.bytes += chunk.byteLength;
+    return;
+  }
+
+  target.chunks.push(chunk.subarray(0, remaining).toString("utf8"));
+  target.bytes += remaining;
+  target.truncated = true;
 }
 
 function splitPatchPath(value: string): string | null {
@@ -589,6 +638,100 @@ export async function searchCodeForTool(
   };
 }
 
+export async function runCommandForTool(
+  cwd: string,
+  input: RunCommandInput,
+  abortSignal?: AbortSignal,
+): Promise<RunCommandOutput> {
+  const command = input.command?.trim();
+  if (!command) throw new Error("command is required");
+
+  const commandCwd = resolveToolPath(cwd, input.cwd);
+  const cwdInfo = await stat(commandCwd);
+  if (!cwdInfo.isDirectory()) {
+    throw new Error(`cwd is not a directory: ${commandCwd}`);
+  }
+
+  const timeoutMs = normalizeCommandTimeoutMs(input.timeoutMs);
+  const startedAt = Date.now();
+  const stdout = { chunks: [] as string[], bytes: 0, truncated: false };
+  const stderr = { chunks: [] as string[], bytes: 0, truncated: false };
+
+  return new Promise<RunCommandOutput>((resolvePromise, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let timeout: NodeJS.Timeout;
+    let fallbackTimer: NodeJS.Timeout | undefined;
+
+    const child = spawn(command, {
+      cwd: commandCwd,
+      shell: true,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      abortSignal?.removeEventListener("abort", abort);
+    };
+
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | string | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolvePromise({
+        command,
+        cwd: commandCwd,
+        exitCode,
+        signal,
+        stdout: stdout.chunks.join(""),
+        stderr: stderr.chunks.join(""),
+        timedOut,
+        truncated: stdout.truncated || stderr.truncated,
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    const requestKill = (reason: NodeJS.Signals | "timeout" | "abort") => {
+      void killProcessTree(child.pid);
+      fallbackTimer = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(null, reason === "timeout" ? "SIGTERM" : reason);
+      }, 5_000);
+      fallbackTimer.unref?.();
+    };
+
+    timeout = setTimeout(() => {
+      timedOut = true;
+      requestKill("timeout");
+    }, timeoutMs);
+
+    const abort = () => {
+      requestKill("abort");
+    };
+    abortSignal?.addEventListener("abort", abort, { once: true });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      appendLimitedOutput(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      appendLimitedOutput(stderr, chunk);
+    });
+    child.once("error", (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    });
+    child.once("close", (code, signal) => {
+      finish(code, signal);
+    });
+  });
+}
+
 export async function editFileForTool(cwd: string, input: EditFileInput): Promise<EditFileOutput> {
   if (!Array.isArray(input.edits) || input.edits.length === 0) {
     throw new Error("edits must contain at least one replacement");
@@ -822,6 +965,20 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         required: ["query"],
       }),
       execute: (input, options) => searchCodeForTool(cwd, input, options.abortSignal),
+    }),
+    run_command: tool<RunCommandInput, RunCommandOutput>({
+      description: "Run a non-interactive shell command in the local workspace. Use for tests, git, and package scripts. Returns stdout/stderr and exitCode; non-zero exit codes are not tool errors.",
+      inputSchema: jsonSchema<RunCommandInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          command: { type: "string", description: "Command line to run in the platform shell." },
+          cwd: { type: "string", description: "Optional working directory. Defaults to the session cwd." },
+          timeoutMs: { type: "number", description: `Optional timeout in milliseconds, capped at ${MAX_COMMAND_TIMEOUT_MS}.` },
+        },
+        required: ["command"],
+      }),
+      execute: (input, options) => runCommandForTool(cwd, input, options.abortSignal),
     }),
     edit_file: tool<EditFileInput, EditFileOutput>({
       description: "Edit an existing UTF-8 text file by applying exact oldText -> newText replacements. Uses optional SHA-256 precondition to avoid overwriting concurrent edits.",

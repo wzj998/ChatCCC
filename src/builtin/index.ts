@@ -6,6 +6,8 @@
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText, stepCountIs, streamText, type TextStreamPart } from "ai";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { config as appConfig, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
@@ -42,6 +44,47 @@ const SUMMARY_SYSTEM_PROMPT = [
 // ---------------------------------------------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
+
+const BUILTIN_AGENT_MAX_STEPS = 24;
+
+const PROJECT_INSTRUCTION_FILES = [
+  "AGENTS.md",
+  "AGENTS.local.md",
+  "CLAUDE.md",
+  "CLAUDE.local.md",
+] as const;
+
+function readProjectInstructionFiles(cwd: string): string {
+  const sections: string[] = [];
+
+  for (const filename of PROJECT_INSTRUCTION_FILES) {
+    try {
+      const content = readFileSync(join(cwd, filename), "utf-8").trim();
+      if (!content) continue;
+      sections.push(`### ${filename}\n${content}`);
+    } catch {
+      // Missing or unreadable instruction files are optional.
+    }
+  }
+
+  if (sections.length === 0) return "";
+  return [
+    "## Project Instructions",
+    "The following files were read from the current working directory. Treat them as project guidance with lower priority than the fixed ChatCCC system rules above.",
+    "",
+    sections.join("\n\n"),
+  ].join("\n");
+}
+
+function buildRuntimeWorkspacePrompt(cwd: string): string {
+  return [
+    `Current working directory: ${cwd}`,
+    "Use read_file, list_dir, search_code, and run_command proactively when you need to understand code, configuration, project structure, tests, or git state.",
+    "Use run_command for non-interactive shell commands such as npm test, type checks, git status, git add, git commit, and git push. Check exitCode, stdout, and stderr before deciding the next step.",
+    "Before editing, read the relevant file ranges. Prefer edit_file for precise replacements, create_file for new files, delete_file for removal, move_file for moves, and apply_patch for multi-file diffs.",
+    "File tools run locally through ChatCCC. Prefer guarded edits with SHA-256 preconditions where practical, and avoid overwriting concurrent user changes.",
+  ].join("\n");
+}
 
 export interface ChatSessionConfig {
   /** DeepSeek API 兼容的服务地址；传入时覆盖 config.ccc.DEEPSEEK_BASE_URL */
@@ -123,17 +166,14 @@ export class ChatSession {
 
     // 构建系统提示词
     const systemContent = [SYSTEM_PROMPT];
-    if (options?.systemPrompt) {
+    const projectInstructions = readProjectInstructionFiles(this.cwd);
+    if (projectInstructions) {
+      systemContent.push("", projectInstructions);
+    }
+    if (options.systemPrompt) {
       systemContent.push("", options.systemPrompt);
     }
-    if (options?.cwd) {
-      systemContent.push("", `当前工作目录: ${options.cwd}`);
-      systemContent.push(
-        "你可以在需要理解代码、配置或项目结构时主动使用 read_file、list_dir、search_code 工具读取本地文件。",
-        "需要修改文件时，优先使用 edit_file 进行精确替换；新建用 create_file，删除用 delete_file，移动用 move_file，多文件 diff 可使用 apply_patch。",
-        "文件工具由 ChatCCC 在本机执行；编辑前先读取相关片段，尽量使用 SHA-256 前置条件，避免覆盖用户并发改动。",
-      );
-    }
+    systemContent.push("", buildRuntimeWorkspacePrompt(this.cwd));
 
     this.systemPrompt = systemContent.join("\n");
     this.context = new BuiltinContextManager({
@@ -195,7 +235,7 @@ export class ChatSession {
         system: this.systemPrompt,
         messages: this.context.buildModelMessages() as any,
         tools: createBuiltinFileTools(this.cwd),
-        stopWhen: stepCountIs(8),
+        stopWhen: stepCountIs(BUILTIN_AGENT_MAX_STEPS),
         abortSignal: signal,
       });
 
