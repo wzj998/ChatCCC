@@ -37,6 +37,14 @@ interface JsonLine {
   [key: string]: unknown;
 }
 
+function parsePositiveIntegerOption(name: string, value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
   const config: ChatSessionConfig = {};
   const options: ChatSessionOptions = {};
@@ -60,6 +68,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
       i++;
     } else if (arg === "--cwd" && next !== undefined) {
       options.cwd = next;
+      i++;
+    } else if (arg === "--max-steps" && next !== undefined) {
+      options.maxSteps = parsePositiveIntegerOption("--max-steps", next);
       i++;
     } else if (arg === "--resume") {
       if (next !== undefined && !next.startsWith("--")) {
@@ -102,6 +113,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     `  --base-url <url>     API base URL (current default ${appConfig.ccc.DEEPSEEK_BASE_URL})`,
     "  --api-key <key>      API key (overrides config.ccc.DEEPSEEK_API_KEY)",
     "  --cwd <path>         Working directory",
+    "  --max-steps <n>      Optional tool-step limit. Omit for no step limit",
     "  --resume [id]        Resume latest cwd session, or the explicit session id",
     "  --list-sessions      List saved ccc sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",

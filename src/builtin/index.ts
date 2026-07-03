@@ -5,7 +5,7 @@
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, stepCountIs, streamText, type TextStreamPart } from "ai";
+import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamPart } from "ai";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -44,8 +44,6 @@ const SUMMARY_SYSTEM_PROMPT = [
 // ---------------------------------------------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
-
-const BUILTIN_AGENT_MAX_STEPS = 24;
 
 const PROJECT_INSTRUCTION_FILES = [
   "AGENTS.md",
@@ -86,6 +84,14 @@ function buildRuntimeWorkspacePrompt(cwd: string): string {
   ].join("\n");
 }
 
+function normalizeMaxSteps(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error("maxSteps must be a positive integer when provided");
+  }
+  return value;
+}
+
 export interface ChatSessionConfig {
   /** DeepSeek API 兼容的服务地址；传入时覆盖 config.ccc.DEEPSEEK_BASE_URL */
   baseURL?: string;
@@ -110,6 +116,8 @@ export interface ChatSessionOptions {
   compactAtTokens?: number;
   /** 压缩时保留的最近原始消息数 */
   keepRecentMessages?: number;
+  /** Optional tool-step limit. Leave unset for no step limit. */
+  maxSteps?: number;
 }
 
 /**
@@ -141,6 +149,7 @@ export class ChatSession {
   private systemPrompt: string;
   private cwd: string;
   private context: BuiltinContextManager;
+  private maxSteps?: number;
 
   constructor(
     overrides: ChatSessionConfig = {},
@@ -163,6 +172,7 @@ export class ChatSession {
     });
     this.model = provider(modelId);
     this.cwd = options.cwd ?? process.cwd();
+    this.maxSteps = normalizeMaxSteps(options.maxSteps);
 
     // 构建系统提示词
     const systemContent = [SYSTEM_PROMPT];
@@ -230,12 +240,13 @@ export class ChatSession {
       }
 
       const toolContext: string[] = [];
+      const maxSteps = this.maxSteps;
       const result = streamText({
         model: this.model,
         system: this.systemPrompt,
         messages: this.context.buildModelMessages() as any,
         tools: createBuiltinFileTools(this.cwd),
-        stopWhen: stepCountIs(BUILTIN_AGENT_MAX_STEPS),
+        stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
       });
 

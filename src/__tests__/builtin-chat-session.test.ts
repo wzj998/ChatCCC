@@ -20,6 +20,7 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 vi.mock("ai", () => ({
   streamText: streamTextMock,
   generateText: generateTextMock,
+  isLoopFinished: vi.fn(() => ({ loopFinished: true })),
   stepCountIs: vi.fn((count: number) => ({ count })),
   jsonSchema: vi.fn((schema: unknown) => schema),
   tool: vi.fn((definition: unknown) => definition),
@@ -109,7 +110,26 @@ describe("ChatSession context management", () => {
     expect(system).not.toContain("parent-only guidance");
   });
 
-  it("keeps enough tool steps for multi-stage workflows", async () => {
+  it("uses loop-finished stopping by default", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-unlimited-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "unlimited-steps",
+      },
+    );
+    await collect(session.chat("run a multi-stage workflow"));
+
+    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      stopWhen: { loopFinished: true },
+    }));
+  });
+
+  it("uses a configured tool step limit when provided", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
     const dir = await mkdtemp(join(tmpdir(), "chatccc-session-step-budget-"));
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
@@ -119,12 +139,13 @@ describe("ChatSession context management", () => {
       {
         cwd: dir,
         sessionId: "step-budget",
+        maxSteps: 7,
       },
     );
-    await collect(session.chat("run a multi-stage workflow"));
+    await collect(session.chat("run a bounded workflow"));
 
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
-      stopWhen: { count: 24 },
+      stopWhen: { count: 7 },
     }));
   });
 

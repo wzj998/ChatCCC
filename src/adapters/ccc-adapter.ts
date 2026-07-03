@@ -17,6 +17,7 @@ export interface CccAdapterOptions extends ChatSessionConfig {
   contextDir?: string;
   compactAtTokens?: number;
   keepRecentMessages?: number;
+  maxSteps?: number;
 }
 
 function toChatSessionOptions(
@@ -31,6 +32,7 @@ function toChatSessionOptions(
     contextDir: options.contextDir,
     compactAtTokens: options.compactAtTokens,
     keepRecentMessages: options.keepRecentMessages,
+    maxSteps: options.maxSteps,
   };
 }
 
