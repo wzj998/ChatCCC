@@ -10,6 +10,7 @@ const mockStreamStates = new Map<string, { status: "running" | "done" | "stopped
 const mockGetCodexUsageSummary = vi.hoisted(() => vi.fn());
 const mockGetCursorUsageSummary = vi.hoisted(() => vi.fn());
 const mockGetChatGptSubscriptionStatus = vi.hoisted(() => vi.fn());
+const mockReloadRuntimeConfig = vi.hoisted(() => vi.fn());
 
 vi.mock("../im-skills.ts", () => ({
   buildImSkillsPrompt: async () => "",
@@ -67,6 +68,10 @@ vi.mock("../cursor-usage.ts", () => ({
 
 vi.mock("../chatgpt-subscription.ts", () => ({
   getChatGptSubscriptionStatus: mockGetChatGptSubscriptionStatus,
+}));
+
+vi.mock("../runtime-reload.ts", () => ({
+  reloadRuntimeConfig: mockReloadRuntimeConfig,
 }));
 
 import { handleCommand } from "../orchestrator.ts";
@@ -140,6 +145,7 @@ describe("handleCommand WeChat processing ack", () => {
     mockGetCodexUsageSummary.mockReset();
     mockGetCursorUsageSummary.mockReset();
     mockGetChatGptSubscriptionStatus.mockReset();
+    mockReloadRuntimeConfig.mockReset();
     mockGetCodexUsageSummary.mockResolvedValue({
       fiveHour: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
       weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
@@ -176,6 +182,11 @@ describe("handleCommand WeChat processing ack", () => {
       code: "chrome_cdp_disabled",
       reason: "Chrome CDP guard is disabled in ChatCCC config.",
       chromeCdp: { enabled: false, port: 15166, status: "skipped" },
+    });
+    mockReloadRuntimeConfig.mockResolvedValue({
+      configPath: "C:\\Users\\me\\.chatccc\\config.json",
+      defaultAgent: "codex",
+      reloadedAt: "2026-07-02T05:00:00.000Z",
     });
     _setAdapterForToolForTest("claude", mockAdapter());
   });
@@ -656,6 +667,22 @@ describe("handleCommand WeChat processing ack", () => {
       ([chatId, title]) => chatId === "feishu-group" && title === "Claude Code Session Ready",
     );
     expect(claudeReadyCall?.[2]).not.toContain("/usage");
+  });
+
+  it("reloads runtime config for the exact /reload command", async () => {
+    const platform = mockPlatform("feishu");
+
+    await handleCommand(platform, "/reload", "feishu-chat", "open-1", Date.now(), "group");
+
+    expect(mockReloadRuntimeConfig).toHaveBeenCalledWith("chat-command");
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "feishu-chat",
+      expect.stringContaining("配置已重新加载"),
+    );
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "feishu-chat",
+      expect.stringContaining("默认 Agent: Codex"),
+    );
   });
 
   it("allows the hidden /new ccc entry without advertising it in normal help", async () => {

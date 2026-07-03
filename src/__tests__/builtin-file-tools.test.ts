@@ -15,6 +15,7 @@ import {
   listDirForTool,
   moveFileForTool,
   readFileForTool,
+  runCommandForTool,
   searchCodeForTool,
 } from "../builtin/file-tools.ts";
 
@@ -88,6 +89,33 @@ describe("builtin file tools", () => {
         text: "const marker = 1;",
       }),
     ]);
+  });
+
+  it("runs non-interactive shell commands in the requested cwd", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(dir, {
+      command: "node -e \"process.stdout.write(process.cwd())\"",
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(result.stdout.toLowerCase()).toBe(dir.toLowerCase());
+    expect(result.stderr).toBe("");
+  });
+
+  it("returns non-zero command exits without throwing", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(dir, {
+      command: "node -e \"process.stderr.write('failed'); process.exit(7)\"",
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(7);
+    expect(result.stderr).toBe("failed");
+    expect(result.timedOut).toBe(false);
   });
 
   it("edits a file with exact replacements and a SHA-256 precondition", async () => {

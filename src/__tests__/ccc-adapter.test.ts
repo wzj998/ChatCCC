@@ -14,6 +14,7 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
 vi.mock("ai", () => ({
   streamText: streamTextMock,
   generateText: generateTextMock,
+  isLoopFinished: vi.fn(() => ({ loopFinished: true })),
   stepCountIs: vi.fn((count: number) => ({ count })),
   jsonSchema: vi.fn((schema: unknown) => schema),
   tool: vi.fn((definition: unknown) => definition),

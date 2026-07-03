@@ -47,7 +47,6 @@ import {
   USE_SIMULATE,
   appendChatLog,
   fileLog,
-  reloadConfigFromDisk,
   reportEnvironmentVariableReadout,
   maskAppId,
   resolveDefaultAgentTool,
@@ -82,6 +81,7 @@ import { handleAgentImageRequest } from "./agent-image-rpc.ts";
 import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { handleAgentDelegateTaskRequest } from "./agent-delegate-task-rpc.ts";
 import { handleAgentStopStuckRequest } from "./agent-stop-stuck.ts";
+import { handleAgentReloadConfigRequest } from "./agent-reload-config-rpc.ts";
 import { handleChatGptSubscriptionRequest } from "./chatgpt-subscription-rpc.ts";
 import { applyPrivacy } from "./privacy.ts";
 import {
@@ -91,7 +91,6 @@ import {
 } from "./cardkit.ts";
 import {
   MAX_PROCESSED,
-  clearAdapterCache,
   loadSessionRegistryForBinding,
   processedMessages,
   rebuildBindingsFromRegistry,
@@ -108,6 +107,7 @@ import { fixStaleStreamStates } from "./stream-state.ts";
 import { handleCommand, type PlatformAdapter } from "./orchestrator.ts";
 import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
 import { handleCodexResetCardAction } from "./codex-reset-actions.ts";
+import { reloadRuntimeConfig } from "./runtime-reload.ts";
 
 // ---------------------------------------------------------------------------
 // Feishu 平台适配器
@@ -710,7 +710,8 @@ async function main(): Promise<void> {
     setExtraApiHandler(async (req, res) => {
       const injected = await handleSimInjectMessage(req, res);
       if (injected) return true;
-      return (await handleAgentImageRequest(req, res))
+      return (await handleAgentReloadConfigRequest(req, res))
+        || (await handleAgentImageRequest(req, res))
         || (await handleAgentFileRequest(req, res))
         || (await handleAgentDelegateTaskRequest(req, res, feishuPlatform))
         || (await handleAgentStopStuckRequest(req, res))
@@ -766,15 +767,11 @@ async function main(): Promise<void> {
   // 刷进进程内的 export let 常量（live binding 让 CLAUDE_MODEL 等下次创建
   // 会话时自动看到新值）。setup 首次激活走 onActivate 路径，不依赖此 hook。
   setReloadConfigHook(() => {
-    reloadConfigFromDisk();
-    clearAdapterCache();
-    startChromeDevtoolsGuard();
-    appendStartupTrace("reload-from-ui: config reloaded", {
-      appIdMask: maskAppId(APP_ID),
-    });
+    reloadRuntimeConfig("reload-from-ui");
   });
   setExtraApiHandler(async (req, res) => {
-    return (await handleAgentImageRequest(req, res))
+    return (await handleAgentReloadConfigRequest(req, res))
+      || (await handleAgentImageRequest(req, res))
       || (await handleAgentFileRequest(req, res))
       || (await handleAgentDelegateTaskRequest(req, res, feishuPlatform))
       || (await handleAgentStopStuckRequest(req, res))
@@ -796,9 +793,7 @@ async function main(): Promise<void> {
       // 时，原地（同进程）调用 startBotService，复用 setup HTTP server。
       startSetupMode(CHATCCC_PORT, {
         onActivate: async (httpServer: Server) => {
-          reloadConfigFromDisk();
-          clearAdapterCache();
-          startChromeDevtoolsGuard();
+          reloadRuntimeConfig("setup-activate");
           appendStartupTrace("setup-activate: reloaded config from disk", {
             appIdMaskAfterReload: maskAppId(APP_ID),
           });
