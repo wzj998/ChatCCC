@@ -8,7 +8,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -30,6 +29,7 @@ import {
   createRawStreamLog,
   type RawStreamLogHandle,
 } from "./raw-stream-log.ts";
+import { readJsonLinesWithBadJsonIdleWatchdog } from "./jsonl-stream.ts";
 
 // ---------------------------------------------------------------------------
 // 特殊注入提示
@@ -439,33 +439,26 @@ async function* readJsonLines(
   stats?: CursorStreamStats,
 ): AsyncGenerator<CursorMessageLine> {
   const tag = debugTag ?? "cursor";
-  const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
-  // abort 时主动 close readline，避免等待 Windows 管道自然关闭（可能延迟数分钟）
-  const onAbort = () => { rl.close(); };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  let lineCount = 0;
-  try {
-    for await (const line of rl) {
-      if (signal?.aborted) break;
-      lineCount++;
+  yield* readJsonLinesWithBadJsonIdleWatchdog<CursorMessageLine>({
+    input: proc.stdout!,
+    tool: "cursor",
+    tag,
+    signal,
+    rawLog,
+    parse: (line) => JSON.parse(line) as CursorMessageLine,
+    onRawLine: (line) => {
       if (stats) {
         stats.rawLineCount++;
         stats.stdoutLength += Buffer.byteLength(line, "utf-8") + 1;
       }
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      rawLog?.writeLine(trimmed);
-      try {
-        const parsed = JSON.parse(trimmed) as CursorMessageLine;
-        if (stats) stats.parsedLineCount++;
-        yield parsed;
-      } catch { /* 非 JSON 行静默跳过 */ }
-    }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    rl.close();
-    console.log(`[Cursor debug] ${tag} readJsonLines done: ${lineCount} raw lines, signalAborted=${signal?.aborted ?? false}`);
-  }
+    },
+    onParsedLine: () => {
+      if (stats) stats.parsedLineCount++;
+    },
+    onDone: (info) => {
+      console.log(`[Cursor debug] ${tag} readJsonLines done: ${info.lineCount} raw lines, signalAborted=${info.signalAborted}`);
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

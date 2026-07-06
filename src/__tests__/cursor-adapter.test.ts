@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -10,6 +10,7 @@ import {
   createCursorAdapter,
   formatCursorAgentEmptyOutputMessage,
 } from "../adapters/cursor-adapter.ts";
+import { BadJsonIdleTimeoutError } from "../adapters/jsonl-stream.ts";
 import type { UnifiedStreamMessage } from "../adapters/adapter-interface.ts";
 import type {
   CursorSessionMeta,
@@ -81,6 +82,33 @@ function createMockCursorProcess(args: {
 
   return child;
 }
+
+function createHangingMockCursorProcess(args: {
+  stdout?: string;
+  stderr?: string;
+}): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stdin = new PassThrough();
+  Object.assign(child, {
+    stdout,
+    stderr,
+    stdin,
+    pid: undefined,
+  });
+
+  setTimeout(() => {
+    if (args.stdout) stdout.write(args.stdout);
+    if (args.stderr) stderr.write(args.stderr);
+  }, 0);
+
+  return child;
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // ---------------------------------------------------------------------------
 // normalizeCursorMessage — 核心映射逻辑测试（纯函数）
@@ -756,5 +784,31 @@ describe("Cursor adapter process failures", () => {
     await expect(iterator.next()).rejects.toThrow(
       /Cursor Agent exited without stream-json output/,
     );
+  });
+
+  it("prompt fails when Cursor emits bad JSON and then leaves stdout idle", async () => {
+    vi.useFakeTimers();
+    const store = createInMemoryMetaStore({ sid: { cwd: "F:/repo" } });
+    const spawnImpl = (() =>
+      createHangingMockCursorProcess({
+        stdout: "{\"type\":\"tool_call\",\"subtype\":\"started\"\n",
+      })) as CursorSpawnForTest;
+    const adapter = createCursorAdapter({ metaStore: store, spawn: spawnImpl });
+
+    const pending = (async () => {
+      for await (const _event of adapter.prompt(
+        "sid",
+        "[User message]\nhello\n[/User message]",
+        "F:/repo",
+      )) {
+        // No normalized events are expected before the watchdog fires.
+      }
+    })().catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    const error = await pending;
+    expect(error).toBeInstanceOf(BadJsonIdleTimeoutError);
   });
 });
