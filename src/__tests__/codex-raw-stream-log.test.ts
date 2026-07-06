@@ -23,6 +23,7 @@ vi.mock("../adapters/proc-tree-kill.ts", () => ({
 
 import { config } from "../config.ts";
 import { createCodexAdapter } from "../adapters/codex-adapter.ts";
+import { BadJsonIdleTimeoutError } from "../adapters/jsonl-stream.ts";
 import type { CodexSessionMetaStore } from "../adapters/codex-session-meta-store.ts";
 
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
@@ -52,6 +53,28 @@ function createProc(lines: string[]): EventEmitter & {
   return proc;
 }
 
+function createHangingProc(lines: string[]): EventEmitter & {
+  stdout: PassThrough;
+  stderr: PassThrough;
+  stdin: PassThrough;
+  pid: number;
+} {
+  const proc = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    stdin: PassThrough;
+    pid: number;
+  };
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.stdin = new PassThrough();
+  proc.pid = 4242;
+  queueMicrotask(() => {
+    for (const line of lines) proc.stdout.write(`${line}\n`);
+  });
+  return proc;
+}
+
 async function collect(iterable: AsyncIterable<unknown>): Promise<unknown[]> {
   const events: unknown[] = [];
   for await (const event of iterable) events.push(event);
@@ -69,6 +92,7 @@ function metaStore(): CodexSessionMetaStore {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   spawnMock.mockReset();
   createRawStreamLogMock.mockReset();
   rawLogWriteLineMock.mockReset();
@@ -116,5 +140,24 @@ describe("Codex raw stream logs", () => {
       type: "assistant",
       blocks: [{ type: "text", text: "hello" }],
     });
+  });
+
+  it("fails the turn and kills the process tree when bad JSON is followed by idle stdout", async () => {
+    vi.useFakeTimers();
+    spawnMock.mockReturnValueOnce(createHangingProc([
+      "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"",
+    ]));
+    createRawStreamLogMock.mockResolvedValueOnce(null);
+
+    const adapter = createCodexAdapter({ metaStore: metaStore() });
+    const pending = collect(adapter.prompt("sid-raw", "hi", "F:/project"))
+      .catch((error: unknown) => error);
+
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    const error = await pending;
+    expect(error).toBeInstanceOf(BadJsonIdleTimeoutError);
+    expect(killProcessTreeMock).toHaveBeenCalledWith(4242);
   });
 });

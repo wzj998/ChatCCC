@@ -10,7 +10,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -33,6 +32,7 @@ import {
   createRawStreamLog,
   type RawStreamLogHandle,
 } from "./raw-stream-log.ts";
+import { readJsonLinesWithBadJsonIdleWatchdog } from "./jsonl-stream.ts";
 
 // ---------------------------------------------------------------------------
 // 特殊注入提示
@@ -237,26 +237,14 @@ async function* readJsonLines(
   signal?: AbortSignal,
   rawLog?: RawStreamLogHandle | null,
 ): AsyncGenerator<CodexEvent> {
-  const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
-  // abort 时主动 close readline，避免等待 Windows 管道自然关闭（可能延迟数分钟）
-  const onAbort = () => { rl.close(); };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    for await (const line of rl) {
-      if (signal?.aborted) break;
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      rawLog?.writeLine(trimmed);
-      try {
-        yield JSON.parse(trimmed) as CodexEvent;
-      } catch {
-        // 非 JSON 行静默跳过（如 "Reading prompt from stdin..."）
-      }
-    }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    rl.close();
-  }
+  yield* readJsonLinesWithBadJsonIdleWatchdog<CodexEvent>({
+    input: proc.stdout!,
+    tool: "codex",
+    tag: "codex",
+    signal,
+    rawLog,
+    parse: (line) => JSON.parse(line) as CodexEvent,
+  });
 }
 
 // ---------------------------------------------------------------------------
