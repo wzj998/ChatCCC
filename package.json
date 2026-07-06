@@ -36,6 +36,7 @@
     "demo:permission-check": "tsx demo/permission_check.ts",
     "demo:claude-hi": "tsx demo/claude_say_hi.ts",
     "demo:codex-hi": "tsx demo/codex_say_hi.ts",
+    "demo:codex-app-server-approval": "tsx demo/codex-app-server-approval/approval_demo.ts",
     "demo:ilink-echo": "tsx demo/ilink_echo_probe.ts",
     "claude-proxy": "tsx src/litellm-proxy.ts",
     "test": "vitest run",
