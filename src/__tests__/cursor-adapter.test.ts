@@ -98,10 +98,10 @@ function createHangingMockCursorProcess(args: {
     pid: undefined,
   });
 
-  setTimeout(() => {
+  queueMicrotask(() => {
     if (args.stdout) stdout.write(args.stdout);
     if (args.stderr) stderr.write(args.stderr);
-  }, 0);
+  });
 
   return child;
 }
@@ -744,6 +744,33 @@ describe("Cursor adapter process failures", () => {
     expect(message).not.toContain("登录态已失效");
   });
 
+  it("formats empty stdout action-required stderr with the actionable Cursor error", () => {
+    const message = formatCursorAgentEmptyOutputMessage({
+      exitCode: 1,
+      stdoutLength: 0,
+      stderr: "ActionRequiredError: You have an unpaid invoice Your team has an unpaid invoice. Please contact your team administrator to pay your invoice and continue using Cursor.\n",
+    });
+
+    expect(message).toContain("底层命令异常退出");
+    expect(message).toContain("[Cursor stderr] exit=1");
+    expect(message).toContain("ActionRequiredError");
+    expect(message).toContain("unpaid invoice");
+    expect(message).toContain("team administrator");
+  });
+
+  it("redacts obvious secrets from visible Cursor stderr", () => {
+    const message = formatCursorAgentEmptyOutputMessage({
+      exitCode: 1,
+      stdoutLength: 0,
+      stderr: "Error: failed with token=secret-token-value and Bearer abcdefghijklmnop\n",
+    });
+
+    expect(message).toContain("token=<redacted>");
+    expect(message).toContain("Bearer <redacted>");
+    expect(message).not.toContain("secret-token-value");
+    expect(message).not.toContain("abcdefghijklmnop");
+  });
+
   it("does not format a message when stdout is non-empty", () => {
     expect(
       formatCursorAgentEmptyOutputMessage({
@@ -786,14 +813,49 @@ describe("Cursor adapter process failures", () => {
     );
   });
 
+  it("prompt surfaces action-required stderr before failing the stream", async () => {
+    const store = createInMemoryMetaStore({ sid: { cwd: "F:/repo" } });
+    const spawnImpl = (() =>
+      createMockCursorProcess({
+        exitCode: 1,
+        stderr: "ActionRequiredError: You have an unpaid invoice Your team has an unpaid invoice. Please contact your team administrator to pay your invoice and continue using Cursor.\n",
+      })) as CursorSpawnForTest;
+    const adapter = createCursorAdapter({ metaStore: store, spawn: spawnImpl });
+    const iterator = adapter.prompt(
+      "sid",
+      "[User message]\nhello\n[/User message]",
+      "F:/repo",
+    )[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value.blocks).toHaveLength(1);
+    expect(first.value.blocks[0]).toMatchObject({ type: "text_final" });
+    expect(first.value.blocks[0]).toHaveProperty(
+      "text",
+      expect.stringContaining("ActionRequiredError"),
+    );
+    expect(first.value.blocks[0]).toHaveProperty(
+      "text",
+      expect.stringContaining("unpaid invoice"),
+    );
+
+    await expect(iterator.next()).rejects.toThrow(
+      /Cursor Agent exited without stream-json output/,
+    );
+  });
+
   it("prompt fails when Cursor emits bad JSON and then leaves stdout idle", async () => {
-    vi.useFakeTimers();
     const store = createInMemoryMetaStore({ sid: { cwd: "F:/repo" } });
     const spawnImpl = (() =>
       createHangingMockCursorProcess({
         stdout: "{\"type\":\"tool_call\",\"subtype\":\"started\"\n",
       })) as CursorSpawnForTest;
-    const adapter = createCursorAdapter({ metaStore: store, spawn: spawnImpl });
+    const adapter = createCursorAdapter({
+      metaStore: store,
+      spawn: spawnImpl,
+      badJsonIdleTimeoutMs: 10,
+    });
 
     const pending = (async () => {
       for await (const _event of adapter.prompt(
@@ -804,9 +866,6 @@ describe("Cursor adapter process failures", () => {
         // No normalized events are expected before the watchdog fires.
       }
     })().catch((error: unknown) => error);
-
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(120_000);
 
     const error = await pending;
     expect(error).toBeInstanceOf(BadJsonIdleTimeoutError);
