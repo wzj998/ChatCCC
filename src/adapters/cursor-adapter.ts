@@ -156,6 +156,26 @@ function isCursorAuthRelatedError(stderr: string): boolean {
   );
 }
 
+const CURSOR_VISIBLE_STDERR_MAX_CHARS = 1200;
+
+function sanitizeCursorStderr(stderr: string): string {
+  return stderr
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "<redacted-api-key>")
+    .replace(
+      /\b(api[_-]?key|token|authorization|password)\s*[:=]\s*["']?[^\s"']+/gi,
+      "$1=<redacted>",
+    )
+    .trim();
+}
+
+function formatCursorVisibleStderr(stderr: string): string {
+  const sanitized = sanitizeCursorStderr(stderr);
+  if (sanitized.length <= CURSOR_VISIBLE_STDERR_MAX_CHARS) return sanitized;
+  return `${sanitized.slice(0, CURSOR_VISIBLE_STDERR_MAX_CHARS)}\n...(stderr truncated)`;
+}
+
 export function formatCursorAgentEmptyOutputMessage(args: {
   exitCode: number | null;
   stdoutLength: number;
@@ -165,11 +185,12 @@ export function formatCursorAgentEmptyOutputMessage(args: {
   if (args.stdoutLength !== 0) return null;
   if (args.stderr.trim().length === 0) return null;
 
+  const stderrBlock = `[Cursor stderr] exit=${args.exitCode ?? "unknown"}:\n${formatCursorVisibleStderr(args.stderr)}`;
   if (isCursorAuthRelatedError(args.stderr)) {
-    return "Cursor Agent 没有返回内容。检测到认证相关错误，可能需要重新登录 Cursor Agent，或配置 CURSOR_API_KEY。请在本机运行 agent status 检查状态；如未登录，请运行 agent login 后重试。";
+    return `Cursor Agent 没有返回内容。检测到认证相关错误，可能需要重新登录 Cursor Agent，或配置 CURSOR_API_KEY。请在本机运行 agent status 检查状态；如未登录，请运行 agent login 后重试。\n\n${stderrBlock}`;
   }
 
-  return "Cursor Agent 没有返回内容。底层命令异常退出，请检查本机 Cursor Agent 状态后重试。";
+  return `Cursor Agent 没有返回内容。底层命令异常退出，错误信息如下：\n\n${stderrBlock}`;
 }
 
 function createCursorAgentFailureError(info: CursorProcessCloseInfo): Error {
@@ -437,6 +458,7 @@ async function* readJsonLines(
   debugTag?: string,
   rawLog?: RawStreamLogHandle | null,
   stats?: CursorStreamStats,
+  idleTimeoutMs?: number,
 ): AsyncGenerator<CursorMessageLine> {
   const tag = debugTag ?? "cursor";
   yield* readJsonLinesWithBadJsonIdleWatchdog<CursorMessageLine>({
@@ -445,6 +467,7 @@ async function* readJsonLines(
     tag,
     signal,
     rawLog,
+    idleTimeoutMs,
     parse: (line) => JSON.parse(line) as CursorMessageLine,
     onRawLine: (line) => {
       if (stats) {
@@ -472,11 +495,18 @@ class CursorAdapter implements ToolAdapter {
   private metaStore: CursorSessionMetaStore;
   private modelOverride: string | undefined;
   private spawnImpl: CursorSpawn;
+  private badJsonIdleTimeoutMs: number | undefined;
 
-  constructor(metaStore: CursorSessionMetaStore, modelOverride?: string, spawnImpl: CursorSpawn = spawn) {
+  constructor(
+    metaStore: CursorSessionMetaStore,
+    modelOverride?: string,
+    spawnImpl: CursorSpawn = spawn,
+    badJsonIdleTimeoutMs?: number,
+  ) {
     this.metaStore = metaStore;
     this.modelOverride = modelOverride;
     this.spawnImpl = spawnImpl;
+    this.badJsonIdleTimeoutMs = badJsonIdleTimeoutMs;
   }
 
   async createSession(cwd: string): Promise<CreateSessionResult> {
@@ -485,7 +515,7 @@ class CursorAdapter implements ToolAdapter {
     const stats = createCursorStreamStats();
     this.activeProcs.add(proc);
 
-    for await (const msg of readJsonLines(proc, undefined, "createSession", null, stats)) {
+    for await (const msg of readJsonLines(proc, undefined, "createSession", null, stats, this.badJsonIdleTimeoutMs)) {
       if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
         const sessionId = msg.session_id;
         await this.metaStore
@@ -554,7 +584,7 @@ class CursorAdapter implements ToolAdapter {
     const stats = createCursorStreamStats();
 
     try {
-      for await (const raw of readJsonLines(proc, signal, sessionId, rawLog, stats)) {
+      for await (const raw of readJsonLines(proc, signal, sessionId, rawLog, stats, this.badJsonIdleTimeoutMs)) {
         if (signal?.aborted) break;
         if (
           raw.type === "system" &&
@@ -627,6 +657,8 @@ export interface CreateCursorAdapterOptions {
   model?: string;
   /** 注入自定义 spawn 实现（测试用）。 */
   spawn?: CursorSpawn;
+  /** Test-only override for the bad JSON idle watchdog threshold. */
+  badJsonIdleTimeoutMs?: number;
 }
 
 export function createCursorAdapter(
@@ -636,5 +668,6 @@ export function createCursorAdapter(
     options.metaStore ?? defaultCursorSessionMetaStore,
     options.model,
     options.spawn,
+    options.badJsonIdleTimeoutMs,
   );
 }
