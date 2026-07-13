@@ -167,7 +167,7 @@ describe("buildHelpCard", () => {
     const parsed = JSON.parse(card);
     const lines = parsed.elements[1].text.content.split("\n");
 
-    expect(lines).toContain("发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡");
+    expect(lines).toContain("发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡");
     expect(lines.at(-1)).toBe(ABD_HELP_LINE);
   });
 
