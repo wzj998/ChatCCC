@@ -132,15 +132,15 @@ describe("Codex avatar usage battery", () => {
     mockConfig.cursor.onDemandMonthlyBudget = 1000;
   });
 
-  it("adds weekly battery and 5h ring percentages to Codex avatar uploads when usage lookup succeeds", async () => {
+  it("adds 7-day battery and 5h ring percentages to Codex avatar uploads when both windows exist", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
     const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
     const uploadedNames: string[] = [];
     await writeCodexAuth(homeDir);
     mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
       rate_limit: {
-        primary_window: { used_percent: 37 },
-        secondary_window: { used_percent: 12 },
+        primary_window: { used_percent: 37, limit_window_seconds: 18000 },
+        secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
       },
     }), { status: 200 }));
 
@@ -148,7 +148,49 @@ describe("Codex avatar usage battery", () => {
       const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
       await setChatAvatar("tenant-token", "chat_1", "codex", "busy");
 
-      expect(uploadedNames).toEqual(["avatar_codex_busy_week_88_5h_63.jpg"]);
+      expect(uploadedNames).toEqual(["avatar_codex_busy_7d_88_5h_63.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a 7-day battery without a 5h ring when the API only returns a 7-day window", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    await writeCodexAuth(homeDir);
+    mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
+      rate_limit: {
+        primary_window: {
+          used_percent: 23,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 500000,
+          reset_at: 1784510226,
+        },
+        secondary_window: null,
+      },
+    }), { status: 200 }));
+
+    try {
+      const { getCodexUsageSummary, setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+
+      await expect(getCodexUsageSummary()).resolves.toEqual({
+        fiveHour: null,
+        weekly: {
+          usedPercent: 23,
+          remainingPercent: 77,
+          resetAfterSeconds: 500000,
+          resetAtEpochSeconds: 1784510226,
+          limitWindowSeconds: 604800,
+        },
+        rateLimitResetCreditsAvailable: null,
+        rateLimitResetCredits: [],
+      });
+
+      await setChatAvatar("tenant-token", "chat_1", "codex", "busy");
+
+      expect(uploadedNames).toEqual(["avatar_codex_busy_7d_77.jpg"]);
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });
@@ -172,7 +214,7 @@ describe("Codex avatar usage battery", () => {
         },
       });
 
-      expect(uploadedNames).toEqual(["avatar_codex_busy_week_88_5h_63.jpg"]);
+      expect(uploadedNames).toEqual(["avatar_codex_busy_7d_88_5h_63.jpg"]);
       expect(fetchMock).not.toHaveBeenCalledWith("https://chatgpt.com/backend-api/wham/usage", expect.anything());
     } finally {
       await rm(homeDir, { recursive: true, force: true });

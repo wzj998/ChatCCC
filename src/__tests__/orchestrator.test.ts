@@ -519,11 +519,36 @@ describe("handleCommand WeChat processing ack", () => {
     expect(card.elements[0].text.content).toContain("**5h:** 已用 37%，剩余 63%，重置:");
     expect(card.elements[0].text.content).toContain("约 2小时52分钟后");
     expect(card.elements[0].text.content).toContain("[███████░░░░░░░░░░░░░]");
-    expect(card.elements[0].text.content).toContain("**周:** 已用 12%，剩余 88%，重置:");
+    expect(card.elements[0].text.content).toContain("**7天:** 已用 12%，剩余 88%，重置:");
     expect(card.elements[0].text.content).toContain("约 3天18小时17分钟后");
     expect(card.elements[0].text.content).toContain("[██░░░░░░░░░░░░░░░░░░]");
     expect(card.elements[2].actions[0].text.content).toBe("发起重置");
     expect(card.elements[2].actions[0].value).toEqual({ action: "codex_reset_request", availableCount: 2 });
+    expect(platform.setChatAvatar).toHaveBeenCalledWith("feishu-p2p", "codex", "idle", { codexUsage: usage });
+  });
+
+  it("shows only the 7-day window when the 5h window is absent", async () => {
+    const platform = mockPlatform("feishu");
+    const usage = {
+      fiveHour: null,
+      weekly: {
+        usedPercent: 23,
+        remainingPercent: 77,
+        resetAtEpochSeconds: 1784510226,
+        resetAfterSeconds: 500000,
+        limitWindowSeconds: 604800,
+      },
+      rateLimitResetCreditsAvailable: 0,
+      rateLimitResetCredits: [],
+    };
+    mockGetCodexUsageSummary.mockResolvedValue(usage);
+
+    await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    const content = card.elements[0].text.content as string;
+    expect(content).not.toContain("**5h:**");
+    expect(content).toContain("**7天:** 已用 23%，剩余 77%，重置:");
     expect(platform.setChatAvatar).toHaveBeenCalledWith("feishu-p2p", "codex", "idle", { codexUsage: usage });
   });
 
@@ -646,7 +671,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(codexPlatform.sendCard).toHaveBeenCalledWith(
       "feishu-group",
       "Codex Session Ready",
-      expect.stringContaining("发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡。"),
+      expect.stringContaining("发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡。"),
       "green",
     );
 

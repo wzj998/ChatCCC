@@ -323,7 +323,7 @@ const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
 const PLAIN_AVATAR_TOOL = "plain";
-const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-ring-gray-consumed-v13";
+const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-window-aware-v14";
 const CURSOR_AVATAR_USAGE_STYLE_VERSION = "usage-battery-v1";
 
 export interface CodexUsageBalance {
@@ -331,6 +331,7 @@ export interface CodexUsageBalance {
   remainingPercent: number;
   resetAtEpochSeconds: number | null;
   resetAfterSeconds: number | null;
+  limitWindowSeconds?: number | null;
 }
 
 export interface CodexRateLimitResetCredit {
@@ -339,7 +340,7 @@ export interface CodexRateLimitResetCredit {
 }
 
 export interface CodexUsageSummary {
-  fiveHour: CodexUsageBalance;
+  fiveHour: CodexUsageBalance | null;
   weekly: CodexUsageBalance | null;
   rateLimitResetCreditsAvailable: number | null;
   rateLimitResetCredits: CodexRateLimitResetCredit[] | null;
@@ -359,6 +360,9 @@ function normalizeAvatarTool(tool: string): string {
   return AVATAR_BADGES[tool] ? tool : PLAIN_AVATAR_TOOL;
 }
 
+const FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
+const SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+
 function normalizeAvatarStatus(status: string): string {
   return AVATAR_SOURCES[status] ? status : "idle";
 }
@@ -376,9 +380,9 @@ function avatarCacheKey(
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   if (normalizedTool === "codex") {
-    return codexUsage
-      ? `${normalizedTool}:${normalizedStatus}:${CODEX_AVATAR_USAGE_STYLE_VERSION}:week-battery:${codexUsage.weekly?.remainingPercent}:5h-ring:${codexUsage.fiveHour.remainingPercent}`
-      : `${normalizedTool}:${normalizedStatus}:plain`;
+    if (!codexUsage?.weekly) return `${normalizedTool}:${normalizedStatus}:plain`;
+    const ringKey = codexUsage.fiveHour ? `:5h-ring:${codexUsage.fiveHour.remainingPercent}` : "";
+    return `${normalizedTool}:${normalizedStatus}:${CODEX_AVATAR_USAGE_STYLE_VERSION}:7d-battery:${codexUsage.weekly.remainingPercent}${ringKey}`;
   }
   if (normalizedTool === "cursor") {
     return cursorBatteryPercent !== null
@@ -423,12 +427,22 @@ function usageBalanceFromWindow(raw: Record<string, unknown>, fieldName: string)
   const used = clampPercent(usedPercent);
   const resetAt = Number(raw.reset_at);
   const resetAfter = Number(raw.reset_after_seconds);
-  return {
+  const rawLimitWindow = raw.limit_window_seconds;
+  const limitWindow = rawLimitWindow === null || rawLimitWindow === undefined || rawLimitWindow === ""
+    ? Number.NaN
+    : Number(rawLimitWindow);
+  const balance: CodexUsageBalance = {
     usedPercent: used,
     remainingPercent: clampPercent(100 - used),
     resetAtEpochSeconds: Number.isFinite(resetAt) ? resetAt : null,
     resetAfterSeconds: Number.isFinite(resetAfter) ? resetAfter : null,
   };
+  if (Number.isFinite(limitWindow)) balance.limitWindowSeconds = limitWindow;
+  return balance;
+}
+
+function isUsageWindowDuration(balance: CodexUsageBalance | null, seconds: number): boolean {
+  return balance?.limitWindowSeconds === seconds;
 }
 
 function parseOptionalUsageWindow(rateLimit: Record<string, unknown>, keys: string[]): CodexUsageBalance | null {
@@ -541,18 +555,25 @@ export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
   const rateLimit = data.rate_limit;
   if (!rateLimit || typeof rateLimit !== "object") throw new Error("missing rate_limit");
 
-  const fiveHour = parseOptionalUsageWindow(rateLimit, ["primary_window"]);
-  if (!fiveHour) throw new Error("missing rate_limit.primary_window.used_percent");
+  const primaryWindow = parseOptionalUsageWindow(rateLimit, ["primary_window"]);
+  const secondaryWindow = parseOptionalUsageWindow(rateLimit, [
+    "secondary_window",
+    "weekly_window",
+    "week_window",
+    "long_window",
+  ]);
+  if (!primaryWindow && !secondaryWindow) throw new Error("missing supported rate_limit usage window");
+
+  const windows = [primaryWindow, secondaryWindow];
+  const fiveHour = windows.find((window) => isUsageWindowDuration(window, FIVE_HOUR_WINDOW_SECONDS))
+    ?? (primaryWindow?.limitWindowSeconds === undefined ? primaryWindow : null);
+  const weekly = windows.find((window) => isUsageWindowDuration(window, SEVEN_DAY_WINDOW_SECONDS))
+    ?? (secondaryWindow?.limitWindowSeconds === undefined ? secondaryWindow : null);
   const resetCredits = await resetCreditsPromise;
 
   return {
     fiveHour,
-    weekly: parseOptionalUsageWindow(rateLimit, [
-      "secondary_window",
-      "weekly_window",
-      "week_window",
-      "long_window",
-    ]),
+    weekly,
     rateLimitResetCreditsAvailable: resetCredits?.availableCount ?? parseRateLimitResetCredits(data),
     rateLimitResetCredits: resetCredits?.availableCredits ?? null,
   };
@@ -763,8 +784,8 @@ async function renderAvatar(
   const composites: sharp.OverlayOptions[] = [];
   const hasAgentBadge = normalizedTool !== PLAIN_AVATAR_TOOL;
 
-  const codexWeeklyUsage = normalizedTool === "codex" ? codexUsage?.weekly : null;
-  const useDynamicCodexAvatar = codexUsage && codexWeeklyUsage;
+  const codexWeeklyUsage = normalizedTool === "codex" ? codexUsage?.weekly ?? null : null;
+  const useDynamicCodexAvatar = normalizedTool === "codex" && codexUsage !== null && codexWeeklyUsage !== null;
   const useDynamicCursorAvatar = normalizedTool === "cursor" && cursorBatteryPercent !== null;
   const basePath = useDynamicCodexAvatar || useDynamicCursorAvatar
     ? AVATAR_SOURCES[normalizedStatus]
@@ -773,8 +794,10 @@ async function renderAvatar(
       : AVATAR_SOURCES[normalizedStatus];
 
   if (useDynamicCodexAvatar) {
+    if (codexUsage.fiveHour) {
+      composites.push({ input: buildCodexUsageRingSvg(codexUsage.fiveHour.remainingPercent), left: 0, top: 0 });
+    }
     composites.push(
-      { input: buildCodexUsageRingSvg(codexUsage.fiveHour.remainingPercent), left: 0, top: 0 },
       { input: buildCodexUsageBatterySvg(codexWeeklyUsage.remainingPercent), left: 0, top: 0 },
       await buildAgentBadgeOverlay(normalizedTool),
     );
@@ -801,7 +824,7 @@ async function renderAvatar(
     buffer: jpeg,
     contentType: "image/jpeg",
     filename: normalizedTool === "codex" && codexUsage?.weekly
-      ? `avatar_${normalizedTool}_${normalizedStatus}_week_${codexUsage.weekly.remainingPercent}_5h_${codexUsage.fiveHour.remainingPercent}.jpg`
+      ? `avatar_${normalizedTool}_${normalizedStatus}_7d_${codexUsage.weekly.remainingPercent}${codexUsage.fiveHour ? `_5h_${codexUsage.fiveHour.remainingPercent}` : ""}.jpg`
       : normalizedTool === "cursor" && cursorBatteryPercent !== null
         ? `avatar_${normalizedTool}_${normalizedStatus}_battery_${cursorBatteryPercent}.jpg`
       : `avatar_${normalizedTool}_${normalizedStatus}.jpg`,

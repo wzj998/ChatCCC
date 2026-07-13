@@ -135,7 +135,7 @@ function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: 
     return `（约 ${parts.join("")}后）`;
   };
 
-  const formatResetTime = (balance: CodexUsageSummary["fiveHour"]) => {
+  const formatResetTime = (balance: NonNullable<CodexUsageSummary["fiveHour"]>) => {
     if (balance.resetAtEpochSeconds === null) return "暂无数据";
     const date = new Date(balance.resetAtEpochSeconds * 1000);
     const pad = (value: number) => String(value).padStart(2, "0");
@@ -263,8 +263,8 @@ function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: 
     formatChatGptSubscriptionFailure(),
     formatResetCredits(),
     "",
-    formatWindow("5h", usage.fiveHour),
-    formatWindow("周", usage.weekly),
+    usage.fiveHour ? formatWindow("5h", usage.fiveHour) : "",
+    usage.weekly ? formatWindow("7天", usage.weekly) : "",
   ].filter((line, index, arr) => line !== "" || (index > 0 && arr[index - 1] !== "")).join("\n");
 }
 
@@ -325,7 +325,7 @@ function formatCursorUsageSummary(usage: CursorUsageSummary): string {
 }
 
 function usageHelpLine(tool: string): string {
-  if (tool === "codex") return "\n发送 **/usage** 查看 Codex 5h/周用量，以及查询/使用主动重置卡。";
+  if (tool === "codex") return "\n发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡。";
   if (tool === "cursor") return "\n发送 **/usage** 查看 Cursor 用量。";
   return "";
 }

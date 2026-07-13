@@ -344,7 +344,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/cd` | 查看或设置当前会话工作目录 |
 | `/sessions` | 查看所有会话状态 |
 | `/session <数字>` | 将当前群聊切换到 `/sessions` 列表中的指定会话 |
-| `/usage` | 查看当前会话对应 Agent 的用量；Codex 显示 5h/周用量，若 Chrome CDP 可用且 ChatGPT 已登录，会额外显示订阅到期时间；Cursor 显示当前周期用量 |
+| `/usage` | 查看当前会话对应 Agent 的用量；Codex 按接口实际返回显示 5h/7天窗口（缺失窗口不显示），若 Chrome CDP 可用且 ChatGPT 已登录，会额外显示订阅到期时间；Cursor 显示当前周期用量 |
 | `/git <子命令>` | 在当前会话工作目录执行 `git ...` 并回传输出 |
 | `/abd<内容>` | 去掉 `/abd` 前缀后把内容发给 Agent，并在消息末尾追加第一性原理需求澄清提示 |
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
