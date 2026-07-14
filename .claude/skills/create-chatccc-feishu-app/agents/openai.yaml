@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create ChatCCC Feishu App"
+  short_description: "Create and configure a Feishu bot app for ChatCCC"
+  default_prompt: "Use $create-chatccc-feishu-app to create and configure a Feishu enterprise bot app for this ChatCCC project."
