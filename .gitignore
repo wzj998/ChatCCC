@@ -147,7 +147,9 @@ vite.config.ts.timestamp-*
 CLAUDE.local.md
 local/
 .claude/settings.local.json
-.claude/skills/
+.claude/skills/*
+!.claude/skills/create-chatccc-feishu-app/
+!.claude/skills/create-chatccc-feishu-app/**
 state/
 images/downloads/
 

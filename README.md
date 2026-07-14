@@ -166,6 +166,8 @@ npm run dev
 
 #### 飞书（推荐）
 
+如果 Chrome 已登录飞书开放平台，也可以让 Codex、Claude 或 Cursor 使用项目内的 [`create-chatccc-feishu-app`](.agents/skills/create-chatccc-feishu-app/SKILL.md) Skill，通过 Chrome DevTools/CDP 自动创建并配置机器人（默认 CDP 端口为 `15166`）。创建应用、开通权限和正式发布属于外部变更，执行前仍需明确确认；不要把 App Secret 写入对话或仓库。
+
 1. 打开 [飞书开放平台](https://open.feishu.cn)，创建一个**企业自建应用**。
 2. 在「应用功能」里开启**机器人**能力。
 3. 在「权限管理」里开通 `im:` 和 `cardkit:` 前缀下的相关权限：
