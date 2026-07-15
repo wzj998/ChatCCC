@@ -507,6 +507,8 @@ export interface SessionRegistryUpdate {
   chatId: string;
   sessionId: string;
   tool: string;
+  /** 会话容器类型；旧 registry 没有该字段，读取时必须兼容。 */
+  chatType?: string;
   chatName?: string;
   turnCount?: number;
   lastContextTokens?: number;
@@ -519,6 +521,7 @@ interface SessionRegistryRecord {
   chatId: string;
   sessionId: string;
   tool: string;
+  chatType?: string;
   chatName: string;
   turnCount: number;
   lastContextTokens: number;
@@ -583,6 +586,7 @@ export async function recordSessionRegistry(update: SessionRegistryUpdate): Prom
     chatId: update.chatId,
     sessionId: update.sessionId,
     tool: update.tool,
+    chatType: update.chatType ?? existing?.chatType,
     chatName: update.chatName ?? existing?.chatName ?? "",
     turnCount: update.turnCount ?? existing?.turnCount ?? 0,
     lastContextTokens: update.lastContextTokens ?? existing?.lastContextTokens ?? 0,
@@ -836,6 +840,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
     chatId,
     sessionId: newSessionId,
     tool,
+    chatType,
     chatName,
     turnCount: initialTurnCount,
     lastContextTokens: initialContextTokens,
@@ -1846,6 +1851,7 @@ export async function getSessionStatus(chatId: string): Promise<SessionStatus | 
 
 export interface SessionsListEntry {
   chatId: string;
+  chatType?: string;
   sessionId: string;
   chatName: string;
   active: boolean;
@@ -1871,6 +1877,7 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
       const active = activePrompts.get(sessionId);
       return {
         chatId: "",
+        chatType: undefined,
         sessionId,
         tool: record.tool,
         chatName: record.chatName ?? "",
@@ -1891,6 +1898,7 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
       const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
       return {
         chatId: info.chatId,
+        chatType: info.chatType,
         sessionId: info.sessionId,
         chatName: info.chatName || "",
         active: !!activePrompts.get(info.sessionId) &&

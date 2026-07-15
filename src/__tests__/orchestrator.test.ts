@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { PlatformAdapter } from "../platform-adapter.ts";
@@ -298,7 +298,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendText).not.toHaveBeenCalledWith("wx-chat", "会话已停止。");
   });
 
-  it("cleans stale Feishu p2p binding, creates a group, and sends the private message as first prompt", async () => {
+  it("resumes the Feishu p2p session in place instead of creating a group", async () => {
     const platform = mockPlatform("feishu");
     const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
       yield {
@@ -313,41 +313,122 @@ describe("handleCommand WeChat processing ack", () => {
       prompt,
       getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
         sessionId,
-        cwd: "F:\\repo",
+        cwd: homedir(),
       }),
       closeSession: async () => {},
     });
     await recordSessionRegistry({
       chatId: "feishu-p2p",
-      sessionId: "stale-sid",
+      sessionId: "sid-feishu-private",
       tool: "claude",
-      chatName: "旧私聊绑定",
+      chatType: "p2p",
+      chatName: "飞书私聊",
       running: false,
     });
 
     await handleCommand(platform, "帮我看一下日志", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-    expect(platform.createGroup).toHaveBeenCalledWith(expect.stringContaining("帮我看一下日志"), ["ou-user"]);
-    expect(platform.updateChatInfo).toHaveBeenCalledWith(
-      "feishu-group",
-      expect.stringContaining("帮我看一下日志"),
-      expect.stringContaining("sid-feishu-new"),
-    );
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    expect(platform.updateChatInfo).not.toHaveBeenCalled();
     expect(prompt).toHaveBeenCalledWith(
-      "sid-feishu-new",
+      "sid-feishu-private",
       expect.stringContaining("帮我看一下日志"),
-      "F:\\repo",
+      homedir(),
       expect.any(AbortSignal),
       expect.any(Object),
     );
 
     const registry = await loadSessionRegistryForBinding();
-    expect(registry["feishu-p2p"]).toBeUndefined();
-    expect(registry["feishu-group"]?.sessionId).toBe("sid-feishu-new");
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
   });
 
-  it("auto-creates a Feishu group for /abd private messages and sends the transformed prompt", async () => {
+  it("creates the first Feishu p2p session in the OS user directory and sends the first prompt in place", async () => {
     const platform = mockPlatform("feishu");
+    const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-private" }));
+    const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
+      yield {
+        type: "assistant" as const,
+        blocks: [{ type: "text" as const, text: `收到: ${userText}` }],
+      };
+    });
+    _setAdapterForToolForTest("claude", {
+      displayName: "Claude",
+      sessionDescPrefix: "Claude Session:",
+      createSession,
+      prompt,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
+        sessionId,
+        cwd: homedir(),
+      }),
+      closeSession: async () => {},
+    });
+
+    await handleCommand(platform, "帮我看一下日志", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    expect(platform.updateChatInfo).not.toHaveBeenCalled();
+    expect(prompt).toHaveBeenCalledWith(
+      "sid-feishu-private",
+      expect.stringContaining("帮我看一下日志"),
+      homedir(),
+      expect.any(AbortSignal),
+      expect.any(Object),
+    );
+
+    const registry = await loadSessionRegistryForBinding();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
+    expect(registry["feishu-p2p"]?.tool).toBe("claude");
+    expect(registry["feishu-p2p"]?.chatType).toBe("p2p");
+  });
+
+  it("replaces an unmarked legacy Feishu p2p binding with a home-directory session", async () => {
+    const platform = mockPlatform("feishu");
+    const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-migrated" }));
+    const prompt = vi.fn(async function* () {
+      yield {
+        type: "assistant" as const,
+        blocks: [{ type: "text" as const, text: "done" }],
+      };
+    });
+    _setAdapterForToolForTest("claude", {
+      displayName: "Claude",
+      sessionDescPrefix: "Claude Session:",
+      createSession,
+      prompt,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
+        sessionId,
+        cwd: homedir(),
+      }),
+      closeSession: async () => {},
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-p2p",
+      sessionId: "sid-feishu-legacy",
+      tool: "claude",
+      chatName: "旧私聊绑定",
+      running: false,
+    });
+
+    await handleCommand(platform, "继续", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(prompt).toHaveBeenCalledWith(
+      "sid-feishu-migrated",
+      expect.stringContaining("继续"),
+      homedir(),
+      expect.any(AbortSignal),
+      expect.any(Object),
+    );
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    const registry = await loadSessionRegistryForBinding();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-migrated");
+    expect(registry["feishu-p2p"]?.chatType).toBe("p2p");
+  });
+
+  it("creates a Feishu p2p session for /abd and sends the transformed prompt without creating a group", async () => {
+    const platform = mockPlatform("feishu");
+    const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-abd" }));
     const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
       yield {
         type: "assistant" as const,
@@ -357,34 +438,33 @@ describe("handleCommand WeChat processing ack", () => {
     _setAdapterForToolForTest("claude", {
       displayName: "Claude",
       sessionDescPrefix: "Claude Session:",
-      createSession: vi.fn(async () => ({ sessionId: "sid-feishu-abd" })),
+      createSession,
       prompt,
       getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
         sessionId,
-        cwd: "F:\\repo",
+        cwd: homedir(),
       }),
       closeSession: async () => {},
     });
 
     await handleCommand(platform, "/abd帮我看一下日志", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-    expect(platform.createGroup).toHaveBeenCalledWith(expect.stringContaining("帮我看一下日志"), ["ou-user"]);
-    expect(platform.createGroup).not.toHaveBeenCalledWith(expect.stringContaining("---"), expect.anything());
-    const updateCall = vi.mocked(platform.updateChatInfo).mock.calls[0];
-    expect(updateCall[1]).not.toContain("---");
-    expect(updateCall[1]).not.toContain(ABD_APPEND_PROMPT);
+    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    expect(platform.updateChatInfo).not.toHaveBeenCalled();
     const userText = prompt.mock.calls[0][1];
     expect(userText).toContain(`[User message]\n帮我看一下日志\n\n---\n${ABD_APPEND_PROMPT}\n[/User message]`);
     expect(userText).not.toContain("/abd");
   });
 
-  it("cleans stale Feishu p2p binding but keeps valid commands from auto-creating a group", async () => {
+  it("keeps the Feishu p2p binding when handling commands", async () => {
     const platform = mockPlatform("feishu");
     await recordSessionRegistry({
       chatId: "feishu-p2p",
-      sessionId: "stale-sid",
+      sessionId: "sid-feishu-private",
       tool: "claude",
-      chatName: "旧私聊绑定",
+      chatType: "p2p",
+      chatName: "飞书私聊",
       running: false,
     });
 
@@ -393,7 +473,90 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.createGroup).not.toHaveBeenCalled();
     expect(platform.sendRawCard).toHaveBeenCalled();
     const registry = await loadSessionRegistryForBinding();
-    expect(registry["feishu-p2p"]).toBeUndefined();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
+  });
+
+  it("keeps the Feishu p2p session bound when /new creates a separate group", async () => {
+    const platform = mockPlatform("feishu");
+    const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-group" }));
+    _setAdapterForToolForTest("claude", {
+      ...mockAdapter("sid-feishu-group"),
+      createSession,
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-p2p",
+      sessionId: "sid-feishu-private",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      running: false,
+    });
+
+    await handleCommand(platform, "/new", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(platform.createGroup).toHaveBeenCalledWith(expect.any(String), ["ou-user"]);
+    const registry = await loadSessionRegistryForBinding();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
+    expect(registry["feishu-group"]?.sessionId).toBe("sid-feishu-group");
+  });
+
+  it("resets a Feishu p2p session in place with /newh and forces the OS user directory", async () => {
+    const platform = mockPlatform("feishu");
+    const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-private-reset" }));
+    _setAdapterForToolForTest("claude", {
+      ...mockAdapter("sid-feishu-private-reset"),
+      createSession,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
+        sessionId,
+        cwd: "F:\\some-project",
+      }),
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-p2p",
+      sessionId: "sid-feishu-private",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      running: false,
+    });
+
+    await handleCommand(platform, "/newh", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(platform.createGroup).not.toHaveBeenCalled();
+    expect(platform.updateChatInfo).not.toHaveBeenCalled();
+    const registry = await loadSessionRegistryForBinding();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private-reset");
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "Claude Code Session Reset",
+      expect.stringContaining(`${homedir()}\`（飞书私聊固定使用系统用户目录）`),
+      "green",
+    );
+  });
+
+  it("does not allow /session to replace the dedicated Feishu p2p session", async () => {
+    const platform = mockPlatform("feishu");
+    await recordSessionRegistry({
+      chatId: "feishu-p2p",
+      sessionId: "sid-feishu-private",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      running: false,
+    });
+
+    await handleCommand(platform, "/session 1", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "feishu-p2p",
+      "/session",
+      expect.stringContaining("飞书私聊使用固定的专属会话"),
+      "yellow",
+    );
+    expect(platform.updateChatInfo).not.toHaveBeenCalled();
+    const registry = await loadSessionRegistryForBinding();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
   });
 
   it("shows Claude effort switch card in an active Feishu session", async () => {
