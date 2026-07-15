@@ -352,8 +352,10 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
 | `/ask <内容>` | 只读问答模式：与 /plan 相同，仅允许读文件和 stop-stuck-loop 请求 |
 | `/restart` | 重启机器人进程 |
-| `/update` | 更新 npm 全局包并重启（仅限 `npm install -g chatccc` 安装的全局进程） |
+| `/update` | 更新 npm 全局包并重启（仅限 `npm install -g chatccc` 安装的全局进程；同一飞书事件跨重启去重） |
 | `/deleteg` | 解散当前飞书会话群；Agent 会话记录保留 |
+
+`/update` 会在执行 npm 更新前把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新 `/update` 因事件 ID 不同，仍可立即执行。该保护仅作用于 `/update`，普通消息与 `/restart` 的处理不变。
 
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`，Cursor 使用 `cursor.model`，Codex 使用 `codex.model`。
 

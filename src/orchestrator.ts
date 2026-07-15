@@ -90,6 +90,7 @@ import { getChatGptSubscriptionStatus, type ChatGptSubscriptionResult } from "./
 import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
+import { acquireUpdateCommandGuard } from "./update-command-guard.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -505,6 +506,7 @@ export async function handleCommand(
   msgTimestamp: number,
   chatType = "group",
   traceId?: string,
+  commandId?: string,
 ): Promise<void> {
   const tid = traceId ?? makeTraceId();
   const sharedPrefix = applySharedPrefix(text);
@@ -579,6 +581,30 @@ export async function handleCommand(
       logTrace(tid, "DONE", { outcome: "update_not_global" });
       return;
     }
+
+    // `/update` 会主动重启进程，内存 processedMessages 随之丢失。必须在发送
+    // “正在更新”以及执行 npm 命令之前同步落盘，才能挡住新进程收到的飞书重投。
+    // 该护栏只位于此分支，不改变普通消息和 `/restart` 的现有去重行为。
+    const updateGuard = acquireUpdateCommandGuard({ commandId });
+    appendStartupTrace("update: command guard checked", {
+      allowed: updateGuard.allowed,
+      reason: updateGuard.reason,
+      hasCommandId: Boolean(commandId),
+    });
+    if (!updateGuard.allowed) {
+      if (updateGuard.reason === "duplicate_id") {
+        // 同一条飞书消息的重投静默丢弃，避免用户再次看到重复提示。
+        logTrace(tid, "DONE", { outcome: "update_duplicate_id" });
+        return;
+      }
+      await platform.sendText(
+        chatId,
+        "无法写入更新保护状态。为避免连续更新和重启，本次 /update 未执行。",
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "update_guard_write_failed" });
+      return;
+    }
+
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
     logTrace(tid, "DONE", { outcome: "update" });
     appendStartupTrace("update: sync update begin", { fromPid: process.pid });

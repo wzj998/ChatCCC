@@ -190,6 +190,10 @@ function getInnerEvent(data: Evt): InnerEvent {
 }
 
 import { formatMessageContent } from "./format-message.ts";
+import {
+  buildUpdateCommandId,
+  extractFeishuEventId,
+} from "./update-command-guard.ts";
 
 // ---------------------------------------------------------------------------
 // Card action helper: parse button click into text command
@@ -199,6 +203,7 @@ interface CardActionResult {
   text: string;
   chatId: string;
   openId: string;
+  commandId?: string;
 }
 
 function parseCardAction(data: unknown): CardActionResult | null {
@@ -237,7 +242,12 @@ function parseCardAction(data: unknown): CardActionResult | null {
     ((raw as Record<string, unknown>).operator as Record<string, unknown>)?.open_id as string ??
     "";
 
-  return { text, chatId, openId };
+  return {
+    text,
+    chatId,
+    openId,
+    commandId: buildUpdateCommandId("card", extractFeishuEventId(data)),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +442,18 @@ async function startBotServiceCore(): Promise<void> {
         const delayToken = await getTenantAccessToken();
         await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
       }
-      await handleCommand(feishuPlatform, text, chatId, openId, msgTimestamp, chatType, traceId);
+      // 仅 `/update` 会使用这个稳定 ID 做跨重启幂等；其他命令仍沿用
+      // processedMessages 的进程内去重。
+      await handleCommand(
+        feishuPlatform,
+        text,
+        chatId,
+        openId,
+        msgTimestamp,
+        chatType,
+        traceId,
+        buildUpdateCommandId("message", messageId),
+      );
       } catch (err) {
         logTrace(traceId, "ERROR", { message: (err as Error).message });
         console.error(`[${ts()}] [FATAL] im.message.receive_v1 handler crashed: ${(err as Error).message}`);
@@ -483,7 +504,16 @@ async function startBotServiceCore(): Promise<void> {
       const result = parseCardAction(data);
       if (!result) return;
       console.log(`[BTN] chat=${result.chatId} text="${result.text}"`);
-      handleCommand(feishuPlatform, result.text, result.chatId, result.openId, Date.now()).catch((err) =>
+      handleCommand(
+        feishuPlatform,
+        result.text,
+        result.chatId,
+        result.openId,
+        Date.now(),
+        "group",
+        undefined,
+        result.commandId,
+      ).catch((err) =>
         console.error(`[${ts()}] [BTN] handleCommand failed: ${(err as Error).message}`)
       );
       } catch (err) {
@@ -508,7 +538,16 @@ async function startBotServiceCore(): Promise<void> {
         const data = JSON.parse(raw.toString()) as Evt;
         const action = parseCardAction(data);
         if (action) {
-          handleCommand(feishuPlatform, action.text, action.chatId, action.openId, Date.now()).catch((err) =>
+          handleCommand(
+            feishuPlatform,
+            action.text,
+            action.chatId,
+            action.openId,
+            Date.now(),
+            "group",
+            undefined,
+            action.commandId,
+          ).catch((err) =>
             console.error(`[${ts()}] [BTN] handleCommand failed: ${(err as Error).message}`)
           );
           return;
