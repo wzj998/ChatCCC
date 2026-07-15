@@ -1,10 +1,43 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, it, expect } from "vitest";
 import {
+  AGENT_TEAM_PAGE_HTML,
   PAGE_HTML,
   chooseStartPath,
+  createUiRouter,
   getRestartRequiredReasons,
   unflattenConfig,
 } from "../web-ui.ts";
+
+describe("Agent Team page", () => {
+  it("adds a prominent global entry to the ChatCCC page", () => {
+    expect(PAGE_HTML).toContain('href="/agent-team"');
+    expect(PAGE_HTML).toContain('class="agent-team-entry"');
+    expect(PAGE_HTML).toContain("Agent Team");
+    expect(PAGE_HTML).toContain("linear-gradient");
+  });
+
+  it("contains only the Agent Team title as page content", () => {
+    expect(AGENT_TEAM_PAGE_HTML).toContain("<title>Agent Team</title>");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("<h1>Agent Team</h1>");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("dashboard-view");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("wizard-view");
+  });
+
+  it("serves the Agent Team page from its own route", async () => {
+    const server = createServer(createUiRouter());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/agent-team`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(AGENT_TEAM_PAGE_HTML);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  });
+});
 
 describe("unflattenConfig", () => {
   it("maps Claude subagent model into claude.subagentModel", () => {
@@ -66,6 +99,18 @@ describe("unflattenConfig", () => {
       },
     });
   });
+
+  it("maps the Web UI startup preference into webUi config", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_WEB_UI_OPEN_ON_START: false,
+      }),
+    ).toEqual({
+      webUi: {
+        openOnStart: false,
+      },
+    });
+  });
 });
 
 describe("getRestartRequiredReasons", () => {
@@ -75,6 +120,7 @@ describe("getRestartRequiredReasons", () => {
       feishu: { enabled: true, platformType: "feishu" },
       ilink: { enabled: true, reuseTokenOnStart: true },
     },
+    webUi: { openOnStart: true },
     chromeDevtools: { enabled: false, port: 15166, chromePath: "" },
     port: 18080,
     claude: {
@@ -142,6 +188,12 @@ describe("getRestartRequiredReasons", () => {
 });
 
 describe("dashboard edit modal", () => {
+  it("keeps the embedded dashboard script syntactically valid", () => {
+    const script = PAGE_HTML.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script ?? "")).not.toThrow();
+  });
+
   it("shows the edit modal and overlay when a section edit button is clicked", () => {
     expect(PAGE_HTML).toContain("function editSection(section)");
     expect(PAGE_HTML).toContain("document.getElementById('edit-modal').classList.remove('hidden');");
@@ -157,6 +209,13 @@ describe("dashboard edit modal", () => {
   it("shows config effect scope hints", () => {
     expect(PAGE_HTML).toContain("生效范围：保存后下一条消息或下个新会话生效");
     expect(PAGE_HTML).toContain("生效范围：飞书开关、App ID、App Secret 或平台类型变更需要重启 ChatCCC");
+  });
+
+  it("shows the Web UI startup switch in both the wizard and dashboard", () => {
+    expect(PAGE_HTML).toContain('id="field-CHATCCC_WEB_UI_OPEN_ON_START"');
+    expect(PAGE_HTML).toContain('id="cfg-WEB_UI_OPEN_ON_START"');
+    expect(PAGE_HTML).toContain("editSection('webUi')");
+    expect(PAGE_HTML).toContain("下次直接启动生效；内部重启始终不打开");
   });
 });
 

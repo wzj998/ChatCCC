@@ -41,6 +41,7 @@ import {
 const baseAppConfig: AppConfig = {
   feishu: { appId: "INITIAL_APP", appSecret: "INITIAL_SECRET" },
   platforms: { feishu: { enabled: true }, ilink: { enabled: true } },
+  webUi: { openOnStart: true },
   chromeDevtools: { enabled: false, port: 15166, chromePath: "" },
   port: 18080,
   gitTimeoutSeconds: 180,
@@ -226,6 +227,18 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
 
     expect(config).toBe(refBefore);
     expect(config.chromeDevtools).toEqual({ enabled: true, port: 15166, chromePath: "C:/Chrome/chrome.exe" });
+  });
+
+  it("刷新 webUi 启动开关但保持 config 引用", () => {
+    const refBefore = config;
+
+    applyLoadedConfig({
+      ...structuredClone(baseAppConfig),
+      webUi: { openOnStart: false },
+    });
+
+    expect(config).toBe(refBefore);
+    expect(config.webUi).toEqual({ openOnStart: false });
   });
 
   it("空 feishu 凭证也能正确刷入（向导回滚到空的反向场景）", () => {

@@ -29,10 +29,16 @@ import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, waitForPortFree } from "./shared.ts";
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
+import {
+  buildWebUiUrl,
+  openWebUiInDefaultBrowser,
+  shouldAutoOpenWebUi,
+} from "./startup-lifecycle.ts";
 import { buildPlatformStartupPlan } from "./platform-startup.ts";
 import { makeTraceId, logTrace } from "./trace.ts";
 import {
   CHATCCC_PORT,
+  config,
   APP_ID,
   APP_SECRET,
   FEISHU_ENABLED,
@@ -721,10 +727,16 @@ async function startConfiguredPlatforms(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  // 用户直接运行 chatccc 时打开系统默认浏览器；由 `/restart`、`/update`
+  // 或 Web UI 拉起的替代进程会携带内部标记，不重复打扰用户。
+  const autoOpenWebUi = shouldAutoOpenWebUi({
+    openOnStart: config.webUi.openOnStart,
+  });
   appendStartupTrace("main: entered", {
     argv: process.argv.join(" ").slice(0, 400),
     CHATCCC_PORT,
     PROJECT_ROOT,
+    autoOpenWebUi,
   });
 
   // 黑匣子：所有未捕获异常 / 信号 / beforeExit 都同步写入 startup-trace.log（appendFileSync）。
@@ -782,6 +794,15 @@ async function main(): Promise<void> {
     console.log(`  消息日志: ~/.chatccc/sim/messages.jsonl`);
     console.log(`${"=".repeat(60)}\n`);
 
+    if (autoOpenWebUi) {
+      const url = buildWebUiUrl(SIM_PORT);
+      const opened = openWebUiInDefaultBrowser(SIM_PORT);
+      appendStartupTrace(
+        opened ? "web-ui: opening simulate browser" : "web-ui: simulate browser unavailable",
+        { url },
+      );
+    }
+
     installShutdownHandlers(simServer);
     return;
   }
@@ -831,6 +852,7 @@ async function main(): Promise<void> {
       // 凭证不全：进 setup 向导。注入 onActivate 回调让用户点"保存并启动"
       // 时，原地（同进程）调用 startBotService，复用 setup HTTP server。
       startSetupMode(CHATCCC_PORT, {
+        openBrowser: autoOpenWebUi,
         onActivate: async (httpServer: Server) => {
           reloadRuntimeConfig("setup-activate");
           appendStartupTrace("setup-activate: reloaded config from disk", {
@@ -876,6 +898,24 @@ async function main(): Promise<void> {
     printServiceDidNotStart(`本地中继端口 ${CHATCCC_PORT} 无法监听（${err.code ?? "?"} — ${err.message}）`);
     process.exit(1);
   });
+
+  // 必须等 HTTP server 真正监听后再发起打开请求，避免浏览器先到一步看到
+  // ERR_CONNECTION_REFUSED。Chrome CDP 守护仍保持自己原有的独立行为。
+  if (autoOpenWebUi) {
+    const url = buildWebUiUrl(CHATCCC_PORT);
+    const opened = openWebUiInDefaultBrowser(CHATCCC_PORT);
+    if (opened) {
+      console.log(`[WEB-UI] 已请求系统默认浏览器打开: ${url}`);
+      appendStartupTrace("web-ui: opening default browser", { url });
+    } else {
+      appendStartupTrace("web-ui: default browser unavailable", { url });
+    }
+  } else {
+    appendStartupTrace("web-ui: default browser skipped by lifecycle or preference", {
+      url: buildWebUiUrl(CHATCCC_PORT),
+      openOnStart: config.webUi.openOnStart,
+    });
+  }
 
   await startConfiguredPlatforms(httpServer, { failOnFeishuError: false });
 

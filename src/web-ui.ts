@@ -13,6 +13,11 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
+import {
+  buildWebUiUrl,
+  createInternalRestartEnv,
+  openWebUiInDefaultBrowser,
+} from "./startup-lifecycle.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -32,6 +37,7 @@ interface AppConfig {
     feishu?: { enabled?: boolean; platformType?: string };
     ilink?: { enabled?: boolean; reuseTokenOnStart?: boolean };
   };
+  webUi?: { openOnStart?: boolean };
   chromeDevtools?: { enabled?: boolean; port?: number; chromePath?: string };
   port?: number;
   gitTimeoutSeconds?: number;
@@ -230,6 +236,7 @@ function spawnService(): { ok: boolean; pid?: number; error?: string } {
       detached: true,
       stdio: "ignore",
       shell: true,
+      env: createInternalRestartEnv(),
     });
     child.unref();
     return { ok: true, pid: child.pid ?? undefined };
@@ -252,12 +259,14 @@ function scheduleRestart(): void {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
+      env: createInternalRestartEnv(),
     }).unref();
   } else {
     spawn("bash", ["-c", "sleep 2 && npx tsx src/index.ts"], {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: "ignore",
+      env: createInternalRestartEnv(),
     }).unref();
   }
 }
@@ -409,6 +418,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
       result.platforms = result.platforms || {};
       (result.platforms as Record<string, unknown>).ilink = (result.platforms as Record<string, unknown>).ilink || {};
       ((result.platforms as Record<string, unknown>).ilink as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_WEB_UI_OPEN_ON_START") {
+      result.webUi = result.webUi || {};
+      (result.webUi as Record<string, unknown>).openOnStart = val === true || val === "true";
     } else if (key === "CHATCCC_CHROME_DEVTOOLS_ENABLED") {
       result.chromeDevtools = result.chromeDevtools || {};
       (result.chromeDevtools as Record<string, unknown>).enabled = val === true || val === "true";
@@ -589,6 +601,24 @@ async function handleForgetIlink(_req: IncomingMessage, res: ServerResponse): Pr
 // HTML page (embedded template)
 // ---------------------------------------------------------------------------
 
+/** Agent Team 的首个占位页面：按产品约定只展示标题，不提前放入功能内容。 */
+export const AGENT_TEAM_PAGE_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Team</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:radial-gradient(circle at 50% 20%,#312e81 0,#111827 42%,#020617 100%);color:#fff}
+h1{font-size:clamp(40px,8vw,88px);font-weight:750;letter-spacing:-.04em;text-shadow:0 12px 42px rgba(129,140,248,.45)}
+</style>
+</head>
+<body>
+  <h1>Agent Team</h1>
+</body>
+</html>`;
+
 export const PAGE_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -601,6 +631,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 header{background:#0f172a;color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
 header h1{font-size:20px;font-weight:600}
 header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500}
+.header-actions{display:flex;align-items:center;gap:12px}
+.agent-team-entry{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border:1px solid rgba(255,255,255,.2);border-radius:999px;background:linear-gradient(135deg,#6366f1,#8b5cf6 55%,#d946ef);color:#fff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.01em;box-shadow:0 8px 24px rgba(99,102,241,.38);transition:transform .18s ease,box-shadow .18s ease,filter .18s ease}
+.agent-team-entry:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(139,92,246,.52);filter:saturate(1.16)}
+.agent-team-entry:focus-visible{outline:3px solid rgba(196,181,253,.65);outline-offset:3px}
+.agent-team-entry .agent-team-icon{font-size:16px;line-height:1}
 .badge-running{background:#16a34a;color:#fff}
 .badge-stopped{background:#94a3b8;color:#fff}
 /* container 完全不限宽、不留左右内边距 —— step-2 是三列卡片需要尽量利用屏幕；
@@ -669,12 +704,16 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:520px){header{padding:12px 14px}.header-actions{gap:8px}.agent-team-entry{padding:8px 11px;font-size:13px}header .badge{padding:4px 8px}}
 </style>
 </head>
 <body>
 <header>
   <h1>ChatCCC</h1>
-  <span id="header-badge" class="badge badge-stopped">未启动</span>
+  <div class="header-actions">
+    <a href="/agent-team" class="agent-team-entry"><span class="agent-team-icon" aria-hidden="true">✦</span>Agent Team <span aria-hidden="true">→</span></a>
+    <span id="header-badge" class="badge badge-stopped">未启动</span>
+  </div>
 </header>
 <div class="container">
 
@@ -731,6 +770,17 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <div style="font-size:12px;color:#64748b">启动后扫码登录，通过微信收发消息（仅支持私聊）</div>
           </div>
           <input type="checkbox" class="agent-toggle" id="platform-enable-ilink" checked onchange="onWizardPlatformToggle('ilink', this.checked)">
+        </div>
+      </div>
+
+      <!-- Web UI 启动行为 -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px" id="web-ui-startup-block">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px">
+          <div>
+            <div style="font-weight:600;font-size:14px">启动时打开 Web UI</div>
+            <div style="font-size:12px;color:#64748b">直接运行 ChatCCC 时用系统默认浏览器打开管理页面；内部重启始终不打开</div>
+          </div>
+          <input type="checkbox" class="agent-toggle" id="field-CHATCCC_WEB_UI_OPEN_ON_START" checked>
         </div>
       </div>
 
@@ -957,6 +1007,15 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
     </details>
 
     <details class="card config-section">
+      <summary>Web UI</summary>
+      <div class="section-detail">
+        <div class="config-row"><span class="key">直接启动时自动打开</span><span class="val" id="cfg-WEB_UI_OPEN_ON_START">-</span></div>
+        <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：下次直接启动生效；内部重启始终不打开。Linux 无图形桌面时会跳过打开并输出 SSH 隧道提示。</div>
+        <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('webUi')">编辑</button>
+      </div>
+    </details>
+
+    <details class="card config-section">
       <summary>Chrome CDP（选填）</summary>
       <div class="section-detail">
         <div class="config-row"><span class="key">状态</span><span class="val" id="cfg-CHROME_DEVTOOLS_ENABLED">-</span></div>
@@ -1055,6 +1114,7 @@ const AGENT_FIELDS = {
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
+const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
 const CHROME_DEVTOOLS_FIELDS = ['CHATCCC_CHROME_DEVTOOLS_ENABLED','CHATCCC_CHROME_DEVTOOLS_PORT','CHATCCC_CHROME_DEVTOOLS_PATH'];
 
 function cursorBatteryModeLabel(value) {
@@ -1063,6 +1123,7 @@ function cursorBatteryModeLabel(value) {
 
 function configEffectHint(section) {
   if (section === 'feishu') return '生效范围：App ID、App Secret、平台类型或飞书开关变更需要重启 ChatCCC；其它未变更项仅保存。';
+  if (section === 'webUi') return '生效范围：下次直接启动生效；内部重启始终不打开。';
   if (section === 'chromeDevtools') return '生效范围：保存后立即应用到 Chrome CDP 守护进程。';
   if (section === 'claude') return '生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。';
   if (section === 'cursor') return '生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。';
@@ -1314,6 +1375,8 @@ function renderStep1() {
   if (credFields) credFields.style.display = feishuEnabled ? '' : 'none';
   var ilToggle = document.getElementById('platform-enable-ilink');
   if (ilToggle) ilToggle.checked = ilinkEnabled;
+  var webUiOpenOnStart = document.getElementById('field-CHATCCC_WEB_UI_OPEN_ON_START');
+  if (webUiOpenOnStart) webUiOpenOnStart.checked = !c.webUi || c.webUi.openOnStart !== false;
   var cd = c.chromeDevtools || {};
   var cdpEnabled = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_ENABLED');
   if (cdpEnabled) cdpEnabled.checked = cd.enabled === true;
@@ -1420,6 +1483,8 @@ function collectAllFields() {
   if (ptEl && ptEl.value.trim()) vars['CHATCCC_FEISHU_PLATFORM_TYPE'] = ptEl.value.trim();
   vars.CHATCCC_FEISHU_ENABLED = !!state.platformsEnabled.feishu;
   vars.CHATCCC_ILINK_ENABLED = !!state.platformsEnabled.ilink;
+  var webUiOpenOnStartEl = document.getElementById('field-CHATCCC_WEB_UI_OPEN_ON_START');
+  vars.CHATCCC_WEB_UI_OPEN_ON_START = !webUiOpenOnStartEl || !!webUiOpenOnStartEl.checked;
   var cdpEnabledEl = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_ENABLED');
   vars.CHATCCC_CHROME_DEVTOOLS_ENABLED = !!(cdpEnabledEl && cdpEnabledEl.checked);
   var cdpPortEl = document.getElementById('field-CHATCCC_CHROME_DEVTOOLS_PORT');
@@ -1475,6 +1540,9 @@ function renderStep3() {
   if (!state.platformsEnabled.feishu && !state.platformsEnabled.ilink) {
     lines.push('<div style="color:#ef4444;margin-top:8px">未启用任何平台</div>');
   }
+
+  lines.push('<h3 style="margin:16px 0 8px">Web UI</h3>');
+  lines.push('<div class="config-row"><span class="key">直接启动时自动打开</span><span class="val">' + (vars.CHATCCC_WEB_UI_OPEN_ON_START ? '已启用' : '已禁用') + '</span></div>');
 
   lines.push('<h3 style="margin:16px 0 8px">Chrome CDP</h3>');
   lines.push('<div class="config-row"><span class="key">状态</span><span class="val">' + (vars.CHATCCC_CHROME_DEVTOOLS_ENABLED ? '已启用' : '已禁用') + '</span></div>');
@@ -1688,6 +1756,9 @@ function updateDashboardUI() {
     ilinkForgetRow.style.display = (ilinkEnabled && state.ilinkAuthExists) ? '' : 'none';
   }
 
+  var webUi = c.webUi || {};
+  document.getElementById('cfg-WEB_UI_OPEN_ON_START').textContent = webUi.openOnStart !== false ? '已启用' : '已禁用';
+
   var chromeDevtools = c.chromeDevtools || {};
   var cdpPort = chromeDevtools.port || 15166;
   document.getElementById('cfg-CHROME_DEVTOOLS_ENABLED').textContent = chromeDevtools.enabled ? '已启用' : '已禁用';
@@ -1775,10 +1846,11 @@ function editSection(section) {
   editSectionType = section;
   var fields;
   if (section === 'feishu') fields = FEISHU_FIELDS;
+  else if (section === 'webUi') fields = WEB_UI_FIELDS;
   else if (section === 'chromeDevtools') fields = CHROME_DEVTOOLS_FIELDS;
   else fields = AGENT_FIELDS[section] || [];
 
-  var titleMap = { feishu: '飞书', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
+  var titleMap = { feishu: '飞书', webUi: 'Web UI', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
   document.getElementById('edit-modal-title').textContent = '编辑 ' + (titleMap[section] || section);
 
   document.getElementById('edit-modal-effect').textContent = configEffectHint(section);
@@ -1786,6 +1858,7 @@ function editSection(section) {
   var html = '';
   var labelMap = {
     'CHATCCC_APP_ID': 'App ID', 'CHATCCC_APP_SECRET': 'App Secret',
+    'CHATCCC_WEB_UI_OPEN_ON_START': '直接启动 ChatCCC 时自动打开 Web UI',
     'CHATCCC_CHROME_DEVTOOLS_ENABLED': '启用常驻 Chrome CDP（选填）',
     'CHATCCC_CHROME_DEVTOOLS_PORT': 'CDP 端口',
     'CHATCCC_CHROME_DEVTOOLS_PATH': 'Chrome 路径（选填）',
@@ -1797,6 +1870,7 @@ function editSection(section) {
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
   };
   var hintMap = {
+    'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
     'CHATCCC_CHROME_DEVTOOLS_ENABLED': '依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。',
     'CHATCCC_CHROME_DEVTOOLS_PORT': '默认 15166，健康检查端点为 http://127.0.0.1:15166/json/version。',
     'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。'
@@ -1813,6 +1887,8 @@ function editSection(section) {
       if (section === 'feishu') {
         if (key === 'CHATCCC_APP_ID' && state.config.feishu) val = state.config.feishu.appId || '';
         else if (key === 'CHATCCC_APP_SECRET' && state.config.feishu) val = state.config.feishu.appSecret || '';
+      } else if (section === 'webUi') {
+        val = !state.config.webUi || state.config.webUi.openOnStart !== false ? 'true' : 'false';
       } else if (section === 'chromeDevtools' && state.config.chromeDevtools) {
         if (key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') val = state.config.chromeDevtools.enabled === true ? 'true' : 'false';
         else if (key === 'CHATCCC_CHROME_DEVTOOLS_PORT') val = state.config.chromeDevtools.port != null ? String(state.config.chromeDevtools.port) : '15166';
@@ -1838,9 +1914,10 @@ function editSection(section) {
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
-    if (key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') {
+    if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') {
       var checked = val === true || val === 'true';
-      html += '<div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="edit-' + key + '"' + (checked ? ' checked' : '') + ' onchange="toggleEditChromeDevtoolsFields(this.checked)"> ' + (labelMap[key] || key) + '</label>';
+      var changeHandler = key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED' ? ' onchange="toggleEditChromeDevtoolsFields(this.checked)"' : '';
+      html += '<div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="edit-' + key + '"' + (checked ? ' checked' : '') + changeHandler + '> ' + (labelMap[key] || key) + '</label>';
       if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
       html += '</div>';
     } else if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') {
@@ -1897,6 +1974,7 @@ function closeEditModal() {
 async function saveEdit() {
   var fields;
   if (editSectionType === 'feishu') fields = FEISHU_FIELDS;
+  else if (editSectionType === 'webUi') fields = WEB_UI_FIELDS;
   else if (editSectionType === 'chromeDevtools') fields = CHROME_DEVTOOLS_FIELDS;
   else fields = AGENT_FIELDS[editSectionType] || [];
 
@@ -1904,7 +1982,7 @@ async function saveEdit() {
   fields.forEach(function(key){
     var el = document.getElementById('edit-' + key);
     if (!el) return;
-    if (key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') vars[key] = !!el.checked;
+    if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') vars[key] = !!el.checked;
     else vars[key] = el.value.trim();
   });
   if (editSectionType === 'chromeDevtools' && !vars.CHATCCC_CHROME_DEVTOOLS_PORT) {
@@ -1963,6 +2041,7 @@ init();
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? "/";
   const method = req.method ?? "GET";
+  const pathname = url.split("?", 1)[0];
 
   if (extraApiHandler && await extraApiHandler(req, res)) return;
 
@@ -1976,6 +2055,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/restart" && method === "POST") return handleRestartService(req, res);
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);
   if (url === "/api/ilink/forget" && method === "POST") return handleForgetIlink(req, res);
+
+  if (method === "GET" && (pathname === "/agent-team" || pathname === "/agent-team/")) {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(AGENT_TEAM_PAGE_HTML);
+    return;
+  }
 
   // Serve HTML page for all other GET requests
   if (method === "GET") {
@@ -2001,39 +2086,6 @@ export function createUiRouter(): (req: IncomingMessage, res: ServerResponse) =>
 // ---------------------------------------------------------------------------
 
 /**
- * 跨平台调起本地浏览器。
- * - Windows：cmd /c start "" <url>。注意 start 把第一个被引号包裹的参数当成"窗口标题"，
- *   所以这里需要传一个空标题占位，否则当 url 被引号包住时它会被错误地当成标题。
- * - macOS：open <url>
- * - Linux：xdg-open <url>
- *
- * 任何失败都不抛——主流程不依赖浏览器是否真的弹起来，console 已经打印了 url。
- */
-function openInBrowser(url: string): void {
-  try {
-    if (process.platform === "win32") {
-      const child = spawn("cmd.exe", ["/c", "start", "", url], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      child.on("error", () => { /* 浏览器未弹起来不影响主流程 */ });
-      child.unref();
-    } else if (process.platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
-      child.on("error", () => {});
-      child.unref();
-    } else {
-      const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
-      child.on("error", () => {});
-      child.unref();
-    }
-  } catch (err) {
-    console.error(`[WEB-UI] 自动打开浏览器失败: ${(err as Error).message}`);
-  }
-}
-
-/**
  * setup → service「在线切换」回调签名：
  *   - 入参 httpServer：setup 模式当前监听的 HTTP server，会被复用为 service 的
  *     relay server（避免 close + recreate 的端口竞态）。
@@ -2047,6 +2099,8 @@ export type SetupActivateHook = (
 
 export interface StartSetupModeOptions {
   onActivate?: SetupActivateHook;
+  /** 内部重启进入 setup 模式时设为 false，避免重复弹出系统浏览器。 */
+  openBrowser?: boolean;
 }
 
 // setup HTTP server + onActivate 回调通过模块级变量暴露给 handleStartService。
@@ -2094,19 +2148,23 @@ export function startSetupMode(port: number, options: StartSetupModeOptions = {}
   });
 
   server.listen(port, "127.0.0.1", () => {
-    const url = `http://127.0.0.1:${port}`;
+    const url = buildWebUiUrl(port);
     console.log("");
     console.log("=".repeat(60));
     console.log("  ChatCCC — 首次配置向导");
     console.log("=".repeat(60));
     console.log("  未检测到已配置的飞书凭证，已启动配置界面。");
-    console.log(`  正在自动打开浏览器: ${url}`);
+    if (options.openBrowser !== false) {
+      console.log(`  已启用启动时自动打开浏览器: ${url}`);
+    } else {
+      console.log(`  内部重启不会自动打开浏览器，请按需访问: ${url}`);
+    }
     console.log("  若浏览器未自动弹出，请手动访问上面的地址。");
     console.log("");
     console.log("  在向导里填好 App ID / App Secret 后点「保存并启动」，");
     console.log("  服务会在当前进程内直接激活，不需要重新运行 chatccc。");
     console.log("=".repeat(60));
     console.log("");
-    openInBrowser(url);
+    if (options.openBrowser !== false) openWebUiInDefaultBrowser(port);
   });
 }
