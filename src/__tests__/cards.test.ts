@@ -258,7 +258,7 @@ describe("buildCdCard", () => {
   it("shows current working directory in markdown", () => {
     const card = buildCdCard("/home/project", entries, []);
     const parsed = JSON.parse(card);
-    const cwdContent = mdContents(parsed).find((c) => c.includes("本会话默认工作路径"));
+    const cwdContent = mdContents(parsed).find((c) => c.includes("后续新建会话默认工作路径"));
     expect(cwdContent).toBeDefined();
     expect(cwdContent).toContain("/home/project");
   });
@@ -405,11 +405,12 @@ describe("buildSessionsCard", () => {
 
   it("shows (群聊) tag for group chat sessions and not for private chats", () => {
     const card = buildSessionsCard([
-      { sessionId: "g1", chatName: "group-chat", chatId: "oc_group1", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
-      { sessionId: "p1", chatName: "private-chat", chatId: "ou_private1", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "g1", chatName: "group-chat", chatId: "oc_group1", chatType: "group", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+      { sessionId: "p1", chatName: "private-chat", chatId: "oc_private1", chatType: "p2p", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
     ]);
     const content: string = JSON.parse(card).elements[0].text.content;
     expect(content).toContain("(群聊)");
+    expect(content).toContain("(私聊)");
     // 群聊会话包含 (群聊)
     expect(content).toMatch(/group-chat.*\(群聊\)/);
     // 私聊会话不包含 (群聊)
@@ -432,6 +433,16 @@ describe("buildSessionsCard", () => {
     ]);
     const parsed = JSON.parse(card);
     expect(parsed.elements[2].text.content).toContain("/session 数字");
+  });
+
+  it("explains fixed Feishu private-session behavior without advertising switching", () => {
+    const card = buildSessionsCard([
+      { sessionId: "abc123", chatName: "飞书私聊", chatId: "ou_private", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+    ], { fixedPrivateSession: true });
+    const parsed = JSON.parse(card);
+    expect(parsed.elements[2].text.content).toContain("固定的专属会话");
+    expect(parsed.elements[2].text.content).toContain("不支持 **/session** 切换");
+    expect(parsed.elements[2].text.content).not.toContain("/session 数字");
   });
 
   it("includes close button", () => {

@@ -87,7 +87,6 @@ import {
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
 import { getChatGptSubscriptionStatus, type ChatGptSubscriptionResult } from "./chatgpt-subscription.ts";
-import { delegateAgentTask } from "./agent-delegate-task.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
@@ -410,41 +409,9 @@ function shouldSendWechatProcessingAck(
   return platform.kind === "wechat" && chatType === "p2p" && !isCommandText;
 }
 
-function isNonWechatP2p(platform: PlatformAdapter, chatType: string): boolean {
-  return chatType === "p2p" && platform.kind !== "wechat";
-}
-
-async function cleanupNonWechatP2pBinding(
-  platform: PlatformAdapter,
-  chatId: string,
-  chatType: string,
-  tid: string,
-): Promise<void> {
-  if (!isNonWechatP2p(platform, chatType)) return;
-
-  try {
-    const registry = await loadSessionRegistryForBinding();
-    const record = registry[chatId];
-    if (!record?.sessionId) return;
-
-    unbindChatFromSession(record.sessionId, chatId);
-    displayCards.delete(chatId);
-    cancelQueuedMessage(record.sessionId);
-    sessionInfoMap.delete(chatId);
-    await removeSessionRegistryRecord(chatId);
-    logTrace(tid, "BRANCH", {
-      reason: "cleanup_non_wechat_p2p_binding",
-      chatId,
-      oldSessionId: record.sessionId,
-    });
-    console.log(
-      `[${ts()}] [P2P] Removed non-WeChat p2p binding: chat=${chatId} session=${record.sessionId}`,
-    );
-  } catch (err) {
-    console.log(
-      `[${ts()}] [INFO] Cannot cleanup p2p registry for ${chatId}: ${(err as Error).message}`,
-    );
-  }
+/** 飞书私聊是固定会话容器；显式 /new 才创建独立群聊。 */
+function isFeishuP2p(platform: PlatformAdapter, chatType: string): boolean {
+  return chatType === "p2p" && platform.kind === "feishu";
 }
 
 /** 检测当前进程是否从 npm 全局安装启动 */
@@ -546,7 +513,6 @@ export async function handleCommand(
   const textLower = text.toLowerCase();
   const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
   recordChatPlatform(chatId, platform);
-  await cleanupNonWechatP2pBinding(platform, chatId, chatType, tid);
 
   if (isCommandText && textLower === "/reload") {
     logTrace(tid, "BRANCH", { cmd: "/reload" });
@@ -815,8 +781,8 @@ export async function handleCommand(
     const cwd = sessionCwd;
     const initialName = sessionChatName("新会话", cwd);
 
-    // 微信私聊：不创建群，直接绑定 session 到当前私聊
-    // 飞书私聊：也要建群
+    // /new 的平台语义保持不同：微信在当前私聊新建 session；飞书显式
+    // /new 始终创建独立群聊。飞书私聊自己的常驻 session 不在这里切换。
     if (chatType === "p2p" && platform.kind === "wechat") {
       // 先解绑旧 session（如果存在），避免旧 session 的 display loop
       // 继续往同一个 chat 推送内容（/newh 走 switchChatBinding 已有此逻辑，
@@ -841,6 +807,7 @@ export async function handleCommand(
         chatId,
         sessionId,
         tool,
+        chatType,
         chatName: initialName,
         turnCount: 0,
         startTime: Date.now(),
@@ -927,6 +894,7 @@ export async function handleCommand(
       chatId: newChatId,
       sessionId,
       tool,
+      chatType: "group",
       chatName: initialName,
       turnCount: 0,
       startTime: Date.now(),
@@ -962,7 +930,8 @@ export async function handleCommand(
     return;
   }
 
-  // 检测会话上下文：群聊从 description 获取，私聊从 session-registry 获取
+  // 检测会话上下文：群聊从 description 获取，飞书/微信私聊都从
+  // session-registry 获取。私聊 chatId 是稳定容器，进程重启后仍恢复绑定。
   let sessionId: string | null = null;
   let descriptionTool: string | null = null;
   let toolLabel: string | null = null;
@@ -988,17 +957,30 @@ export async function handleCommand(
         `[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`,
       );
     }
-  } else if (platform.kind === "wechat") {
-    // 微信私聊：从 session-registry.json 获取绑定的 session。
-    // 飞书私聊不再作为持久会话入口，避免历史 registry 残留误路由到旧 session。
+  } else if (platform.kind === "wechat" || platform.kind === "feishu") {
+    // 私聊没有可写的群描述，因此会话绑定只持久化在 session-registry.json。
     try {
       const registry = await loadSessionRegistryForBinding();
       const record = registry[chatId];
-      if (record && record.sessionId && record.tool) {
+      // 旧版飞书曾把私聊视为建群入口，并会清理私聊 registry。没有 p2p
+      // 标记的残留记录不能证明它是在固定用户目录创建的，因此只迁移一次：
+      // 先解除旧绑定；若本条是普通消息，随后在用户目录创建新的私聊 session。
+      if (platform.kind === "feishu" && record?.sessionId && record.chatType !== "p2p") {
+        unbindChatFromSession(record.sessionId, chatId);
+        displayCards.delete(chatId);
+        cancelQueuedMessage(record.sessionId);
+        sessionInfoMap.delete(chatId);
+        await removeSessionRegistryRecord(chatId);
+        logTrace(tid, "BRANCH", {
+          reason: "migrate_legacy_feishu_p2p_binding",
+          chatId,
+          oldSessionId: record.sessionId,
+        });
+      } else if (record && record.sessionId && record.tool) {
         sessionId = record.sessionId;
         descriptionTool = record.tool;
         toolLabel = toolDisplayName(descriptionTool);
-        // 确保 sessionInfoMap 中有该私聊的信息
+        // 确保内存状态在冷启动后恢复；bindChatToSession 是幂等的。
         if (!sessionInfoMap.has(chatId)) {
           sessionInfoMap.set(chatId, {
             sessionId,
@@ -1060,10 +1042,10 @@ export async function handleCommand(
       }
     }
 
-    // 微信 P2P：首条非指令消息 → 更新 registry 中的会话名
+    // P2P：首条非指令消息只更新 registry 中的展示名，不修改私聊信息。
     if (
       chatType === "p2p" &&
-      platform.kind === "wechat" &&
+      (platform.kind === "wechat" || platform.kind === "feishu") &&
       !isCommandText
     ) {
       try {
@@ -1093,12 +1075,12 @@ export async function handleCommand(
             () => {},
           );
           console.log(
-            `[${ts()}] [RENAME] WeChat P2P → "${newName2}"`,
+            `[${ts()}] [RENAME] ${platform.kind} P2P → "${newName2}"`,
           );
         }
       } catch (err) {
         console.error(
-          `[${ts()}] [RENAME] WeChat P2P failed: ${(err as Error).message}`,
+          `[${ts()}] [RENAME] ${platform.kind} P2P failed: ${(err as Error).message}`,
         );
       }
     }
@@ -1214,6 +1196,7 @@ export async function handleCommand(
         sessionId: s.sessionId,
         chatName: s.chatName,
         chatId: s.chatId,
+        chatType: s.chatType,
         active: s.active,
         turnCount: s.turnCount,
         elapsedSeconds: s.active
@@ -1222,7 +1205,10 @@ export async function handleCommand(
         model: s.model,
         tool: s.tool,
       }));
-      const card = buildSessionsCard(cardData, { defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()) });
+      const card = buildSessionsCard(cardData, {
+        defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()),
+        fixedPrivateSession: isFeishuP2p(platform, chatType),
+      });
       const ok = await platform.sendRawCard(chatId, card);
       console.log(
         `[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${cardData.length}`,
@@ -1233,13 +1219,19 @@ export async function handleCommand(
 
     if (isCommandText && textLower === "/newh") {
       logTrace(tid, "BRANCH", { cmd: "/newh" });
-      const adapter = getAdapterForTool(descriptionTool, sessionId);
       let cwd: string;
-      try {
-        const info = await adapter.getSessionInfo(sessionId);
-        cwd = info?.cwd ?? (await getDefaultCwd(chatId));
-      } catch {
-        cwd = await getDefaultCwd(chatId);
+      if (isFeishuP2p(platform, chatType)) {
+        // 飞书私聊不支持切换工作目录。即使 /cd 已为后续 /new 群聊
+        // 保存了其他默认目录，/newh 仍必须在运行 ChatCCC 的用户目录重建。
+        cwd = homedir();
+      } else {
+        const adapter = getAdapterForTool(descriptionTool, sessionId);
+        try {
+          const info = await adapter.getSessionInfo(sessionId);
+          cwd = info?.cwd ?? (await getDefaultCwd(chatId));
+        } catch {
+          cwd = await getDefaultCwd(chatId);
+        }
       }
 
       // 第一步:创建新 session(此时尚未碰任何内存绑定,失败可直接返回,
@@ -1304,7 +1296,7 @@ export async function handleCommand(
         `${toolLabel} Session Reset`,
         `会话已重置为新的 **${toolLabel}** 会话。\n\n` +
           `**Session ID:** ${newSessionId}\n` +
-          `**工作目录:** \`${cwd}\`（沿用当前会话目录）\n\n` +
+          `**工作目录:** \`${cwd}\`${isFeishuP2p(platform, chatType) ? "（飞书私聊固定使用系统用户目录）" : "（沿用当前会话目录）"}\n\n` +
           `直接在这里发消息即可继续对话。\n` +
           `发送 **/cd** 可切换新建会话的默认目录。\n` +
           `发送 **/model** 查看或切换当前会话的模型。`,
@@ -1358,6 +1350,19 @@ export async function handleCommand(
     // /session <number>：切换到 /sessions 列表中的指定会话
     const sessionMatch = isCommandText ? textLower.match(/^\/session\s+(\d+)$/) : null;
     if (sessionMatch) {
+      // 飞书私聊有自己唯一的常驻 session；历史群聊 session 只能回到对应群聊
+      // 继续，禁止通过 /session 把它们重新绑定进私聊。
+      if (isFeishuP2p(platform, chatType)) {
+        await platform.sendCard(
+          chatId,
+          "/session",
+          "飞书私聊使用固定的专属会话，不能切换到历史群聊会话。请回到对应群聊继续，或发送 /new 新建群聊。",
+          "yellow",
+        );
+        logTrace(tid, "DONE", { outcome: "session_switch_disabled_feishu_p2p" });
+        return;
+      }
+
       const index = parseInt(sessionMatch[1], 10) - 1;
       logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
       const allSessions = await getAllSessionsStatus();
@@ -1848,6 +1853,7 @@ export async function handleCommand(
       sessionId: s.sessionId,
       chatName: s.chatName,
       chatId: s.chatId,
+      chatType: s.chatType,
       active: s.active,
       turnCount: s.turnCount,
       elapsedSeconds: s.active
@@ -1856,7 +1862,10 @@ export async function handleCommand(
       model: s.model,
       tool: s.tool,
     }));
-    const card = buildSessionsCard(cardData, { defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()) });
+    const card = buildSessionsCard(cardData, {
+      defaultToolLabel: toolDisplayName(resolveDefaultAgentTool()),
+      fixedPrivateSession: isFeishuP2p(platform, chatType),
+    });
     const ok = await platform.sendRawCard(chatId, card);
     console.log(
       `[${ts()}] [SESSIONS] card sent, ok=${ok}, count=${cardData.length}`,
@@ -1865,51 +1874,61 @@ export async function handleCommand(
     return;
   }
 
-  // 飞书私聊普通消息：不再绑定私聊本身，而是自动创建会话群并把私聊内容作为首轮 prompt。
-  if (isNonWechatP2p(platform, chatType) && !isCommandText) {
+  // 飞书私聊普通消息：首次使用时在当前私聊创建并持久化一个专属 session，
+  // 随后的消息会在上面的 registry 路由中继续该 session。只有显式 /new 才建群。
+  if (isFeishuP2p(platform, chatType) && !isCommandText) {
     const tool = resolveDefaultAgentTool();
     const toolLabel = toolDisplayName(tool);
-    logTrace(tid, "BRANCH", { cmd: "auto_new_from_p2p", tool });
-
-    if (!openId) {
-      logTrace(tid, "DONE", { outcome: "auto_new_p2p_no_openid" });
-      await platform.sendCard(
-        chatId,
-        "Error",
-        "Cannot identify sender.",
-        "red",
-      );
-      return;
-    }
+    // 私聊 cwd 故意不读取 /cd 的 chatId 默认值：/cd 只为之后显式
+    // /new 创建的群聊服务，飞书私聊始终从 ChatCCC 运行账号的用户目录启动。
+    const cwd = homedir();
+    logTrace(tid, "BRANCH", { cmd: "auto_new_feishu_p2p", tool, cwd });
 
     try {
-      const cwd = await getDefaultCwd(chatId);
-      const result = await delegateAgentTask({
+      const init = await initClaudeSession(tool, cwd);
+      const sessionId = init.sessionId;
+      const chatName = sessionChatName(text.slice(0, 10) || "私聊会话", cwd);
+      const switchResult = await switchChatBinding({
+        chatId,
+        chatType,
+        oldSessionId: null,
+        newSessionId: sessionId,
+        tool,
+        chatName,
+        newDescription: `${sessionPrefixForTool(tool)} ${sessionId}`,
+        updateChatInfoFn: (cid, name, desc) =>
+          platform.updateChatInfo(cid, name, desc),
+      });
+      if (!switchResult.ok) {
+        throw switchResult.error ?? new Error("Failed to bind Feishu private session");
+      }
+
+      await resumeAndPrompt(
+        sessionId,
+        promptText,
         platform,
+        chatId,
+        msgTimestamp,
+        tool,
+        tid,
+      );
+      logTrace(tid, "DONE", {
+        outcome: "auto_new_feishu_p2p_prompt_done",
+        chatId,
+        sessionId,
         tool,
         cwd,
-        promptText,
-        openIds: [openId],
-        chatNamePrefix: text.slice(0, 10) || "新会话",
-        msgTimestamp,
-        traceId: tid,
-      });
-      logTrace(tid, "DONE", {
-        outcome: "auto_new_p2p_prompt_done",
-        newChatId: result.chatId,
-        sessionId: result.sessionId,
-        tool,
       });
     } catch (err) {
       console.error(`[${ts()}] [AUTO-P2P] FAIL: ${(err as Error).message}`);
       logTrace(tid, "DONE", {
-        outcome: "auto_new_p2p_delegate_fail",
+        outcome: "auto_new_feishu_p2p_fail",
         error: (err as Error).message,
       });
       await platform.sendCard(
         chatId,
         "Error",
-        `Failed to create ${toolLabel} delegated task:\n${(err as Error).message}`,
+        `Failed to create ${toolLabel} private session:\n${(err as Error).message}`,
         "red",
       );
     }

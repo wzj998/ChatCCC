@@ -178,8 +178,8 @@ export function buildCdContent(
     : "";
 
   const statusLine = isUpdate
-    ? `**本会话默认工作路径（已切换）:** \`${dirPath}\``
-    : `**本会话默认工作路径:** \`${dirPath}\``;
+    ? `**后续新建会话默认工作路径（已切换）:** \`${dirPath}\``
+    : `**后续新建会话默认工作路径:** \`${dirPath}\``;
 
   const lines: string[] = [];
   if (currentLine) lines.push(currentLine, "");
@@ -228,7 +228,7 @@ export function buildCdCard(
   }
   elements.push({
     tag: "div",
-    text: { tag: "lark_md", content: `**本会话默认工作路径:** \`${dirPath}\`` },
+    text: { tag: "lark_md", content: `**后续新建会话默认工作路径:** \`${dirPath}\`` },
   });
 
   if (recentDirs.length > 0) {
@@ -319,13 +319,15 @@ export function buildSessionsCard(sessions: Array<{
   sessionId: string;
   chatName: string;
   chatId: string;
+  chatType?: string;
   active: boolean;
   turnCount: number;
   elapsedSeconds: number | null;
   model: string;
   tool: string;
-}>, opts: { defaultToolLabel?: string } = {}): string {
+}>, opts: { defaultToolLabel?: string; fixedPrivateSession?: boolean } = {}): string {
   const defaultToolLabel = opts.defaultToolLabel ?? "Claude Code";
+  const fixedPrivateSession = opts.fixedPrivateSession ?? false;
   // 按 tool 分组排序：Claude Code 在前，Cursor 其次，Codex 最后
   const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor" && s.tool !== "codex" && s.tool !== "ccc");
   const cursorSessions = sessions.filter(s => s.tool === "cursor");
@@ -341,7 +343,9 @@ export function buildSessionsCard(sessions: Array<{
       config: { wide_screen_mode: true },
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
+        { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
+          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；发送 **/new**、**/new claude**、**/new cursor** 或 **/new codex** 会另外创建会话群。`
+          : `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
       ],
@@ -359,7 +363,13 @@ export function buildSessionsCard(sessions: Array<{
     }
     const toolLabel = sessionToolLabel(s.tool);
     const namePart = s.chatName ? `**${s.chatName}** ` : "";
-    const chatTag = !s.chatId ? " (chat id缺失)" : s.chatId.startsWith("oc_") ? " (群聊)" : "";
+    const chatTag = !s.chatId
+      ? " (chat id缺失)"
+      : s.chatType === "p2p"
+        ? " (私聊)"
+        : s.chatType === "group" || (s.chatType == null && s.chatId.startsWith("oc_"))
+          ? " (群聊)"
+          : "";
     return `**${i + 1}.** ${namePart}${chatTag} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
@@ -376,7 +386,9 @@ export function buildSessionsCard(sessions: Array<{
     elements: [
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
-      { tag: "div", text: { tag: "lark_md", content: "在会话群内发送 **/newh** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
+      { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
+        ? "当前飞书私聊使用固定的专属会话；发送 **/newh** 可在私聊中原地重置。群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
+        : "在会话群内发送 **/newh** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
       { tag: "hr" },
       {
         tag: "action",

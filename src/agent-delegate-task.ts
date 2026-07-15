@@ -43,6 +43,7 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
       chatId,
       sessionId,
       tool: input.tool,
+      chatType: "group",
       chatName,
       turnCount: 0,
       startTime: Date.now(),
@@ -78,4 +79,3 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
   console.log(`[${ts()}] [AGENT-DELEGATE-TASK] created ${toolLabel} session=${sessionId} chat=${chatId} cwd=${cwd}`);
   return { chatId, sessionId, tool: input.tool, cwd };
 }
-
