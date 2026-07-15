@@ -61,6 +61,15 @@ describe("config.sample.json", () => {
     expect(sample.chromeDevtools?.chromePath).toBe("");
   });
 
+  it("opens the Web UI on direct startup by default", () => {
+    const configSamplePath = join(process.cwd(), "config.sample.json");
+    const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
+      webUi?: { openOnStart?: unknown };
+    };
+
+    expect(sample.webUi?.openOnStart).toBe(true);
+  });
+
   it("keeps raw stream logs disabled by default for every agent", () => {
     const configSamplePath = join(process.cwd(), "config.sample.json");
     const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {

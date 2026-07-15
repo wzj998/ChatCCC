@@ -153,6 +153,7 @@ export interface RawStreamLogsConfig {
 export interface AppConfig {
   feishu: FeishuConfig;
   platforms: PlatformsConfig;
+  webUi: { openOnStart: boolean };
   chromeDevtools: ChromeDevtoolsConfig;
   port: number;
   gitTimeoutSeconds: number;
@@ -420,6 +421,7 @@ function loadConfig(): AppConfig {
   const defaults: AppConfig = {
     feishu: { appId: "", appSecret: "" },
     platforms: { feishu: { enabled: true }, ilink: { enabled: true } },
+    webUi: { openOnStart: true },
     chromeDevtools: { enabled: false, port: 15166, chromePath: "" },
     port: 18080,
     gitTimeoutSeconds: 180,
@@ -495,6 +497,7 @@ function loadConfig(): AppConfig {
     };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown };
     ccc?: { DEEPSEEK_API_KEY?: unknown; DEEPSEEK_BASE_URL?: unknown; model?: unknown };
+    webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
     rawStreamLogs?: unknown;
   };
@@ -510,6 +513,7 @@ function loadConfig(): AppConfig {
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
   const cccRaw = (parsed.ccc ?? {}) as NonNullable<typeof parsed.ccc>;
+  const webUiRaw = (parsed.webUi ?? {}) as NonNullable<typeof parsed.webUi>;
   const chromeDevtoolsRaw = (parsed.chromeDevtools ?? {}) as NonNullable<typeof parsed.chromeDevtools>;
   const rawStreamLogsRaw = typeof parsed.rawStreamLogs === "object" && parsed.rawStreamLogs !== null
     ? parsed.rawStreamLogs as unknown as Record<string, unknown>
@@ -596,6 +600,10 @@ function loadConfig(): AppConfig {
           ? Boolean(((parsed.platforms as unknown as Record<string, unknown>).ilink as Record<string, unknown>).reuseTokenOnStart ?? true)
           : true,
       },
+    },
+    webUi: {
+      // 兼容升级前没有 webUi 字段的 config.json：缺省仍按“自动打开”处理。
+      openOnStart: typeof webUiRaw.openOnStart === "boolean" ? webUiRaw.openOnStart : true,
     },
     chromeDevtools: {
       enabled: typeof chromeDevtoolsRaw.enabled === "boolean" ? chromeDevtoolsRaw.enabled : false,

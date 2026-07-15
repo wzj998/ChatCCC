@@ -133,7 +133,7 @@ Write-Host ''
 chatccc
 ```
 
-如果一切顺利，浏览器会自动打开 `http://127.0.0.1:18080` 的 Web 配置页面。按页面提示填入飞书 App ID / App Secret，点击"保存并启动"即可。
+如果一切顺利，系统默认浏览器会自动打开 `http://localhost:18080/` 的 Web 配置页面。按页面提示填入飞书 App ID / App Secret，点击"保存并启动"即可。
 
 > **只想装 ChatCCC 本体？** 如果你已经有 Node.js，直接 `npm install -g chatccc && chatccc` 即可，不需要跑上面的完整脚本。
 
@@ -151,7 +151,7 @@ chatccc
 
 旧版本留在仓库或包目录下的 `config.json`、`logs/`、`state/` 会在首次启动时自动迁移到用户目录。
 
-首次启动时，如果还没有有效配置，ChatCCC 会自动打开本地 Web 配置向导（默认 `http://127.0.0.1:18080`）。
+每次直接运行 `chatccc` 时，无论是否已经完成配置，ChatCCC 默认都会用系统默认浏览器打开本地 Web UI（默认 `http://localhost:18080/`，修改 `config.port` 后跟随实际端口）。可在首次配置向导或管理页的 **Web UI** 设置中关闭；关闭后从下一次直接启动起生效。由 `/restart`、`/update` 或 Web UI 发起的内部重启始终不会重复打开浏览器。Linux 服务器没有 `DISPLAY`/`WAYLAND_DISPLAY` 时会跳过打开，并在终端输出 SSH 隧道访问提示。主页顶部的 **Agent Team** 入口会跳转到独立的 `/agent-team` 页面。
 
 #### 从源码运行
 
@@ -264,6 +264,9 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
     "feishu": { "enabled": true, "platformType": "feishu" },
     "ilink": { "enabled": true, "reuseTokenOnStart": true }
   },
+  "webUi": {
+    "openOnStart": true
+  },
   "chromeDevtools": {
     "enabled": false,
     "port": 15166,
@@ -307,6 +310,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `platforms.feishu.platformType` | 飞书平台类型，默认 `feishu` |
 | `platforms.ilink.enabled` | 是否启用微信 iLink |
 | `platforms.ilink.reuseTokenOnStart` | 启动时是否复用已有微信登录 token |
+| `webUi.openOnStart` | 直接启动时是否打开系统默认浏览器；默认 true，内部重启始终跳过 |
 | `chromeDevtools.enabled` | 是否启用常驻 Chrome CDP；默认 false |
 | `chromeDevtools.port` | Chrome CDP 端口；默认 15166 |
 | `chromeDevtools.chromePath` | Chrome 可执行文件路径；留空时自动探测 |

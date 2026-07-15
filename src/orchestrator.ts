@@ -91,6 +91,7 @@ import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
 import { acquireUpdateCommandGuard } from "./update-command-guard.ts";
+import { createInternalRestartEnv } from "./startup-lifecycle.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -480,7 +481,12 @@ function syncUpdateAndRestart(): void {
 
   // 3. spawn new chatccc
   try {
-    const child = spawn(binPath, [], { detached: true, stdio: "ignore", shell: true });
+    const child = spawn(binPath, [], {
+      detached: true,
+      stdio: "ignore",
+      shell: true,
+      env: createInternalRestartEnv(),
+    });
     child.unref();
     updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${binPath}`);
     appendStartupTrace("update: spawn OK", { childPid: child.pid, binPath });
@@ -548,6 +554,7 @@ export async function handleCommand(
       detached: true,
       stdio: "ignore",
       shell: true,
+      env: createInternalRestartEnv(),
     });
 
     child.on("error", (err) => {
