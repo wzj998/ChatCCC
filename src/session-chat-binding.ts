@@ -6,6 +6,7 @@
 // ---------------------------------------------------------------------------
 
 import type { PlatformAdapter } from "./platform-adapter.ts";
+import type { ResponseProgressObservation } from "./response-stall.ts";
 
 const sessionChatsMap = new Map<string, Set<string>>();
 
@@ -68,6 +69,12 @@ export interface ActivePrompt {
   /** Root PID for the CLI process currently serving this prompt, if the adapter exposes one. */
   processPid?: number;
   processMonitor?: ReturnType<typeof setInterval>;
+  responseStallMonitor?: ReturnType<typeof setInterval>;
+  /** Character-count progress observed only while the activity is "responding". */
+  responseProgress?: ResponseProgressObservation;
+  /** Set before a response-stall auto-end begins so competing monitors cannot win the race. */
+  autoEnded?: boolean;
+  autoEndedAt?: number;
   /** Set when the watchdog detects that the CLI process disappeared before stream finalization. */
   abnormalExit?: boolean;
   abnormalExitNotified?: boolean;
@@ -222,6 +229,7 @@ export function resetBindingState(): void {
   lastActiveChatMap.clear();
   for (const prompt of activePrompts.values()) {
     if (prompt.processMonitor) clearInterval(prompt.processMonitor);
+    if (prompt.responseStallMonitor) clearInterval(prompt.responseStallMonitor);
   }
   activePrompts.clear();
   queuedMessages.clear();

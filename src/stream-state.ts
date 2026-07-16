@@ -13,7 +13,7 @@ export const STREAMS_DIR = join(USER_DATA_DIR, "state", "streams");
 
 export interface StreamState {
   sessionId: string;
-  status: "running" | "done" | "stopped" | "error";
+  status: "running" | "done" | "stopped" | "error" | "auto_ended";
   accumulatedContent: string;
   /** 本轮会话中 LLM 输出的全部文本内容（所有 text block 的累加）。
    *  命名含 "final" 但实为"全部累积文本"，并非仅"最终一段回复"。
@@ -33,6 +33,8 @@ export interface StreamState {
   /** Set by stop-stuck-loop to prevent the session from being resumed.
    *  The orchestrator checks this before resuming and creates a new session instead. */
   stuckAt?: number;
+  /** Set when the shared response watchdog ends a turn after three minutes without new characters. */
+  autoEndedAt?: number;
 }
 
 function getStreamStatePath(sessionId: string): string {

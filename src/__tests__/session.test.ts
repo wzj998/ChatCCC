@@ -3,17 +3,23 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+const killProcessTreeMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../adapters/proc-tree-kill.ts", () => ({
+  killProcessTree: killProcessTreeMock,
+}));
+
 // mock stream-state 以支持在测试中控制累积长度
 const mockStreamStates = new Map<string, {
   accumulatedContent: string;
   finalReply: string;
   activity?: {
-    kind: "starting" | "thinking" | "tool" | "processing" | "responding" | "compacting";
+    kind: "starting" | "thinking" | "tool" | "processing" | "responding" | "searching" | "compacting";
     startedAt: number;
     toolName?: string;
     toolCount?: number;
   };
-  status?: "running" | "done" | "stopped" | "error";
+  status?: "running" | "done" | "stopped" | "error" | "auto_ended";
+  autoEndedAt?: number;
   turnCount?: number;
   finalReplySentTurn?: number;
   finalReplySentAt?: number;
@@ -29,6 +35,7 @@ vi.mock("../stream-state.ts", () => ({
       activity: state.activity,
       finalReplySentTurn: state.finalReplySentTurn,
       finalReplySentAt: state.finalReplySentAt,
+      autoEndedAt: state.autoEndedAt,
       status: state.status ?? "running",
       chunkCount: 0,
       turnCount: state.turnCount ?? 0,
@@ -43,12 +50,13 @@ vi.mock("../stream-state.ts", () => ({
     accumulatedContent: string;
     finalReply: string;
     activity?: {
-      kind: "starting" | "thinking" | "tool" | "processing" | "responding" | "compacting";
+      kind: "starting" | "thinking" | "tool" | "processing" | "responding" | "searching" | "compacting";
       startedAt: number;
       toolName?: string;
       toolCount?: number;
     };
-    status?: "running" | "done" | "stopped" | "error";
+    status?: "running" | "done" | "stopped" | "error" | "auto_ended";
+    autoEndedAt?: number;
     turnCount?: number;
     finalReplySentTurn?: number;
     finalReplySentAt?: number;
@@ -58,6 +66,7 @@ vi.mock("../stream-state.ts", () => ({
       finalReply: state.finalReply,
       activity: state.activity,
       status: state.status,
+      autoEndedAt: state.autoEndedAt,
       turnCount: state.turnCount,
       finalReplySentTurn: state.finalReplySentTurn,
       finalReplySentAt: state.finalReplySentAt,
@@ -109,6 +118,10 @@ import {
   _resetProcessAliveForTest,
   _setProcessMonitorIntervalForTest,
   _resetProcessMonitorIntervalForTest,
+  _setResponseStallTimeoutForTest,
+  _resetResponseStallTimeoutForTest,
+  _setResponseStallCheckIntervalForTest,
+  _resetResponseStallCheckIntervalForTest,
   setSessionEffortOverride,
 } from "../session.ts";
 import {
@@ -351,6 +364,8 @@ describe("runAgentSession process monitor", () => {
     _clearAdapterCacheForTest();
     _resetProcessAliveForTest();
     _resetProcessMonitorIntervalForTest();
+    _resetResponseStallTimeoutForTest();
+    _resetResponseStallCheckIntervalForTest();
     resetBindingState();
     vi.useRealTimers();
   });
@@ -583,6 +598,106 @@ describe("runAgentSession process monitor", () => {
   });
 });
 
+describe("runAgentSession response stall watchdog", () => {
+  let tempDir = "";
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+    killProcessTreeMock.mockClear();
+    tempDir = await mkdtemp(join(tmpdir(), "chatccc-response-stall-"));
+    _setSessionRegistryFileForTest(join(tempDir, "session-registry.json"));
+    _setSessionToolsFileForTest(join(tempDir, "session-tools.json"));
+  });
+
+  afterEach(async () => {
+    _resetSessionRegistryFileForTest();
+    _resetSessionToolsFileForTest();
+    _clearAdapterCacheForTest();
+    _resetProcessAliveForTest();
+    _resetResponseStallTimeoutForTest();
+    _resetResponseStallCheckIntervalForTest();
+    resetBindingState();
+    vi.useRealTimers();
+    if (tempDir) await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("auto-ends every Agent after three minutes of unchanged reply characters, including zero", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(180_000);
+    _setResponseStallCheckIntervalForTest(1_000);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-response-stall", "chat-response-stall");
+    recordLastActiveChat("sid-response-stall", "chat-response-stall");
+
+    const closeSession = vi.fn();
+    const adapter: ToolAdapter = {
+      displayName: "Any Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-response-stall" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        options?.onSessionCreated?.(closeSession);
+        options?.onProcessStart?.({ pid: 4242 });
+        yield { type: "assistant", blocks: [{ type: "text", text: "" }] };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    const runPromise = runAgentSession(
+      "sid-response-stall",
+      "prompt",
+      platform,
+      "chat-response-stall",
+      Date.now(),
+      "claude",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-response-stall")?.responseProgress).toEqual({
+        totalChars: 0,
+        unchangedSince: expect.any(Number),
+      });
+    });
+
+    const progress = activePrompts.get("sid-response-stall")!.responseProgress!;
+    const remainingBeforeBoundary = progress.unchangedSince + 180_000 - Date.now() - 1;
+    await vi.advanceTimersByTimeAsync(remainingBeforeBoundary);
+    expect(activePrompts.has("sid-response-stall")).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    await runPromise;
+
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(killProcessTreeMock).toHaveBeenCalledWith(4242);
+    expect(activePrompts.has("sid-response-stall")).toBe(false);
+    expect(mockStreamStates.get("sid-response-stall")).toMatchObject({
+      status: "auto_ended",
+      finalReply: "",
+      autoEndedAt: expect.any(Number),
+    });
+  });
+});
+
 describe("unified display loop WeChat delta", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -651,6 +766,7 @@ describe("unified display loop WeChat delta", () => {
       "tool output",
     );
   });
+
 });
 
 describe("unified display loop activity status", () => {
@@ -731,6 +847,54 @@ describe("unified display loop terminal card update", () => {
     stopUnifiedDisplayLoop();
     resetBindingState();
     vi.useRealTimers();
+  });
+
+  it("shows a distinct auto-ended state and sends a warning even with an empty reply", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-auto-ended", "chat-auto-ended");
+    recordLastActiveChat("sid-auto-ended", "chat-auto-ended");
+    sessionInfoMap.set("chat-auto-ended", {
+      sessionId: "sid-auto-ended",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "cursor",
+    });
+    displayCards.set("chat-auto-ended", {
+      cardId: "card-auto-ended",
+      sequence: 1,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-auto-ended",
+      turnCount: 1,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-auto-ended", {
+      accumulatedContent: "",
+      finalReply: "",
+      status: "auto_ended",
+      turnCount: 1,
+      autoEndedAt: Date.now(),
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const payload = vi.mocked(platform.cardUpdate).mock.calls[0]?.[1];
+    const card = JSON.parse(payload as string) as {
+      header: { title: { content: string }; template?: string };
+    };
+    expect(card.header.title.content).toBe("已自动结束 · 3分钟无新内容");
+    expect(card.header.template).toBe("orange");
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-auto-ended",
+      "⚠️ 已自动结束：连续 3 分钟处于“正在生成回复”且回复字符总数没有变化。本轮没有可发送的回复内容。",
+    );
+    expect(displayCards.has("chat-auto-ended")).toBe(false);
   });
 
   it("does not repeat the same terminal CardKit sequence while the prompt is still active", async () => {
