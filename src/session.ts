@@ -36,9 +36,11 @@ import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 import { createCccAdapter } from "./adapters/ccc-adapter.ts";
+import { killProcessTree } from "./adapters/proc-tree-kill.ts";
 import { resourceMonitor, registerProcess, unregisterProcess } from "./adapters/resource-monitor.ts";
 import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
+import { hasResponseStalled, observeResponseProgress } from "./response-stall.ts";
 
 // 微信显示循环压缩：头5 + ... + 尾5，避免在最后一步 sendText 中压缩指令回复
 function compressWechatDisplayText(text: string): string {
@@ -155,7 +157,11 @@ function platformForChat(chatId: string): PlatformAdapter | null {
 }
 
 const DEFAULT_PROCESS_MONITOR_INTERVAL_MS = 5000;
+const DEFAULT_RESPONSE_STALL_TIMEOUT_MS = 3 * 60 * 1000;
+const DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS = 5000;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
+let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
+let responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
 let isProcessAliveImpl = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -188,6 +194,22 @@ export function _resetProcessMonitorIntervalForTest(): void {
   processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
 }
 
+export function _setResponseStallTimeoutForTest(ms: number): void {
+  responseStallTimeoutMs = ms;
+}
+
+export function _resetResponseStallTimeoutForTest(): void {
+  responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
+}
+
+export function _setResponseStallCheckIntervalForTest(ms: number): void {
+  responseStallCheckIntervalMs = ms;
+}
+
+export function _resetResponseStallCheckIntervalForTest(): void {
+  responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
+}
+
 function clearPromptProcessMonitor(sessionId: string): void {
   const prompt = activePrompts.get(sessionId);
   if (!prompt?.processMonitor) return;
@@ -195,17 +217,40 @@ function clearPromptProcessMonitor(sessionId: string): void {
   prompt.processMonitor = undefined;
 }
 
-function formatTerminalHeader(status: "running" | "done" | "stopped" | "error"): {
+function clearPromptResponseStallMonitor(sessionId: string): void {
+  const prompt = activePrompts.get(sessionId);
+  if (!prompt?.responseStallMonitor) return;
+  clearInterval(prompt.responseStallMonitor);
+  prompt.responseStallMonitor = undefined;
+}
+
+function formatTerminalHeader(status: "running" | "done" | "stopped" | "error" | "auto_ended"): {
   title: string;
   template?: string;
 } {
+  if (status === "auto_ended") return { title: "已自动结束 · 3分钟无新内容", template: "orange" };
   if (status === "stopped") return { title: "已停止", template: "red" };
   if (status === "error") return { title: "异常结束", template: "red" };
   return { title: "完成" };
 }
 
-function turnFinalStatus(status: "running" | "done" | "stopped" | "error"): "done" | "stopped" {
-  return status === "stopped" || status === "error" ? "stopped" : "done";
+function turnFinalStatus(status: "running" | "done" | "stopped" | "error" | "auto_ended"): "done" | "stopped" {
+  return status === "stopped" || status === "error" || status === "auto_ended" ? "stopped" : "done";
+}
+
+function formatAutoEndedReply(finalReply: string): string {
+  const reason = "⚠️ 已自动结束：连续 3 分钟处于“正在生成回复”且回复字符总数没有变化。";
+  return finalReply
+    ? `${reason}以下回复可能不完整。\n\n${finalReply}`
+    : `${reason}本轮没有可发送的回复内容。`;
+}
+
+function formatTerminalReply(
+  status: "running" | "done" | "stopped" | "error" | "auto_ended",
+  finalReply: string,
+): string | null {
+  if (status === "auto_ended") return formatAutoEndedReply(finalReply);
+  return finalReply || null;
 }
 
 function isCardKitSequenceConflict(err: unknown): boolean {
@@ -224,7 +269,7 @@ function startPromptProcessMonitor(sessionId: string, info: ToolProcessInfo): vo
       clearPromptProcessMonitor(sessionId);
       return;
     }
-    if (current.stopped || current.abnormalExit || current.resourceStuck) return;
+    if (current.stopped || current.abnormalExit || current.resourceStuck || current.autoEnded) return;
     if (isProcessAliveImpl(info.pid)) return;
 
     current.abnormalExit = true;
@@ -339,6 +384,7 @@ export function resetState(): void {
   chatPlatformMap.clear();
   for (const prompt of activePrompts.values()) {
     if (prompt.processMonitor) clearInterval(prompt.processMonitor);
+    if (prompt.responseStallMonitor) clearInterval(prompt.responseStallMonitor);
   }
   activePrompts.clear();
   displayCards.clear();
@@ -964,7 +1010,7 @@ export async function runAgentSession(
   const onResourceStuck = (data: { pid: number; sessionId: string; idleMinutes: number }) => {
     if (data.sessionId !== sessionId) return;
     const prompt = activePrompts.get(sessionId);
-    if (!prompt || prompt.stopped || prompt.abnormalExit || prompt.resourceStuck) return;
+    if (!prompt || prompt.stopped || prompt.abnormalExit || prompt.resourceStuck || prompt.autoEnded) return;
     prompt.resourceStuck = true;
 
     const chatId = pickDisplayChat(sessionId) ?? getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
@@ -1073,6 +1119,7 @@ export async function runAgentSession(
   // 再开始缓存问题对应的任务"。
   const prevState = await readStreamState(sessionId);
   if (prevState && prevState.status !== "running") {
+    const prevTerminalReply = formatTerminalReply(prevState.status, prevState.finalReply);
     const displayChatId = pickDisplayChat(sessionId);
     if (displayChatId) {
       const pp = platformForChat(displayChatId);
@@ -1105,16 +1152,16 @@ export async function runAgentSession(
           const finalStatus = turnFinalStatus(prevState.status);
           finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
 
-          if (prevState.finalReply && stillOursAfterUpdate && !isFinalReplySentForTurn(prevState)) {
-            await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevState.finalReply);
+          if (prevTerminalReply && stillOursAfterUpdate && !isFinalReplySentForTurn(prevState)) {
+            await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevTerminalReply);
           }
           pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
         }
-      } else if (pp && prevState.finalReply && !isFinalReplySentForTurn(prevState)) {
+      } else if (pp && prevTerminalReply && !isFinalReplySentForTurn(prevState)) {
         // 无 display 记录但上一轮有 finalReply（极快轮次），至少发送
         const finalStatus = turnFinalStatus(prevState.status);
         finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
-        await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevState.finalReply);
+        await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevTerminalReply);
       }
       // else: displayCards 无记录且无 finalReply → 无需处理
     }
@@ -1188,6 +1235,69 @@ export async function runAgentSession(
   const toolCallMap = new Map<string, { name: string; input: unknown }>();
   let streamErrored = false;
 
+  const runningPrompt = activePrompts.get(sessionId);
+  if (runningPrompt) {
+    const checkResponseStall = async () => {
+      const current = activePrompts.get(sessionId);
+      if (!current || current !== runningPrompt) {
+        clearPromptResponseStallMonitor(sessionId);
+        return;
+      }
+      if (
+        current.stopped
+        || current.abnormalExit
+        || current.resourceStuck
+        || current.autoEnded
+        || activityTracker.activity.kind !== "responding"
+        || !hasResponseStalled(current.responseProgress, Date.now(), responseStallTimeoutMs)
+      ) {
+        return;
+      }
+
+      const autoEndedAt = Date.now();
+      current.autoEnded = true;
+      current.autoEndedAt = autoEndedAt;
+      clearPromptResponseStallMonitor(sessionId);
+      clearPromptProcessMonitor(sessionId);
+
+      // First publish an atomic terminal state so the card cannot keep claiming the
+      // Agent is running while process cleanup is underway.
+      await writeStreamState({
+        sessionId,
+        status: "auto_ended",
+        accumulatedContent: state.accumulatedContent,
+        finalReply: pickFinalReply(state).trim(),
+        activity: activityTracker.activity,
+        chunkCount: state.chunkCount,
+        turnCount: nextTurnCount,
+        contextTokens: existingInfo?.lastContextTokens ?? 0,
+        updatedAt: autoEndedAt,
+        cwd,
+        tool,
+        autoEndedAt,
+      });
+
+      try {
+        current.closeSession?.();
+      } catch (err) {
+        console.warn(`[${ts()}] [RESPONSE-STALL] closeSession failed for ${sessionId}: ${(err as Error).message}`);
+      }
+      current.controller.abort();
+      await killProcessTree(current.processPid);
+      console.warn(
+        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after 3 minutes without reply character changes`,
+      );
+    };
+
+    const responseStallMonitor = setInterval(() => {
+      void checkResponseStall().catch((err) => {
+        console.warn(`[${ts()}] [RESPONSE-STALL] check failed for ${sessionId}: ${(err as Error).message}`);
+      });
+    }, responseStallCheckIntervalMs);
+    responseStallMonitor.unref?.();
+    runningPrompt.responseStallMonitor = responseStallMonitor;
+  }
+
   try {
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
       onProcessStart: (processInfo) => {
@@ -1223,6 +1333,17 @@ export async function runAgentSession(
         }
       }
 
+      const prompt = activePrompts.get(sessionId);
+      if (prompt && !prompt.autoEnded) {
+        const totalChars = state.accumulatedContent.length + pickFinalReply(state).length;
+        prompt.responseProgress = observeResponseProgress(
+          prompt.responseProgress,
+          activityTracker.activity.kind === "responding",
+          totalChars,
+          Date.now(),
+        );
+      }
+
       // 定时写入文件
       const now2 = Date.now();
       if (activityChanged || now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
@@ -1252,6 +1373,9 @@ export async function runAgentSession(
     const wasStopped = prompt?.stopped ?? false;
     const wasAbnormalExit = prompt?.abnormalExit ?? false;
     const wasResourceStuck = prompt?.resourceStuck ?? false;
+    const wasAutoEnded = prompt?.autoEnded ?? false;
+    const autoEndedAt = prompt?.autoEndedAt;
+    clearPromptResponseStallMonitor(sessionId);
     clearPromptProcessMonitor(sessionId);
     activePrompts.delete(sessionId);
 
@@ -1259,7 +1383,13 @@ export async function runAgentSession(
     // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
     // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
     // 运行中并更新旧卡片，而不是新建卡片。
-    const finalStatus = (streamErrored || wasAbnormalExit || wasResourceStuck) ? "error" : wasStopped ? "stopped" : "done";
+    const finalStatus = wasAutoEnded
+      ? "auto_ended"
+      : (streamErrored || wasAbnormalExit || wasResourceStuck)
+        ? "error"
+        : wasStopped
+          ? "stopped"
+          : "done";
     const finalReply = pickFinalReply(state).trim();
 
     // stop-stuck-loop 接口可能在 fire-and-forget 中已写入带 final_reply 的
@@ -1290,6 +1420,7 @@ export async function runAgentSession(
       cwd,
       tool,
       ...(preserveStuckAt ? { stuckAt: preserveStuckAt } : {}),
+      ...(autoEndedAt !== undefined ? { autoEndedAt } : {}),
     });
 
     // 消费队列中的缓存消息（异步，不阻塞后续清理）
@@ -1342,6 +1473,36 @@ export async function runAgentSession(
       }
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
+    } else if (wasAutoEnded) {
+      for (const cid of getChatsForSession(sessionId)) {
+        const finfo = sessionInfoMap.get(cid);
+        await recordSessionRegistry({
+          chatId: cid,
+          sessionId,
+          tool,
+          turnCount: finfo?.turnCount ?? nextTurnCount,
+          lastContextTokens: finfo?.lastContextTokens ?? nextContextTokens,
+          startTime: finfo?.startTime ?? now,
+          running: false,
+        });
+      }
+      const activeAutoEnded = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+      if (activeAutoEnded) {
+        const terminalState = await readStreamState(sessionId);
+        if (!displayCards.has(activeAutoEnded) && (!terminalState || !isFinalReplySentForTurn(terminalState))) {
+          const pp = platformForChat(activeAutoEnded) ?? platform;
+          await sendFinalReplyTextOnce(
+            pp,
+            activeAutoEnded,
+            sessionId,
+            nextTurnCount,
+            formatAutoEndedReply(finalReplyToWrite),
+          );
+        }
+        platform.setChatAvatar(activeAutoEnded, tool, "idle").catch(() => {});
+      }
+      console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled response output (content chunks: ${state.chunkCount})`);
+      if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "response_stall", chunks: state.chunkCount });
     } else if (wasAbnormalExit) {
       for (const cid of getChatsForSession(sessionId)) {
         const finfo = sessionInfoMap.get(cid);
@@ -1462,7 +1623,11 @@ export function startUnifiedDisplayLoop(): void {
               if (activePrompts.has(sessionId)) continue;
 
               const tail = "━━━ 回答结束 ━━━";
-              const finalMsg = remaining ? remaining + "\n" + tail : tail;
+              const finalMsg = state.status === "auto_ended"
+                ? formatAutoEndedReply(remaining)
+                : remaining
+                  ? remaining + "\n" + tail
+                  : tail;
               if (!isFinalReplySentForTurn(state)) {
                 await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, finalMsg);
               }
@@ -1512,9 +1677,10 @@ export function startUnifiedDisplayLoop(): void {
               }
 
               let terminalTextDelivered = true;
-              if (state.finalReply) {
+              const terminalReply = formatTerminalReply(state.status, state.finalReply);
+              if (terminalReply) {
                 if (!isFinalReplySentForTurn(state)) {
-                  terminalTextDelivered = await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, state.finalReply);
+                  terminalTextDelivered = await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, terminalReply);
                 }
               } else if (state.accumulatedContent.trim()) {
                 const short = truncateContent(state.accumulatedContent, 30, 4000);
@@ -1740,6 +1906,7 @@ export function stopSession(sessionId: string): boolean {
   const prompt = activePrompts.get(sessionId);
   if (!prompt) return false;
   prompt.stopped = true;
+  clearPromptResponseStallMonitor(sessionId);
   clearPromptProcessMonitor(sessionId);
   cancelQueuedMessage(sessionId);
   try {
