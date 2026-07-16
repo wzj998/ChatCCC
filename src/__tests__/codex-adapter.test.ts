@@ -79,7 +79,7 @@ describe("normalizeCodexMessage", () => {
     expect(result).not.toBeNull();
     expect(result!.type).toBe("assistant");
     expect(result!.blocks).toEqual([
-      { type: "tool_use", name: "Bash", input: { command: "powershell.exe -Command ls" } },
+      { type: "tool_use", id: "item_0", name: "Bash", input: { command: "powershell.exe -Command ls" } },
     ]);
   });
 

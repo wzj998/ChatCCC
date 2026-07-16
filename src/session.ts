@@ -22,6 +22,11 @@ import {
   ts,
 } from "./config.ts";
 import { buildProgressCard, getToolEmoji, isCodeBlockOpen, truncateContent } from "./cards.ts";
+import {
+  createAgentActivityTracker,
+  formatAgentActivityTitle,
+  updateAgentActivity,
+} from "./agent-activity.ts";
 import { simplifyToolUse, simplifyToolResult } from "./simplify.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
@@ -88,12 +93,13 @@ async function createVisibleProgressCard(
   sessionId: string,
   turnCount: number,
   notifyFailureText?: string,
+  headerTitle = "正在启动 Agent · 0秒",
 ): Promise<string | null> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     let cardId: string | null = null;
     try {
       cardId = await platform.cardCreate(
-        buildProgressCard("", { showStop: true, headerTitle: "生成中..." }),
+        buildProgressCard("等待 Agent 输出...", { showStop: true, headerTitle }),
       );
       if (!cardId) throw new Error("empty card id");
       await platform.cardSend(chatId, cardId);
@@ -1116,6 +1122,7 @@ export async function runAgentSession(
 
   // 初始化 stream-state.json
   const initialState = createEmptyStreamState(sessionId, cwd, tool, nextTurnCount);
+  const activityTracker = createAgentActivityTracker(initialState.activity?.startedAt ?? Date.now());
   await writeStreamState(initialState);
 
   // 为新 turn 创建第一张展示卡片，同时注册到 turn-cards 持久化。
@@ -1124,12 +1131,14 @@ export async function runAgentSession(
   if (displayChatIdForNew) {
     const ppNew = platformForChat(displayChatIdForNew);
     if (ppNew && ppNew.kind !== "wechat") {
+      const initialHeaderTitle = formatAgentActivityTitle(activityTracker.activity);
       const cardId = await createVisibleProgressCard(
         ppNew,
         displayChatIdForNew,
         sessionId,
         nextTurnCount,
         "生成中卡片发送失败，结果将以文本形式发送。",
+        initialHeaderTitle,
       );
       if (cardId) {
         displayCards.set(displayChatIdForNew, {
@@ -1138,6 +1147,7 @@ export async function runAgentSession(
           cardBusy: false,
           cardCreatedAt: Date.now(),
           lastSentContent: "",
+          lastSentHeaderTitle: initialHeaderTitle,
           streamErrorNotified: false,
           sessionId,
           turnCount: nextTurnCount,
@@ -1193,7 +1203,9 @@ export async function runAgentSession(
         if (prompt) prompt.closeSession = closeSession;
       },
     })) {
+      let activityChanged = false;
       for (const block of unifiedMsg.blocks) {
+        if (updateAgentActivity(activityTracker, block)) activityChanged = true;
         accumulateBlockContent(block, state, toolCallMap);
 
         if (block.type === "compact_boundary" && block.post_tokens) {
@@ -1213,13 +1225,14 @@ export async function runAgentSession(
 
       // 定时写入文件
       const now2 = Date.now();
-      if (now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
+      if (activityChanged || now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
         lastFileWrite = now2;
         await writeStreamState({
           sessionId,
           status: "running",
           accumulatedContent: state.accumulatedContent,
           finalReply: pickFinalReply(state),
+          activity: activityTracker.activity,
           chunkCount: state.chunkCount,
           turnCount: nextTurnCount,
           contextTokens: existingInfo?.lastContextTokens ?? 0,
@@ -1269,6 +1282,7 @@ export async function runAgentSession(
       status: finalStatus,
       accumulatedContent: state.accumulatedContent,
       finalReply: finalReplyToWrite,
+      activity: activityTracker.activity,
       chunkCount: state.chunkCount,
       turnCount: nextTurnCount,
       contextTokens: existingInfo?.lastContextTokens ?? 0,
@@ -1560,6 +1574,8 @@ export function startUnifiedDisplayLoop(): void {
                 continue;
               }
 
+              const activityHeaderTitle = formatAgentActivityTitle(state.activity, Date.now());
+
               // 卡片轮转
               if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
                 display.cardBusy = true;
@@ -1570,6 +1586,7 @@ export function startUnifiedDisplayLoop(): void {
                     sessionId,
                     display.turnCount,
                     display.streamErrorNotified ? undefined : "生成中卡片发送失败，结果将继续更新在上一张卡片中。",
+                    activityHeaderTitle,
                   );
                   if (!newCardId) {
                     display.streamErrorNotified = true;
@@ -1577,7 +1594,7 @@ export function startUnifiedDisplayLoop(): void {
                   }
                   const oldSeqBase = display.sequence;
                   const oldContent = state.accumulatedContent + state.finalReply;
-                  const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "生成中（上轮）" });
+                  const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "上一阶段记录" });
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).then(() => {
                     display.sequence = oldSeqBase + 1;
                   }).catch(err => {
@@ -1590,6 +1607,7 @@ export function startUnifiedDisplayLoop(): void {
                   display.rotationAccLen = state.accumulatedContent.length;
                   display.rotationFinalReply = state.finalReply;
                   display.lastSentContent = "";
+                  display.lastSentHeaderTitle = activityHeaderTitle;
                   display.streamErrorNotified = false;
                 } catch (err) {
                   console.error(`[${ts()}] [CARDIKT] rotation FAIL for ${chatId}: ${(err as Error).message}`);
@@ -1612,13 +1630,20 @@ export function startUnifiedDisplayLoop(): void {
                 const delta = (accDelta + replyDelta).trim();
 
                 display.dotCount = (display.dotCount % 9) + 1;
-                let deltaBase = (delta || "");
+                let deltaBase = delta;
                 if (isCodeBlockOpen(deltaBase)) deltaBase += "\n```";
-                const displayContent = deltaBase + "\n" + "。" .repeat(display.dotCount);
-                if (displayContent === display.lastSentContent) continue;
+                const displayContent = deltaBase + "\n" + "。".repeat(display.dotCount);
+                if (
+                  displayContent === display.lastSentContent
+                  && activityHeaderTitle === display.lastSentHeaderTitle
+                ) continue;
 
                 display.lastSentContent = displayContent;
-                const deltaCard = buildProgressCard(truncateContent(displayContent) || "处理中...", { showStop: true, headerTitle: "生成中..." });
+                display.lastSentHeaderTitle = activityHeaderTitle;
+                const deltaCard = buildProgressCard(truncateContent(displayContent) || "等待 Agent 输出...", {
+                  showStop: true,
+                  headerTitle: activityHeaderTitle,
+                });
                 display.cardBusy = true;
                 const mySeq = display.sequence + 1;
                 try {
@@ -1643,14 +1668,18 @@ export function startUnifiedDisplayLoop(): void {
               let contentBase = state.accumulatedContent + state.finalReply;
               if (isCodeBlockOpen(contentBase)) contentBase += "\n```";
               const fullContent = contentBase + "\n" + "。".repeat(display.dotCount);
-              if (fullContent === display.lastSentContent) continue;
+              if (
+                fullContent === display.lastSentContent
+                && activityHeaderTitle === display.lastSentHeaderTitle
+              ) continue;
 
               display.lastSentContent = fullContent;
-              const cardContent = truncateContent(fullContent);
+              display.lastSentHeaderTitle = activityHeaderTitle;
+              const cardContent = truncateContent(fullContent) || "等待 Agent 输出...";
               display.cardBusy = true;
               const mySeq = display.sequence + 1;
               try {
-                const card = buildProgressCard(cardContent, { showStop: true, headerTitle: "生成中..." });
+                const card = buildProgressCard(cardContent, { showStop: true, headerTitle: activityHeaderTitle });
                 await p.cardUpdate(display.cardId, card, mySeq);
                 display.sequence = mySeq;
               } catch (err) {

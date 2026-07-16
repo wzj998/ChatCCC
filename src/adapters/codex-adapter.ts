@@ -153,6 +153,7 @@ export function normalizeCodexMessage(
       blocks: [
         {
           type: "tool_use",
+          id: msg.item.id,
           name: "Bash",
           input: { command: msg.item.command },
         },
