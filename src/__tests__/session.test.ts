@@ -7,6 +7,12 @@ import { dirname, join } from "node:path";
 const mockStreamStates = new Map<string, {
   accumulatedContent: string;
   finalReply: string;
+  activity?: {
+    kind: "starting" | "thinking" | "tool" | "processing" | "responding" | "compacting";
+    startedAt: number;
+    toolName?: string;
+    toolCount?: number;
+  };
   status?: "running" | "done" | "stopped" | "error";
   turnCount?: number;
   finalReplySentTurn?: number;
@@ -20,6 +26,7 @@ vi.mock("../stream-state.ts", () => ({
       sessionId: sid,
       accumulatedContent: state.accumulatedContent,
       finalReply: state.finalReply,
+      activity: state.activity,
       finalReplySentTurn: state.finalReplySentTurn,
       finalReplySentAt: state.finalReplySentAt,
       status: state.status ?? "running",
@@ -35,6 +42,12 @@ vi.mock("../stream-state.ts", () => ({
     sessionId: string;
     accumulatedContent: string;
     finalReply: string;
+    activity?: {
+      kind: "starting" | "thinking" | "tool" | "processing" | "responding" | "compacting";
+      startedAt: number;
+      toolName?: string;
+      toolCount?: number;
+    };
     status?: "running" | "done" | "stopped" | "error";
     turnCount?: number;
     finalReplySentTurn?: number;
@@ -43,6 +56,7 @@ vi.mock("../stream-state.ts", () => ({
     mockStreamStates.set(state.sessionId, {
       accumulatedContent: state.accumulatedContent,
       finalReply: state.finalReply,
+      activity: state.activity,
       status: state.status,
       turnCount: state.turnCount,
       finalReplySentTurn: state.finalReplySentTurn,
@@ -50,7 +64,7 @@ vi.mock("../stream-state.ts", () => ({
     });
   },
   createEmptyStreamState: (sid: string, cwd: string, tool: string, turnCount: number) => ({
-    sessionId: sid, status: "running" as const, accumulatedContent: "", finalReply: "", chunkCount: 0, turnCount, contextTokens: 0, updatedAt: Date.now(), cwd, tool,
+    sessionId: sid, status: "running" as const, accumulatedContent: "", finalReply: "", activity: { kind: "starting" as const, startedAt: Date.now() }, chunkCount: 0, turnCount, contextTokens: 0, updatedAt: Date.now(), cwd, tool,
   }),
   isFinalReplySentForTurn: (state: { turnCount: number; finalReplySentTurn?: number }) => state.finalReplySentTurn === state.turnCount,
   markFinalReplySent: async (sid: string, turnCount: number, sentAt = Date.now()) => {
@@ -636,6 +650,72 @@ describe("unified display loop WeChat delta", () => {
       "chat-wechat",
       "tool output",
     );
+  });
+});
+
+describe("unified display loop activity status", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T08:00:00.000Z"));
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+  });
+
+  afterEach(() => {
+    stopUnifiedDisplayLoop();
+    resetBindingState();
+    vi.useRealTimers();
+  });
+
+  it("renders explicit activity and elapsed time alongside the liveness dots", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-activity", "chat-activity");
+    recordLastActiveChat("sid-activity", "chat-activity");
+    sessionInfoMap.set("chat-activity", {
+      sessionId: "sid-activity",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: Date.now() - 12_000,
+      tool: "codex",
+    });
+    displayCards.set("chat-activity", {
+      cardId: "card-activity",
+      sequence: 1,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-activity",
+      turnCount: 1,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-activity", {
+      accumulatedContent: "正在检查日志",
+      finalReply: "",
+      activity: {
+        kind: "tool",
+        startedAt: Date.now() - 12_000,
+        toolName: "Shell",
+        toolCount: 1,
+      },
+      status: "running",
+      turnCount: 1,
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const payload = vi.mocked(platform.cardUpdate).mock.calls[0]?.[1];
+    expect(payload).toBeTypeOf("string");
+    const card = JSON.parse(payload as string) as {
+      header: { title: { content: string } };
+      body: { elements: Array<{ tag: string; content?: string }> };
+    };
+    expect(card.header.title.content).toBe("正在执行 Shell · 15秒");
+    expect(card.body.elements[0]?.content).toBe("正在检查日志\n。");
   });
 });
 

@@ -2,6 +2,8 @@ import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { USER_DATA_DIR, ts } from "./config.ts";
+import { createAgentActivityTracker } from "./agent-activity.ts";
+import type { AgentActivity } from "./agent-activity.ts";
 
 // ---------------------------------------------------------------------------
 // stream-state.json — 每个 session 的流式输出持久化文件
@@ -17,6 +19,8 @@ export interface StreamState {
    *  命名含 "final" 但实为"全部累积文本"，并非仅"最终一段回复"。
    *  参见 session.ts 的 AccumulatorState 注释。 */
   finalReply: string;
+  /** Current user-visible work phase for running progress cards. */
+  activity?: AgentActivity;
   /** The turn whose terminal text reply has already been delivered to IM. */
   finalReplySentTurn?: number;
   finalReplySentAt?: number;
@@ -123,15 +127,17 @@ export async function markFinalReplySent(sessionId: string, turnCount: number, s
 }
 
 export function createEmptyStreamState(sessionId: string, cwd: string, tool: string, turnCount: number): StreamState {
+  const now = Date.now();
   return {
     sessionId,
     status: "running",
     accumulatedContent: "",
     finalReply: "",
+    activity: createAgentActivityTracker(now).activity,
     chunkCount: 0,
     turnCount,
     contextTokens: 0,
-    updatedAt: Date.now(),
+    updatedAt: now,
     cwd,
     tool,
   };

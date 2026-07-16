@@ -297,6 +297,7 @@ export function normalizeCursorMessage(
         blocks: [
           {
             type: "tool_use",
+            id: msg.call_id,
             name: mapToolCallKey(toolKey),
             input: toolData.args ?? {},
           },

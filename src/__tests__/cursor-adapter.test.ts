@@ -662,7 +662,7 @@ describe("Cursor stream fixture - 端到端不重复", () => {
     } as Parameters<typeof normalizeCursorMessage>[0]);
     expect(result).not.toBeNull();
     expect(result!.blocks).toEqual([
-      { type: "tool_use", name: "Bash", input: { command: "ls" } },
+      { type: "tool_use", id: "toolu_abc", name: "Bash", input: { command: "ls" } },
     ]);
   });
 

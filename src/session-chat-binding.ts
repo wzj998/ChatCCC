@@ -141,6 +141,8 @@ export interface DisplayCardState {
   cardBusy: boolean;
   cardCreatedAt: number;
   lastSentContent: string;
+  /** Last rendered activity header; elapsed time can change without body output. */
+  lastSentHeaderTitle?: string;
   streamErrorNotified: boolean;
   /** 所属 session */
   sessionId: string;
@@ -153,7 +155,7 @@ export interface DisplayCardState {
   lastSentAccLen?: number;
   /** WeChat delta: 上次发送时的 finalReply */
   lastSentFinalReply?: string;
-  /** 点点点动画计数器（统一 display loop 每个卡片独立计数） */
+  /** Liveness animation counter; the explicit activity header conveys Agent state. */
   dotCount: number;
 }
 
