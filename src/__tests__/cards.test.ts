@@ -435,12 +435,13 @@ describe("buildSessionsCard", () => {
     expect(parsed.elements[2].text.content).toContain("/session 数字");
   });
 
-  it("explains fixed Feishu private-session behavior without advertising switching", () => {
+  it("explains Feishu private-session default Agent following without advertising /session switching", () => {
     const card = buildSessionsCard([
       { sessionId: "abc123", chatName: "飞书私聊", chatId: "ou_private", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
     ], { fixedPrivateSession: true });
     const parsed = JSON.parse(card);
-    expect(parsed.elements[2].text.content).toContain("固定的专属会话");
+    expect(parsed.elements[2].text.content).toContain("下一条普通消息");
+    expect(parsed.elements[2].text.content).toContain("新空会话");
     expect(parsed.elements[2].text.content).toContain("不支持 **/session** 切换");
     expect(parsed.elements[2].text.content).not.toContain("/session 数字");
   });

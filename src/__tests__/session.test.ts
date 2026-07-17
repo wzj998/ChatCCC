@@ -134,6 +134,9 @@ import {
   resetBindingState,
   getChatsForSession,
   displayCards,
+  enqueueMessage,
+  setQueueConsumer,
+  isSessionRunning,
 } from "../session-chat-binding.ts";
 import type { AccumulatorState } from "../session.ts";
 import type { ToolAdapter, ToolPromptOptions, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
@@ -499,6 +502,73 @@ describe("runAgentSession process monitor", () => {
     );
     expect(platform.sendText).toHaveBeenCalledWith("chat-card-fallback", "final answer");
     expect(mockStreamStates.get("sid-card-fallback")?.finalReplySentTurn).toBe(1);
+  });
+
+  it("consumes a queued message only after the previous turn finishes final delivery", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-queue-finalize", "chat-queue-finalize");
+    recordLastActiveChat("sid-queue-finalize", "chat-queue-finalize");
+
+    let releaseFinalDelivery: (() => void) | undefined;
+    const finalDeliveryGate = new Promise<void>((resolve) => {
+      releaseFinalDelivery = resolve;
+    });
+    platform.sendText = vi.fn(async (_chatId, content) => {
+      if (content === "final answer") await finalDeliveryGate;
+      return true;
+    });
+
+    const adapter: ToolAdapter = {
+      displayName: "Claude Code",
+      sessionDescPrefix: "Claude Code Session:",
+      createSession: async () => ({ sessionId: "sid-queue-finalize" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* () {
+        // 强制走最终文本发送路径，并用 gate 模拟该收尾步骤仍在进行。
+        displayCards.delete("chat-queue-finalize");
+        yield { type: "assistant", blocks: [{ type: "text", text: "final answer" }] };
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    enqueueMessage("sid-queue-finalize", {
+      text: "queued prompt",
+      chatId: "chat-queue-finalize",
+      openId: "open-user",
+      msgTimestamp: Date.now(),
+      chatType: "p2p",
+    });
+    const consumeQueued = vi.fn();
+    setQueueConsumer(consumeQueued);
+
+    const runPromise = runAgentSession(
+      "sid-queue-finalize",
+      "first prompt",
+      platform,
+      "chat-queue-finalize",
+      Date.now(),
+      "claude",
+    );
+    await vi.waitFor(() => {
+      expect(platform.sendText).toHaveBeenCalledWith("chat-queue-finalize", "final answer");
+    });
+    expect(isSessionRunning("sid-queue-finalize")).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(consumeQueued).not.toHaveBeenCalled();
+
+    releaseFinalDelivery?.();
+    await runPromise;
+    expect(isSessionRunning("sid-queue-finalize")).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(consumeQueued).toHaveBeenCalledTimes(1);
+    expect(consumeQueued).toHaveBeenCalledWith(
+      platform,
+      expect.objectContaining({ text: "queued prompt", chatId: "chat-queue-finalize" }),
+    );
+    setQueueConsumer(() => {});
   });
 
   it("sends the stopped notice only after the prompt generator exits", async () => {

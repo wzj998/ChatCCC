@@ -87,7 +87,7 @@ import {
   resetState,
   sessionInfoMap,
 } from "../session.ts";
-import { activePrompts, resetBindingState } from "../session-chat-binding.ts";
+import { activePrompts, dequeueMessage, resetBindingState } from "../session-chat-binding.ts";
 import { ABD_APPEND_PROMPT } from "../shared-prefix.ts";
 import { config } from "../config.ts";
 
@@ -342,6 +342,148 @@ describe("handleCommand WeChat processing ack", () => {
     expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
   });
 
+  it("switches an idle Feishu p2p chat to a fresh session when the default Agent changes", async () => {
+    const platform = mockPlatform("feishu");
+    const oldPrompt = vi.fn(async function* () {
+      yield { type: "assistant" as const, blocks: [{ type: "text" as const, text: "old" }] };
+    });
+    _setAdapterForToolForTest("claude", {
+      ...mockAdapter("sid-old-claude"),
+      prompt: oldPrompt,
+    });
+
+    const createCursorSession = vi.fn(async () => ({ sessionId: "sid-new-cursor" }));
+    const cursorPrompt = vi.fn(async function* () {
+      yield { type: "assistant" as const, blocks: [{ type: "text" as const, text: "new" }] };
+    });
+    _setAdapterForToolForTest("cursor", {
+      ...mockAdapter("sid-new-cursor"),
+      displayName: "Cursor",
+      sessionDescPrefix: "Cursor Session:",
+      createSession: createCursorSession,
+      prompt: cursorPrompt,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({ sessionId, cwd: homedir() }),
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-p2p",
+      sessionId: "sid-old-claude",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      running: false,
+    });
+
+    const originalCursorEnabled = config.cursor.enabled;
+    try {
+      config.cursor.enabled = true;
+      config.claude.defaultAgent = false;
+      config.cursor.defaultAgent = true;
+
+      await handleCommand(platform, "/state", "feishu-p2p", "ou-user", Date.now(), "p2p");
+      expect(createCursorSession).not.toHaveBeenCalled();
+      expect((await loadSessionRegistryForBinding())["feishu-p2p"]?.sessionId).toBe("sid-old-claude");
+
+      await handleCommand(platform, "使用新的默认 Agent", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+      expect(createCursorSession).toHaveBeenCalledWith(homedir());
+      expect(oldPrompt).not.toHaveBeenCalled();
+      expect(cursorPrompt).toHaveBeenCalledWith(
+        "sid-new-cursor",
+        expect.stringContaining("使用新的默认 Agent"),
+        homedir(),
+        expect.any(AbortSignal),
+        expect.any(Object),
+      );
+      expect(platform.updateChatInfo).not.toHaveBeenCalled();
+      expect(platform.sendCard).toHaveBeenCalledWith(
+        "feishu-p2p",
+        "默认 Agent 已切换",
+        expect.stringContaining("Claude Code → Cursor"),
+        "green",
+      );
+
+      const registry = await loadSessionRegistryForBinding();
+      expect(registry["feishu-p2p"]).toMatchObject({
+        sessionId: "sid-new-cursor",
+        tool: "cursor",
+        chatType: "p2p",
+        turnCount: 1,
+      });
+    } finally {
+      config.cursor.enabled = originalCursorEnabled;
+    }
+  });
+
+  it("waits for a running Feishu p2p Agent before switching the queued message to the new default", async () => {
+    const platform = mockPlatform("feishu");
+    const createCursorSession = vi.fn(async () => ({ sessionId: "sid-cursor-after-wait" }));
+    const cursorPrompt = vi.fn(async function* () {
+      yield { type: "assistant" as const, blocks: [{ type: "text" as const, text: "new" }] };
+    });
+    _setAdapterForToolForTest("cursor", {
+      ...mockAdapter("sid-cursor-after-wait"),
+      displayName: "Cursor",
+      sessionDescPrefix: "Cursor Session:",
+      createSession: createCursorSession,
+      prompt: cursorPrompt,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({ sessionId, cwd: homedir() }),
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-p2p-wait",
+      sessionId: "sid-running-claude",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      running: true,
+    });
+    activePrompts.set("sid-running-claude", {
+      controller: new AbortController(),
+      stopped: false,
+      startTime: Date.now(),
+    });
+
+    const originalCursorEnabled = config.cursor.enabled;
+    try {
+      config.cursor.enabled = true;
+      config.claude.defaultAgent = false;
+      config.cursor.defaultAgent = true;
+
+      await handleCommand(platform, "等当前回复完成后处理", "feishu-p2p-wait", "ou-user", Date.now(), "p2p");
+
+      expect(createCursorSession).not.toHaveBeenCalled();
+      const queued = dequeueMessage("sid-running-claude");
+      expect(queued?.text).toContain("等当前回复完成后处理");
+      expect(platform.sendCard).toHaveBeenCalledWith(
+        "feishu-p2p-wait",
+        "Agent 切换等待中",
+        expect.stringContaining("完成后会切换到 Cursor"),
+        "blue",
+      );
+
+      activePrompts.delete("sid-running-claude");
+      await handleCommand(
+        platform,
+        queued!.text,
+        queued!.chatId,
+        queued!.openId,
+        queued!.msgTimestamp,
+        queued!.chatType,
+        queued!.traceId,
+      );
+
+      expect(createCursorSession).toHaveBeenCalledTimes(1);
+      expect(cursorPrompt).toHaveBeenCalledWith(
+        "sid-cursor-after-wait",
+        expect.stringContaining("等当前回复完成后处理"),
+        homedir(),
+        expect.any(AbortSignal),
+        expect.any(Object),
+      );
+    } finally {
+      config.cursor.enabled = originalCursorEnabled;
+    }
+  });
+
   it("creates the first Feishu p2p session in the OS user directory and sends the first prompt in place", async () => {
     const platform = mockPlatform("feishu");
     const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-private" }));
@@ -551,7 +693,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendCard).toHaveBeenCalledWith(
       "feishu-p2p",
       "/session",
-      expect.stringContaining("飞书私聊使用固定的专属会话"),
+      expect.stringContaining("下一条普通消息时跟随默认 Agent"),
       "yellow",
     );
     expect(platform.updateChatInfo).not.toHaveBeenCalled();
