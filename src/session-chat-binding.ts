@@ -53,9 +53,21 @@ export function hasChatsForSession(sessionId: string): boolean {
   return (sessionChatsMap.get(sessionId)?.size ?? 0) > 0;
 }
 
-/** 检查 sessionId 是否正被其他 chatId 使用（有活跃 prompt） */
+// Agent generator 退出后，最终卡片、registry、头像等仍可能在异步收尾。该阶段
+// 也必须阻止下一轮提前进入，否则旧会话的落盘可能覆盖新会话绑定。
+const finalizingSessions = new Set<string>();
+
+/** 检查 sessionId 是否有活跃 prompt 或正在完成本轮异步收尾。 */
 export function isSessionRunning(sessionId: string): boolean {
-  return activePrompts.has(sessionId);
+  return activePrompts.has(sessionId) || finalizingSessions.has(sessionId);
+}
+
+export function markSessionFinalizing(sessionId: string): void {
+  finalizingSessions.add(sessionId);
+}
+
+export function clearSessionFinalizing(sessionId: string): void {
+  finalizingSessions.delete(sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +244,7 @@ export function resetBindingState(): void {
     if (prompt.responseStallMonitor) clearInterval(prompt.responseStallMonitor);
   }
   activePrompts.clear();
+  finalizingSessions.clear();
   queuedMessages.clear();
   displayCards.clear();
   if (unifiedDisplayLoopHandle !== null) {

@@ -75,6 +75,8 @@ import {
   cancelQueuedMessage,
   setQueuePreservedChat,
   consumeQueuePreservedChat,
+  markSessionFinalizing,
+  clearSessionFinalizing,
 } from "./session-chat-binding.ts";
 
 async function sendFinalReplyTextOnce(
@@ -1377,8 +1379,10 @@ export async function runAgentSession(
     const autoEndedAt = prompt?.autoEndedAt;
     clearPromptResponseStallMonitor(sessionId);
     clearPromptProcessMonitor(sessionId);
+    markSessionFinalizing(sessionId);
     activePrompts.delete(sessionId);
 
+    try {
     // 先写最终状态（done/stopped），确保 display loop 在下一轮消费前
     // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
     // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
@@ -1422,34 +1426,6 @@ export async function runAgentSession(
       ...(preserveStuckAt ? { stuckAt: preserveStuckAt } : {}),
       ...(autoEndedAt !== undefined ? { autoEndedAt } : {}),
     });
-
-    // 消费队列中的缓存消息（异步，不阻塞后续清理）
-    // 用户 /stop 后应丢弃队列消息，避免用户停止后又自动开始新轮
-    if (wasStopped) {
-      const discarded = dequeueMessage(sessionId);
-      if (discarded) {
-        console.log(`[${ts()}] [QUEUE] Discarding queued message for stopped session ${sessionId}`);
-      }
-    } else {
-      const queued = dequeueMessage(sessionId);
-      if (queued) {
-        // 队列消息可能来自其他群，保存当前 display chat 避免 display loop 被
-        // 错误重定向（runAgentSession 会 consumeQueuePreservedChat 并在存在时
-        // 用保存的 chat 替代 queued.chatId 作为 display 目标）
-        const preservedChat = getLastActiveChat(sessionId);
-        if (preservedChat && preservedChat !== queued.chatId) {
-          setQueuePreservedChat(sessionId, preservedChat);
-        }
-        console.log(`[${ts()}] [QUEUE] Consuming queued message for session ${sessionId}: "${queued.text.slice(0, 50)}"`);
-        // setTimeout 而非 setImmediate：给 display loop 的 setInterval
-        // 足够时间读到 "done" 状态并终结旧卡片，避免新轮更新旧卡片的 bug。
-        // setImmediate 在 check 阶段触发早于下一个 timers 阶段，
-        // display loop (setInterval) 还没机会读到 "done" 就被新 "running" 覆盖。
-        setTimeout(() => {
-          consumeQueuedMessage(platform, queued);
-        }, 200);
-      }
-    }
 
     // display loop 下一轮会读到最终状态并发送消息
 
@@ -1544,6 +1520,38 @@ export async function runAgentSession(
       }
       console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
+    }
+
+    // 必须等本轮最终卡片、registry 和头像全部收尾后再取出并调度队列消息。
+    // 在收尾期间新到达的消息也会因 finalizingSessions 被正确排入这里。
+    let queuedForConsumption: ReturnType<typeof dequeueMessage> = undefined;
+    if (wasStopped) {
+      const discarded = dequeueMessage(sessionId);
+      if (discarded) {
+        console.log(`[${ts()}] [QUEUE] Discarding queued message for stopped session ${sessionId}`);
+      }
+    } else {
+      queuedForConsumption = dequeueMessage(sessionId);
+    }
+
+    if (queuedForConsumption) {
+      const queued = queuedForConsumption;
+      // 队列消息可能来自其他群，保存当前 display chat 避免 display loop 被
+      // 错误重定向（runAgentSession 会 consumeQueuePreservedChat 并在存在时
+      // 用保存的 chat 替代 queued.chatId 作为 display 目标）。
+      const preservedChat = getLastActiveChat(sessionId);
+      if (preservedChat && preservedChat !== queued.chatId) {
+        setQueuePreservedChat(sessionId, preservedChat);
+      }
+      console.log(`[${ts()}] [QUEUE] Consuming queued message for session ${sessionId}: "${queued.text.slice(0, 50)}"`);
+      // setTimeout 而非 setImmediate：给 display loop 的 setInterval
+      // 足够时间读到最终状态并终结旧卡片，避免新轮更新旧卡片。
+      setTimeout(() => {
+        consumeQueuedMessage(platform, queued);
+      }, 200);
+    }
+    } finally {
+      clearSessionFinalizing(sessionId);
     }
   }
 }

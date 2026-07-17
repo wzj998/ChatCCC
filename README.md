@@ -318,7 +318,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `gitTimeoutSeconds` | `/git` 命令超时时间，默认 180 秒 |
 | `allowInterrupt` | 是否允许新消息中断正在运行的任务；默认 false |
 | `*.enabled` | 是否启用对应 AI Agent |
-| `*.defaultAgent` | `/new` 未指定 Agent 时使用哪个工具 |
+| `*.defaultAgent` | `/new` 未指定 Agent 时使用哪个工具；飞书私聊会在下一条普通消息到达时跟随变化并创建新的空会话 |
 | `cursor.path` / `codex.path` | CLI 可执行文件路径；留空时自动探测或使用 PATH |
 | `cursor.avatarBatteryMode` | Cursor 头像电量显示来源：`apiPercent` 或 `onDemandUse` |
 | `cursor.onDemandMonthlyBudget` | `avatarBatteryMode=onDemandUse` 时用于计算电量的月预算 |
@@ -330,7 +330,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 ### 5. 开始使用
 
-**飞书：** 找到机器人后直接发送普通消息，即可在当前私聊中创建并持续使用专属 AI 会话；私聊工作目录固定为运行 ChatCCC 的系统账号用户目录。需要独立任务时，发送 `/new`、`/new claude`、`/new cursor` 或 `/new codex`，机器人会另外创建会话群，原私聊会话不受影响。
+**飞书：** 找到机器人后直接发送普通消息，即可在当前私聊中创建并持续使用专属 AI 会话；私聊工作目录固定为运行 ChatCCC 的系统账号用户目录。默认 Agent 发生变化后，下一条私聊普通消息会触发切换并创建新的空会话；若旧 Agent 正在生成，该消息会先排队，待当前回复完成后再切换。命令不会触发自动切换。需要独立任务时，发送 `/new`、`/new claude`、`/new cursor` 或 `/new codex`，机器人会另外创建会话群。
 
 **微信：** 扫码登录后，在机器人私聊里发送 `/new` 或指定 Agent 的 `/new ...` 命令即可开始。功能与飞书基本一致，但展示为纯文本。
 

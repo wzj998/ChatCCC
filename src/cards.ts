@@ -344,7 +344,7 @@ export function buildSessionsCard(sessions: Array<{
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
         { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
-          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；发送 **/new**、**/new claude**、**/new cursor** 或 **/new codex** 会另外创建会话群。`
+          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；默认 Agent 变化后，下一条普通消息会创建对应 Agent 的新空会话。发送 **/new**、**/new claude**、**/new cursor** 或 **/new codex** 会另外创建会话群。`
           : `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
@@ -387,7 +387,7 @@ export function buildSessionsCard(sessions: Array<{
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
       { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
-        ? "当前飞书私聊使用固定的专属会话；发送 **/newh** 可在私聊中原地重置。群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
+        ? "当前飞书私聊使用专属会话；默认 Agent 变化后，下一条普通消息会自动创建对应 Agent 的新空会话。发送 **/newh** 可在私聊中原地重置。群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
         : "在会话群内发送 **/newh** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
       { tag: "hr" },
       {

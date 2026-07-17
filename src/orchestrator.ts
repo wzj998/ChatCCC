@@ -411,9 +411,133 @@ function shouldSendWechatProcessingAck(
   return platform.kind === "wechat" && chatType === "p2p" && !isCommandText;
 }
 
-/** 飞书私聊是固定会话容器；显式 /new 才创建独立群聊。 */
+/** 飞书私聊是专属会话容器；显式 /new 才创建独立群聊。 */
 function isFeishuP2p(platform: PlatformAdapter, chatType: string): boolean {
   return chatType === "p2p" && platform.kind === "feishu";
+}
+
+interface FeishuP2pRegistryRecord {
+  sessionId: string;
+  tool: string;
+  chatType?: string;
+  chatName?: string;
+}
+
+type FeishuP2pAgentResolution =
+  | { kind: "ready"; sessionId: string; tool: string }
+  | { kind: "waiting"; sessionId: string; tool: string; desiredTool: AgentTool }
+  | { kind: "error"; previousTool: string; desiredTool: AgentTool; error: Error };
+
+// 同一个飞书私聊可能短时间收到多条消息。切换期间共享同一个 Promise，避免
+// 为同一次默认 Agent 变化创建多个空会话。
+const feishuP2pAgentSwitches = new Map<string, Promise<FeishuP2pAgentResolution>>();
+
+async function resolveFeishuP2pAgent(
+  platform: PlatformAdapter,
+  chatId: string,
+  text: string,
+  record: FeishuP2pRegistryRecord,
+  traceId: string,
+): Promise<FeishuP2pAgentResolution> {
+  const desiredTool = resolveDefaultAgentTool();
+  if (record.tool === desiredTool) {
+    return { kind: "ready", sessionId: record.sessionId, tool: record.tool };
+  }
+
+  if (isSessionRunning(record.sessionId)) {
+    return {
+      kind: "waiting",
+      sessionId: record.sessionId,
+      tool: record.tool,
+      desiredTool,
+    };
+  }
+
+  const existingSwitch = feishuP2pAgentSwitches.get(chatId);
+  if (existingSwitch) return existingSwitch;
+
+  const switchOperation = (async (): Promise<FeishuP2pAgentResolution> => {
+    try {
+      // 异步创建开始前重新读取一次，防止另一个请求刚完成了绑定切换。
+      const latestRecord = (await loadSessionRegistryForBinding())[chatId];
+      if (!latestRecord?.sessionId || !latestRecord.tool || latestRecord.chatType !== "p2p") {
+        return {
+          kind: "error",
+          previousTool: record.tool,
+          desiredTool,
+          error: new Error("飞书私聊绑定在切换前已发生变化"),
+        };
+      }
+      if (latestRecord.tool === desiredTool) {
+        return { kind: "ready", sessionId: latestRecord.sessionId, tool: latestRecord.tool };
+      }
+      if (isSessionRunning(latestRecord.sessionId)) {
+        return {
+          kind: "waiting",
+          sessionId: latestRecord.sessionId,
+          tool: latestRecord.tool,
+          desiredTool,
+        };
+      }
+
+      const cwd = homedir();
+      const init = await initClaudeSession(desiredTool, cwd);
+      const chatName = sessionChatName(text.slice(0, 10) || "私聊会话", cwd);
+      const switchResult = await switchChatBinding({
+        chatId,
+        chatType: "p2p",
+        oldSessionId: latestRecord.sessionId,
+        newSessionId: init.sessionId,
+        tool: desiredTool,
+        chatName,
+        newDescription: `${sessionPrefixForTool(desiredTool)} ${init.sessionId}`,
+        updateChatInfoFn: (id, name, desc) => platform.updateChatInfo(id, name, desc),
+      });
+      if (!switchResult.ok) {
+        return {
+          kind: "error",
+          previousTool: latestRecord.tool,
+          desiredTool,
+          error: switchResult.error ?? new Error("更新飞书私聊绑定失败"),
+        };
+      }
+
+      const previousLabel = toolDisplayName(latestRecord.tool);
+      const desiredLabel = toolDisplayName(desiredTool);
+      logTrace(traceId, "BRANCH", {
+        reason: "switch_feishu_p2p_default_agent",
+        chatId,
+        oldSessionId: latestRecord.sessionId,
+        newSessionId: init.sessionId,
+        oldTool: latestRecord.tool,
+        newTool: desiredTool,
+      });
+      await platform.sendCard(
+        chatId,
+        "默认 Agent 已切换",
+        `检测到默认 Agent 已变化：**${previousLabel} → ${desiredLabel}**。\n\n已创建新的空白 ${desiredLabel} 私聊会话，并从本条消息开始使用。`,
+        "green",
+      ).catch(() => {});
+      platform.setChatAvatar(chatId, desiredTool, "new").catch(() => {});
+      return { kind: "ready", sessionId: init.sessionId, tool: desiredTool };
+    } catch (err) {
+      return {
+        kind: "error",
+        previousTool: record.tool,
+        desiredTool,
+        error: err as Error,
+      };
+    }
+  })();
+
+  feishuP2pAgentSwitches.set(chatId, switchOperation);
+  try {
+    return await switchOperation;
+  } finally {
+    if (feishuP2pAgentSwitches.get(chatId) === switchOperation) {
+      feishuP2pAgentSwitches.delete(chatId);
+    }
+  }
 }
 
 /** 检测当前进程是否从 npm 全局安装启动 */
@@ -532,7 +656,7 @@ export async function handleCommand(
           "配置已重新加载。",
           `默认 Agent: ${toolDisplayName(result.defaultAgent)}`,
           `配置文件: ${result.configPath}`,
-          "后续新会话会使用最新配置；正在生成的会话不会被中断。",
+          "后续新会话会使用最新配置；飞书私聊会在下一条普通消息时跟随默认 Agent，正在生成的会话不会被中断。",
         ].join("\n"),
       ).catch(() => {});
       logTrace(tid, "DONE", { outcome: "reload", defaultAgent: result.defaultAgent });
@@ -968,6 +1092,7 @@ export async function handleCommand(
   let sessionId: string | null = null;
   let descriptionTool: string | null = null;
   let toolLabel: string | null = null;
+  let pendingFeishuP2pDefaultTool: AgentTool | null = null;
   let chatInfo: Awaited<ReturnType<PlatformAdapter["getChatInfo"]>> | undefined;
   let description: string | undefined;
 
@@ -1010,8 +1135,37 @@ export async function handleCommand(
           oldSessionId: record.sessionId,
         });
       } else if (record && record.sessionId && record.tool) {
-        sessionId = record.sessionId;
-        descriptionTool = record.tool;
+        let resolvedRecord: { sessionId: string; tool: string } = record;
+        if (platform.kind === "feishu" && !isCommandText && record.chatType === "p2p") {
+          const resolution = await resolveFeishuP2pAgent(platform, chatId, text, record, tid);
+          if (resolution.kind === "error") {
+            const previousLabel = toolDisplayName(resolution.previousTool);
+            const desiredLabel = toolDisplayName(resolution.desiredTool);
+            console.error(
+              `[${ts()}] [P2P-SWITCH] ${previousLabel} -> ${desiredLabel} FAIL: ${resolution.error.message}`,
+            );
+            logTrace(tid, "DONE", {
+              outcome: "switch_feishu_p2p_default_agent_fail",
+              oldTool: resolution.previousTool,
+              newTool: resolution.desiredTool,
+              error: resolution.error.message,
+            });
+            await platform.sendCard(
+              chatId,
+              "Agent 切换失败",
+              `无法从 ${previousLabel} 切换到 ${desiredLabel}：\n${resolution.error.message}`,
+              "red",
+            ).catch(() => {});
+            return;
+          }
+          resolvedRecord = resolution;
+          if (resolution.kind === "waiting") {
+            pendingFeishuP2pDefaultTool = resolution.desiredTool;
+          }
+        }
+
+        sessionId = resolvedRecord.sessionId;
+        descriptionTool = resolvedRecord.tool;
         toolLabel = toolDisplayName(descriptionTool);
         // 确保内存状态在冷启动后恢复；bindChatToSession 是幂等的。
         if (!sessionInfoMap.has(chatId)) {
@@ -1389,7 +1543,7 @@ export async function handleCommand(
         await platform.sendCard(
           chatId,
           "/session",
-          "飞书私聊使用固定的专属会话，不能切换到历史群聊会话。请回到对应群聊继续，或发送 /new 新建群聊。",
+          "飞书私聊不能通过 /session 切换到历史群聊会话；它会在下一条普通消息时跟随默认 Agent。请回到对应群聊继续，或发送 /new 新建群聊。",
           "yellow",
         );
         logTrace(tid, "DONE", { outcome: "session_switch_disabled_feishu_p2p" });
@@ -1762,7 +1916,18 @@ export async function handleCommand(
         if (platform.kind === "wechat") {
           await platform.sendText(chatId, "当前会话正在生成中，你的消息已进入缓存队列，生成完成后会立即处理。发送 /cancel 可取消缓存。").catch(() => {});
         } else {
-          await platform.sendRawCard(chatId, buildQueuedCard(text)).catch(() => {});
+          if (isFeishuP2p(platform, chatType) && pendingFeishuP2pDefaultTool) {
+            const currentLabel = toolDisplayName(descriptionTool);
+            const desiredLabel = toolDisplayName(pendingFeishuP2pDefaultTool);
+            await platform.sendCard(
+              chatId,
+              "Agent 切换等待中",
+              `当前 ${currentLabel} 正在生成；完成后会切换到 ${desiredLabel}，并用新的空会话处理这条消息。\n\n发送 **/cancel** 可取消缓存。`,
+              "blue",
+            ).catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildQueuedCard(text)).catch(() => {});
+          }
         }
       } else {
         logTrace(tid, "QUEUE_FULL", { sessionId });
