@@ -113,6 +113,7 @@ import { fixStaleStreamStates } from "./stream-state.ts";
 import { handleCommand, type PlatformAdapter } from "./orchestrator.ts";
 import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
 import { handleCodexResetCardAction } from "./codex-reset-actions.ts";
+import { resolveFeishuCardActionChatType } from "./card-action-routing.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
 
 // ---------------------------------------------------------------------------
@@ -509,14 +510,16 @@ async function startBotServiceCore(): Promise<void> {
 
       const result = parseCardAction(data);
       if (!result) return;
-      console.log(`[BTN] chat=${result.chatId} text="${result.text}"`);
+      const registry = await loadSessionRegistryForBinding();
+      const chatType = resolveFeishuCardActionChatType(result.chatId, registry);
+      console.log(`[BTN] chat=${result.chatId} chatType=${chatType} text="${result.text}"`);
       handleCommand(
         feishuPlatform,
         result.text,
         result.chatId,
         result.openId,
         Date.now(),
-        "group",
+        chatType,
         undefined,
         result.commandId,
       ).catch((err) =>
@@ -544,13 +547,15 @@ async function startBotServiceCore(): Promise<void> {
         const data = JSON.parse(raw.toString()) as Evt;
         const action = parseCardAction(data);
         if (action) {
+          const registry = await loadSessionRegistryForBinding();
+          const chatType = resolveFeishuCardActionChatType(action.chatId, registry);
           handleCommand(
             feishuPlatform,
             action.text,
             action.chatId,
             action.openId,
             Date.now(),
-            "group",
+            chatType,
             undefined,
             action.commandId,
           ).catch((err) =>

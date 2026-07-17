@@ -416,6 +416,48 @@ function isFeishuP2p(platform: PlatformAdapter, chatType: string): boolean {
   return chatType === "p2p" && platform.kind === "feishu";
 }
 
+async function sendStateCard(
+  platform: PlatformAdapter,
+  chatId: string,
+  sessionId: string | null,
+  toolLabel: string,
+  traceId: string,
+): Promise<void> {
+  const status = sessionId ? await getSessionStatus(chatId) : null;
+  const isActive = sessionId ? isSessionRunning(sessionId) : false;
+  const stateLabel = sessionId
+    ? (isActive ? "🟢 运行中" : "⚪ 空闲")
+    : "⚪ 未建立会话";
+  const statusText = [
+    `**群名:** ${status?.chatName || "—"}`,
+    `**Session ID:** ${sessionId ? `\`${status?.sessionId ?? sessionId}\`` : "—"}`,
+    `**工具:** ${toolLabel}`,
+    `**状态:** ${stateLabel}`,
+    `**已对话轮数:** ${status?.turnCount ?? 0}`,
+    `**模型:** ${sessionId ? (status?.model ?? anthropicConfigDisplay(CLAUDE_MODEL)) : "—"}`,
+  ];
+  if (status?.effort != null) {
+    statusText.push(`**Effort:** ${status.effort}`);
+  }
+  if (isActive && status) {
+    const elapsed = Math.floor((Date.now() - status.startTime) / 1000);
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+    statusText.push(`**本轮已运行:** ${mins}分${secs}秒`);
+    statusText.push(`**已产出总字符:** ${status.accumulatedLength.toLocaleString()}`);
+  }
+  if (status?.lastContextTokens) {
+    statusText.push(`**上下文 Token 数:** ~${status.lastContextTokens.toLocaleString()}`);
+  }
+  const card = buildStatusCard(statusText.join("\n"), isActive ? "blue" : "green");
+  const ok = await platform.sendRawCard(chatId, card);
+  console.log(`[${ts()}] [STATUS] card sent, ok=${ok}`);
+  logTrace(traceId, "DONE", {
+    outcome: sessionId ? "status" : "status_no_session",
+    ok,
+  });
+}
+
 interface FeishuP2pRegistryRecord {
   sessionId: string;
   tool: string;
@@ -1338,40 +1380,7 @@ export async function handleCommand(
 
     if (isCommandText && textLower === "/state") {
       logTrace(tid, "BRANCH", { cmd: "/state" });
-      const status = await getSessionStatus(chatId);
-      const isActive = isSessionRunning(sessionId);
-      const statusText = [
-        `**群名:** ${status?.chatName || "—"}`,
-        `**Session ID:** \`${status?.sessionId ?? sessionId}\``,
-        `**工具:** ${toolLabel}`,
-        `**状态:** ${isActive ? "🟢 运行中" : "⚪ 空闲"}`,
-        `**已对话轮数:** ${status?.turnCount ?? 0}`,
-        `**模型:** ${status?.model ?? anthropicConfigDisplay(CLAUDE_MODEL)}`,
-      ];
-      if (status?.effort != null) {
-        statusText.push(`**Effort:** ${status.effort}`);
-      }
-      if (isActive) {
-        const elapsed = Math.floor((Date.now() - status!.startTime) / 1000);
-        const mins = Math.floor(elapsed / 60);
-        const secs = elapsed % 60;
-        statusText.push(`**本轮已运行:** ${mins}分${secs}秒`);
-        statusText.push(
-          `**已产出总字符:** ${status!.accumulatedLength.toLocaleString()}`,
-        );
-      }
-      if (status?.lastContextTokens) {
-        statusText.push(
-          `**上下文 Token 数:** ~${status.lastContextTokens.toLocaleString()}`,
-        );
-      }
-      const card = buildStatusCard(
-        statusText.join("\n"),
-        isActive ? "blue" : "green",
-      );
-      const ok = await platform.sendRawCard(chatId, card);
-      console.log(`[${ts()}] [STATUS] card sent, ok=${ok}`);
-      logTrace(tid, "DONE", { outcome: "status", ok });
+      await sendStateCard(platform, chatId, sessionId, toolLabel, tid);
       return;
     }
 
@@ -2001,6 +2010,20 @@ export async function handleCommand(
       await platform.sendRawCard(chatId, card);
     }
     logTrace(tid, "DONE", { outcome: "model_query", defaultTool });
+    return;
+  }
+
+  // A private /state query is useful even before the first Agent session exists.
+  // Keep it read-only and render the same status-card shape as established chats.
+  if (isCommandText && textLower === "/state" && isFeishuP2p(platform, chatType)) {
+    logTrace(tid, "BRANCH", { cmd: "/state", scope: "unbound_p2p" });
+    await sendStateCard(
+      platform,
+      chatId,
+      null,
+      toolDisplayName(resolveDefaultAgentTool()),
+      tid,
+    );
     return;
   }
 

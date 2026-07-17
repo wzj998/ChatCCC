@@ -342,6 +342,43 @@ describe("handleCommand WeChat processing ack", () => {
     expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
   });
 
+  it("sends the normal session state card in an established Feishu p2p chat", async () => {
+    const platform = mockPlatform("feishu");
+    _setAdapterForToolForTest("claude", mockAdapter("sid-feishu-state"));
+    await recordSessionRegistry({
+      chatId: "feishu-p2p-state",
+      sessionId: "sid-feishu-state",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      turnCount: 2,
+      running: false,
+    });
+
+    await handleCommand(platform, "/state", "feishu-p2p-state", "ou-user", Date.now(), "p2p");
+
+    expect(platform.getChatInfo).not.toHaveBeenCalled();
+    expect(platform.sendRawCard).toHaveBeenCalledTimes(1);
+    const cardText = vi.mocked(platform.sendRawCard).mock.calls[0][1];
+    expect(cardText).toContain("sid-feishu-state");
+    expect(cardText).toContain("Claude Code");
+    expect(cardText).toContain("2");
+  });
+
+  it("shows an explicit state card without creating an Agent when a Feishu p2p chat is not bound yet", async () => {
+    const platform = mockPlatform("feishu");
+    const adapter = mockAdapter("should-not-be-created");
+    _setAdapterForToolForTest("claude", adapter);
+
+    await handleCommand(platform, "/state", "feishu-p2p-empty", "ou-user", Date.now(), "p2p");
+
+    expect(adapter.createSession).not.toHaveBeenCalled();
+    expect(platform.sendRawCard).toHaveBeenCalledTimes(1);
+    const cardText = vi.mocked(platform.sendRawCard).mock.calls[0][1];
+    expect(cardText).toContain("未建立会话");
+    expect(cardText).toContain("Claude Code");
+  });
+
   it("switches an idle Feishu p2p chat to a fresh session when the default Agent changes", async () => {
     const platform = mockPlatform("feishu");
     const oldPrompt = vi.fn(async function* () {
