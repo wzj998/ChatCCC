@@ -2131,7 +2131,10 @@ export function setExtraApiHandler(handler: ExtraApiHandler): void {
   extraApiHandler = handler;
 }
 
-export function startSetupMode(port: number, options: StartSetupModeOptions = {}): void {
+export function startSetupMode(
+  port: number,
+  options: StartSetupModeOptions = {},
+): ReturnType<typeof createServer> {
   const router = createUiRouter();
   const server = createServer(router);
   setupHttpServer = server;
@@ -2167,4 +2170,5 @@ export function startSetupMode(port: number, options: StartSetupModeOptions = {}
     console.log("");
     if (options.openBrowser !== false) openWebUiInDefaultBrowser(port);
   });
+  return server;
 }
