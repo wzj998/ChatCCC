@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   INTERNAL_RESTART_ENV_VAR,
   buildWebUiUrl,
+  createServiceLifecycleGuard,
   createInternalRestartEnv,
   openWebUiInDefaultBrowser,
   shouldAutoOpenWebUi,
@@ -94,5 +95,137 @@ describe("ChatCCC startup lifecycle", () => {
     expect(spawnImpl).not.toHaveBeenCalled();
     expect(onInfo).toHaveBeenCalledWith(expect.stringContaining("ssh -L 18080:127.0.0.1:18080"));
     expect(onInfo).toHaveBeenCalledWith(expect.stringContaining("http://localhost:18080/"));
+  });
+});
+
+describe("ChatCCC service lifecycle guard", () => {
+  function createHarness() {
+    let intervalCallback: (() => void) | undefined;
+    const timer = { ref: vi.fn() };
+    const setIntervalImpl = vi.fn((callback: () => void) => {
+      intervalCallback = callback;
+      return timer;
+    });
+    const clearIntervalImpl = vi.fn();
+    const tracer = vi.fn();
+    const server = {
+      listening: true,
+      address: vi.fn(() => ({ address: "127.0.0.1", port: 18080 })),
+      ref: vi.fn(),
+    };
+    const recoverServer = vi.fn(async () => {
+      server.listening = true;
+    });
+    const guard = createServiceLifecycleGuard({
+      intervalMs: 10_000,
+      setIntervalImpl,
+      clearIntervalImpl,
+      tracer,
+      getActiveResourcesInfo: () => ["TCPServerWrap", "Timeout"],
+    });
+
+    return {
+      clearIntervalImpl,
+      getIntervalCallback: () => intervalCallback,
+      guard,
+      recoverServer,
+      server,
+      setIntervalImpl,
+      timer,
+      tracer,
+    };
+  }
+
+  it("starts exactly one referenced keep-alive timer", () => {
+    const h = createHarness();
+
+    h.guard.start();
+    h.guard.start();
+
+    expect(h.setIntervalImpl).toHaveBeenCalledOnce();
+    expect(h.setIntervalImpl).toHaveBeenCalledWith(expect.any(Function), 10_000);
+    expect(h.timer.ref).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a listening HTTP server referenced", async () => {
+    const h = createHarness();
+    h.guard.attachServer(h.server, h.recoverServer);
+    h.guard.start();
+
+    await h.guard.checkNow();
+
+    expect(h.server.ref).toHaveBeenCalled();
+    expect(h.recoverServer).not.toHaveBeenCalled();
+  });
+
+  it("coalesces concurrent recovery when the HTTP server is not listening", async () => {
+    const h = createHarness();
+    h.server.listening = false;
+    let finishRecovery: (() => void) | undefined;
+    h.recoverServer.mockImplementation(() => new Promise<void>((resolve) => {
+      finishRecovery = () => {
+        h.server.listening = true;
+        resolve();
+      };
+    }));
+    h.guard.attachServer(h.server, h.recoverServer);
+    h.guard.start();
+
+    const first = h.guard.checkNow();
+    const second = h.guard.checkNow();
+    await Promise.resolve();
+    expect(h.recoverServer).toHaveBeenCalledOnce();
+
+    finishRecovery?.();
+    await Promise.all([first, second]);
+    expect(h.tracer).toHaveBeenCalledWith(
+      "service-lifecycle: HTTP server recovered",
+      expect.objectContaining({ serverListening: true }),
+    );
+  });
+
+  it("re-arms on unexpected beforeExit and records public diagnostics", async () => {
+    const h = createHarness();
+    h.guard.attachServer(h.server, h.recoverServer);
+
+    h.guard.handleBeforeExit(0);
+    await h.guard.checkNow();
+
+    expect(h.setIntervalImpl).toHaveBeenCalledOnce();
+    expect(h.server.ref).toHaveBeenCalled();
+    expect(h.tracer).toHaveBeenCalledWith(
+      "service-lifecycle: unexpected beforeExit",
+      expect.objectContaining({
+        code: 0,
+        activeResources: ["TCPServerWrap", "Timeout"],
+        serverListening: true,
+      }),
+    );
+  });
+
+  it("stays stopped after an intentional shutdown", () => {
+    const h = createHarness();
+    h.guard.start();
+
+    h.guard.beginShutdown("SIGTERM");
+    h.guard.handleBeforeExit(0);
+
+    expect(h.clearIntervalImpl).toHaveBeenCalledWith(h.timer);
+    expect(h.setIntervalImpl).toHaveBeenCalledOnce();
+    expect(h.tracer).toHaveBeenCalledWith(
+      "service-lifecycle: shutdown requested",
+      { reason: "SIGTERM" },
+    );
+  });
+
+  it("the timer callback runs a health check", async () => {
+    const h = createHarness();
+    h.guard.attachServer(h.server, h.recoverServer);
+    h.guard.start();
+
+    h.getIntervalCallback()?.();
+    await Promise.resolve();
+
+    expect(h.server.ref).toHaveBeenCalled();
   });
 });

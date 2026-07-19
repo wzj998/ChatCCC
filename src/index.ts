@@ -31,6 +31,7 @@ import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRel
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
 import {
   buildWebUiUrl,
+  createServiceLifecycleGuard,
   openWebUiInDefaultBrowser,
   shouldAutoOpenWebUi,
 } from "./startup-lifecycle.ts";
@@ -744,10 +745,19 @@ async function main(): Promise<void> {
     autoOpenWebUi,
   });
 
+  // ChatCCC 是常驻服务，不能把“当前刚好有没有 Agent session”当作进程生命周期。
+  // referenced timer 明确锚定服务进程；HTTP Server 接入后还会定期 ref/健康检查。
+  // `/restart`、`/update` 都使用 process.exit()，不会被 timer 阻止。
+  const serviceLifecycle = createServiceLifecycleGuard({ tracer: appendStartupTrace });
+  serviceLifecycle.start();
+
   // 黑匣子：所有未捕获异常 / 信号 / beforeExit 都同步写入 startup-trace.log（appendFileSync）。
   // 越早装越好——后续任何一行抛错都有兜底；它独立于 SIGINT 清理（见末尾的
   // server.close）——只负责诊断与默认致命退出，不替代清理逻辑。
-  installCrashLogging({ flush: () => fileLog.flush() });
+  installCrashLogging({
+    flush: () => fileLog.flush(),
+    onBeforeExit: (code) => serviceLifecycle.handleBeforeExit(code),
+  });
 
   // 模拟模式：独立端口 18079，不与 SDK 实例冲突，不走飞书凭证/权限/WSClient
   if (USE_SIMULATE) {
@@ -791,6 +801,10 @@ async function main(): Promise<void> {
       console.error(`\n[启动] 监听失败：端口 ${SIM_PORT}（${err.code ?? "?"} — ${err.message}）`);
       process.exit(1);
     });
+    serviceLifecycle.attachServer(
+      simServer,
+      () => recoverHttpServer(simServer, SIM_PORT),
+    );
 
     console.log(`\n${"=".repeat(60)}`);
     console.log(`  ChatCCC — 模拟飞书环境模式`);
@@ -808,7 +822,7 @@ async function main(): Promise<void> {
       );
     }
 
-    installShutdownHandlers(simServer);
+    installShutdownHandlers(simServer, serviceLifecycle);
     return;
   }
 
@@ -856,7 +870,7 @@ async function main(): Promise<void> {
     if (!APP_ID.trim() || !APP_SECRET.trim()) {
       // 凭证不全：进 setup 向导。注入 onActivate 回调让用户点"保存并启动"
       // 时，原地（同进程）调用 startBotService，复用 setup HTTP server。
-      startSetupMode(CHATCCC_PORT, {
+      const setupServer = startSetupMode(CHATCCC_PORT, {
         openBrowser: autoOpenWebUi,
         onActivate: async (httpServer: Server) => {
           reloadRuntimeConfig("setup-activate");
@@ -865,7 +879,6 @@ async function main(): Promise<void> {
           });
           try {
             await startConfiguredPlatforms(httpServer, { failOnFeishuError: true });
-            installShutdownHandlers(httpServer);
             return { ok: true };
           } catch (err) {
             appendStartupTrace("setup-activate: startConfiguredPlatforms failed", {
@@ -875,6 +888,13 @@ async function main(): Promise<void> {
           }
         },
       });
+      setupServer.once("listening", () => {
+        serviceLifecycle.attachServer(
+          setupServer,
+          () => recoverHttpServer(setupServer, CHATCCC_PORT),
+        );
+      });
+      installShutdownHandlers(setupServer, serviceLifecycle);
       return;
     }
     console.log(`  必填项校验通过（App ID 摘要: ${maskAppId(APP_ID)}）。\n`);
@@ -903,6 +923,13 @@ async function main(): Promise<void> {
     printServiceDidNotStart(`本地中继端口 ${CHATCCC_PORT} 无法监听（${err.code ?? "?"} — ${err.message}）`);
     process.exit(1);
   });
+  serviceLifecycle.attachServer(
+    httpServer,
+    () => recoverHttpServer(httpServer, CHATCCC_PORT),
+  );
+  // 平台鉴权/长连接启动可能耗时；此时也必须允许 Ctrl+C / SIGTERM 正常退出，
+  // 不能只留下更早安装的信号日志 listener 把默认退出行为吞掉。
+  installShutdownHandlers(httpServer, serviceLifecycle);
 
   // 必须等 HTTP server 真正监听后再发起打开请求，避免浏览器先到一步看到
   // ERR_CONNECTION_REFUSED。Chrome CDP 守护仍保持自己原有的独立行为。
@@ -923,8 +950,22 @@ async function main(): Promise<void> {
   }
 
   await startConfiguredPlatforms(httpServer, { failOnFeishuError: false });
+}
 
-  installShutdownHandlers(httpServer);
+/**
+ * 生命周期健康检查发现 HTTP Server 已停止监听时，优先原地恢复同一个 Server。
+ * router、WebSocket upgrade listener 都挂在这个对象上，复用它能保留现有服务绑定；
+ * 恢复失败会被 lifecycle guard 记录，并在下一轮检查重试。
+ */
+async function recoverHttpServer(httpServer: Server, port: number): Promise<void> {
+  if (httpServer.listening) {
+    httpServer.ref();
+    return;
+  }
+  appendStartupTrace("service-lifecycle: HTTP recovery begin", { port });
+  await listenWithRetry(httpServer, port, "127.0.0.1");
+  httpServer.ref();
+  appendStartupTrace("service-lifecycle: HTTP recovery listen succeeded", { port });
 }
 
 /**
@@ -963,9 +1004,25 @@ async function listenWithRetry(
  * Node EventEmitter 按注册顺序触发，installCrashLogging 装得更早 → 同步 trace
  * 先写盘，再走这里。
  */
-function installShutdownHandlers(httpServer: Server): void {
-  process.on("SIGINT", () => { console.log("\nShutting down..."); wechatSignal.stopped = true; stopChromeDevtoolsGuard(); httpServer.close(); process.exit(0); });
-  process.on("SIGTERM", () => { wechatSignal.stopped = true; stopChromeDevtoolsGuard(); httpServer.close(); process.exit(0); });
+function installShutdownHandlers(
+  httpServer: Server,
+  serviceLifecycle: ReturnType<typeof createServiceLifecycleGuard>,
+): void {
+  process.on("SIGINT", () => {
+    console.log("\nShutting down...");
+    serviceLifecycle.beginShutdown("SIGINT");
+    wechatSignal.stopped = true;
+    stopChromeDevtoolsGuard();
+    httpServer.close();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    serviceLifecycle.beginShutdown("SIGTERM");
+    wechatSignal.stopped = true;
+    stopChromeDevtoolsGuard();
+    httpServer.close();
+    process.exit(0);
+  });
 }
 
 main().catch((err: Error) => {

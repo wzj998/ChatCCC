@@ -1,5 +1,159 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
+const DEFAULT_SERVICE_HEALTH_INTERVAL_MS = 10_000;
+
+interface RefTimer {
+  ref?: () => unknown;
+}
+
+export interface ServiceLifecycleServer {
+  listening: boolean;
+  address: () => unknown;
+  ref: () => unknown;
+}
+
+interface ServiceLifecycleGuardOptions {
+  intervalMs?: number;
+  setIntervalImpl?: (callback: () => void, delayMs: number) => RefTimer;
+  clearIntervalImpl?: (timer: RefTimer) => void;
+  tracer?: (message: string, extra?: Record<string, unknown>) => void;
+  getActiveResourcesInfo?: () => string[];
+}
+
+export interface ServiceLifecycleGuard {
+  start: () => void;
+  attachServer: (
+    server: ServiceLifecycleServer,
+    recoverServer?: () => void | Promise<void>,
+  ) => void;
+  checkNow: () => Promise<void>;
+  handleBeforeExit: (code: number) => void;
+  beginShutdown: (reason: string) => void;
+}
+
+/**
+ * 为 ChatCCC 这种常驻服务建立一个明确的进程生命周期锚点。
+ *
+ * 正常情况下，正在 listen 的 HTTP Server 自己就足以维持事件循环；额外的
+ * referenced timer 是最后一道保险，避免某个依赖升级或异常 close/unref 让进程在
+ * 没有信号、异常或退出码的情况下静默消失。定时检查同时会重新 ref Server，并在
+ * Server 确实停止监听时串行触发恢复，避免只把一个失去服务能力的僵尸进程留下来。
+ */
+export function createServiceLifecycleGuard(
+  options: ServiceLifecycleGuardOptions = {},
+): ServiceLifecycleGuard {
+  const intervalMs = options.intervalMs ?? DEFAULT_SERVICE_HEALTH_INTERVAL_MS;
+  const setIntervalImpl = options.setIntervalImpl
+    ?? ((callback, delayMs) => setInterval(callback, delayMs));
+  const clearIntervalImpl = options.clearIntervalImpl
+    ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
+  const tracer = options.tracer ?? (() => {});
+  const getActiveResourcesInfo = options.getActiveResourcesInfo
+    ?? (() => process.getActiveResourcesInfo());
+
+  let timer: RefTimer | null = null;
+  let server: ServiceLifecycleServer | null = null;
+  let recoverServer: (() => void | Promise<void>) | undefined;
+  let recoveryPromise: Promise<void> | null = null;
+  let shuttingDown = false;
+
+  const trace = (message: string, extra?: Record<string, unknown>): void => {
+    try { tracer(message, extra); } catch { /* 诊断路径不能反过来打断服务 */ }
+  };
+
+  const serverAddress = (): unknown => {
+    try { return server?.address() ?? null; } catch { return null; }
+  };
+
+  const activeResources = (): string[] => {
+    try { return getActiveResourcesInfo(); } catch { return []; }
+  };
+
+  const diagnostics = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    ...extra,
+    uptimeSeconds: Math.floor(process.uptime()),
+    activeResources: activeResources(),
+    serverAttached: server !== null,
+    serverListening: server?.listening ?? false,
+    serverAddress: serverAddress(),
+  });
+
+  const start = (): void => {
+    if (shuttingDown || timer) return;
+    timer = setIntervalImpl(() => { void checkNow(); }, intervalMs);
+    // Node 的 Timeout 默认就是 ref 状态；显式 ref 让常驻服务契约不会依赖默认值。
+    try { timer.ref?.(); } catch { /* ignore */ }
+    trace("service-lifecycle: guard started", { intervalMs });
+  };
+
+  const checkNow = async (): Promise<void> => {
+    if (shuttingDown || !server) return;
+    if (server.listening) {
+      try { server.ref(); } catch (err) {
+        trace("service-lifecycle: HTTP server ref failed", diagnostics({
+          error: (err as Error).message,
+        }));
+      }
+      return;
+    }
+
+    if (recoveryPromise) return recoveryPromise;
+    trace("service-lifecycle: HTTP server inactive", diagnostics());
+    if (!recoverServer) return;
+
+    recoveryPromise = Promise.resolve()
+      .then(() => recoverServer?.())
+      .then(() => {
+        if (server?.listening) {
+          try { server.ref(); } catch { /* 下一轮健康检查会再次尝试 */ }
+          trace("service-lifecycle: HTTP server recovered", diagnostics());
+        } else {
+          trace("service-lifecycle: HTTP recovery completed without listening", diagnostics());
+        }
+      })
+      .catch((err: unknown) => {
+        trace("service-lifecycle: HTTP server recovery failed", diagnostics({
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      })
+      .finally(() => {
+        recoveryPromise = null;
+      });
+    return recoveryPromise;
+  };
+
+  const attachServer = (
+    nextServer: ServiceLifecycleServer,
+    nextRecoverServer?: () => void | Promise<void>,
+  ): void => {
+    server = nextServer;
+    recoverServer = nextRecoverServer;
+    if (server.listening) {
+      try { server.ref(); } catch { /* 下一轮健康检查会记录 */ }
+    }
+    trace("service-lifecycle: HTTP server attached", diagnostics());
+  };
+
+  const handleBeforeExit = (code: number): void => {
+    if (shuttingDown) return;
+    trace("service-lifecycle: unexpected beforeExit", diagnostics({ code }));
+    start();
+    void checkNow();
+  };
+
+  const beginShutdown = (reason: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (timer) {
+      try { clearIntervalImpl(timer); } catch { /* process 即将退出 */ }
+      timer = null;
+    }
+    trace("service-lifecycle: shutdown requested", { reason });
+  };
+
+  return { start, attachServer, checkNow, handleBeforeExit, beginShutdown };
+}
+
 /**
  * ChatCCC 自己拉起替代进程时使用的内部标记。
  *
