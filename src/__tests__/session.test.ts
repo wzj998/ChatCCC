@@ -670,6 +670,7 @@ describe("runAgentSession process monitor", () => {
 
 describe("runAgentSession response stall watchdog", () => {
   let tempDir = "";
+  const recoveryPrompt = "完成了吗？如果没完成继续";
 
   beforeEach(async () => {
     vi.useFakeTimers();
@@ -765,6 +766,227 @@ describe("runAgentSession response stall watchdog", () => {
       finalReply: "",
       autoEndedAt: expect.any(Number),
     });
+  });
+
+  it("runs the reserved recovery prompt before an already queued user message", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(100);
+    _setResponseStallCheckIntervalForTest(10);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-recovery-priority", "chat-recovery-priority");
+    recordLastActiveChat("sid-recovery-priority", "chat-recovery-priority");
+
+    const receivedPrompts: string[] = [];
+    const adapter: ToolAdapter = {
+      displayName: "Any Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-recovery-priority" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        receivedPrompts.push(text);
+        options?.onProcessStart?.({ pid: 5252 + receivedPrompts.length });
+        if (receivedPrompts.length === 1) {
+          yield { type: "assistant", blocks: [{ type: "text", text: "" }] };
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) {
+              resolve();
+              return;
+            }
+            signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return;
+        }
+        yield { type: "assistant", blocks: [{ type: "text", text: "recovery completed" }] };
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    enqueueMessage("sid-recovery-priority", {
+      text: "queued user prompt",
+      chatId: "chat-recovery-priority",
+      openId: "open-user",
+      msgTimestamp: 1,
+      chatType: "p2p",
+    });
+    const consumeQueued = vi.fn();
+    setQueueConsumer(consumeQueued);
+
+    const firstRun = runAgentSession(
+      "sid-recovery-priority",
+      "first prompt",
+      platform,
+      "chat-recovery-priority",
+      0,
+      "claude",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-recovery-priority")?.responseProgress).toBeDefined();
+    });
+    const firstProgress = activePrompts.get("sid-recovery-priority")!.responseProgress!;
+    await vi.advanceTimersByTimeAsync(firstProgress.unchangedSince + 101 - Date.now());
+    await firstRun;
+
+    expect(receivedPrompts).toHaveLength(1);
+    expect(consumeQueued).not.toHaveBeenCalled();
+    expect(isSessionRunning("sid-recovery-priority")).toBe(true);
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-recovery-priority",
+      "检测到会话停滞，正在自动确认并继续。",
+    );
+
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.waitFor(() => expect(receivedPrompts).toHaveLength(2));
+    expect(receivedPrompts[1]).toContain(recoveryPrompt);
+    expect(receivedPrompts[1]).not.toContain("queued user prompt");
+    expect(consumeQueued).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(consumeQueued).toHaveBeenCalledTimes(1);
+    expect(consumeQueued).toHaveBeenCalledWith(
+      platform,
+      expect.objectContaining({ text: "queued user prompt" }),
+    );
+    setQueueConsumer(() => {});
+  });
+
+  it("does not auto-recover a second consecutive response stall", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(100);
+    _setResponseStallCheckIntervalForTest(10);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-recovery-limit", "chat-recovery-limit");
+    recordLastActiveChat("sid-recovery-limit", "chat-recovery-limit");
+
+    const receivedPrompts: string[] = [];
+    const adapter: ToolAdapter = {
+      displayName: "Any Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-recovery-limit" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        receivedPrompts.push(text);
+        options?.onProcessStart?.({ pid: 6262 + receivedPrompts.length });
+        yield { type: "assistant", blocks: [{ type: "text", text: "" }] };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    const firstRun = runAgentSession(
+      "sid-recovery-limit",
+      "first prompt",
+      platform,
+      "chat-recovery-limit",
+      0,
+      "claude",
+    );
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-recovery-limit")?.responseProgress).toBeDefined();
+    });
+    const firstProgress = activePrompts.get("sid-recovery-limit")!.responseProgress!;
+    await vi.advanceTimersByTimeAsync(firstProgress.unchangedSince + 101 - Date.now());
+    await firstRun;
+
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.waitFor(() => expect(receivedPrompts).toHaveLength(2));
+    const recoveryProgress = activePrompts.get("sid-recovery-limit")!.responseProgress!;
+    await vi.advanceTimersByTimeAsync(recoveryProgress.unchangedSince + 101 - Date.now());
+    await vi.waitFor(() => expect(isSessionRunning("sid-recovery-limit")).toBe(false));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(receivedPrompts).toHaveLength(2);
+    expect(receivedPrompts[1]).toContain(recoveryPrompt);
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-recovery-limit",
+      "⚠️ 自动续跑仍连续 3 分钟没有新回复，本次不再自动继续。",
+    );
+  });
+
+  it("lets /stop cancel a reserved recovery before it starts", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(100);
+    _setResponseStallCheckIntervalForTest(10);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-recovery-stop", "chat-recovery-stop");
+    recordLastActiveChat("sid-recovery-stop", "chat-recovery-stop");
+
+    const receivedPrompts: string[] = [];
+    const adapter: ToolAdapter = {
+      displayName: "Any Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-recovery-stop" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+      ) {
+        receivedPrompts.push(text);
+        yield { type: "assistant", blocks: [{ type: "text", text: "" }] };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    const firstRun = runAgentSession(
+      "sid-recovery-stop",
+      "first prompt",
+      platform,
+      "chat-recovery-stop",
+      0,
+      "claude",
+    );
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-recovery-stop")?.responseProgress).toBeDefined();
+    });
+    const progress = activePrompts.get("sid-recovery-stop")!.responseProgress!;
+    await vi.advanceTimersByTimeAsync(progress.unchangedSince + 101 - Date.now());
+    await firstRun;
+
+    expect(isSessionRunning("sid-recovery-stop")).toBe(true);
+    expect(stopSession("sid-recovery-stop")).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(receivedPrompts).toHaveLength(1);
+    expect(isSessionRunning("sid-recovery-stop")).toBe(false);
   });
 });
 

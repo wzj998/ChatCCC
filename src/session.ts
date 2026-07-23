@@ -77,6 +77,10 @@ import {
   consumeQueuePreservedChat,
   markSessionFinalizing,
   clearSessionFinalizing,
+  reserveAutoRecovery,
+  consumeAutoRecoveryReservation,
+  cancelAutoRecoveryReservation,
+  hasAutoRecoveryReservation,
 } from "./session-chat-binding.ts";
 
 async function sendFinalReplyTextOnce(
@@ -161,6 +165,11 @@ function platformForChat(chatId: string): PlatformAdapter | null {
 const DEFAULT_PROCESS_MONITOR_INTERVAL_MS = 5000;
 const DEFAULT_RESPONSE_STALL_TIMEOUT_MS = 3 * 60 * 1000;
 const DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS = 5000;
+export const RESPONSE_STALL_RECOVERY_PROMPT = "完成了吗？如果没完成继续";
+export const RESPONSE_STALL_RECOVERY_NOTICE = "检测到会话停滞，正在自动确认并继续。";
+export const RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE =
+  "⚠️ 自动续跑仍连续 3 分钟没有新回复，本次不再自动继续。";
+const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
 let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
 let responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
@@ -970,6 +979,14 @@ export async function resumeAndPrompt(
 // runAgentSession — session 中心的 agent prompt（文件持久化 + display 解耦）
 // ---------------------------------------------------------------------------
 
+interface RunAgentSessionOptions {
+  /**
+   * 标记本轮是 response-stall 后的唯一一次内部续跑。若本轮再次因相同原因
+   * 停滞，不再递归创建第三轮，避免服务异常期间无限消耗 token。
+   */
+  autoRecovery?: boolean;
+}
+
 export async function runAgentSession(
   sessionId: string,
   userText: string,
@@ -978,6 +995,7 @@ export async function runAgentSession(
   msgTimestamp: number,
   tool: string,
   traceId?: string,
+  options: RunAgentSessionOptions = {},
 ): Promise<void> {
   const tid = traceId ?? "";
 
@@ -1006,6 +1024,7 @@ export async function runAgentSession(
     controller,
     stopped: false,
     startTime: now,
+    autoRecovery: options.autoRecovery === true,
   });
 
   // 资源监控僵死检测：CPU + 内存连续 3 分钟无变化 → 强制停止
@@ -1257,6 +1276,13 @@ export async function runAgentSession(
       }
 
       const autoEndedAt = Date.now();
+      // 普通轮第一次因回复停滞结束时，立即预约同 session 的内部续跑。
+      // 预约先于 abort/收尾建立，isSessionRunning 会在整个交接窗口保持 true，
+      // 因此恰好到达的用户消息只能排队，绝不可能抢在恢复 prompt 前。
+      // 若当前已经是恢复轮，则不再预约第三轮。
+      if (!current.autoRecovery) {
+        reserveAutoRecovery(sessionId);
+      }
       current.autoEnded = true;
       current.autoEndedAt = autoEndedAt;
       clearPromptResponseStallMonitor(sessionId);
@@ -1376,6 +1402,7 @@ export async function runAgentSession(
     const wasAbnormalExit = prompt?.abnormalExit ?? false;
     const wasResourceStuck = prompt?.resourceStuck ?? false;
     const wasAutoEnded = prompt?.autoEnded ?? false;
+    const wasAutoRecovery = prompt?.autoRecovery ?? false;
     const autoEndedAt = prompt?.autoEndedAt;
     clearPromptResponseStallMonitor(sessionId);
     clearPromptProcessMonitor(sessionId);
@@ -1429,6 +1456,8 @@ export async function runAgentSession(
 
     // display loop 下一轮会读到最终状态并发送消息
 
+    let autoRecoveryTarget: { chatId: string; platform: PlatformAdapter } | undefined;
+
     if (wasStopped) {
       for (const cid of getChatsForSession(sessionId)) {
         const finfo = sessionInfoMap.get(cid);
@@ -1464,9 +1493,9 @@ export async function runAgentSession(
       }
       const activeAutoEnded = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
       if (activeAutoEnded) {
+        const pp = platformForChat(activeAutoEnded) ?? platform;
         const terminalState = await readStreamState(sessionId);
         if (!displayCards.has(activeAutoEnded) && (!terminalState || !isFinalReplySentForTurn(terminalState))) {
-          const pp = platformForChat(activeAutoEnded) ?? platform;
           await sendFinalReplyTextOnce(
             pp,
             activeAutoEnded,
@@ -1475,7 +1504,24 @@ export async function runAgentSession(
             formatAutoEndedReply(finalReplyToWrite),
           );
         }
-        platform.setChatAvatar(activeAutoEnded, tool, "idle").catch(() => {});
+        pp.setChatAvatar(activeAutoEnded, tool, "idle").catch(() => {});
+
+        if (wasAutoRecovery) {
+          // 这是紧接第一次停滞而启动的恢复轮；再次发生相同停滞即终止
+          // 自动链，避免第三轮及之后的无限续跑。
+          await pp.sendText(
+            activeAutoEnded,
+            RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE,
+          ).catch(() => {});
+        } else if (hasAutoRecoveryReservation(sessionId)) {
+          // 用户可见提示与内部恢复 prompt 分离：提示发送失败不影响恢复，
+          // 内部恢复仍由 reservation 保证先于普通缓存消息。
+          await pp.sendText(
+            activeAutoEnded,
+            RESPONSE_STALL_RECOVERY_NOTICE,
+          ).catch(() => {});
+          autoRecoveryTarget = { chatId: activeAutoEnded, platform: pp };
+        }
       }
       console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled response output (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "response_stall", chunks: state.chunkCount });
@@ -1522,6 +1568,18 @@ export async function runAgentSession(
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
     }
 
+    // 失去聊天绑定时无法安全选择恢复轮的展示目标，取消本次进程内预约。
+    if (
+      wasAutoEnded
+      && hasAutoRecoveryReservation(sessionId)
+      && !autoRecoveryTarget
+    ) {
+      cancelAutoRecoveryReservation(sessionId);
+    }
+    const shouldScheduleAutoRecovery =
+      autoRecoveryTarget !== undefined
+      && hasAutoRecoveryReservation(sessionId);
+
     // 必须等本轮最终卡片、registry 和头像全部收尾后再取出并调度队列消息。
     // 在收尾期间新到达的消息也会因 finalizingSessions 被正确排入这里。
     let queuedForConsumption: ReturnType<typeof dequeueMessage> = undefined;
@@ -1530,7 +1588,9 @@ export async function runAgentSession(
       if (discarded) {
         console.log(`[${ts()}] [QUEUE] Discarding queued message for stopped session ${sessionId}`);
       }
-    } else {
+    } else if (!shouldScheduleAutoRecovery) {
+      // 第一次 response-stall 后保留普通缓存；恢复轮结束后由恢复轮的
+      // finally 再消费，顺序固定为“自动恢复 → 用户缓存”。
       queuedForConsumption = dequeueMessage(sessionId);
     }
 
@@ -1548,7 +1608,48 @@ export async function runAgentSession(
       // 足够时间读到最终状态并终结旧卡片，避免新轮更新旧卡片。
       setTimeout(() => {
         consumeQueuedMessage(platform, queued);
-      }, 200);
+      }, RESPONSE_STALL_RECOVERY_DELAY_MS);
+    }
+
+    if (shouldScheduleAutoRecovery && autoRecoveryTarget) {
+      const target = autoRecoveryTarget;
+      console.log(
+        `[${ts()}] [RESPONSE-STALL] Reserved automatic recovery for session ${sessionId}`,
+      );
+      // 延迟与普通队列原有策略一致，让上一轮终态先完成展示。reservation
+      // 在定时器等待期间仍令 isSessionRunning=true；调用 runAgentSession
+      // 时会在首次 await 前同步写入 activePrompts，然后才消费 reservation，
+      // 因而不存在普通用户消息可插入的事件循环空窗。
+      setTimeout(() => {
+        if (!hasAutoRecoveryReservation(sessionId)) return;
+        const recoveryRun = runAgentSession(
+          sessionId,
+          RESPONSE_STALL_RECOVERY_PROMPT,
+          target.platform,
+          target.chatId,
+          Date.now(),
+          tool,
+          undefined,
+          { autoRecovery: true },
+        );
+        consumeAutoRecoveryReservation(sessionId);
+        void recoveryRun.catch((err) => {
+          console.error(
+            `[${ts()}] [RESPONSE-STALL] Automatic recovery failed for ${sessionId}: ${(err as Error).message}`,
+          );
+          target.platform.sendText(
+            target.chatId,
+            `⚠️ 自动续跑启动失败：${(err as Error).message}`,
+          ).catch(() => {});
+
+          // 若恢复轮在进入主 stream try/finally 前即准备失败，它不会自然
+          // 消费此前保留的用户缓存；在错误回调中补做一次，避免队列悬挂。
+          const queued = dequeueMessage(sessionId);
+          if (queued) {
+            consumeQueuedMessage(target.platform, queued);
+          }
+        });
+      }, RESPONSE_STALL_RECOVERY_DELAY_MS);
     }
     } finally {
       clearSessionFinalizing(sessionId);
@@ -1911,8 +2012,18 @@ export function stopUnifiedDisplayLoop(): void {
 //    用户体验上"按下停止后还要等几秒卡片才变成已停止"。先把状态标好，
 //    finally 后续再写一次也不冲突——status 最终值仍然是 stopped。
 export function stopSession(sessionId: string): boolean {
+  // /stop 拥有高于内部自动恢复的优先级。旧轮已经完成、恢复轮尚在 200ms
+  // 预约窗口时 activePrompts 为空，因此必须单独取消 reservation。
+  const cancelledRecovery = cancelAutoRecoveryReservation(sessionId);
   const prompt = activePrompts.get(sessionId);
-  if (!prompt) return false;
+  if (!prompt) {
+    if (cancelledRecovery) {
+      cancelQueuedMessage(sessionId);
+      console.log(`[${ts()}] [STOP] Reserved automatic recovery for ${sessionId} cancelled`);
+      return true;
+    }
+    return false;
+  }
   prompt.stopped = true;
   clearPromptResponseStallMonitor(sessionId);
   clearPromptProcessMonitor(sessionId);
