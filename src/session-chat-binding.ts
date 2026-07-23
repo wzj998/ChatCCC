@@ -57,9 +57,17 @@ export function hasChatsForSession(sessionId: string): boolean {
 // 也必须阻止下一轮提前进入，否则旧会话的落盘可能覆盖新会话绑定。
 const finalizingSessions = new Set<string>();
 
-/** 检查 sessionId 是否有活跃 prompt 或正在完成本轮异步收尾。 */
+// response-stall 自动恢复预约只存在于当前进程内：用户已明确 ChatCCC 重启后
+// 不需要补发恢复 prompt。预约从检测到第一次停滞起一直持有到恢复轮同步进入
+// runAgentSession，填补旧轮收尾和新轮 activePrompts.set 之间的空窗，保证此时
+// 到达的普通用户消息只能进入缓存队列，不能抢在恢复 prompt 前执行。
+const autoRecoveryReservations = new Set<string>();
+
+/** 检查 sessionId 是否有活跃 prompt、正在收尾或已预约自动恢复。 */
 export function isSessionRunning(sessionId: string): boolean {
-  return activePrompts.has(sessionId) || finalizingSessions.has(sessionId);
+  return activePrompts.has(sessionId)
+    || finalizingSessions.has(sessionId)
+    || autoRecoveryReservations.has(sessionId);
 }
 
 export function markSessionFinalizing(sessionId: string): void {
@@ -68,6 +76,27 @@ export function markSessionFinalizing(sessionId: string): void {
 
 export function clearSessionFinalizing(sessionId: string): void {
   finalizingSessions.delete(sessionId);
+}
+
+/** 为 response-stall 后的内部恢复轮预留下一次执行权。 */
+export function reserveAutoRecovery(sessionId: string): boolean {
+  if (autoRecoveryReservations.has(sessionId)) return false;
+  autoRecoveryReservations.add(sessionId);
+  return true;
+}
+
+/** 恢复轮启动前原子消费预约；返回 false 表示已被 /stop 取消。 */
+export function consumeAutoRecoveryReservation(sessionId: string): boolean {
+  return autoRecoveryReservations.delete(sessionId);
+}
+
+/** 取消尚未启动的恢复轮。 */
+export function cancelAutoRecoveryReservation(sessionId: string): boolean {
+  return autoRecoveryReservations.delete(sessionId);
+}
+
+export function hasAutoRecoveryReservation(sessionId: string): boolean {
+  return autoRecoveryReservations.has(sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +121,8 @@ export interface ActivePrompt {
   abnormalExitNotified?: boolean;
   /** Set when the resource monitor detects CPU + memory unchanged for 3 minutes. */
   resourceStuck?: boolean;
+  /** True only for the single internal continuation turn after a response stall. */
+  autoRecovery?: boolean;
   /** Adapter-provided callback to close the underlying SDK session / subprocess.
    *  Called by stop-stuck-loop before controller.abort() to terminate the CLI
    *  process immediately, rather than waiting for the async generator to unblock. */
@@ -245,6 +276,7 @@ export function resetBindingState(): void {
   }
   activePrompts.clear();
   finalizingSessions.clear();
+  autoRecoveryReservations.clear();
   queuedMessages.clear();
   displayCards.clear();
   if (unifiedDisplayLoopHandle !== null) {
