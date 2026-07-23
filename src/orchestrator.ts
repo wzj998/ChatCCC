@@ -1147,6 +1147,42 @@ export async function handleCommand(
         sessionId = sessionInfo.sessionId;
         descriptionTool = sessionInfo.tool;
         toolLabel = toolDisplayName(descriptionTool);
+
+        // 群描述是群聊会话路由的权威来源。历史群可能早于 registry 创建，
+        // 或在冷启动时没有被重建进内存映射；若只解析 sessionId 而不补绑定，
+        // prompt 虽能启动，却找不到生成卡片目标，收尾也无法清除 running。
+        const registry = await loadSessionRegistryForBinding();
+        const record = registry[chatId];
+        if (record?.sessionId && record.sessionId !== sessionId) {
+          unbindChatFromSession(record.sessionId, chatId);
+        }
+        bindChatToSession(sessionId, chatId);
+
+        const memoryInfo = sessionInfoMap.get(chatId);
+        if (!memoryInfo || memoryInfo.sessionId !== sessionId) {
+          sessionInfoMap.set(chatId, {
+            sessionId,
+            tool: descriptionTool,
+            turnCount: record?.sessionId === sessionId ? record.turnCount : 0,
+            lastContextTokens:
+              record?.sessionId === sessionId ? record.lastContextTokens : 0,
+            startTime:
+              record?.sessionId === sessionId
+                ? record.startTime
+                : Date.now(),
+          });
+        }
+
+        // 同步自愈持久化记录，使下一次重启可以直接重建绑定。running 取实际
+        // 内存状态，顺便修复旧故障遗留的 stale running=true。
+        await recordSessionRegistry({
+          chatId,
+          sessionId,
+          tool: descriptionTool,
+          chatType,
+          chatName: chatInfo.name,
+          running: isSessionRunning(sessionId),
+        });
       }
     } catch (err) {
       logTrace(tid, "BRANCH", {

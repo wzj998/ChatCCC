@@ -166,7 +166,8 @@ const DEFAULT_PROCESS_MONITOR_INTERVAL_MS = 5000;
 const DEFAULT_RESPONSE_STALL_TIMEOUT_MS = 3 * 60 * 1000;
 const DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS = 5000;
 export const RESPONSE_STALL_RECOVERY_PROMPT = "完成了吗？如果没完成继续";
-export const RESPONSE_STALL_RECOVERY_NOTICE = "检测到会话停滞，正在自动确认并继续。";
+export const RESPONSE_STALL_RECOVERY_NOTICE =
+  `检测到会话停滞，正在自动确认并继续。\n\n${RESPONSE_STALL_RECOVERY_PROMPT}`;
 export const RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE =
   "⚠️ 自动续跑仍连续 3 分钟没有新回复，本次不再自动继续。";
 const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
@@ -999,6 +1000,16 @@ export async function runAgentSession(
 ): Promise<void> {
   const tid = traceId ?? "";
 
+  // runAgentSession 是飞书用户消息、队列消息与内部自动恢复共同使用的唯一
+  // prompt 执行入口。即使冷启动后的历史群只靠群描述解析出 sessionId、registry
+  // 尚未重建出内存映射，也必须在任何异步操作前补齐绑定，确保三种来源都有完全
+  // 相同的卡片、状态和收尾行为。
+  const previousSessionId = sessionInfoMap.get(_chatId)?.sessionId;
+  if (previousSessionId && previousSessionId !== sessionId) {
+    unbindChatFromSession(previousSessionId, _chatId);
+  }
+  bindChatToSession(sessionId, _chatId);
+
   // 记录用户最后发送消息的群（display loop 只推送到该群）
   // 如果是从队列消费且队列消息来自其他群，保留原来的 display chat
   recordChatPlatform(_chatId, platform);
@@ -1025,6 +1036,7 @@ export async function runAgentSession(
     stopped: false,
     startTime: now,
     autoRecovery: options.autoRecovery === true,
+    finalResponseObserved: false,
   });
 
   // 资源监控僵死检测：CPU + 内存连续 3 分钟无变化 → 强制停止
@@ -1269,6 +1281,7 @@ export async function runAgentSession(
         || current.abnormalExit
         || current.resourceStuck
         || current.autoEnded
+        || current.finalResponseObserved
         || activityTracker.activity.kind !== "responding"
         || !hasResponseStalled(current.responseProgress, Date.now(), responseStallTimeoutMs)
       ) {
@@ -1304,6 +1317,18 @@ export async function runAgentSession(
         tool,
         autoEndedAt,
       });
+
+      // 最终事件可能在上面的落盘 I/O 期间到达。只有适配器明确标记的完整
+      // final response 才能赢得这场竞态；普通文本片段绝不能取消超时。
+      if (current.finalResponseObserved) {
+        current.autoEnded = false;
+        current.autoEndedAt = undefined;
+        cancelAutoRecoveryReservation(sessionId);
+        console.log(
+          `[${ts()}] [RESPONSE-STALL] Authoritative final response won timeout race for ${sessionId}`,
+        );
+        return;
+      }
 
       try {
         current.closeSession?.();
@@ -1341,6 +1366,15 @@ export async function runAgentSession(
         if (prompt) prompt.closeSession = closeSession;
       },
     })) {
+      if (unifiedMsg.isFinalResponse) {
+        const prompt = activePrompts.get(sessionId);
+        if (prompt && prompt === runningPrompt) {
+          // 同步标记必须发生在任何 await 之前，让 watchdog 无法在已收到完整
+          // 最终事件后仍把本轮判为停滞。
+          prompt.finalResponseObserved = true;
+        }
+      }
+
       let activityChanged = false;
       for (const block of unifiedMsg.blocks) {
         if (updateAgentActivity(activityTracker, block)) activityChanged = true;
@@ -1401,27 +1435,46 @@ export async function runAgentSession(
     const wasStopped = prompt?.stopped ?? false;
     const wasAbnormalExit = prompt?.abnormalExit ?? false;
     const wasResourceStuck = prompt?.resourceStuck ?? false;
-    const wasAutoEnded = prompt?.autoEnded ?? false;
+    const timeoutTriggered = prompt?.autoEnded ?? false;
+    const completedAtTimeoutBoundary =
+      timeoutTriggered && (prompt?.finalResponseObserved ?? false);
+    const wasAutoEnded = timeoutTriggered && !completedAtTimeoutBoundary;
     const wasAutoRecovery = prompt?.autoRecovery ?? false;
-    const autoEndedAt = prompt?.autoEndedAt;
+    const autoEndedAt = wasAutoEnded ? prompt?.autoEndedAt : undefined;
     clearPromptResponseStallMonitor(sessionId);
     clearPromptProcessMonitor(sessionId);
     markSessionFinalizing(sessionId);
     activePrompts.delete(sessionId);
 
     try {
-    // 先写最终状态（done/stopped），确保 display loop 在下一轮消费前
-    // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
-    // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
-    // 运行中并更新旧卡片，而不是新建卡片。
-    const finalStatus = wasAutoEnded
-      ? "auto_ended"
-      : (streamErrored || wasAbnormalExit || wasResourceStuck)
-        ? "error"
-        : wasStopped
-          ? "stopped"
-          : "done";
-    const finalReply = pickFinalReply(state).trim();
+      if (completedAtTimeoutBoundary) {
+        // reservation 可能在 watchdog 开始终止普通轮时已经建立。最终回复若在
+        // abort/kill 清理边界到达，本轮按完成处理，并原子取消尚未启动的恢复轮。
+        cancelAutoRecoveryReservation(sessionId);
+        console.log(
+          `[${ts()}] [RESPONSE-STALL] Session ${sessionId} completed with an authoritative final response during timeout cleanup`,
+        );
+      }
+      // 即使运行期间映射被异常清空，也必须更新本次实际触发 chat，避免 registry
+      // 永久残留 running=true。
+      const finalizationChatIds = [...new Set([
+        ...getChatsForSession(sessionId),
+        _chatId,
+      ])];
+      // 先写最终状态（done/stopped），确保 display loop 在下一轮消费前
+      // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
+      // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
+      // 运行中并更新旧卡片，而不是新建卡片。
+      const finalStatus = completedAtTimeoutBoundary
+        ? "done"
+        : wasAutoEnded
+          ? "auto_ended"
+          : (streamErrored || wasAbnormalExit || wasResourceStuck)
+            ? "error"
+            : wasStopped
+              ? "stopped"
+              : "done";
+      const finalReply = pickFinalReply(state).trim();
 
     // stop-stuck-loop 接口可能在 fire-and-forget 中已写入带 final_reply 的
     // stream state，finally 不应覆盖它。同时保留 stuckAt 标记，防止
@@ -1459,7 +1512,7 @@ export async function runAgentSession(
     let autoRecoveryTarget: { chatId: string; platform: PlatformAdapter } | undefined;
 
     if (wasStopped) {
-      for (const cid of getChatsForSession(sessionId)) {
+      for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
         await recordSessionRegistry({
           chatId: cid,
@@ -1471,7 +1524,7 @@ export async function runAgentSession(
           running: false,
         });
       }
-      const active1 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+      const active1 = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
       if (active1) {
         await platform.sendText(active1, "会话已停止。").catch(() => {});
         platform.setChatAvatar(active1, tool, "idle").catch(() => {});
@@ -1479,7 +1532,7 @@ export async function runAgentSession(
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
     } else if (wasAutoEnded) {
-      for (const cid of getChatsForSession(sessionId)) {
+      for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
         await recordSessionRegistry({
           chatId: cid,
@@ -1491,7 +1544,7 @@ export async function runAgentSession(
           running: false,
         });
       }
-      const activeAutoEnded = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+      const activeAutoEnded = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
       if (activeAutoEnded) {
         const pp = platformForChat(activeAutoEnded) ?? platform;
         const terminalState = await readStreamState(sessionId);
@@ -1526,7 +1579,7 @@ export async function runAgentSession(
       console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled response output (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "response_stall", chunks: state.chunkCount });
     } else if (wasAbnormalExit) {
-      for (const cid of getChatsForSession(sessionId)) {
+      for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
         await recordSessionRegistry({
           chatId: cid,
@@ -1538,12 +1591,12 @@ export async function runAgentSession(
           running: false,
         });
       }
-      const activeErr = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+      const activeErr = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
       if (activeErr) platform.setChatAvatar(activeErr, tool, "idle").catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} process exited unexpectedly (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "process_missing", chunks: state.chunkCount });
     } else {
-      for (const cid of getChatsForSession(sessionId)) {
+      for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
         await recordSessionRegistry({
           chatId: cid,
@@ -1555,7 +1608,7 @@ export async function runAgentSession(
           running: false,
         });
       }
-      const active2 = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+      const active2 = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
       if (active2) {
         const terminalState = await readStreamState(sessionId);
         if (finalReply && !displayCards.has(active2) && (!terminalState || !isFinalReplySentForTurn(terminalState))) {

@@ -269,10 +269,17 @@ describe("normalizeSdkMessage", () => {
     expect(result!.blocks[0]).toEqual({ type: "text", text: "still here" });
   });
 
-  it("returns null for non-assistant/non-user/non-system messages", () => {
+  it("marks a successful result event as an authoritative final response", () => {
     expect(
       normalizeSdkMessage({ type: "result", subtype: "success" }),
-    ).toBeNull();
+    ).toEqual({
+      type: "assistant",
+      blocks: [],
+      isFinalResponse: true,
+    });
+  });
+
+  it("returns null for other non-assistant/non-user/non-system messages", () => {
     expect(
       normalizeSdkMessage({ type: "stream_event" }),
     ).toBeNull();

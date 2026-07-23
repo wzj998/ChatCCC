@@ -57,6 +57,7 @@ interface SdkContentBlock {
 interface SdkMessageLike {
   type?: string;
   subtype?: string;
+  result?: string;
   message?: { content?: SdkContentBlock[] };
   compact_metadata?: {
     trigger?: "manual" | "auto";
@@ -202,6 +203,16 @@ function logMcpConfig(): void {
 }
 
 export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage | null {
+  // SDK result/success 是 Claude 对本轮完整结束的权威确认。文本已经由之前的
+  // assistant 消息累计，因此这里只发送终态信号，避免重复追加 result 文本。
+  if (msg.type === "result" && msg.subtype === "success") {
+    return {
+      type: "assistant",
+      blocks: [],
+      isFinalResponse: true,
+    };
+  }
+
   if (
     (msg.type === "assistant" || msg.type === "user") &&
     msg.message?.content

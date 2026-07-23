@@ -123,6 +123,8 @@ export interface ActivePrompt {
   resourceStuck?: boolean;
   /** True only for the single internal continuation turn after a response stall. */
   autoRecovery?: boolean;
+  /** Adapter observed an authoritative completed final-response event. */
+  finalResponseObserved?: boolean;
   /** Adapter-provided callback to close the underlying SDK session / subprocess.
    *  Called by stop-stuck-loop before controller.abort() to terminate the CLI
    *  process immediately, rather than waiting for the async generator to unblock. */

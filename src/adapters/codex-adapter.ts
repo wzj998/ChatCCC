@@ -139,6 +139,7 @@ export function normalizeCodexMessage(
     return {
       type: "assistant",
       blocks: [{ type: "text", text: msg.item.text }],
+      isFinalResponse: true,
     };
   }
 

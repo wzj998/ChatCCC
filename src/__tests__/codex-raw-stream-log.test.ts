@@ -139,6 +139,7 @@ describe("Codex raw stream logs", () => {
     expect(events).toContainEqual({
       type: "assistant",
       blocks: [{ type: "text", text: "hello" }],
+      isFinalResponse: true,
     });
   });
 

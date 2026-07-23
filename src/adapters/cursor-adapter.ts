@@ -353,6 +353,7 @@ export function normalizeCursorMessage(
     return {
       type: "assistant",
       blocks: [{ type: "text_final", text: msg.result }],
+      isFinalResponse: true,
     };
   }
 
