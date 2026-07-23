@@ -96,6 +96,12 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
               is_error: event.is_error,
             }],
           };
+        } else if (event.type === "done" && !signal?.aborted) {
+          yield {
+            type: "assistant",
+            blocks: [],
+            isFinalResponse: true,
+          };
         } else if (event.type === "error") {
           throw new Error(event.message);
         }

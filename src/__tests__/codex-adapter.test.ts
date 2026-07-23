@@ -64,6 +64,7 @@ describe("normalizeCodexMessage", () => {
     expect(result).not.toBeNull();
     expect(result!.type).toBe("assistant");
     expect(result!.blocks).toEqual([{ type: "text", text: "hello" }]);
+    expect(result!.isFinalResponse).toBe(true);
   });
 
   it("normalizes command_execution start into tool_use block", () => {

@@ -493,6 +493,7 @@ describe("normalizeCursorMessage - result 消息（官方权威最终文本）",
     expect(result!.blocks).toEqual([
       { type: "text_final", text: "权威最终文本" },
     ]);
+    expect(result!.isFinalResponse).toBe(true);
   });
 
   it("result 消息没有 result 字段时返回 null（无可用文本）", () => {

@@ -87,7 +87,12 @@ import {
   resetState,
   sessionInfoMap,
 } from "../session.ts";
-import { activePrompts, dequeueMessage, resetBindingState } from "../session-chat-binding.ts";
+import {
+  activePrompts,
+  dequeueMessage,
+  getChatsForSession,
+  resetBindingState,
+} from "../session-chat-binding.ts";
 import { ABD_APPEND_PROMPT } from "../shared-prefix.ts";
 import { config } from "../config.ts";
 
@@ -802,6 +807,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendRawCard).toHaveBeenCalled();
     const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
     expect(JSON.stringify(card)).toContain("xhigh");
+    expect(getChatsForSession("sid-codex-effort")).toContain("codex-chat");
   });
 
   it("rejects /effort in Cursor sessions", async () => {

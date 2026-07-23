@@ -90,6 +90,13 @@ export type UnifiedBlock =
 export interface UnifiedStreamMessage {
   type: "assistant" | "user" | "system";
   blocks: UnifiedBlock[];
+  /**
+   * 适配器确认本事件代表一条完整、权威的最终回复，而不是流式文本片段。
+   *
+   * response-stall 终止与最终事件可能在同一事件循环边界竞态；只有该标记
+   * 为 true 时，上层才允许把已经触发的超时改判为正常完成。
+   */
+  isFinalResponse?: boolean;
 }
 
 // ---------------------------------------------------------------------------

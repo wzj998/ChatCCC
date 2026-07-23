@@ -73,6 +73,7 @@ describe("createCccAdapter", () => {
     expect(messages).toEqual([
       { type: "assistant", blocks: [{ type: "text", text: "hello" }] },
       { type: "assistant", blocks: [{ type: "text", text: " world" }] },
+      { type: "assistant", blocks: [], isFinalResponse: true },
     ]);
     expect(streamTextMock).toHaveBeenCalledWith(expect.objectContaining({
       model: { modelId: "deepseek-v4-flash" },
@@ -109,6 +110,7 @@ describe("createCccAdapter", () => {
         type: "assistant",
         blocks: [{ type: "tool_result", tool_use_id: "call-1", content: { content: "hello" }, is_error: false }],
       },
+      { type: "assistant", blocks: [], isFinalResponse: true },
     ]);
   });
 });
