@@ -52,6 +52,7 @@ describe("normalizeSdkMessage", () => {
     expect(result).not.toBeNull();
     expect(result!.type).toBe("assistant");
     expect(result!.blocks).toEqual([{ type: "text", text: "Hello world" }]);
+    expect(result!.isFinalResponse).toBeUndefined();
   });
 
   it("normalizes assistant message with thinking block", () => {

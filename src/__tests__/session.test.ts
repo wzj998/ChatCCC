@@ -122,6 +122,8 @@ import {
   _resetResponseStallTimeoutForTest,
   _setResponseStallCheckIntervalForTest,
   _resetResponseStallCheckIntervalForTest,
+  _setFinalResponseCloseTimeoutForTest,
+  _resetFinalResponseCloseTimeoutForTest,
   setSessionEffortOverride,
   RESPONSE_STALL_RECOVERY_PROMPT,
   RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE,
@@ -371,6 +373,7 @@ describe("runAgentSession process monitor", () => {
     _resetProcessMonitorIntervalForTest();
     _resetResponseStallTimeoutForTest();
     _resetResponseStallCheckIntervalForTest();
+    _resetFinalResponseCloseTimeoutForTest();
     resetBindingState();
     vi.useRealTimers();
   });
@@ -692,6 +695,7 @@ describe("runAgentSession response stall watchdog", () => {
     _resetProcessAliveForTest();
     _resetResponseStallTimeoutForTest();
     _resetResponseStallCheckIntervalForTest();
+    _resetFinalResponseCloseTimeoutForTest();
     resetBindingState();
     vi.useRealTimers();
     if (tempDir) await rm(tempDir, { recursive: true, force: true });
@@ -917,6 +921,141 @@ describe("runAgentSession response stall watchdog", () => {
       "chat-final-race",
       RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE,
     );
+  });
+
+  it("force-closes a stream that stays open after an authoritative final event without auto-recovery", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(100);
+    _setResponseStallCheckIntervalForTest(10);
+    _setFinalResponseCloseTimeoutForTest(1_000);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-final-close", "chat-final-close");
+    recordLastActiveChat("sid-final-close", "chat-final-close");
+
+    const closeSession = vi.fn();
+    const adapter: ToolAdapter = {
+      displayName: "Any Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-final-close" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        options?.onSessionCreated?.(closeSession);
+        options?.onProcessStart?.({ pid: 7171 });
+        yield {
+          type: "assistant",
+          blocks: [{ type: "text", text: "authoritative answer" }],
+        };
+        yield {
+          type: "assistant",
+          blocks: [],
+          isFinalResponse: true,
+        };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    const run = runAgentSession(
+      "sid-final-close",
+      "prompt",
+      platform,
+      "chat-final-close",
+      0,
+      "claude",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-final-close")?.finalResponseObserved).toBe(true);
+    });
+    await vi.advanceTimersByTimeAsync(900);
+    expect(activePrompts.has("sid-final-close")).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await run;
+
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(killProcessTreeMock).toHaveBeenCalledWith(7171);
+    expect(mockStreamStates.get("sid-final-close")).toMatchObject({
+      status: "done",
+      finalReply: "authoritative answer",
+    });
+    expect(platform.sendText).not.toHaveBeenCalledWith(
+      "chat-final-close",
+      expect.stringContaining(RESPONSE_STALL_RECOVERY_PROMPT),
+    );
+  });
+
+  it("cancels the final-response close guard when the stream exits normally", async () => {
+    vi.setSystemTime(0);
+    _setFinalResponseCloseTimeoutForTest(1_000);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-final-normal", "chat-final-normal");
+    recordLastActiveChat("sid-final-normal", "chat-final-normal");
+
+    const closeSession = vi.fn();
+    const adapter: ToolAdapter = {
+      displayName: "Any Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-final-normal" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        _signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        options?.onSessionCreated?.(closeSession);
+        options?.onProcessStart?.({ pid: 7272 });
+        yield {
+          type: "assistant",
+          blocks: [{ type: "text", text: "normal answer" }],
+        };
+        yield {
+          type: "assistant",
+          blocks: [],
+          isFinalResponse: true,
+        };
+      },
+    };
+    _setAdapterForToolForTest("claude", adapter);
+
+    await runAgentSession(
+      "sid-final-normal",
+      "prompt",
+      platform,
+      "chat-final-normal",
+      0,
+      "claude",
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(closeSession).not.toHaveBeenCalled();
+    expect(killProcessTreeMock).not.toHaveBeenCalled();
+    expect(mockStreamStates.get("sid-final-normal")).toMatchObject({
+      status: "done",
+      finalReply: "normal answer",
+    });
   });
 
   it("runs the reserved recovery prompt before an already queued user message", async () => {

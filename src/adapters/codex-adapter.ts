@@ -130,7 +130,8 @@ interface CodexEvent {
 export function normalizeCodexMessage(
   msg: CodexEvent,
 ): UnifiedStreamMessage | null {
-  // agent_message 文本回复
+  // agent_message 只是 Codex 的一条阶段性文本 item。即使内容看起来像完整答复，
+  // 后面仍可能继续发出工具调用，因此不能用它关闭 response-stall watchdog。
   if (
     msg.type === "item.completed" &&
     msg.item?.type === "agent_message" &&
@@ -139,6 +140,15 @@ export function normalizeCodexMessage(
     return {
       type: "assistant",
       blocks: [{ type: "text", text: msg.item.text }],
+    };
+  }
+
+  // turn.completed 是 Codex 对整轮完成的权威确认。正文已经由之前的
+  // agent_message 累计，这里只发送空终态信号，避免重复追加最终文本。
+  if (msg.type === "turn.completed") {
+    return {
+      type: "assistant",
+      blocks: [],
       isFinalResponse: true,
     };
   }
@@ -181,7 +191,7 @@ export function normalizeCodexMessage(
     };
   }
 
-  // thread.started / turn.started / turn.completed → 不映射为用户可见消息
+  // thread.started / turn.started → 不映射为用户可见消息
   return null;
 }
 

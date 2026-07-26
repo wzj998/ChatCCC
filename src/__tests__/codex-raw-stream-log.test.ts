@@ -136,11 +136,17 @@ describe("Codex raw stream logs", () => {
     expect(rawLogWriteLineMock).toHaveBeenNthCalledWith(2, lines[1]);
     expect(rawLogWriteLineMock).toHaveBeenNthCalledWith(3, lines[2]);
     expect(rawLogCloseMock).toHaveBeenCalledWith({ keep: false });
-    expect(events).toContainEqual({
-      type: "assistant",
-      blocks: [{ type: "text", text: "hello" }],
-      isFinalResponse: true,
-    });
+    expect(events).toEqual([
+      {
+        type: "assistant",
+        blocks: [{ type: "text", text: "hello" }],
+      },
+      {
+        type: "assistant",
+        blocks: [],
+        isFinalResponse: true,
+      },
+    ]);
   });
 
   it("fails the turn and kills the process tree when bad JSON is followed by idle stdout", async () => {

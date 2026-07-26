@@ -165,6 +165,7 @@ function platformForChat(chatId: string): PlatformAdapter | null {
 const DEFAULT_PROCESS_MONITOR_INTERVAL_MS = 5000;
 const DEFAULT_RESPONSE_STALL_TIMEOUT_MS = 3 * 60 * 1000;
 const DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS = 5000;
+const DEFAULT_FINAL_RESPONSE_CLOSE_TIMEOUT_MS = 10_000;
 export const RESPONSE_STALL_RECOVERY_PROMPT = "完成了吗？如果没完成继续";
 export const RESPONSE_STALL_RECOVERY_NOTICE =
   `检测到会话停滞，正在自动确认并继续。\n\n${RESPONSE_STALL_RECOVERY_PROMPT}`;
@@ -174,6 +175,7 @@ const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
 let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
 let responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
+let finalResponseCloseTimeoutMs = DEFAULT_FINAL_RESPONSE_CLOSE_TIMEOUT_MS;
 let isProcessAliveImpl = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -222,6 +224,14 @@ export function _resetResponseStallCheckIntervalForTest(): void {
   responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
 }
 
+export function _setFinalResponseCloseTimeoutForTest(ms: number): void {
+  finalResponseCloseTimeoutMs = ms;
+}
+
+export function _resetFinalResponseCloseTimeoutForTest(): void {
+  finalResponseCloseTimeoutMs = DEFAULT_FINAL_RESPONSE_CLOSE_TIMEOUT_MS;
+}
+
 function clearPromptProcessMonitor(sessionId: string): void {
   const prompt = activePrompts.get(sessionId);
   if (!prompt?.processMonitor) return;
@@ -234,6 +244,59 @@ function clearPromptResponseStallMonitor(sessionId: string): void {
   if (!prompt?.responseStallMonitor) return;
   clearInterval(prompt.responseStallMonitor);
   prompt.responseStallMonitor = undefined;
+}
+
+function clearPromptFinalResponseCloseTimer(sessionId: string): void {
+  const prompt = activePrompts.get(sessionId);
+  if (!prompt?.finalResponseCloseTimer) return;
+  clearTimeout(prompt.finalResponseCloseTimer);
+  prompt.finalResponseCloseTimer = undefined;
+}
+
+/**
+ * 权威终态只说明 Agent 已完成本轮，不保证 CLI/SDK 的输出流会及时关闭。
+ * 给正常清理保留 10 秒；若流仍悬挂，则关闭底层 session 并杀掉当前 CLI 树，
+ * 让 runAgentSession 以 done 收尾。这里绝不触发自动续跑，因为答案已完整到达。
+ */
+function scheduleFinalResponseCloseGuard(
+  sessionId: string,
+  runningPrompt: NonNullable<ReturnType<typeof activePrompts.get>>,
+): void {
+  if (runningPrompt.finalResponseCloseTimer) return;
+
+  const timeoutMs = finalResponseCloseTimeoutMs;
+  const handle = setTimeout(() => {
+    const current = activePrompts.get(sessionId);
+    if (
+      !current
+      || current !== runningPrompt
+      || !current.finalResponseObserved
+      || current.stopped
+      || current.abnormalExit
+      || current.resourceStuck
+      || current.autoEnded
+    ) {
+      return;
+    }
+
+    current.finalResponseCloseTimer = undefined;
+    clearPromptProcessMonitor(sessionId);
+    clearPromptResponseStallMonitor(sessionId);
+    try {
+      current.closeSession?.();
+    } catch (err) {
+      console.warn(
+        `[${ts()}] [FINAL-RESPONSE] closeSession failed for ${sessionId}: ${(err as Error).message}`,
+      );
+    }
+    current.controller.abort();
+    void killProcessTree(current.processPid);
+    console.warn(
+      `[${ts()}] [FINAL-RESPONSE] Session ${sessionId} stream stayed open for ${timeoutMs}ms after its authoritative final event; forced clean shutdown`,
+    );
+  }, timeoutMs);
+  handle.unref?.();
+  runningPrompt.finalResponseCloseTimer = handle;
 }
 
 function formatTerminalHeader(status: "running" | "done" | "stopped" | "error" | "auto_ended"): {
@@ -397,6 +460,7 @@ export function resetState(): void {
   for (const prompt of activePrompts.values()) {
     if (prompt.processMonitor) clearInterval(prompt.processMonitor);
     if (prompt.responseStallMonitor) clearInterval(prompt.responseStallMonitor);
+    if (prompt.finalResponseCloseTimer) clearTimeout(prompt.finalResponseCloseTimer);
   }
   activePrompts.clear();
   displayCards.clear();
@@ -1371,7 +1435,10 @@ export async function runAgentSession(
         if (prompt && prompt === runningPrompt) {
           // 同步标记必须发生在任何 await 之前，让 watchdog 无法在已收到完整
           // 最终事件后仍把本轮判为停滞。
-          prompt.finalResponseObserved = true;
+          if (!prompt.finalResponseObserved) {
+            prompt.finalResponseObserved = true;
+            scheduleFinalResponseCloseGuard(sessionId, prompt);
+          }
         }
       }
 
@@ -1443,6 +1510,7 @@ export async function runAgentSession(
     const autoEndedAt = wasAutoEnded ? prompt?.autoEndedAt : undefined;
     clearPromptResponseStallMonitor(sessionId);
     clearPromptProcessMonitor(sessionId);
+    clearPromptFinalResponseCloseTimer(sessionId);
     markSessionFinalizing(sessionId);
     activePrompts.delete(sessionId);
 
@@ -2080,6 +2148,7 @@ export function stopSession(sessionId: string): boolean {
   prompt.stopped = true;
   clearPromptResponseStallMonitor(sessionId);
   clearPromptProcessMonitor(sessionId);
+  clearPromptFinalResponseCloseTimer(sessionId);
   cancelQueuedMessage(sessionId);
   try {
     prompt.closeSession?.();

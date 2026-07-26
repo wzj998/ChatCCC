@@ -111,6 +111,8 @@ export interface ActivePrompt {
   processPid?: number;
   processMonitor?: ReturnType<typeof setInterval>;
   responseStallMonitor?: ReturnType<typeof setInterval>;
+  /** Grace timer that force-closes a stream which stays open after its authoritative final event. */
+  finalResponseCloseTimer?: ReturnType<typeof setTimeout>;
   /** Character-count progress observed only while the activity is "responding". */
   responseProgress?: ResponseProgressObservation;
   /** Set before a response-stall auto-end begins so competing monitors cannot win the race. */
@@ -275,6 +277,7 @@ export function resetBindingState(): void {
   for (const prompt of activePrompts.values()) {
     if (prompt.processMonitor) clearInterval(prompt.processMonitor);
     if (prompt.responseStallMonitor) clearInterval(prompt.responseStallMonitor);
+    if (prompt.finalResponseCloseTimer) clearTimeout(prompt.finalResponseCloseTimer);
   }
   activePrompts.clear();
   finalizingSessions.clear();
