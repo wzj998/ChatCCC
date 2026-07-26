@@ -64,7 +64,7 @@ describe("normalizeCodexMessage", () => {
     expect(result).not.toBeNull();
     expect(result!.type).toBe("assistant");
     expect(result!.blocks).toEqual([{ type: "text", text: "hello" }]);
-    expect(result!.isFinalResponse).toBe(true);
+    expect(result!.isFinalResponse).toBeUndefined();
   });
 
   it("normalizes command_execution start into tool_use block", () => {
@@ -143,13 +143,17 @@ describe("normalizeCodexMessage", () => {
     expect(normalizeCodexMessage({ type: "turn.started" })).toBeNull();
   });
 
-  it("returns null for turn.completed events", () => {
+  it("marks turn.completed as the authoritative final response", () => {
     expect(
       normalizeCodexMessage({
         type: "turn.completed",
         usage: { input_tokens: 100, output_tokens: 50 },
       }),
-    ).toBeNull();
+    ).toEqual({
+      type: "assistant",
+      blocks: [],
+      isFinalResponse: true,
+    });
   });
 
   it("returns null for unknown event types", () => {
@@ -225,7 +229,7 @@ describe("Codex stream fixtures", () => {
     expect(state.accumulatedContent).toContain("tool_test");
   });
 
-  it("with tool: 只映射 agent_message 和 command_execution，不映射元事件", () => {
+  it("with tool: 普通输出不标终态，只有 turn.completed 标记终态", () => {
     const lines = readFixture("codex_with_tool.jsonl");
     const messages: UnifiedStreamMessage[] = [];
     for (const raw of lines) {
@@ -235,11 +239,17 @@ describe("Codex stream fixtures", () => {
       if (normalized) messages.push(normalized);
     }
 
-    // 应有: tool_use + tool_result + text = 3 条消息
-    expect(messages.length).toBe(3);
+    // 应有: tool_use + tool_result + text + turn.completed = 4 条消息
+    expect(messages.length).toBe(4);
     expect(messages[0].blocks[0].type).toBe("tool_use");
     expect(messages[1].blocks[0].type).toBe("tool_result");
     expect(messages[2].blocks[0].type).toBe("text");
+    expect(messages[2].isFinalResponse).toBeUndefined();
+    expect(messages[3]).toEqual({
+      type: "assistant",
+      blocks: [],
+      isFinalResponse: true,
+    });
   });
 });
 

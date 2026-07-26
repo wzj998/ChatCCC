@@ -448,6 +448,7 @@ describe("normalizeCursorMessage - 三类 assistant 事件区分", () => {
     });
     expect(result).not.toBeNull();
     expect(result!.blocks).toEqual([{ type: "text", text: "你" }]);
+    expect(result!.isFinalResponse).toBeUndefined();
   });
 
   it("Buffered flush（has timestamp_ms, has model_call_id）→ text_final（覆盖，避免与 delta 重复累加）", () => {
@@ -464,6 +465,7 @@ describe("normalizeCursorMessage - 三类 assistant 事件区分", () => {
     expect(result!.blocks).toEqual([
       { type: "text_final", text: "完整快照（与 delta 累计相同）" },
     ]);
+    expect(result!.isFinalResponse).toBeUndefined();
   });
 
   it("Final flush（no timestamp_ms）→ text_final（覆盖）", () => {
@@ -478,6 +480,7 @@ describe("normalizeCursorMessage - 三类 assistant 事件区分", () => {
     expect(result!.blocks).toEqual([
       { type: "text_final", text: "你上一题问的是 1+2=?" },
     ]);
+    expect(result!.isFinalResponse).toBeUndefined();
   });
 });
 
