@@ -13,6 +13,11 @@ import type { StreamState } from "../stream-state.ts";
 // mock stream-state，使用模块内可观测的 Map 记录读写
 const stateStore = new Map<string, StreamState>();
 const writeCalls: StreamState[] = [];
+const killProcessTreeMock = vi.hoisted(() => vi.fn(async (_pid?: number) => {}));
+
+vi.mock("../adapters/proc-tree-kill.ts", () => ({
+  killProcessTree: killProcessTreeMock,
+}));
 
 vi.mock("../stream-state.ts", () => ({
   readStreamState: async (sid: string): Promise<StreamState | null> => {
@@ -75,6 +80,7 @@ beforeEach(() => {
   activePrompts.clear();
   stateStore.clear();
   writeCalls.length = 0;
+  killProcessTreeMock.mockClear();
 });
 
 describe("stopSession 行为护栏", () => {
@@ -136,5 +142,21 @@ describe("stopSession 行为护栏", () => {
 
     expect(ok).toBe(true);
     expect(closeSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("按完整进程树停止 CLI，不先杀壳进程造成后代进程逃逸", async () => {
+    seedRunningSession("sid-tree");
+    activePrompts.get("sid-tree")!.processPid = 4242;
+    const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    try {
+      expect(stopSession("sid-tree")).toBe(true);
+      await flush();
+
+      expect(killProcessTreeMock).toHaveBeenCalledWith(4242);
+      expect(processKillSpy).not.toHaveBeenCalled();
+    } finally {
+      processKillSpy.mockRestore();
+    }
   });
 });

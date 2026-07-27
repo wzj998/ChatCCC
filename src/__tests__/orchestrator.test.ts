@@ -427,7 +427,7 @@ describe("handleCommand WeChat processing ack", () => {
 
       await handleCommand(platform, "使用新的默认 Agent", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-      expect(createCursorSession).toHaveBeenCalledWith(homedir());
+      expect(createCursorSession).toHaveBeenCalledWith(homedir(), expect.any(AbortSignal));
       expect(oldPrompt).not.toHaveBeenCalled();
       expect(cursorPrompt).toHaveBeenCalledWith(
         "sid-new-cursor",
@@ -549,7 +549,7 @@ describe("handleCommand WeChat processing ack", () => {
 
     await handleCommand(platform, "帮我看一下日志", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(createSession).toHaveBeenCalledWith(homedir(), expect.any(AbortSignal));
     expect(platform.createGroup).not.toHaveBeenCalled();
     expect(platform.updateChatInfo).not.toHaveBeenCalled();
     expect(prompt).toHaveBeenCalledWith(
@@ -596,7 +596,7 @@ describe("handleCommand WeChat processing ack", () => {
 
     await handleCommand(platform, "继续", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(createSession).toHaveBeenCalledWith(homedir(), expect.any(AbortSignal));
     expect(prompt).toHaveBeenCalledWith(
       "sid-feishu-migrated",
       expect.stringContaining("继续"),
@@ -633,7 +633,7 @@ describe("handleCommand WeChat processing ack", () => {
 
     await handleCommand(platform, "/abd帮我看一下日志", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(createSession).toHaveBeenCalledWith(homedir(), expect.any(AbortSignal));
     expect(platform.createGroup).not.toHaveBeenCalled();
     expect(platform.updateChatInfo).not.toHaveBeenCalled();
     const userText = prompt.mock.calls[0][1];
@@ -706,7 +706,7 @@ describe("handleCommand WeChat processing ack", () => {
 
     await handleCommand(platform, "/newh", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
-    expect(createSession).toHaveBeenCalledWith(homedir());
+    expect(createSession).toHaveBeenCalledWith(homedir(), expect.any(AbortSignal));
     expect(platform.createGroup).not.toHaveBeenCalled();
     expect(platform.updateChatInfo).not.toHaveBeenCalled();
     const registry = await loadSessionRegistryForBinding();

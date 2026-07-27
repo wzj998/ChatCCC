@@ -155,8 +155,9 @@ export interface ToolAdapter {
   /**
    * 创建新会话，返回会话 ID。
    * 适配器内部需处理后台流消费（静默消费 stream 中除 init 外的所有事件）。
+   * signal 用于上层在长期收不到 init 事件时终止底层 SDK/CLI。
    */
-  createSession(cwd: string): Promise<CreateSessionResult>;
+  createSession(cwd: string, signal?: AbortSignal): Promise<CreateSessionResult>;
 
   /**
    * 向已有会话发送提示文本，返回归一化消息的异步迭代器。
