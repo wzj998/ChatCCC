@@ -1,20 +1,20 @@
-/** A snapshot of response output progress while the Agent is generating a reply. */
+/** A snapshot of visible output progress while the Agent is starting or replying. */
 export interface ResponseProgressObservation {
   totalChars: number;
   unchangedSince: number;
 }
 
 /**
- * Tracks how long the displayed response character count has remained unchanged.
- * Leaving the responding phase clears the window; returning starts a fresh one.
+ * Tracks how long the displayed output character count has remained unchanged.
+ * Leaving a monitored phase clears the window; returning starts a fresh one.
  */
 export function observeResponseProgress(
   previous: ResponseProgressObservation | undefined,
-  isResponding: boolean,
+  isMonitoredPhase: boolean,
   totalChars: number,
   now = Date.now(),
 ): ResponseProgressObservation | undefined {
-  if (!isResponding) return undefined;
+  if (!isMonitoredPhase) return undefined;
   if (previous?.totalChars === totalChars) return previous;
   return { totalChars, unchangedSince: now };
 }

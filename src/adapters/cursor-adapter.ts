@@ -511,34 +511,40 @@ class CursorAdapter implements ToolAdapter {
     this.badJsonIdleTimeoutMs = badJsonIdleTimeoutMs;
   }
 
-  async createSession(cwd: string): Promise<CreateSessionResult> {
+  async createSession(cwd: string, signal?: AbortSignal): Promise<CreateSessionResult> {
+    if (signal?.aborted) throw new Error("Cursor session creation aborted");
     const handle = spawnAgent(["ok"], cwd, undefined, this.modelOverride, undefined, this.spawnImpl);
     const proc = handle.proc;
     const stats = createCursorStreamStats();
     this.activeProcs.add(proc);
+    const onAbort = () => { void killProcessTree(proc.pid); };
+    signal?.addEventListener("abort", onAbort, { once: true });
 
-    for await (const msg of readJsonLines(proc, undefined, "createSession", null, stats, this.badJsonIdleTimeoutMs)) {
-      if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
-        const sessionId = msg.session_id;
-        await this.metaStore
-          .set(sessionId, { cwd: msg.cwd ?? cwd, model: msg.model })
-          .catch(() => {});
-        this.activeProcs.delete(proc);
-        await killProcessTree(proc.pid);
-        return { sessionId };
+    try {
+      for await (const msg of readJsonLines(proc, signal, "createSession", null, stats, this.badJsonIdleTimeoutMs)) {
+        if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
+          const sessionId = msg.session_id;
+          await this.metaStore
+            .set(sessionId, { cwd: msg.cwd ?? cwd, model: msg.model })
+            .catch(() => {});
+          return { sessionId };
+        }
       }
-    }
 
-    await killProcessTree(proc.pid);
-    this.activeProcs.delete(proc);
-    const closeInfo = await handle.waitForClose();
-    const visibleMessage = formatCursorAgentEmptyOutputMessage({
-      exitCode: closeInfo.code,
-      stdoutLength: stats.stdoutLength,
-      stderr: closeInfo.stderr,
-    });
-    if (visibleMessage) throw new Error(visibleMessage);
-    throw new Error("No session ID in Cursor init event");
+      if (signal?.aborted) throw new Error("Cursor session creation aborted");
+      const closeInfo = await handle.waitForClose();
+      const visibleMessage = formatCursorAgentEmptyOutputMessage({
+        exitCode: closeInfo.code,
+        stdoutLength: stats.stdoutLength,
+        stderr: closeInfo.stderr,
+      });
+      if (visibleMessage) throw new Error(visibleMessage);
+      throw new Error("No session ID in Cursor init event");
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      await killProcessTree(proc.pid);
+      this.activeProcs.delete(proc);
+    }
   }
 
   async *prompt(

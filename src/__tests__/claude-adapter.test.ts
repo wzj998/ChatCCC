@@ -379,6 +379,20 @@ describe("createClaudeAdapter", () => {
     await expect(adapter.closeSession("any-sid")).resolves.toBeUndefined();
   });
 
+  it("does not start SDK session creation when the startup signal is already aborted", async () => {
+    const adapter = createClaudeAdapter({
+      model: "claude-sonnet-4-6",
+      effort: "high",
+      isEmpty: () => false,
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      adapter.createSession("F:\\repo", controller.signal),
+    ).rejects.toThrow("Claude session creation aborted");
+  });
+
   // -------------------------------------------------------------------------
   // getSessionInfo 行为契约
   //   - cwd 决定 /git 是否可用

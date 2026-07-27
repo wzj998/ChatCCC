@@ -3,7 +3,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-const killProcessTreeMock = vi.hoisted(() => vi.fn(async () => {}));
+const killProcessTreeMock = vi.hoisted(() => vi.fn(async (_pid?: number) => {}));
 vi.mock("../adapters/proc-tree-kill.ts", () => ({
   killProcessTree: killProcessTreeMock,
 }));
@@ -110,6 +110,7 @@ import {
   setSessionPlatform,
   recordChatPlatform,
   _getPlatformForChatForTest,
+  initClaudeSession,
   runAgentSession,
   stopSession,
   startUnifiedDisplayLoop,
@@ -244,6 +245,55 @@ describe("resetState", () => {
     expect(chatSessionMap.size).toBe(0);
     expect(sessionInfoMap.size).toBe(0);
     expect(processedMessages.size).toBe(0);
+  });
+});
+
+describe("initClaudeSession startup watchdog", () => {
+  afterEach(() => {
+    _clearAdapterCacheForTest();
+    _resetResponseStallTimeoutForTest();
+    vi.useRealTimers();
+  });
+
+  it("aborts session creation when an Agent never emits its init event", async () => {
+    vi.useFakeTimers();
+    _setResponseStallTimeoutForTest(100);
+
+    let aborted = false;
+    const adapter: ToolAdapter = {
+      displayName: "Silent Cursor",
+      sessionDescPrefix: "Cursor Session:",
+      createSession: async (_cwd: string, signal?: AbortSignal) => {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            aborted = true;
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve();
+          }, { once: true });
+        });
+        throw new Error("adapter aborted");
+      },
+      prompt: async function* () {},
+      getSessionInfo: async () => undefined,
+      closeSession: async () => {},
+    };
+    _setAdapterForToolForTest("cursor", adapter);
+
+    let outcome: unknown;
+    void initClaudeSession("cursor", "F:\\repo").then(
+      (value) => { outcome = value; },
+      (err) => { outcome = err; },
+    );
+
+    await vi.advanceTimersByTimeAsync(101);
+
+    expect(aborted).toBe(true);
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain("3 minutes");
   });
 });
 
@@ -774,6 +824,88 @@ describe("runAgentSession response stall watchdog", () => {
     });
   });
 
+  it("auto-ends an Agent that stays in starting state without emitting any event", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(180_000);
+    _setResponseStallCheckIntervalForTest(1_000);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-starting-stall", "chat-starting-stall");
+    recordLastActiveChat("sid-starting-stall", "chat-starting-stall");
+
+    const closeSession = vi.fn();
+    const adapter: ToolAdapter = {
+      displayName: "Silent Agent",
+      sessionDescPrefix: "Agent Session:",
+      createSession: async () => ({ sessionId: "sid-starting-stall" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        options?.onSessionCreated?.(closeSession);
+        options?.onProcessStart?.({ pid: 4343 });
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        if (false) yield { type: "assistant", blocks: [] };
+      },
+    };
+    _setAdapterForToolForTest("codex", adapter);
+
+    const runPromise = runAgentSession(
+      "sid-starting-stall",
+      "prompt",
+      platform,
+      "chat-starting-stall",
+      Date.now(),
+      "codex",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-starting-stall")).toMatchObject({
+        processPid: 4343,
+        responseProgress: {
+          totalChars: 0,
+          unchangedSince: expect.any(Number),
+        },
+      });
+      expect(closeSession).toHaveBeenCalledTimes(0);
+    });
+
+    await vi.advanceTimersByTimeAsync(181_001);
+    const stateAfterDeadline = mockStreamStates.get("sid-starting-stall");
+    const closeCountAfterDeadline = closeSession.mock.calls.length;
+    const treeKillCountAfterDeadline = killProcessTreeMock.mock.calls
+      .filter(([pid]) => pid === 4343)
+      .length;
+
+    // 旧实现不会结束真正的零事件启动；先清理测试会话，避免失败用例悬挂。
+    if (stateAfterDeadline?.status !== "auto_ended") {
+      stopSession("sid-starting-stall");
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await runPromise;
+
+    expect(stateAfterDeadline).toMatchObject({
+      status: "auto_ended",
+      finalReply: "",
+      autoEndedAt: expect.any(Number),
+    });
+    expect(closeCountAfterDeadline).toBe(1);
+    expect(treeKillCountAfterDeadline).toBeGreaterThanOrEqual(1);
+  });
+
   it("self-heals a missing trigger-chat binding and gives automatic recovery the normal card lifecycle", async () => {
     vi.setSystemTime(0);
     _setResponseStallTimeoutForTest(100);
@@ -1215,7 +1347,7 @@ describe("runAgentSession response stall watchdog", () => {
     expect(receivedPrompts[1]).toContain(recoveryPrompt);
     expect(platform.sendText).toHaveBeenCalledWith(
       "chat-recovery-limit",
-      "⚠️ 自动续跑仍连续 3 分钟没有新回复，本次不再自动继续。",
+      "⚠️ 自动续跑仍连续 3 分钟没有启动进展或新回复，本次不再自动继续。",
     );
   });
 
@@ -1474,7 +1606,7 @@ describe("unified display loop terminal card update", () => {
     expect(card.header.template).toBe("orange");
     expect(platform.sendText).toHaveBeenCalledWith(
       "chat-auto-ended",
-      "⚠️ 已自动结束：连续 3 分钟处于“正在生成回复”且回复字符总数没有变化。本轮没有可发送的回复内容。",
+      "⚠️ 已自动结束：连续 3 分钟没有启动进展或回复字符变化。本轮没有可发送的回复内容。",
     );
     expect(displayCards.has("chat-auto-ended")).toBe(false);
   });

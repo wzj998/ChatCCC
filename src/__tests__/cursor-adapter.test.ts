@@ -359,6 +359,19 @@ describe("createCursorAdapter", () => {
     await expect(adapter.closeSession("any-id")).resolves.toBeUndefined();
   });
 
+  it("aborts a zero-output createSession stream instead of leaving Cursor Agent alive", async () => {
+    const store = createInMemoryMetaStore();
+    const spawnImpl = (() =>
+      createHangingMockCursorProcess({})) as CursorSpawnForTest;
+    const adapter = createCursorAdapter({ metaStore: store, spawn: spawnImpl });
+    const controller = new AbortController();
+
+    const pending = adapter.createSession("F:/repo", controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toThrow("Cursor session creation aborted");
+  });
+
   // -------------------------------------------------------------------------
   // getSessionInfo 行为契约
   //   - cwd 决定 /git 是否可用

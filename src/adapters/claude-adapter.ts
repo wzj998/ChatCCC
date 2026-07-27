@@ -452,9 +452,14 @@ class ClaudeAdapter implements ToolAdapter {
     this.maxTurn = options.maxTurn ?? 0;
   }
 
-  async createSession(cwd: string): Promise<CreateSessionResult> {
+  async createSession(cwd: string, signal?: AbortSignal): Promise<CreateSessionResult> {
     logMcpConfig();
     const abortController = new AbortController();
+    const removeAbortListener = bridgeAbortSignal(signal, abortController);
+    if (abortController.signal.aborted) {
+      removeAbortListener?.();
+      throw new Error("Claude session creation aborted");
+    }
     let sessionId: string | undefined;
     const session = unstable_v2_createSession(
       toSdkSessionOptions(buildSdkOptions({
@@ -486,6 +491,7 @@ class ClaudeAdapter implements ToolAdapter {
         }
       }
     } finally {
+      removeAbortListener?.();
       closeSdkSession(session);
     }
 

@@ -27,6 +27,7 @@ import {
   formatAgentActivityTitle,
   updateAgentActivity,
 } from "./agent-activity.ts";
+import type { AgentActivityKind } from "./agent-activity.ts";
 import { simplifyToolUse, simplifyToolResult } from "./simplify.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
@@ -170,7 +171,7 @@ export const RESPONSE_STALL_RECOVERY_PROMPT = "完成了吗？如果没完成继
 export const RESPONSE_STALL_RECOVERY_NOTICE =
   `检测到会话停滞，正在自动确认并继续。\n\n${RESPONSE_STALL_RECOVERY_PROMPT}`;
 export const RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE =
-  "⚠️ 自动续跑仍连续 3 分钟没有新回复，本次不再自动继续。";
+  "⚠️ 自动续跑仍连续 3 分钟没有启动进展或新回复，本次不再自动继续。";
 const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
 let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
@@ -314,10 +315,18 @@ function turnFinalStatus(status: "running" | "done" | "stopped" | "error" | "aut
 }
 
 function formatAutoEndedReply(finalReply: string): string {
-  const reason = "⚠️ 已自动结束：连续 3 分钟处于“正在生成回复”且回复字符总数没有变化。";
+  const reason = "⚠️ 已自动结束：连续 3 分钟没有启动进展或回复字符变化。";
   return finalReply
     ? `${reason}以下回复可能不完整。\n\n${finalReply}`
     : `${reason}本轮没有可发送的回复内容。`;
+}
+
+/**
+ * 只监控用户无法判断是否仍有进展的两个阶段。思考、工具调用和搜索可能合法地
+ * 长时间不产生回复字符，由资源监控负责识别真正僵死，不能在这里误杀。
+ */
+function monitorsOutputProgress(kind: AgentActivityKind): boolean {
+  return kind === "starting" || kind === "responding";
 }
 
 function formatTerminalReply(
@@ -1017,7 +1026,32 @@ export async function initClaudeSession(tool: string, overrideCwd?: string, chat
     `[${ts()}] [STEP 1/5] Creating ${adapter.displayName} session (${formatToolConfigForLog(tool)}, cwd=${cwd})`
   );
 
-  const result = await adapter.createSession(cwd);
+  // Claude/Cursor 创建会话时需要先等待 SDK/CLI 的 init 事件。它们若在首个
+  // 事件前卡死，正式 turn 尚未建立，runAgentSession 的看门狗无法介入。
+  // 因此创建入口也使用相同的三分钟阈值，并通过 AbortSignal 释放底层资源。
+  const createController = new AbortController();
+  let createTimeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutError = new Error(
+    `${adapter.displayName} session creation timed out after 3 minutes without an init event`,
+  );
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    createTimeout = setTimeout(() => {
+      // 先固定对外错误，再 abort 适配器，避免适配器自己的 abort 错误赢得竞态。
+      reject(timeoutError);
+      createController.abort();
+    }, responseStallTimeoutMs);
+    createTimeout.unref?.();
+  });
+
+  let result: Awaited<ReturnType<ToolAdapter["createSession"]>>;
+  try {
+    result = await Promise.race([
+      adapter.createSession(cwd, createController.signal),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (createTimeout) clearTimeout(createTimeout);
+  }
   const sessionId = result.sessionId;
   console.log(`[${ts()}]   → sessionId: ${sessionId}`);
 
@@ -1334,6 +1368,16 @@ export async function runAgentSession(
 
   const runningPrompt = activePrompts.get(sessionId);
   if (runningPrompt) {
+    // 必须在消费第一个事件前建立零字符基线。部分 CLI 卡死时只启动了进程，
+    // 甚至一个事件都不会 yield；若等循环体更新进度，这种会话会永久停在
+    // “正在启动 Agent”，也永远触发不了三分钟保护。
+    runningPrompt.responseProgress = observeResponseProgress(
+      undefined,
+      true,
+      0,
+      activityTracker.activity.startedAt,
+    );
+
     const checkResponseStall = async () => {
       const current = activePrompts.get(sessionId);
       if (!current || current !== runningPrompt) {
@@ -1346,7 +1390,7 @@ export async function runAgentSession(
         || current.resourceStuck
         || current.autoEnded
         || current.finalResponseObserved
-        || activityTracker.activity.kind !== "responding"
+        || !monitorsOutputProgress(activityTracker.activity.kind)
         || !hasResponseStalled(current.responseProgress, Date.now(), responseStallTimeoutMs)
       ) {
         return;
@@ -1402,7 +1446,7 @@ export async function runAgentSession(
       current.controller.abort();
       await killProcessTree(current.processPid);
       console.warn(
-        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after 3 minutes without reply character changes`,
+        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after 3 minutes without startup or reply progress`,
       );
     };
 
@@ -1466,8 +1510,10 @@ export async function runAgentSession(
       if (prompt && !prompt.autoEnded) {
         const totalChars = state.accumulatedContent.length + pickFinalReply(state).length;
         prompt.responseProgress = observeResponseProgress(
-          prompt.responseProgress,
-          activityTracker.activity.kind === "responding",
+          // starting → responding 本身是一次有效进展，即便首个文本块仍为空也应
+          // 重新计时；其它活动阶段会清空观察窗口。
+          activityChanged ? undefined : prompt.responseProgress,
+          monitorsOutputProgress(activityTracker.activity.kind),
           totalChars,
           Date.now(),
         );
@@ -1644,7 +1690,7 @@ export async function runAgentSession(
           autoRecoveryTarget = { chatId: activeAutoEnded, platform: pp };
         }
       }
-      console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled response output (content chunks: ${state.chunkCount})`);
+      console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled startup or response output (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "response_stall", chunks: state.chunkCount });
     } else if (wasAbnormalExit) {
       for (const cid of finalizationChatIds) {
@@ -2150,19 +2196,18 @@ export function stopSession(sessionId: string): boolean {
   clearPromptProcessMonitor(sessionId);
   clearPromptFinalResponseCloseTimer(sessionId);
   cancelQueuedMessage(sessionId);
+
+  // 先发起整棵进程树清理，再触发 close/abort。Windows 上 CLI 由
+  // cmd.exe → node → 实际二进制组成；若先 process.kill(cmd.exe)，taskkill
+  // 随后便无法从已消失的根 PID 找到后代，正是幽灵 Codex/Cursor 的来源。
+  // killProcessTree 在返回 Promise 前已启动 taskkill，因此这里无需阻塞。
+  void killProcessTree(prompt.processPid);
   try {
     prompt.closeSession?.();
   } catch (err) {
     console.warn(`[${ts()}] [STOP] closeSession failed for ${sessionId}: ${(err as Error).message}`);
   }
   prompt.controller.abort();
-
-  // 强制杀死 CLI 子进程。controller.abort() 只在 for-await 收到下一条
-  // stream 消息时才被检测到——如果 agent 陷入无输出的计算循环，abort 信号
-  // 永远不会生效。直接 process.kill 让 stdout/stderr 管道关闭，stream 立即结束。
-  if (prompt.processPid !== undefined) {
-    try { process.kill(prompt.processPid); } catch { /* 进程可能已退出 */ }
-  }
   console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
 
   // fire-and-forget：立刻把 stream-state.status 改成 stopped，
