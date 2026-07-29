@@ -1274,7 +1274,7 @@ describe("runAgentSession response stall watchdog", () => {
     expect(consumeQueued).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(200);
-    expect(consumeQueued).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(consumeQueued).toHaveBeenCalledTimes(1));
     expect(consumeQueued).toHaveBeenCalledWith(
       platform,
       expect.objectContaining({ text: "queued user prompt" }),
