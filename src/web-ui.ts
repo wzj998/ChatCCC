@@ -53,7 +53,7 @@ interface AppConfig {
     avatarBatteryMode?: string;
     onDemandMonthlyBudget?: number;
   };
-  codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; alternativeModel?: string; effort?: string };
+  codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; alternativeModel?: string; effort?: string; fastMode?: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +491,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CODEX_EFFORT") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).effort = val;
+    } else if (key === "CHATCCC_CODEX_FAST_MODE") {
+      result.codex = result.codex || {};
+      (result.codex as Record<string, unknown>).fastMode = val === true || val === "true";
     } else if (key === "CHATCCC_CODEX_ENABLED") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).enabled = val === true || val === "true";
@@ -932,6 +935,11 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <label>努力程度 (Effort)</label>
               <input type="text" id="field-CHATCCC_CODEX_EFFORT" placeholder="留空由 codex config.toml 决定">
             </div>
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="field-CHATCCC_CODEX_FAST_MODE"> Fast 模式
+              </label>
+            </div>
             <button class="btn btn-outline" onclick="validateCli('codex')" style="margin-bottom:12px">检测 Codex CLI</button>
             <div id="codex-validate-result"></div>
           </fieldset>
@@ -1062,6 +1070,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CODEX_MODEL">-</span></div>
         <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CODEX_ALTERNATIVE_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-CODEX_EFFORT">-</span></div>
+        <div class="config-row"><span class="key">Fast 模式</span><span class="val" id="cfg-CODEX_FAST_MODE">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-codex" onchange="setDashboardDefaultAgent('codex', this.checked)"> 设为默认 Agent</label>
         <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('codex')">编辑</button>
@@ -1111,7 +1120,7 @@ var step2InputBound = false;
 const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
-  codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT']
+  codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1402,7 +1411,7 @@ function isAgentEnabled(node, keys) {
 
 var CLAUDE_FALLBACK_KEYS = ['model','subagentModel','effort','maxTurn'];
 var CURSOR_FALLBACK_KEYS = ['path','command','model','alternativeModel'];
-var CODEX_FALLBACK_KEYS = ['path','command','model','alternativeModel','effort'];
+var CODEX_FALLBACK_KEYS = ['path','command','model','alternativeModel','effort','fastMode'];
 
 function renderStep2() {
   var c = state.config || {};
@@ -1433,6 +1442,8 @@ function renderStep2() {
     prefillNested('field-CHATCCC_CODEX_ALTERNATIVE_MODEL', c.codex.alternativeModel);
     prefillNested('field-CHATCCC_CODEX_EFFORT', c.codex.effort);
   }
+  var codexFastModeEl = document.getElementById('field-CHATCCC_CODEX_FAST_MODE');
+  if (codexFastModeEl) codexFastModeEl.checked = !!(c.codex && c.codex.fastMode === true);
 
   // 按已有 config 决定每个 Agent 默认是否开启：优先 enabled 字段，缺省时按"任一字段非空"
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
@@ -1515,7 +1526,9 @@ function collectAllFields() {
   if (state.agentsEnabled.codex) {
     AGENT_FIELDS.codex.forEach(function(key){
       var el = document.getElementById('field-' + key);
-      if (el && el.value.trim()) vars[key] = el.value.trim();
+      if (!el) return;
+      if (key === 'CHATCCC_CODEX_FAST_MODE') vars[key] = !!el.checked;
+      else if (el.value.trim()) vars[key] = el.value.trim();
     });
   }
   return vars;
@@ -1587,6 +1600,7 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CODEX_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CODEX_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CODEX_EFFORT || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">Fast 模式</span><span class="val">' + (vars.CHATCCC_CODEX_FAST_MODE ? '已启用' : '已禁用') + '</span></div>');
     }
   });
   document.getElementById('review-content').innerHTML = lines.join('');
@@ -1795,6 +1809,7 @@ function updateDashboardUI() {
   document.getElementById('cfg-CODEX_MODEL').textContent = (c.codex && c.codex.model) || '(留空)';
   document.getElementById('cfg-CODEX_ALTERNATIVE_MODEL').textContent = (c.codex && c.codex.alternativeModel) || '(留空)';
   document.getElementById('cfg-CODEX_EFFORT').textContent = (c.codex && c.codex.effort) || '(留空)';
+  document.getElementById('cfg-CODEX_FAST_MODE').textContent = c.codex && c.codex.fastMode === true ? '已启用' : '已禁用';
 }
 
 function pollStatus() {
@@ -1867,7 +1882,8 @@ function editSection(section) {
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型', 'CHATCCC_CURSOR_ALTERNATIVE_MODEL': '备选模型',
     'CHATCCC_CURSOR_AVATAR_BATTERY_MODE': '头像电池电量',
     'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月On demand use预算',
-    'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort'
+    'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort',
+    'CHATCCC_CODEX_FAST_MODE': 'Fast 模式'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
@@ -1911,10 +1927,11 @@ function editSection(section) {
         else if (key === 'CHATCCC_CODEX_MODEL') val = state.config.codex.model || '';
         else if (key === 'CHATCCC_CODEX_ALTERNATIVE_MODEL') val = state.config.codex.alternativeModel || '';
         else if (key === 'CHATCCC_CODEX_EFFORT') val = state.config.codex.effort || '';
+        else if (key === 'CHATCCC_CODEX_FAST_MODE') val = state.config.codex.fastMode === true ? 'true' : 'false';
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
-    if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') {
+    if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED' || key === 'CHATCCC_CODEX_FAST_MODE') {
       var checked = val === true || val === 'true';
       var changeHandler = key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED' ? ' onchange="toggleEditChromeDevtoolsFields(this.checked)"' : '';
       html += '<div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="edit-' + key + '"' + (checked ? ' checked' : '') + changeHandler + '> ' + (labelMap[key] || key) + '</label>';
@@ -1982,7 +1999,7 @@ async function saveEdit() {
   fields.forEach(function(key){
     var el = document.getElementById('edit-' + key);
     if (!el) return;
-    if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED') vars[key] = !!el.checked;
+    if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED' || key === 'CHATCCC_CODEX_FAST_MODE') vars[key] = !!el.checked;
     else vars[key] = el.value.trim();
   });
   if (editSectionType === 'chromeDevtools' && !vars.CHATCCC_CHROME_DEVTOOLS_PORT) {

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildCodexInvocationArgs,
   normalizeCodexMessage,
   createCodexAdapter,
   type CreateCodexAdapterOptions,
@@ -15,6 +16,20 @@ import {
 import { accumulateBlockContent, pickFinalReply, type AccumulatorState } from "../session.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+describe("buildCodexInvocationArgs", () => {
+  it("forces the priority service tier when Fast mode is on", () => {
+    expect(buildCodexInvocationArgs(["exec", "--json"], "", "", true)).toContain(
+      'service_tier="fast"',
+    );
+  });
+
+  it("forces the standard service tier when Fast mode is off", () => {
+    const args = buildCodexInvocationArgs(["exec", "--json"], "", "", false);
+    expect(args).toContain('service_tier="default"');
+    expect(args).not.toContain('service_tier="fast"');
+  });
+});
 
 function readFixture(name: string): unknown[] {
   const raw = readFileSync(join(__dirname, "fixtures", name), "utf-8");

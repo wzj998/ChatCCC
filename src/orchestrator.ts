@@ -39,6 +39,7 @@ import {
 import {
   buildHelpCard,
   buildEffortCard,
+  buildFastModeCard,
   buildModelCard,
   buildStatusCard,
   buildCdContent,
@@ -69,6 +70,8 @@ import {
   getAdapterForTool,
   getEffectiveModelForTool,
   getEffectiveEffortForTool,
+  getEffectiveFastModeForTool,
+  setSessionFastModeOverride,
   stopSession,
   loadSessionRegistryForBinding,
   removeSessionRegistryRecord,
@@ -329,6 +332,28 @@ function usageHelpLine(tool: string): string {
   if (tool === "codex") return "\n发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡。";
   if (tool === "cursor") return "\n发送 **/usage** 查看 Cursor 用量。";
   return "";
+}
+
+function fastHelpAfterModel(tool: string): string {
+  return tool === "codex"
+    ? "\n发送 **/fast** 查看或切换当前会话的 Fast 模式。"
+    : "";
+}
+
+async function sendFastModeStatus(
+  platform: PlatformAdapter,
+  chatId: string,
+  enabled: boolean,
+): Promise<void> {
+  if (platform.kind === "wechat") {
+    const mode = enabled ? "ON (Fast)" : "OFF (Standard)";
+    await platform.sendText(
+      chatId,
+      `Codex Fast 模式: ${mode}\n输入 /fast on 或 /fast off 切换。切换将在下一条消息生效，当前生成不中断。`,
+    );
+    return;
+  }
+  await platform.sendRawCard(chatId, buildFastModeCard(enabled));
 }
 
 async function resolveUsageTarget(chatId: string): Promise<{ tool: "codex" | "cursor"; sessionId?: string }> {
@@ -1021,7 +1046,7 @@ export async function handleCommand(
           `**工作目录:** \`${cwd}\`\n\n` +
           `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
           `发送 **/cd** 切换新建会话的默认目录。\n` +
-          `发送 **/model** 查看或切换当前会话的模型。\n` +
+          `发送 **/model** 查看或切换当前会话的模型。${fastHelpAfterModel(tool)}\n` +
           `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
           `发送 **/sessions** 查看所有会话状态。\n` +
           `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
@@ -1109,7 +1134,7 @@ export async function handleCommand(
         `**工作目录:** \`${cwd}\`\n\n` +
         `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
         `发送 **/cd** 切换新建会话的默认目录。\n` +
-        `发送 **/model** 查看或切换当前会话的模型。\n` +
+        `发送 **/model** 查看或切换当前会话的模型。${fastHelpAfterModel(tool)}\n` +
         `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
         `发送 **/sessions** 查看所有会话状态。\n` +
         `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
@@ -1531,7 +1556,7 @@ export async function handleCommand(
           `**工作目录:** \`${cwd}\`${isFeishuP2p(platform, chatType) ? "（飞书私聊固定使用系统用户目录）" : "（沿用当前会话目录）"}\n\n` +
           `直接在这里发消息即可继续对话。\n` +
           `发送 **/cd** 可切换新建会话的默认目录。\n` +
-          `发送 **/model** 查看或切换当前会话的模型。`,
+          `发送 **/model** 查看或切换当前会话的模型。${fastHelpAfterModel(descriptionTool)}`,
         "green",
       );
 
@@ -1705,7 +1730,7 @@ export async function handleCommand(
           `**Session ID:** ${target.sessionId}\n` +
           `**工作目录:** \`${cwd2}\`\n\n` +
           `直接在这里发消息即可继续对话。\n` +
-          `发送 **/model** 查看或切换当前会话的模型。${busyNote}`,
+          `发送 **/model** 查看或切换当前会话的模型。${fastHelpAfterModel(descriptionTool)}${busyNote}`,
         "green",
       );
 
@@ -1714,6 +1739,43 @@ export async function handleCommand(
         sessionId: target.sessionId,
         index: index + 1,
         cwd: cwd2,
+      });
+      return;
+    }
+
+    if (isCommandText && (textLower === "/fast" || textLower.startsWith("/fast "))) {
+      const fastArg = text.slice(5).trim().toLowerCase();
+      logTrace(tid, "BRANCH", { cmd: "/fast", arg: fastArg, sessionId, tool: descriptionTool });
+
+      if (descriptionTool !== "codex") {
+        const msg = `当前 ${toolLabel} 会话不支持 Fast 模式；/fast 仅适用于 Codex。`;
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "Codex Fast 模式", msg, "yellow")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "fast_unsupported", tool: descriptionTool });
+        return;
+      }
+
+      if (fastArg && fastArg !== "on" && fastArg !== "off") {
+        const msg = "用法: /fast、/fast on 或 /fast off";
+        await (platform.kind === "wechat"
+          ? platform.sendText(chatId, msg)
+          : platform.sendCard(chatId, "Codex Fast 模式", msg, "yellow")
+        ).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "fast_invalid", arg: fastArg });
+        return;
+      }
+
+      if (fastArg) {
+        setSessionFastModeOverride(sessionId, fastArg === "on");
+      }
+      const enabled = getEffectiveFastModeForTool("codex", sessionId);
+      await sendFastModeStatus(platform, chatId, enabled).catch(() => {});
+      logTrace(tid, "DONE", {
+        outcome: fastArg ? "fast_switched" : "fast_query",
+        enabled,
+        sessionId,
       });
       return;
     }
@@ -1781,6 +1843,9 @@ export async function handleCommand(
           lines.push("", "输入 /model <模型名> 切换模型");
         } else {
           lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
+        }
+        if (descriptionTool === "codex") {
+          lines.push("输入 /fast 查看或切换当前会话的 Fast 模式");
         }
         await platform.sendText(chatId, lines.join("\n")).catch(() => {});
       } else {
@@ -2022,6 +2087,33 @@ export async function handleCommand(
     return;
   }
 
+  if (isCommandText && (textLower === "/fast" || textLower.startsWith("/fast "))) {
+    const defaultTool = resolveDefaultAgentTool();
+    const fastArg = text.slice(5).trim().toLowerCase();
+    if (defaultTool !== "codex") {
+      const msg = `当前默认 Agent (${toolDisplayName(defaultTool)}) 不支持 Fast 模式；/fast 仅适用于 Codex。`;
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "Codex Fast 模式", msg, "yellow")
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "fast_unsupported", defaultTool });
+      return;
+    }
+    if (fastArg) {
+      const msg = "当前没有绑定 Codex 会话，无法设置会话覆盖。请先创建或进入 Codex 会话；全局默认值可在 Web UI 中设置。";
+      await (platform.kind === "wechat"
+        ? platform.sendText(chatId, msg)
+        : platform.sendCard(chatId, "Codex Fast 模式", msg, "yellow")
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "fast_no_session", arg: fastArg });
+      return;
+    }
+    const enabled = getEffectiveFastModeForTool("codex");
+    await sendFastModeStatus(platform, chatId, enabled).catch(() => {});
+    logTrace(tid, "DONE", { outcome: "fast_query", enabled, defaultTool });
+    return;
+  }
+
   // 无会话上下文 → 检查是否是 /model 查询
   if (isCommandText && textLower === "/model") {
     const defaultTool = resolveDefaultAgentTool();
@@ -2039,6 +2131,9 @@ export async function handleCommand(
         lines.push("", "在会话中输入 /model <模型名> 切换模型");
       } else {
         lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
+      }
+      if (defaultTool === "codex") {
+        lines.push("输入 /fast 查看当前 Codex Fast 模式");
       }
       await platform.sendText(chatId, lines.join("\n")).catch(() => {});
     } else {

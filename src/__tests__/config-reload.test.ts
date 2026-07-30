@@ -71,7 +71,7 @@ const baseAppConfig: AppConfig = {
     avatarBatteryMode: "apiPercent",
     onDemandMonthlyBudget: 1000,
   },
-  codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort" },
+  codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort", fastMode: false },
   ccc: { DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model" },
 };
 
@@ -207,7 +207,7 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
     applyLoadedConfig({
       ...structuredClone(baseAppConfig),
       feishu: { appId: "REF_TEST_APP", appSecret: "REF_TEST_SECRET" },
-      codex: { enabled: true, defaultAgent: false, path: "/refresh/codex", model: "fresh-model", alternativeModel: "", effort: "low" },
+      codex: { enabled: true, defaultAgent: false, path: "/refresh/codex", model: "fresh-model", alternativeModel: "", effort: "low", fastMode: true },
     });
 
     // 必须是同一个引用：codex-adapter 等下游模块"直接 import config"，
@@ -215,6 +215,7 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
     expect(config).toBe(refBefore);
     expect(config.feishu.appId).toBe("REF_TEST_APP");
     expect(config.codex.path).toBe("/refresh/codex");
+    expect(config.codex.fastMode).toBe(true);
   });
 
   it("刷新 chromeDevtools 配置但保持 config 引用", () => {

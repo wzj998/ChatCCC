@@ -475,6 +475,7 @@ export function resetState(): void {
   displayCards.clear();
   sessionModelOverrides.clear();
   sessionEffortOverrides.clear();
+  sessionFastModeOverrides.clear();
   adapterCache.clear();
   stopUnifiedDisplayLoop();
   console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions + bindings)`);
@@ -492,6 +493,7 @@ const adapterCache = new Map<string, ToolAdapter>();
 // Per-session 模型覆盖（/model 命令设置，不持久化）
 const sessionModelOverrides = new Map<string, string>();
 const sessionEffortOverrides = new Map<string, string>();
+const sessionFastModeOverrides = new Map<string, boolean>();
 
 /** 返回 session 的生效模型：优先 per-session 覆盖，其次全局配置（Claude） */
 function getModelForSession(sessionId?: string): string {
@@ -525,6 +527,14 @@ export function getEffectiveEffortForTool(tool: string, sessionId?: string): str
   return "";
 }
 
+export function getEffectiveFastModeForTool(tool: string, sessionId?: string): boolean {
+  if (tool !== "codex") return false;
+  if (sessionId && sessionFastModeOverrides.has(sessionId)) {
+    return sessionFastModeOverrides.get(sessionId) === true;
+  }
+  return config.codex.fastMode;
+}
+
 /** 为指定 session 设置模型覆盖（/model <name>） */
 export function setSessionModelOverride(sessionId: string, model: string): void {
   sessionModelOverrides.set(sessionId, model);
@@ -547,10 +557,16 @@ export function clearSessionEffortOverride(sessionId: string): void {
   adapterCache.clear();
 }
 
+export function setSessionFastModeOverride(sessionId: string, fastMode: boolean): void {
+  sessionFastModeOverrides.set(sessionId, fastMode);
+  adapterCache.clear();
+}
+
 export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter {
   const effectiveModel = getEffectiveModelForTool(tool, sessionId);
   const effectiveEffort = getEffectiveEffortForTool(tool, sessionId);
-  const cacheKey = `${tool}:${effectiveModel || ""}:${effectiveEffort || ""}`;
+  const effectiveFastMode = getEffectiveFastModeForTool(tool, sessionId);
+  const cacheKey = `${tool}:${effectiveModel || ""}:${effectiveEffort || ""}:${effectiveFastMode ? "fast" : "default"}`;
   const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
@@ -558,7 +574,11 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
   if (tool === "cursor") {
     adapter = createCursorAdapter({ model: effectiveModel || undefined });
   } else if (tool === "codex") {
-    adapter = createCodexAdapter({ model: effectiveModel || undefined, effort: effectiveEffort || undefined });
+    adapter = createCodexAdapter({
+      model: effectiveModel || undefined,
+      effort: effectiveEffort || undefined,
+      fastMode: effectiveFastMode,
+    });
   } else if (tool === "ccc") {
     adapter = createCccAdapter({ model: effectiveModel || undefined });
   } else {
@@ -1009,7 +1029,7 @@ function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?:
     const effortStr = e.trim() !== ""
       ? `effort=${e}`
       : "effort=(由 codex config.toml 决定)";
-    return `model=${modelStr}, ${effortStr}`;
+    return `model=${modelStr}, ${effortStr}, fast=${getEffectiveFastModeForTool(tool, sessionId) ? "on" : "off"}`;
   }
   if (tool === "ccc") {
     const m = getEffectiveModelForTool(tool, sessionId);
@@ -2408,7 +2428,8 @@ export function _setAdapterForToolForTest(tool: string, adapter: ToolAdapter): v
   // 同时设置当前配置模型对应的 key（getAdapterForTool 会优先 lookup 含 model 的 key）
   const effective = getEffectiveModelForTool(tool);
   const effort = getEffectiveEffortForTool(tool);
-  adapterCache.set(`${tool}:${effective || ""}:${effort || ""}`, adapter);
+  const fastMode = getEffectiveFastModeForTool(tool);
+  adapterCache.set(`${tool}:${effective || ""}:${effort || ""}:${fastMode ? "fast" : "default"}`, adapter);
   if (effective) adapterCache.set(`${tool}:${effective}`, adapter);
 }
 

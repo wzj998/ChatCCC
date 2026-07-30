@@ -553,6 +553,10 @@ export function buildModelCard(
     lines.push("", "没有可切换的模型。请在 config.json 中配置模型字段。");
   }
 
+  if (tool === "codex") {
+    lines.push("输入 `/fast` 查看或切换当前会话的 Fast 模式");
+  }
+
   const buttons: ButtonDef[] = [];
   for (const m of models.slice(0, 20)) {
     const shortName = m.includes("/") ? m.slice(m.lastIndexOf("/") + 1) : m;
@@ -570,6 +574,43 @@ export function buildModelCard(
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
       buildButtons(buttons),
+    ],
+  });
+}
+
+export function buildFastModeCard(enabled: boolean): string {
+  const mode = enabled ? "ON (Fast)" : "OFF (Standard)";
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: {
+      template: enabled ? "green" : "blue",
+      title: { content: "Codex Fast 模式", tag: "plain_text" },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: [
+            `**当前模式:** ${mode}`,
+            "",
+            "切换将在下一条消息生效，当前生成不中断。",
+          ].join("\n"),
+        },
+      },
+      { tag: "hr" },
+      buildButtons([
+        {
+          text: "ON",
+          value: JSON.stringify({ cmd: "/fast on" }),
+          type: enabled ? "primary" : "default",
+        },
+        {
+          text: "OFF",
+          value: JSON.stringify({ cmd: "/fast off" }),
+          type: enabled ? "default" : "primary",
+        },
+      ]),
     ],
   });
 }

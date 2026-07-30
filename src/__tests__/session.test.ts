@@ -126,9 +126,12 @@ import {
   _setFinalResponseCloseTimeoutForTest,
   _resetFinalResponseCloseTimeoutForTest,
   setSessionEffortOverride,
+  getEffectiveFastModeForTool,
+  setSessionFastModeOverride,
   RESPONSE_STALL_RECOVERY_PROMPT,
   RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE,
 } from "../session.ts";
+import { config } from "../config.ts";
 import {
   activePrompts,
   bindChatToSession,
@@ -146,6 +149,25 @@ import {
 import type { AccumulatorState } from "../session.ts";
 import type { ToolAdapter, ToolPromptOptions, UnifiedBlock, SessionInfo } from "../adapters/adapter-interface.ts";
 import type { PlatformAdapter } from "../platform-adapter.ts";
+
+describe("Codex Fast mode overrides", () => {
+  it("uses the global default until the current session overrides it", () => {
+    const previousFastMode = config.codex.fastMode;
+    config.codex.fastMode = false;
+    resetState();
+
+    expect(getEffectiveFastModeForTool("codex", "sid-fast")).toBe(false);
+    setSessionFastModeOverride("sid-fast", true);
+    expect(getEffectiveFastModeForTool("codex", "sid-fast")).toBe(true);
+    setSessionFastModeOverride("sid-fast", false);
+    expect(getEffectiveFastModeForTool("codex", "sid-fast")).toBe(false);
+    expect(getEffectiveFastModeForTool("claude", "sid-fast")).toBe(false);
+
+    resetState();
+    expect(getEffectiveFastModeForTool("codex", "sid-fast")).toBe(false);
+    config.codex.fastMode = previousFastMode;
+  });
+});
 
 // Helper to create a mock active session entry
 function mockActiveSession(chatId: string, overrides: Partial<{
