@@ -69,7 +69,8 @@
     "path": "",
     "model": "",
     "alternativeModel": "",
-    "effort": ""
+    "effort": "",
+    "fastMode": false
   },
   "ccc": {
     "DEEPSEEK_API_KEY": "",

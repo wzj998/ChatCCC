@@ -199,13 +199,12 @@ export function normalizeCodexMessage(
 // 子进程辅助函数
 // ---------------------------------------------------------------------------
 
-function spawnCodex(
+export function buildCodexInvocationArgs(
   args: string[],
-  cwd?: string,
-  stdinText?: string,
   modelOverride?: string,
   effortOverride?: string,
-): ChildProcess {
+  fastModeOverride?: boolean,
+): string[] {
   const allArgs = [...args];
   const model = modelOverride ?? resolveCodexModel();
   if (model) {
@@ -217,6 +216,25 @@ function spawnCodex(
   if (effort) {
     allArgs.push("-c", `model_reasoning_effort="${effort}"`);
   }
+  const fastMode = fastModeOverride ?? config.codex.fastMode;
+  allArgs.push("-c", `service_tier="${fastMode ? "fast" : "default"}"`);
+  return allArgs;
+}
+
+function spawnCodex(
+  args: string[],
+  cwd?: string,
+  stdinText?: string,
+  modelOverride?: string,
+  effortOverride?: string,
+  fastModeOverride?: boolean,
+): ChildProcess {
+  const allArgs = buildCodexInvocationArgs(
+    args,
+    modelOverride,
+    effortOverride,
+    fastModeOverride,
+  );
 
   const proc = spawn(detectCodexCommand(), allArgs, {
     cwd,
@@ -269,11 +287,18 @@ class CodexAdapter implements ToolAdapter {
   private metaStore: CodexSessionMetaStore;
   private modelOverride: string | undefined;
   private effortOverride: string | undefined;
+  private fastModeOverride: boolean | undefined;
 
-  constructor(metaStore: CodexSessionMetaStore, modelOverride?: string, effortOverride?: string) {
+  constructor(
+    metaStore: CodexSessionMetaStore,
+    modelOverride?: string,
+    effortOverride?: string,
+    fastModeOverride?: boolean,
+  ) {
     this.metaStore = metaStore;
     this.modelOverride = modelOverride;
     this.effortOverride = effortOverride;
+    this.fastModeOverride = fastModeOverride;
   }
 
   // createSession: 生成 sessionId，记录 cwd，不创建 Codex 线程（延迟到首次 prompt）
@@ -304,7 +329,14 @@ class CodexAdapter implements ToolAdapter {
       ? [...baseArgs, "-C", cwd, "-"]
       : [...baseArgs, "resume", threadId, "-"];
 
-    const proc = spawnCodex(args, cwd, buildCodexPromptText(userText), this.modelOverride, this.effortOverride);
+    const proc = spawnCodex(
+      args,
+      cwd,
+      buildCodexPromptText(userText),
+      this.modelOverride,
+      this.effortOverride,
+      this.fastModeOverride,
+    );
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     const rawLogConfig = config.rawStreamLogs.codex;
@@ -379,6 +411,7 @@ export interface CreateCodexAdapterOptions {
   /** per-session 模型覆盖（/model 命令）；传了就用，不传走全局 codex.model */
   model?: string;
   effort?: string;
+  fastMode?: boolean;
 }
 
 export function createCodexAdapter(
@@ -388,5 +421,6 @@ export function createCodexAdapter(
     options.metaStore ?? defaultCodexSessionMetaStore,
     options.model,
     options.effort,
+    options.fastMode,
   );
 }

@@ -8,6 +8,8 @@ import {
   buildStatusCard,
   buildCodexUsageCard,
   buildCodexResetConfirmCard,
+  buildFastModeCard,
+  buildModelCard,
   buildButtons,
   truncateContent,
   getToolEmoji,
@@ -178,6 +180,40 @@ describe("buildHelpCard", () => {
 
     expect(text).not.toContain("/new ccc");
     expect(text).not.toContain("CCC Agent");
+  });
+});
+
+describe("Codex Fast mode cards", () => {
+  it("shows the current mode and exposes ON/OFF commands", () => {
+    const card = JSON.parse(buildFastModeCard(false)) as {
+      header: { title: { content: string } };
+      elements: Array<{
+        tag: string;
+        text?: { content: string };
+        actions?: Array<{ text: { content: string }; value: string }>;
+      }>;
+    };
+
+    expect(card.header.title.content).toBe("Codex Fast 模式");
+    expect(card.elements.find((element) => element.tag === "div")?.text?.content).toContain("OFF");
+    const actions = card.elements.find((element) => element.tag === "action")?.actions ?? [];
+    expect(actions.map((action) => JSON.parse(action.value).cmd)).toEqual([
+      "/fast on",
+      "/fast off",
+    ]);
+  });
+
+  it("places /fast help immediately after /model help for Codex", () => {
+    const card = JSON.parse(buildModelCard("gpt-5", ["gpt-5"], "codex")) as {
+      elements: Array<{ tag: string; text?: { content: string } }>;
+    };
+    const content = card.elements.find((element) => element.tag === "div")?.text?.content ?? "";
+    const modelHelpIndex = content.indexOf("/model");
+    const fastHelpIndex = content.indexOf("/fast");
+
+    expect(modelHelpIndex).toBeGreaterThanOrEqual(0);
+    expect(fastHelpIndex).toBeGreaterThan(modelHelpIndex);
+    expect(content.slice(modelHelpIndex, fastHelpIndex).split("\n")).toHaveLength(2);
   });
 });
 

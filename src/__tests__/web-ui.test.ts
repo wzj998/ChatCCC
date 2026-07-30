@@ -68,11 +68,12 @@ describe("unflattenConfig", () => {
     });
   });
 
-  it("maps Cursor and Codex alternative models into agent config", () => {
+  it("maps Cursor and Codex runtime settings into agent config", () => {
     expect(
       unflattenConfig({
         CHATCCC_CURSOR_ALTERNATIVE_MODEL: "gpt-5.5-high",
         CHATCCC_CODEX_ALTERNATIVE_MODEL: "gpt-5.3-codex",
+        CHATCCC_CODEX_FAST_MODE: true,
       }),
     ).toEqual({
       cursor: {
@@ -80,6 +81,7 @@ describe("unflattenConfig", () => {
       },
       codex: {
         alternativeModel: "gpt-5.3-codex",
+        fastMode: true,
       },
     });
   });
@@ -149,6 +151,7 @@ describe("getRestartRequiredReasons", () => {
       model: "",
       alternativeModel: "",
       effort: "",
+      fastMode: false,
     },
   };
 
@@ -159,7 +162,13 @@ describe("getRestartRequiredReasons", () => {
         chromeDevtools: { enabled: true, port: 15167, chromePath: "C:/Chrome/chrome.exe" },
         claude: { ...baseConfig.claude, model: "claude-sonnet", apiKey: "sk-test", maxTurn: 8 },
         cursor: { ...baseConfig.cursor, path: "C:/cursor-agent.cmd", model: "cursor-model" },
-        codex: { ...baseConfig.codex, path: "C:/codex.cmd", model: "gpt-5.3-codex", effort: "high" },
+        codex: {
+          ...baseConfig.codex,
+          path: "C:/codex.cmd",
+          model: "gpt-5.3-codex",
+          effort: "high",
+          fastMode: true,
+        },
       }),
     ).toEqual([]);
   });
@@ -209,6 +218,12 @@ describe("dashboard edit modal", () => {
   it("shows config effect scope hints", () => {
     expect(PAGE_HTML).toContain("生效范围：保存后下一条消息或下个新会话生效");
     expect(PAGE_HTML).toContain("生效范围：飞书开关、App ID、App Secret 或平台类型变更需要重启 ChatCCC");
+  });
+
+  it("shows the Codex Fast mode switch in both the wizard and dashboard", () => {
+    expect(PAGE_HTML).toContain('id="field-CHATCCC_CODEX_FAST_MODE"');
+    expect(PAGE_HTML).toContain('id="cfg-CODEX_FAST_MODE"');
+    expect(PAGE_HTML).toContain("Fast 模式");
   });
 
   it("shows the Web UI startup switch in both the wizard and dashboard", () => {

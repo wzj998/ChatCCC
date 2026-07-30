@@ -86,6 +86,7 @@ import {
   recordSessionRegistry,
   resetState,
   sessionInfoMap,
+  getEffectiveFastModeForTool,
 } from "../session.ts";
 import {
   activePrompts,
@@ -146,6 +147,7 @@ describe("handleCommand WeChat processing ack", () => {
     config.claude.defaultAgent = true;
     config.cursor.defaultAgent = false;
     config.codex.defaultAgent = false;
+    config.codex.fastMode = false;
     mockStreamStates.clear();
     mockGetCodexUsageSummary.mockReset();
     mockGetCursorUsageSummary.mockReset();
@@ -660,6 +662,55 @@ describe("handleCommand WeChat processing ack", () => {
     expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
   });
 
+  it("queries and switches Fast mode for the current Codex session", async () => {
+    const platform = mockPlatform("feishu");
+    await recordSessionRegistry({
+      chatId: "feishu-codex",
+      sessionId: "sid-codex-fast",
+      tool: "codex",
+      chatType: "p2p",
+      chatName: "Codex",
+      running: false,
+    });
+
+    await handleCommand(platform, "/fast", "feishu-codex", "ou-user", Date.now(), "p2p");
+    let card = JSON.parse(
+      vi.mocked(platform.sendRawCard).mock.calls.at(-1)?.[1] ?? "{}",
+    ) as { elements?: Array<{ tag: string; text?: { content: string } }> };
+    expect(card.elements?.find((element) => element.tag === "div")?.text?.content).toContain("OFF");
+
+    await handleCommand(platform, "/fast on", "feishu-codex", "ou-user", Date.now(), "p2p");
+    expect(getEffectiveFastModeForTool("codex", "sid-codex-fast")).toBe(true);
+
+    await handleCommand(platform, "/fast off", "feishu-codex", "ou-user", Date.now(), "p2p");
+    expect(getEffectiveFastModeForTool("codex", "sid-codex-fast")).toBe(false);
+    card = JSON.parse(
+      vi.mocked(platform.sendRawCard).mock.calls.at(-1)?.[1] ?? "{}",
+    ) as { elements?: Array<{ tag: string; text?: { content: string } }> };
+    expect(card.elements?.find((element) => element.tag === "div")?.text?.content).toContain("OFF");
+  });
+
+  it("uses a text fallback for Fast mode commands on WeChat", async () => {
+    const platform = mockPlatform("wechat");
+    await recordSessionRegistry({
+      chatId: "wechat-codex",
+      sessionId: "sid-wechat-codex-fast",
+      tool: "codex",
+      chatType: "p2p",
+      chatName: "Codex",
+      running: false,
+    });
+
+    await handleCommand(platform, "/fast on", "wechat-codex", "wx-user", Date.now(), "p2p");
+
+    expect(getEffectiveFastModeForTool("codex", "sid-wechat-codex-fast")).toBe(true);
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "wechat-codex",
+      expect.stringContaining("ON (Fast)"),
+    );
+    expect(platform.sendRawCard).not.toHaveBeenCalled();
+  });
+
   it("keeps the Feishu p2p session bound when /new creates a separate group", async () => {
     const platform = mockPlatform("feishu");
     const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-group" }));
@@ -1022,6 +1073,14 @@ describe("handleCommand WeChat processing ack", () => {
       expect.stringContaining("发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡。"),
       "green",
     );
+
+    const codexReadyCall = vi.mocked(codexPlatform.sendCard).mock.calls.find(
+      ([chatId, title]) => chatId === "feishu-group" && title === "Codex Session Ready",
+    );
+    const modelHelpIndex = codexReadyCall?.[2].indexOf("/model") ?? -1;
+    const fastHelpIndex = codexReadyCall?.[2].indexOf("/fast") ?? -1;
+    expect(modelHelpIndex).toBeGreaterThanOrEqual(0);
+    expect(fastHelpIndex).toBeGreaterThan(modelHelpIndex);
 
     const cursorPlatform = mockPlatform("feishu");
     _setAdapterForToolForTest("cursor", mockAdapter("sid-cursor"));

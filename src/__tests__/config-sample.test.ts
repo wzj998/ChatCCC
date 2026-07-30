@@ -28,15 +28,16 @@ describe("config.sample.json", () => {
     expect(sample.claude?.subagentModel).toBe("");
   });
 
-  it("leaves Cursor and Codex alternative models empty by default", () => {
+  it("leaves alternative models empty and Codex Fast mode off by default", () => {
     const configSamplePath = join(process.cwd(), "config.sample.json");
     const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
       cursor?: { alternativeModel?: unknown };
-      codex?: { alternativeModel?: unknown };
+      codex?: { alternativeModel?: unknown; fastMode?: unknown };
     };
 
     expect(sample.cursor?.alternativeModel).toBe("");
     expect(sample.codex?.alternativeModel).toBe("");
+    expect(sample.codex?.fastMode).toBe(false);
   });
 
   it("sets ccc agent DeepSeek defaults in the sample config", () => {

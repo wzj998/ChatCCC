@@ -298,7 +298,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
     "defaultAgent": false,
     "path": "",
     "model": "",
-    "effort": ""
+    "effort": "",
+    "fastMode": false
   }
 }
 ```
@@ -320,6 +321,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `*.enabled` | 是否启用对应 AI Agent |
 | `*.defaultAgent` | `/new` 未指定 Agent 时使用哪个工具；飞书私聊会在下一条普通消息到达时跟随变化并创建新的空会话 |
 | `cursor.path` / `codex.path` | CLI 可执行文件路径；留空时自动探测或使用 PATH |
+| `codex.fastMode` | Codex Fast 模式的全局默认值；默认 `false`，每次调用都会显式覆盖 Codex CLI 的 service tier |
 | `cursor.avatarBatteryMode` | Cursor 头像电量显示来源：`apiPercent` 或 `onDemandUse` |
 | `cursor.onDemandMonthlyBudget` | `avatarBatteryMode=onDemandUse` 时用于计算电量的月预算 |
 | `claude.model` / `claude.subagentModel` / `claude.effort` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
@@ -346,6 +348,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/new codex` | 创建 Codex 会话；飞书中会创建新群 |
 | `/newh` | 在当前聊天原地重置会话；群聊保留工作目录，飞书私聊固定使用系统用户目录 |
 | `/model` | 查看或切换当前会话的模型 |
+| `/fast` | 查看当前 Codex 会话的 Fast 模式；使用 `/fast on` 或 `/fast off` 切换 |
 | `/stop` | 停止当前回复 |
 | `/cancel` | 取消当前会话里排队等待处理的消息 |
 | `/state` | 查看当前会话状态 |
@@ -364,6 +367,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 `/update` 会在执行 npm 更新前把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新 `/update` 因事件 ID 不同，仍可立即执行。该保护仅作用于 `/update`，普通消息与 `/restart` 的处理不变。
 
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`，Cursor 使用 `cursor.model`，Codex 使用 `codex.model`。
+
+> **Codex Fast 模式**：Web UI 中的“Fast 模式”设置新 Codex 会话的全局默认值，默认关闭。进入 Codex 会话后，`/fast` 查询当前状态，`/fast on` 和 `/fast off` 只覆盖当前会话并从下一条消息生效。ChatCCC 会显式向 Codex CLI 传入 `service_tier="fast"` 或 `service_tier="default"`，因此关闭时不会继承用户 `config.toml` 中可能开启的 Fast。
 
 ---
 

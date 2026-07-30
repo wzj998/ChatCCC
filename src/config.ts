@@ -99,6 +99,8 @@ export interface CodexConfig {
   /** /model 可切换的单个备选模型；留空则不加入候选列表 */
   alternativeModel: string;
   effort: string;
+  /** Codex Priority service tier. False explicitly forces the standard tier. */
+  fastMode: boolean;
 }
 
 export interface CccConfig {
@@ -442,7 +444,7 @@ function loadConfig(): AppConfig {
       avatarBatteryMode: "apiPercent",
       onDemandMonthlyBudget: 1000,
     },
-    codex: { enabled: false, defaultAgent: false, path: "", model: "", alternativeModel: "", effort: "" },
+    codex: { enabled: false, defaultAgent: false, path: "", model: "", alternativeModel: "", effort: "", fastMode: false },
     ccc: { DEEPSEEK_API_KEY: "", DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL, model: DEFAULT_CCC_MODEL },
   };
 
@@ -495,7 +497,7 @@ function loadConfig(): AppConfig {
       avatarBatteryMode?: unknown;
       onDemandMonthlyBudget?: unknown;
     };
-    codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown };
+    codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown; fastMode?: unknown };
     ccc?: { DEEPSEEK_API_KEY?: unknown; DEEPSEEK_BASE_URL?: unknown; model?: unknown };
     webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
@@ -557,7 +559,8 @@ function loadConfig(): AppConfig {
       (typeof codexRaw.command === "string" && (codexRaw.command as string).trim()) ||
       (typeof codexRaw.model === "string" && (codexRaw.model as string).trim()) ||
       (typeof codexRaw.alternativeModel === "string" && (codexRaw.alternativeModel as string).trim()) ||
-      (typeof codexRaw.effort === "string" && (codexRaw.effort as string).trim()),
+      (typeof codexRaw.effort === "string" && (codexRaw.effort as string).trim()) ||
+      codexRaw.fastMode === true,
     );
 
   const claudeEnabled = resolveEnabled(claude.enabled, claudeNonEmpty);
@@ -649,6 +652,7 @@ function loadConfig(): AppConfig {
       model: normalizeOptionalConfigField(codexRaw.model, { label: "codex.model" }),
       alternativeModel: normalizeOptionalConfigField(codexRaw.alternativeModel, { label: "codex.alternativeModel" }),
       effort: normalizeOptionalConfigField(codexRaw.effort, { label: "codex.effort" }),
+      fastMode: codexRaw.fastMode === true,
     },
     ccc: {
       DEEPSEEK_API_KEY: normalizeOptionalConfigField(cccRaw.DEEPSEEK_API_KEY, { label: "ccc.DEEPSEEK_API_KEY" }),
