@@ -42,6 +42,13 @@ import { resourceMonitor, registerProcess, unregisterProcess } from "./adapters/
 import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { hasResponseStalled, observeResponseProgress } from "./response-stall.ts";
+import {
+  MAX_PROCESSED,
+  clearFeishuMessageLedgerMemory,
+  processedMessages,
+} from "./feishu-message-ingress.ts";
+
+export { MAX_PROCESSED, processedMessages };
 
 // 微信显示循环压缩：头5 + ... + 尾5，避免在最后一步 sendText 中压缩指令回复
 function compressWechatDisplayText(text: string): string {
@@ -130,9 +137,6 @@ async function createVisibleProgressCard(
 // ---------------------------------------------------------------------------
 // Shared state (imported by index.ts)
 // ---------------------------------------------------------------------------
-
-export const processedMessages = new Set<string>();
-export const MAX_PROCESSED = 5000;
 
 /** 每个 chatId 上一次已处理消息的时间戳，用于拦截延迟送达的旧消息 */
 export const lastMsgTimestamps = new Map<string, number>();
@@ -463,7 +467,7 @@ export function resetState(): void {
   }
   chatSessionMap.clear();
   sessionInfoMap.clear();
-  processedMessages.clear();
+  clearFeishuMessageLedgerMemory();
   lastMsgTimestamps.clear();
   chatPlatformMap.clear();
   for (const prompt of activePrompts.values()) {

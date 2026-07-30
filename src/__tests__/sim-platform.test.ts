@@ -76,6 +76,7 @@ describe("SimulatedPlatform", () => {
     const notice = SimulatedPlatform.formatDelayNotice(Date.now() - 20 * 60 * 1000, "测试消息");
     expect(notice).toBeDefined();
     expect(notice).toContain("延迟送达");
+    expect(notice).not.toContain("因服务离线");
     // 近期消息不触发
     expect(SimulatedPlatform.formatDelayNotice(Date.now(), "test")).toBeNull();
   });

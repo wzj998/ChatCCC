@@ -97,9 +97,7 @@ import {
   updateCardKitCard,
 } from "./cardkit.ts";
 import {
-  MAX_PROCESSED,
   loadSessionRegistryForBinding,
-  processedMessages,
   rebuildBindingsFromRegistry,
   resetState,
   setSessionPlatform,
@@ -116,6 +114,10 @@ import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
 import { handleCodexResetCardAction } from "./codex-reset-actions.ts";
 import { resolveFeishuCardActionChatType } from "./card-action-routing.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
+import {
+  createAckFirstEventHandler,
+  feishuMessageLedger,
+} from "./feishu-message-ingress.ts";
 
 // ---------------------------------------------------------------------------
 // Feishu 平台适配器
@@ -265,6 +267,99 @@ function parseCardAction(data: unknown): CardActionResult | null {
 let broadcastToRelay: (data: unknown) => void = () => {};
 const wechatSignal = { stopped: false };
 
+async function processFeishuMessageEvent(data: Evt): Promise<void> {
+  const traceId = makeTraceId();
+  try {
+    broadcastToRelay(data);
+
+    const event = getInnerEvent(data);
+    const message = event.message;
+    if (!message) return;
+
+    const messageId = message.message_id;
+    const chatId = message.chat_id ?? "";
+    const chatType = message.chat_type ?? "group";
+    const msgTimestamp = parseInt(message.create_time ?? "0", 10) || Date.now();
+    const disposition = await feishuMessageLedger.accept({
+      messageId,
+      chatId,
+      createTime: msgTimestamp,
+    });
+
+    if (disposition === "duplicate") {
+      console.log(`[MSG] Duplicate message ignored: ${messageId ?? "(missing id)"}`);
+      return;
+    }
+    if (disposition === "stale") {
+      logTrace(traceId, "DONE", {
+        outcome: "skip_stale_feishu_message",
+        messageId,
+        chatId,
+        msgTimestamp,
+      });
+      console.log(
+        `[${ts()}] [SKIP] Stale Feishu message ignored: messageId=${messageId ?? "(missing id)"} chatId=${chatId} createTime=${msgTimestamp}`,
+      );
+      return;
+    }
+
+    const text = await formatMessageContent(message);
+    const openId = event.sender?.sender_id?.open_id ?? "";
+
+    console.log(
+      `[MSG] id=${messageId ?? "(missing)"} sender=${openId} chat=${chatId} type=${chatType} text="${text}"`,
+    );
+    appendChatLog(chatId, openId, text);
+
+    if (messageId) {
+      getTenantAccessToken().then((freshToken) =>
+        addReaction(freshToken, messageId).catch((err) =>
+          console.error(`[${ts()}] Reaction failed: ${(err as Error).message}`)
+        )
+      ).catch((err) =>
+        console.error(`[${ts()}] Reaction token failed: ${(err as Error).message}`)
+      );
+    }
+
+    if (!text) return;
+    logTrace(traceId, "RECV", {
+      messageId,
+      chatId,
+      chatType,
+      text: text.slice(0, 100),
+    });
+
+    const delayNotice = formatDelayNotice(msgTimestamp, text);
+    if (delayNotice) {
+      const delayToken = await getTenantAccessToken();
+      await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
+    }
+
+    await handleCommand(
+      feishuPlatform,
+      text,
+      chatId,
+      openId,
+      msgTimestamp,
+      chatType,
+      traceId,
+      buildUpdateCommandId("message", messageId),
+    );
+  } catch (err) {
+    logTrace(traceId, "ERROR", { message: (err as Error).message });
+    console.error(
+      `[${ts()}] [FATAL] im.message.receive_v1 worker crashed: ${(err as Error).message}`,
+    );
+  }
+}
+
+const handleFeishuMessageEventAckFirst = createAckFirstEventHandler(
+  processFeishuMessageEvent,
+  (err) => console.error(
+    `[${ts()}] [FATAL] Detached Feishu event worker failed: ${(err as Error).message}`,
+  ),
+);
+
 // ---------------------------------------------------------------------------
 // Simulate mode: inject message via HTTP
 // ---------------------------------------------------------------------------
@@ -401,72 +496,7 @@ async function startBotServiceCore(): Promise<void> {
 
   const eventDispatcher = new EventDispatcher({});
   eventDispatcher.register({
-    "im.message.receive_v1": async (data: Evt) => {
-      const traceId = makeTraceId();
-      try {
-      broadcastToRelay(data);
-
-      const event = getInnerEvent(data);
-      const message = event.message;
-      if (!message) return;
-
-      const messageId = message.message_id;
-      if (messageId) {
-        if (processedMessages.has(messageId)) {
-          console.log(`[MSG] Duplicate message ignored: ${messageId}`);
-          return;
-        }
-        processedMessages.add(messageId);
-        if (processedMessages.size > MAX_PROCESSED) {
-          const it = processedMessages.values();
-          for (let i = 0; i < 1000; i++) processedMessages.delete(it.next().value as string);
-        }
-      }
-
-      const text = await formatMessageContent(message);
-      const sender = event.sender;
-      const openId = sender?.sender_id?.open_id ?? "";
-      const chatId = message.chat_id ?? "";
-      const chatType = message.chat_type ?? "group";
-
-      console.log(`[MSG] sender=${openId} chat=${chatId} type=${chatType} text="${text}"`);
-      appendChatLog(chatId, openId, text);
-
-      if (messageId) {
-        getTenantAccessToken().then((freshToken) =>
-          addReaction(freshToken, messageId).catch((err) =>
-            console.error(`[${ts()}] Reaction failed: ${(err as Error).message}`)
-          )
-        ).catch((err) =>
-          console.error(`[${ts()}] Reaction token failed: ${(err as Error).message}`)
-        );
-      }
-
-      if (!text) return;
-      const msgTimestamp = parseInt(message.create_time ?? "0", 10) || Date.now();
-      logTrace(traceId, "RECV", { chatId, chatType, text: text.slice(0, 100) });
-      const delayNotice = formatDelayNotice(msgTimestamp, text);
-      if (delayNotice) {
-        const delayToken = await getTenantAccessToken();
-        await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
-      }
-      // 仅 `/update` 会使用这个稳定 ID 做跨重启幂等；其他命令仍沿用
-      // processedMessages 的进程内去重。
-      await handleCommand(
-        feishuPlatform,
-        text,
-        chatId,
-        openId,
-        msgTimestamp,
-        chatType,
-        traceId,
-        buildUpdateCommandId("message", messageId),
-      );
-      } catch (err) {
-        logTrace(traceId, "ERROR", { message: (err as Error).message });
-        console.error(`[${ts()}] [FATAL] im.message.receive_v1 handler crashed: ${(err as Error).message}`);
-      }
-    },
+    "im.message.receive_v1": handleFeishuMessageEventAckFirst,
 
     "card.action.trigger": async (data: Evt) => {
       try {
@@ -594,6 +624,7 @@ async function startBotServiceCore(): Promise<void> {
     // 进程首次启动:此时所有 Map 都是空的,resetState 主要是打个 LOG 标识"开始
     // 干净状态"。修正残留的 running stream-state 并重建 session→chat 映射。
     resetState();
+    await feishuMessageLedger.load();
     startUnifiedDisplayLoop();
     fixStaleStreamStates().then(async () => {
       const registry = await loadSessionRegistryForBinding();
