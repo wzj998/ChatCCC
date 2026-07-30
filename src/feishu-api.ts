@@ -1023,7 +1023,7 @@ export function formatDelayNotice(createTimeMs: number, messageText?: string, no
   }
 
   const contentLine = messageText ? `\n> 原始内容：${messageText.slice(0, 200)}` : "";
-  return `> ⚠️ 延迟送达提醒：此消息于 ${sendTimeStr} 发送，因服务离线，延迟约 ${delayStr}后送达${contentLine}`;
+  return `> ⚠️ 延迟送达提醒：此消息于 ${sendTimeStr} 发送，现延迟约 ${delayStr}后送达${contentLine}`;
 }
 
 /**
