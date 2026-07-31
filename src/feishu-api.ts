@@ -324,6 +324,7 @@ const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
 const PLAIN_AVATAR_TOOL = "plain";
 const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-window-aware-v14";
+const CODEX_FAST_FRAME_STYLE_VERSION = "fast-champagne-frame-v1";
 const CURSOR_AVATAR_USAGE_STYLE_VERSION = "usage-battery-v1";
 
 export interface CodexUsageBalance {
@@ -376,13 +377,15 @@ function avatarCacheKey(
   status: string,
   codexUsage: CodexUsageSummary | null = null,
   cursorBatteryPercent: number | null = null,
+  fastMode = false,
 ): string {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   if (normalizedTool === "codex") {
-    if (!codexUsage?.weekly) return `${normalizedTool}:${normalizedStatus}:plain`;
+    const fastKey = fastMode ? `:${CODEX_FAST_FRAME_STYLE_VERSION}` : "";
+    if (!codexUsage?.weekly) return `${normalizedTool}:${normalizedStatus}:plain${fastKey}`;
     const ringKey = codexUsage.fiveHour ? `:5h-ring:${codexUsage.fiveHour.remainingPercent}` : "";
-    return `${normalizedTool}:${normalizedStatus}:${CODEX_AVATAR_USAGE_STYLE_VERSION}:7d-battery:${codexUsage.weekly.remainingPercent}${ringKey}`;
+    return `${normalizedTool}:${normalizedStatus}:${CODEX_AVATAR_USAGE_STYLE_VERSION}:7d-battery:${codexUsage.weekly.remainingPercent}${ringKey}${fastKey}`;
   }
   if (normalizedTool === "cursor") {
     return cursorBatteryPercent !== null
@@ -773,21 +776,47 @@ async function buildAgentBadgeOverlay(tool: string): Promise<sharp.OverlayOption
   };
 }
 
+function buildCodexFastFrameOverlay(): sharp.OverlayOptions {
+  const size = AVATAR_BADGE_SIZE + 16;
+  const innerOffset = 7;
+  const innerSize = size - innerOffset * 2;
+  const frame = Buffer.from(`
+<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="champagne" x1="0" y1="0" x2="${size}" y2="${size}" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF0BE"/>
+      <stop offset="0.55" stop-color="#FFD56A"/>
+      <stop offset="1" stop-color="#EFA923"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="${size - 1}" height="${size - 1}" rx="25" fill="url(#champagne)"/>
+  <rect x="${innerOffset}" y="${innerOffset}" width="${innerSize}" height="${innerSize}" rx="21" fill="#fffdf4"/>
+</svg>`);
+  return {
+    input: frame,
+    left: AVATAR_SIZE - size - 2,
+    top: AVATAR_SIZE - size - 2,
+  };
+}
+
 async function renderAvatar(
   tool: string,
   status: string,
   codexUsage: CodexUsageSummary | null = null,
   cursorBatteryPercent: number | null = null,
+  fastMode = false,
 ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
   const normalizedTool = normalizeAvatarTool(tool);
   const normalizedStatus = normalizeAvatarStatus(status);
   const composites: sharp.OverlayOptions[] = [];
   const hasAgentBadge = normalizedTool !== PLAIN_AVATAR_TOOL;
+  const useFastCodexAvatar = normalizedTool === "codex" && fastMode;
 
   const codexWeeklyUsage = normalizedTool === "codex" ? codexUsage?.weekly ?? null : null;
   const useDynamicCodexAvatar = normalizedTool === "codex" && codexUsage !== null && codexWeeklyUsage !== null;
   const useDynamicCursorAvatar = normalizedTool === "cursor" && cursorBatteryPercent !== null;
-  const basePath = useDynamicCodexAvatar || useDynamicCursorAvatar
+  const useDynamicBadgeAvatar = useDynamicCodexAvatar || useDynamicCursorAvatar || useFastCodexAvatar;
+  const basePath = useDynamicBadgeAvatar
     ? AVATAR_SOURCES[normalizedStatus]
     : hasAgentBadge
       ? avatarCombinationPath(normalizedTool, normalizedStatus)
@@ -797,15 +826,14 @@ async function renderAvatar(
     if (codexUsage.fiveHour) {
       composites.push({ input: buildCodexUsageRingSvg(codexUsage.fiveHour.remainingPercent), left: 0, top: 0 });
     }
-    composites.push(
-      { input: buildCodexUsageBatterySvg(codexWeeklyUsage.remainingPercent), left: 0, top: 0 },
-      await buildAgentBadgeOverlay(normalizedTool),
-    );
+    composites.push({ input: buildCodexUsageBatterySvg(codexWeeklyUsage.remainingPercent), left: 0, top: 0 });
   } else if (useDynamicCursorAvatar) {
-    composites.push(
-      { input: buildCodexUsageBatterySvg(cursorBatteryPercent), left: 0, top: 0 },
-      await buildAgentBadgeOverlay(normalizedTool),
-    );
+    composites.push({ input: buildCodexUsageBatterySvg(cursorBatteryPercent), left: 0, top: 0 });
+  }
+
+  if (useDynamicBadgeAvatar) {
+    if (useFastCodexAvatar) composites.push(buildCodexFastFrameOverlay());
+    composites.push(await buildAgentBadgeOverlay(normalizedTool));
   }
 
   let pipeline = sharp(await readFile(basePath))
@@ -824,10 +852,10 @@ async function renderAvatar(
     buffer: jpeg,
     contentType: "image/jpeg",
     filename: normalizedTool === "codex" && codexUsage?.weekly
-      ? `avatar_${normalizedTool}_${normalizedStatus}_7d_${codexUsage.weekly.remainingPercent}${codexUsage.fiveHour ? `_5h_${codexUsage.fiveHour.remainingPercent}` : ""}.jpg`
+      ? `avatar_${normalizedTool}_${normalizedStatus}${useFastCodexAvatar ? "_fast" : ""}_7d_${codexUsage.weekly.remainingPercent}${codexUsage.fiveHour ? `_5h_${codexUsage.fiveHour.remainingPercent}` : ""}.jpg`
       : normalizedTool === "cursor" && cursorBatteryPercent !== null
         ? `avatar_${normalizedTool}_${normalizedStatus}_battery_${cursorBatteryPercent}.jpg`
-      : `avatar_${normalizedTool}_${normalizedStatus}.jpg`,
+      : `avatar_${normalizedTool}_${normalizedStatus}${useFastCodexAvatar ? "_fast" : ""}.jpg`,
   };
 }
 
@@ -837,8 +865,9 @@ async function uploadImage(
   status: string,
   codexUsage: CodexUsageSummary | null = null,
   cursorBatteryPercent: number | null = null,
+  fastMode = false,
 ): Promise<string> {
-  const image = await renderAvatar(tool, status, codexUsage, cursorBatteryPercent);
+  const image = await renderAvatar(tool, status, codexUsage, cursorBatteryPercent, fastMode);
   const blob = new Blob([new Uint8Array(image.buffer)], { type: image.contentType });
   const form = new FormData();
   form.append("image_type", "avatar");
@@ -872,10 +901,11 @@ async function getOrUploadAvatarKey(
   const cursorBatteryPercent = normalizedTool === "cursor"
     ? await resolveCursorAvatarBatteryPercent(usageHints.cursorUsage)
     : null;
-  const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent);
+  const fastMode = normalizedTool === "codex" && usageHints.fastMode === true;
+  const keyName = avatarCacheKey(normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent, fastMode);
   const cached = avatarKeyCache.get(keyName);
   if (cached) return cached;
-  const key = await uploadImage(token, normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent);
+  const key = await uploadImage(token, normalizedTool, normalizedStatus, codexUsage, cursorBatteryPercent, fastMode);
   avatarKeyCache.set(keyName, key);
   await persistAvatarKeyCache().catch((err) => {
     console.error(`[${ts()}] [AVATAR] persist cache FAIL: ${(err as Error).message}`);

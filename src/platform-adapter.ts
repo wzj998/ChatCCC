@@ -11,6 +11,7 @@ import type { CodexUsageSummary } from "./feishu-api.ts";
 export interface ChatAvatarUsageHints {
   codexUsage?: CodexUsageSummary | null;
   cursorUsage?: CursorUsageSummary | null;
+  fastMode?: boolean;
 }
 
 export interface PlatformAdapter {

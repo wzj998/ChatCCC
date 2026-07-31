@@ -681,9 +681,21 @@ describe("handleCommand WeChat processing ack", () => {
 
     await handleCommand(platform, "/fast on", "feishu-codex", "ou-user", Date.now(), "p2p");
     expect(getEffectiveFastModeForTool("codex", "sid-codex-fast")).toBe(true);
+    expect(platform.setChatAvatar).toHaveBeenLastCalledWith(
+      "feishu-codex",
+      "codex",
+      "idle",
+      { fastMode: true },
+    );
 
     await handleCommand(platform, "/fast off", "feishu-codex", "ou-user", Date.now(), "p2p");
     expect(getEffectiveFastModeForTool("codex", "sid-codex-fast")).toBe(false);
+    expect(platform.setChatAvatar).toHaveBeenLastCalledWith(
+      "feishu-codex",
+      "codex",
+      "idle",
+      { fastMode: false },
+    );
     card = JSON.parse(
       vi.mocked(platform.sendRawCard).mock.calls.at(-1)?.[1] ?? "{}",
     ) as { elements?: Array<{ tag: string; text?: { content: string } }> };
