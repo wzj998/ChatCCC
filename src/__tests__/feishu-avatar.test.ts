@@ -251,14 +251,14 @@ describe("Codex avatar usage battery", () => {
       const cacheRaw = await readFile(join(userDataDir, "state", "avatar-image-keys.json"), "utf-8");
       const cache = JSON.parse(cacheRaw) as Record<string, string>;
       expect(cache["codex:idle:plain"]).toBe("img_test");
-      expect(cache["codex:idle:plain:fast-champagne-frame-v1"]).toBe("img_test");
+      expect(cache["codex:idle:plain:fast-champagne-frame-v2"]).toBe("img_test");
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });
     }
   });
 
-  it("renders a thick champagne frame above the Codex badge in Fast mode", async () => {
+  it("renders an extra-thick champagne frame above the Codex badge in Fast mode", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
     const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
     const uploadedNames: string[] = [];
@@ -274,7 +274,7 @@ describe("Codex avatar usage battery", () => {
 
       expect(uploadedNames).toEqual(["avatar_codex_idle_fast.jpg"]);
       const { data, info } = await sharp(uploadedImages[0]).raw().toBuffer({ resolveWithObject: true });
-      const pixelOffset = (149 * info.width + 200) * info.channels;
+      const pixelOffset = (144 * info.width + 200) * info.channels;
       const [red, green, blue] = data.subarray(pixelOffset, pixelOffset + 3);
       expect(red).toBeGreaterThan(220);
       expect(green).toBeGreaterThan(150);
