@@ -324,7 +324,7 @@ const AVATAR_BADGE_SIZE = 92;
 const AVATAR_BADGE_MARGIN = 10;
 const PLAIN_AVATAR_TOOL = "plain";
 const CODEX_AVATAR_USAGE_STYLE_VERSION = "usage-window-aware-v14";
-const CODEX_FAST_FRAME_STYLE_VERSION = "fast-champagne-frame-v1";
+const CODEX_FAST_FRAME_STYLE_VERSION = "fast-champagne-frame-v2";
 const CURSOR_AVATAR_USAGE_STYLE_VERSION = "usage-battery-v1";
 
 export interface CodexUsageBalance {
@@ -760,7 +760,10 @@ function buildCodexUsageRingSvg(remainingPercent: number): Buffer {
 </svg>`);
 }
 
-async function buildAgentBadgeOverlay(tool: string): Promise<sharp.OverlayOptions> {
+async function buildAgentBadgeOverlay(
+  tool: string,
+  margin = AVATAR_BADGE_MARGIN,
+): Promise<sharp.OverlayOptions> {
   const badge = await sharp(AVATAR_BADGES[tool])
     .resize(AVATAR_BADGE_SIZE, AVATAR_BADGE_SIZE, {
       fit: "contain",
@@ -771,14 +774,14 @@ async function buildAgentBadgeOverlay(tool: string): Promise<sharp.OverlayOption
     .toBuffer();
   return {
     input: badge,
-    left: AVATAR_SIZE - AVATAR_BADGE_SIZE - AVATAR_BADGE_MARGIN,
-    top: AVATAR_SIZE - AVATAR_BADGE_SIZE - AVATAR_BADGE_MARGIN,
+    left: AVATAR_SIZE - AVATAR_BADGE_SIZE - margin,
+    top: AVATAR_SIZE - AVATAR_BADGE_SIZE - margin,
   };
 }
 
 function buildCodexFastFrameOverlay(): sharp.OverlayOptions {
-  const size = AVATAR_BADGE_SIZE + 16;
-  const innerOffset = 7;
+  const size = AVATAR_BADGE_SIZE + 20;
+  const innerOffset = 9;
   const innerSize = size - innerOffset * 2;
   const frame = Buffer.from(`
 <svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
@@ -794,8 +797,8 @@ function buildCodexFastFrameOverlay(): sharp.OverlayOptions {
 </svg>`);
   return {
     input: frame,
-    left: AVATAR_SIZE - size - 2,
-    top: AVATAR_SIZE - size - 2,
+    left: AVATAR_SIZE - size - 1,
+    top: AVATAR_SIZE - size - 1,
   };
 }
 
@@ -833,7 +836,7 @@ async function renderAvatar(
 
   if (useDynamicBadgeAvatar) {
     if (useFastCodexAvatar) composites.push(buildCodexFastFrameOverlay());
-    composites.push(await buildAgentBadgeOverlay(normalizedTool));
+    composites.push(await buildAgentBadgeOverlay(normalizedTool, useFastCodexAvatar ? 11 : AVATAR_BADGE_MARGIN));
   }
 
   let pipeline = sharp(await readFile(basePath))
