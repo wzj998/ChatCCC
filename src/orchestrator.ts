@@ -340,6 +340,22 @@ function fastHelpAfterModel(tool: string): string {
     : "";
 }
 
+function setChatAvatarForSession(
+  platform: PlatformAdapter,
+  chatId: string,
+  tool: string,
+  status: string,
+  sessionId?: string,
+  usageHints?: ChatAvatarUsageHints,
+): Promise<void> {
+  const fastMode = getEffectiveFastModeForTool(tool, sessionId);
+  if (!usageHints && !fastMode) return platform.setChatAvatar(chatId, tool, status);
+  return platform.setChatAvatar(chatId, tool, status, {
+    ...usageHints,
+    ...(fastMode ? { fastMode: true } : {}),
+  });
+}
+
 async function sendFastModeStatus(
   platform: PlatformAdapter,
   chatId: string,
@@ -375,8 +391,9 @@ function refreshUsageAvatar(
   tool: "codex" | "cursor",
   status: "busy" | "idle",
   usageHints: ChatAvatarUsageHints,
+  sessionId?: string,
 ): void {
-  platform.setChatAvatar(chatId, tool, status, usageHints).catch((err) => {
+  setChatAvatarForSession(platform, chatId, tool, status, sessionId, usageHints).catch((err) => {
     console.warn(`[${ts()}] [AVATAR] usage refresh failed: chatId=${chatId} tool=${tool} ${(err as Error).message}`);
   });
 }
@@ -386,6 +403,7 @@ async function sendUsageSummary(
   chatId: string,
   tool: "codex" | "cursor",
   avatarStatus: "busy" | "idle" = "idle",
+  sessionId?: string,
 ): Promise<void> {
   if (tool === "cursor") {
     const usage = await getCursorUsageSummary();
@@ -395,7 +413,7 @@ async function sendUsageSummary(
     } else {
       await platform.sendCard(chatId, "Cursor Usage", content, "blue");
     }
-    refreshUsageAvatar(platform, chatId, tool, avatarStatus, { cursorUsage: usage });
+    refreshUsageAvatar(platform, chatId, tool, avatarStatus, { cursorUsage: usage }, sessionId);
     return;
   }
 
@@ -411,7 +429,7 @@ async function sendUsageSummary(
   } else {
     await platform.sendCard(chatId, "Codex Usage", content, "blue");
   }
-  refreshUsageAvatar(platform, chatId, tool, avatarStatus, { codexUsage: usage });
+  refreshUsageAvatar(platform, chatId, tool, avatarStatus, { codexUsage: usage }, sessionId);
 }
 
 async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor", err: unknown): Promise<void> {
@@ -585,7 +603,7 @@ async function resolveFeishuP2pAgent(
         `检测到默认 Agent 已变化：**${previousLabel} → ${desiredLabel}**。\n\n已创建新的空白 ${desiredLabel} 私聊会话，并从本条消息开始使用。`,
         "green",
       ).catch(() => {});
-      platform.setChatAvatar(chatId, desiredTool, "new").catch(() => {});
+      setChatAvatarForSession(platform, chatId, desiredTool, "new", init.sessionId).catch(() => {});
       return { kind: "ready", sessionId: init.sessionId, tool: desiredTool };
     } catch (err) {
       return {
@@ -817,7 +835,7 @@ export async function handleCommand(
     const avatarStatus = usageTarget.sessionId && isSessionRunning(usageTarget.sessionId) ? "busy" : "idle";
     logTrace(tid, "BRANCH", { cmd: "/usage", tool: usageTool });
     try {
-      await sendUsageSummary(platform, chatId, usageTool, avatarStatus);
+      await sendUsageSummary(platform, chatId, usageTool, avatarStatus, usageTarget.sessionId);
       logTrace(tid, "DONE", { outcome: "usage", tool: usageTool });
     } catch (err) {
       await sendUsageError(platform, chatId, usageTool, err);
@@ -1149,7 +1167,7 @@ export async function handleCommand(
       sessionId,
       tool,
     });
-    platform.setChatAvatar(newChatId, tool, "new").catch(() => {});
+    setChatAvatarForSession(platform, newChatId, tool, "new", sessionId).catch(() => {});
     console.log(`${"=".repeat(60)}`);
     return;
   }
@@ -1544,9 +1562,7 @@ export async function handleCommand(
         );
       }
 
-      platform
-        .setChatAvatar(chatId, descriptionTool, "new")
-        .catch(() => {});
+      setChatAvatarForSession(platform, chatId, descriptionTool, "new", newSessionId).catch(() => {});
 
       await platform.sendCard(
         chatId,
@@ -1716,7 +1732,7 @@ export async function handleCommand(
         );
       }
 
-      platform.setChatAvatar(chatId, target.tool, "new").catch(() => {});
+      setChatAvatarForSession(platform, chatId, target.tool, "new", target.sessionId).catch(() => {});
 
       const targetToolLabel = toolDisplayName(target.tool);
       const busyNote = isSessionRunning(target.sessionId)
@@ -1772,6 +1788,12 @@ export async function handleCommand(
       }
       const enabled = getEffectiveFastModeForTool("codex", sessionId);
       await sendFastModeStatus(platform, chatId, enabled).catch(() => {});
+      if (fastArg) {
+        const avatarStatus = isSessionRunning(sessionId) ? "busy" : "idle";
+        await platform.setChatAvatar(chatId, "codex", avatarStatus, { fastMode: enabled }).catch((err) => {
+          console.warn(`[${ts()}] [AVATAR] Fast mode refresh failed: chatId=${chatId} ${(err as Error).message}`);
+        });
+      }
       logTrace(tid, "DONE", {
         outcome: fastArg ? "fast_switched" : "fast_query",
         enabled,

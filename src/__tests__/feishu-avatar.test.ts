@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 
 const mockConfig = {
   cursor: {
@@ -68,13 +69,17 @@ function mockAvatarFetch(uploadedNames: string[], usageResponse: Response): void
   }));
 }
 
-function mockAvatarUploadOnlyFetch(uploadedNames: string[]): ReturnType<typeof vi.fn> {
+function mockAvatarUploadOnlyFetch(
+  uploadedNames: string[],
+  uploadedImages: Buffer[] = [],
+): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const urlText = String(url);
     if (urlText === "https://open.feishu.test/im/v1/images") {
       const form = init?.body as FormData;
       const image = form.get("image") as File;
       uploadedNames.push(image.name);
+      uploadedImages.push(Buffer.from(await image.arrayBuffer()));
       return new Response(JSON.stringify({ code: 0, data: { image_key: "img_test" } }), { status: 200 });
     }
     if (urlText === "https://open.feishu.test/im/v1/chats/chat_1") {
@@ -216,6 +221,64 @@ describe("Codex avatar usage battery", () => {
 
       expect(uploadedNames).toEqual(["avatar_codex_busy_7d_88_5h_63.jpg"]);
       expect(fetchMock).not.toHaveBeenCalledWith("https://chatgpt.com/backend-api/wham/usage", expect.anything());
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates Fast and standard Codex avatars in the upload cache", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    mockAvatarUploadOnlyFetch(uploadedNames);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "codex", "idle", {
+        codexUsage: null,
+        fastMode: false,
+      });
+      await setChatAvatar("tenant-token", "chat_1", "codex", "idle", {
+        codexUsage: null,
+        fastMode: true,
+      });
+
+      expect(uploadedNames).toEqual([
+        "avatar_codex_idle.jpg",
+        "avatar_codex_idle_fast.jpg",
+      ]);
+      const cacheRaw = await readFile(join(userDataDir, "state", "avatar-image-keys.json"), "utf-8");
+      const cache = JSON.parse(cacheRaw) as Record<string, string>;
+      expect(cache["codex:idle:plain"]).toBe("img_test");
+      expect(cache["codex:idle:plain:fast-champagne-frame-v1"]).toBe("img_test");
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders a thick champagne frame above the Codex badge in Fast mode", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    const uploadedImages: Buffer[] = [];
+    mockAvatarUploadOnlyFetch(uploadedNames, uploadedImages);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "codex", "idle", {
+        codexUsage: null,
+        fastMode: true,
+      });
+
+      expect(uploadedNames).toEqual(["avatar_codex_idle_fast.jpg"]);
+      const { data, info } = await sharp(uploadedImages[0]).raw().toBuffer({ resolveWithObject: true });
+      const pixelOffset = (149 * info.width + 200) * info.channels;
+      const [red, green, blue] = data.subarray(pixelOffset, pixelOffset + 3);
+      expect(red).toBeGreaterThan(220);
+      expect(green).toBeGreaterThan(150);
+      expect(blue).toBeLessThan(180);
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });

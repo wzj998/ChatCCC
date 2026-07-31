@@ -539,6 +539,18 @@ export function getEffectiveFastModeForTool(tool: string, sessionId?: string): b
   return config.codex.fastMode;
 }
 
+function setSessionChatAvatar(
+  platform: PlatformAdapter,
+  chatId: string,
+  tool: string,
+  status: string,
+  sessionId: string,
+): Promise<void> {
+  return getEffectiveFastModeForTool(tool, sessionId)
+    ? platform.setChatAvatar(chatId, tool, status, { fastMode: true })
+    : platform.setChatAvatar(chatId, tool, status);
+}
+
 /** 为指定 session 设置模型覆盖（/model <name>） */
 export function setSessionModelOverride(sessionId: string, model: string): void {
   sessionModelOverrides.set(sessionId, model);
@@ -1290,7 +1302,7 @@ export async function runAgentSession(
         if (displayCards.get(displayChatId) !== display) {
           const finalStatus = turnFinalStatus(prevState.status);
           finalizeTurnCards(sessionId, prevState.turnCount, finalStatus).catch(() => {});
-          pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
+          setSessionChatAvatar(pp, displayChatId, prevState.tool, "idle", sessionId).catch(() => {});
         } else {
           const nextSeq = display.sequence + 1;
           const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status);
@@ -1310,7 +1322,7 @@ export async function runAgentSession(
           if (prevTerminalReply && stillOursAfterUpdate && !isFinalReplySentForTurn(prevState)) {
             await sendFinalReplyTextOnce(pp, displayChatId, sessionId, prevState.turnCount, prevTerminalReply);
           }
-          pp.setChatAvatar(displayChatId, prevState.tool, "idle").catch(() => {});
+          setSessionChatAvatar(pp, displayChatId, prevState.tool, "idle", sessionId).catch(() => {});
         }
       } else if (pp && prevTerminalReply && !isFinalReplySentForTurn(prevState)) {
         // 无 display 记录但上一轮有 finalReply（极快轮次），至少发送
@@ -1375,7 +1387,7 @@ export async function runAgentSession(
   // 设置最后活跃群头像为 busy
   const activeCid = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
   if (activeCid) {
-    platform.setChatAvatar(activeCid, tool, "busy").catch(() => {});
+    setSessionChatAvatar(platform, activeCid, tool, "busy", sessionId).catch(() => {});
   }
 
   const state: AccumulatorState = {
@@ -1665,7 +1677,7 @@ export async function runAgentSession(
       const active1 = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
       if (active1) {
         await platform.sendText(active1, "会话已停止。").catch(() => {});
-        platform.setChatAvatar(active1, tool, "idle").catch(() => {});
+        setSessionChatAvatar(platform, active1, tool, "idle", sessionId).catch(() => {});
       }
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
@@ -1695,7 +1707,7 @@ export async function runAgentSession(
             formatAutoEndedReply(finalReplyToWrite),
           );
         }
-        pp.setChatAvatar(activeAutoEnded, tool, "idle").catch(() => {});
+        setSessionChatAvatar(pp, activeAutoEnded, tool, "idle", sessionId).catch(() => {});
 
         if (wasAutoRecovery) {
           // 这是紧接第一次停滞而启动的恢复轮；再次发生相同停滞即终止
@@ -1730,7 +1742,7 @@ export async function runAgentSession(
         });
       }
       const activeErr = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
-      if (activeErr) platform.setChatAvatar(activeErr, tool, "idle").catch(() => {});
+      if (activeErr) setSessionChatAvatar(platform, activeErr, tool, "idle", sessionId).catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} process exited unexpectedly (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "process_missing", chunks: state.chunkCount });
     } else {
@@ -1753,7 +1765,7 @@ export async function runAgentSession(
           const pp = platformForChat(active2) ?? platform;
           await sendFinalReplyTextOnce(pp, active2, sessionId, nextTurnCount, finalReply);
         }
-        platform.setChatAvatar(active2, tool, "idle").catch(() => {});
+        setSessionChatAvatar(platform, active2, tool, "idle", sessionId).catch(() => {});
       }
       console.log(`[${ts()}] Session ${sessionId} stream complete (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, chunks: state.chunkCount, finalTextLen: finalReply.length });
@@ -1996,7 +2008,7 @@ export function startUnifiedDisplayLoop(): void {
               finalizeTurnCards(sessionId, state.turnCount, finalSt).catch(() => {});
               displayCards.delete(chatId);
             }
-            p.setChatAvatar(chatId, state.tool, "idle").catch(() => {});
+            setSessionChatAvatar(p, chatId, state.tool, "idle", sessionId).catch(() => {});
             console.log(`[${ts()}] [DISPLAY] unified loop deleted display for ${chatId} (terminal: ${state.status})`);
           } else {
             // running: 创建或更新展示

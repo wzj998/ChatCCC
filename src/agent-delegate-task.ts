@@ -3,7 +3,13 @@ import { resolve } from "node:path";
 import { sessionPrefixForTool, toolDisplayName, ts } from "./config.ts";
 import { setDefaultCwd } from "./config.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
-import { initClaudeSession, recordSessionRegistry, resumeAndPrompt, saveSessionTool } from "./session.ts";
+import {
+  getEffectiveFastModeForTool,
+  initClaudeSession,
+  recordSessionRegistry,
+  resumeAndPrompt,
+  saveSessionTool,
+} from "./session.ts";
 import { bindChatToSession } from "./session-chat-binding.ts";
 import { sessionChatName } from "./session-name.ts";
 
@@ -64,7 +70,11 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
       `下面会自动把任务作为第一句话发送给 ${toolLabel}。`,
     "green",
   ).catch(() => {});
-  input.platform.setChatAvatar(chatId, input.tool, "new").catch(() => {});
+  const fastMode = getEffectiveFastModeForTool(input.tool, sessionId);
+  const avatarUpdate = fastMode
+    ? input.platform.setChatAvatar(chatId, input.tool, "new", { fastMode: true })
+    : input.platform.setChatAvatar(chatId, input.tool, "new");
+  avatarUpdate.catch(() => {});
 
   await resumeAndPrompt(
     sessionId,
