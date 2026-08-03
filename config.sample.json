@@ -73,8 +73,11 @@
     "fastMode": false
   },
   "ccc": {
+    "enabled": false,
+    "defaultAgent": false,
     "DEEPSEEK_API_KEY": "",
     "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
-    "model": "deepseek-v4-pro"
+    "model": "deepseek-v4-pro",
+    "alternativeModel": ""
   }
 }

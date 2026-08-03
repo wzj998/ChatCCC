@@ -54,6 +54,14 @@ interface AppConfig {
     onDemandMonthlyBudget?: number;
   };
   codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; alternativeModel?: string; effort?: string; fastMode?: boolean };
+  ccc?: {
+    enabled?: boolean;
+    defaultAgent?: boolean;
+    DEEPSEEK_API_KEY?: string;
+    DEEPSEEK_BASE_URL?: string;
+    model?: string;
+    alternativeModel?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +508,24 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CODEX_DEFAULT_AGENT") {
       result.codex = result.codex || {};
       (result.codex as Record<string, unknown>).defaultAgent = val === true || val === "true";
+    } else if (key === "CHATCCC_CCC_API_KEY") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).DEEPSEEK_API_KEY = val;
+    } else if (key === "CHATCCC_CCC_BASE_URL") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).DEEPSEEK_BASE_URL = val;
+    } else if (key === "CHATCCC_CCC_MODEL") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_CCC_ALTERNATIVE_MODEL") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).alternativeModel = val;
+    } else if (key === "CHATCCC_CCC_ENABLED") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_CCC_DEFAULT_AGENT") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).defaultAgent = val === true || val === "true";
     }
   }
   return result;
@@ -945,6 +971,39 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
           </fieldset>
         </div>
 
+        <!-- CCC Agent 卡片 -->
+        <div class="agent-card" id="agent-card-ccc">
+          <div class="agent-card-header">
+            <input type="checkbox" class="agent-toggle" id="agent-enable-ccc" onchange="onAgentToggle('ccc', this.checked)">
+            <div class="meta">
+              <div class="name">CCC Agent</div>
+              <div class="desc">ChatCCC 内置 Agent<br>使用 DeepSeek 兼容 API</div>
+            </div>
+          </div>
+          <label class="agent-default-row">
+            <input type="checkbox" id="agent-default-ccc" onchange="onDefaultAgentToggle('ccc', this.checked)">
+            设为默认 Agent
+          </label>
+          <fieldset class="agent-body" id="agent-body-ccc" disabled>
+            <div class="form-group">
+              <label>API Key</label>
+              <input type="password" id="field-CHATCCC_CCC_API_KEY" placeholder="DeepSeek 兼容 API Key">
+            </div>
+            <div class="form-group">
+              <label>Base URL</label>
+              <input type="text" id="field-CHATCCC_CCC_BASE_URL" placeholder="https://api.deepseek.com/v1">
+            </div>
+            <div class="form-group">
+              <label>模型</label>
+              <input type="text" id="field-CHATCCC_CCC_MODEL" placeholder="deepseek-v4-pro">
+            </div>
+            <div class="form-group">
+              <label>备选模型（选填）</label>
+              <input type="text" id="field-CHATCCC_CCC_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
+            </div>
+          </fieldset>
+        </div>
+
       </div>
 
       <div class="btn-group" style="justify-content:space-between">
@@ -1077,6 +1136,19 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       </div>
     </details>
 
+    <details class="card config-section" id="dash-ccc">
+      <summary>CCC Agent</summary>
+      <div class="section-detail">
+        <div class="config-row"><span class="key">API Key</span><span class="val" id="cfg-CCC_API_KEY">-</span></div>
+        <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-CCC_BASE_URL">-</span></div>
+        <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CCC_MODEL">-</span></div>
+        <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CCC_ALTERNATIVE_MODEL">-</span></div>
+        <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-ccc" onchange="setDashboardDefaultAgent('ccc', this.checked)"> 设为默认 Agent</label>
+        <div class="hint" style="margin-top:6px;line-height:1.6">备选模型仅加入 /model 人工切换列表；保存后下一条消息或下个新会话生效。</div>
+        <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('ccc')">编辑</button>
+      </div>
+    </details>
+
     <div class="card" id="dash-no-agent-hint" style="text-align:center;color:#94a3b8;display:none">
       未启用任何 AI Agent。点击下方按钮重新运行配置向导启用。
     </div>
@@ -1103,8 +1175,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 <script>
 let state = {
   view: 'loading',
-  // 三个 Agent 各自的启用开关；初始全 false，renderStep2() 会按已存在 config 自动打开
-  agentsEnabled: { claude: false, cursor: false, codex: false },
+  // 四个 Agent 各自的启用开关；初始全 false，renderStep2() 会按已存在 config 自动打开
+  agentsEnabled: { claude: false, cursor: false, codex: false, ccc: false },
   defaultAgent: 'claude',
   wizardStep: 1,
   config: {},
@@ -1120,7 +1192,8 @@ var step2InputBound = false;
 const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
-  codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE']
+  codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1226,21 +1299,24 @@ function firstEnabledAgent() {
   if (state.agentsEnabled.claude) return 'claude';
   if (state.agentsEnabled.cursor) return 'cursor';
   if (state.agentsEnabled.codex) return 'codex';
+  if (state.agentsEnabled.ccc) return 'ccc';
   return null;
 }
 
-function resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn) {
+function resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn) {
   if (claudeOn && c.claude && c.claude.defaultAgent === true) return 'claude';
   if (cursorOn && c.cursor && c.cursor.defaultAgent === true) return 'cursor';
   if (codexOn && c.codex && c.codex.defaultAgent === true) return 'codex';
+  if (cccOn && c.ccc && c.ccc.defaultAgent === true) return 'ccc';
   if (claudeOn) return 'claude';
   if (cursorOn) return 'cursor';
   if (codexOn) return 'codex';
+  if (cccOn) return 'ccc';
   return 'claude';
 }
 
 function updateDefaultAgentToggles() {
-  ['claude','cursor','codex'].forEach(function(agent){
+  ['claude','cursor','codex','ccc'].forEach(function(agent){
     var el = document.getElementById('agent-default-' + agent);
     if (el) {
       el.checked = state.defaultAgent === agent;
@@ -1272,6 +1348,7 @@ function updateStep2NextBtn() {
   if (state.agentsEnabled.claude) validCount++;
   if (state.agentsEnabled.cursor) validCount++;
   if (state.agentsEnabled.codex) validCount++;
+  if (state.agentsEnabled.ccc) validCount++;
   if (validCount > 0 && !state.defaultAgent) {
     state.defaultAgent = firstEnabledAgent();
     updateDefaultAgentToggles();
@@ -1412,6 +1489,8 @@ function isAgentEnabled(node, keys) {
 var CLAUDE_FALLBACK_KEYS = ['model','subagentModel','effort','maxTurn'];
 var CURSOR_FALLBACK_KEYS = ['path','command','model','alternativeModel'];
 var CODEX_FALLBACK_KEYS = ['path','command','model','alternativeModel','effort','fastMode'];
+// 旧版 CCC 配置没有 enabled；只有 API Key 才表示用户实际完成了配置。
+var CCC_FALLBACK_KEYS = ['DEEPSEEK_API_KEY'];
 
 function renderStep2() {
   var c = state.config || {};
@@ -1444,18 +1523,27 @@ function renderStep2() {
   }
   var codexFastModeEl = document.getElementById('field-CHATCCC_CODEX_FAST_MODE');
   if (codexFastModeEl) codexFastModeEl.checked = !!(c.codex && c.codex.fastMode === true);
+  if (c.ccc) {
+    prefillNested('field-CHATCCC_CCC_API_KEY', c.ccc.DEEPSEEK_API_KEY);
+    prefillNested('field-CHATCCC_CCC_BASE_URL', c.ccc.DEEPSEEK_BASE_URL);
+    prefillNested('field-CHATCCC_CCC_MODEL', c.ccc.model);
+    prefillNested('field-CHATCCC_CCC_ALTERNATIVE_MODEL', c.ccc.alternativeModel);
+  }
 
   // 按已有 config 决定每个 Agent 默认是否开启：优先 enabled 字段，缺省时按"任一字段非空"
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
-  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn);
+  var cccOn = isAgentEnabled(c.ccc, CCC_FALLBACK_KEYS);
+  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn);
   document.getElementById('agent-enable-claude').checked = claudeOn;
   document.getElementById('agent-enable-cursor').checked = cursorOn;
   document.getElementById('agent-enable-codex').checked = codexOn;
+  document.getElementById('agent-enable-ccc').checked = cccOn;
   onAgentToggle('claude', claudeOn);
   onAgentToggle('cursor', cursorOn);
   onAgentToggle('codex', codexOn);
+  onAgentToggle('ccc', cccOn);
   updateDefaultAgentToggles();
 
   // Cursor path placeholder/hint：把已探测到的路径显示为占位
@@ -1479,7 +1567,7 @@ function renderStep2() {
  * 收集"待落地到 config.json 的扁平 vars"。
  *
  * - 飞书字段始终收集
- * - 三个 Agent 的 enabled 状态都显式下发，让 config.json 持久化用户的最新开关偏好
+  * - 四个 Agent 的 enabled 状态都显式下发，让 config.json 持久化用户的最新开关偏好
  * - Agent 字段仅在该 Agent 开关启用时收集；未启用的 Agent 不下发其它字段，
  *   服务端 deepMerge 会保留 config.json 中已有值（避免关闭开关时误清空旧配置）
  */
@@ -1505,12 +1593,14 @@ function collectAllFields() {
   vars.CHATCCC_CLAUDE_ENABLED = !!state.agentsEnabled.claude;
   vars.CHATCCC_CURSOR_ENABLED = !!state.agentsEnabled.cursor;
   vars.CHATCCC_CODEX_ENABLED = !!state.agentsEnabled.codex;
+  vars.CHATCCC_CCC_ENABLED = !!state.agentsEnabled.ccc;
   if (!state.defaultAgent || !state.agentsEnabled[state.defaultAgent]) {
     state.defaultAgent = firstEnabledAgent();
   }
   vars.CHATCCC_CLAUDE_DEFAULT_AGENT = state.defaultAgent === 'claude';
   vars.CHATCCC_CURSOR_DEFAULT_AGENT = state.defaultAgent === 'cursor';
   vars.CHATCCC_CODEX_DEFAULT_AGENT = state.defaultAgent === 'codex';
+  vars.CHATCCC_CCC_DEFAULT_AGENT = state.defaultAgent === 'ccc';
   if (state.agentsEnabled.claude) {
     AGENT_FIELDS.claude.forEach(function(key){
       var el = document.getElementById('field-' + key);
@@ -1529,6 +1619,12 @@ function collectAllFields() {
       if (!el) return;
       if (key === 'CHATCCC_CODEX_FAST_MODE') vars[key] = !!el.checked;
       else if (el.value.trim()) vars[key] = el.value.trim();
+    });
+  }
+  if (state.agentsEnabled.ccc) {
+    AGENT_FIELDS.ccc.forEach(function(key){
+      var el = document.getElementById('field-' + key);
+      if (el && el.value.trim()) vars[key] = el.value.trim();
     });
   }
   return vars;
@@ -1553,7 +1649,6 @@ function renderStep3() {
   if (!state.platformsEnabled.feishu && !state.platformsEnabled.ilink) {
     lines.push('<div style="color:#ef4444;margin-top:8px">未启用任何平台</div>');
   }
-
   lines.push('<h3 style="margin:16px 0 8px">Web UI</h3>');
   lines.push('<div class="config-row"><span class="key">直接启动时自动打开</span><span class="val">' + (vars.CHATCCC_WEB_UI_OPEN_ON_START ? '已启用' : '已禁用') + '</span></div>');
 
@@ -1571,10 +1666,11 @@ function renderStep3() {
   if (state.agentsEnabled.claude) enabledList.push('claude');
   if (state.agentsEnabled.cursor) enabledList.push('cursor');
   if (state.agentsEnabled.codex) enabledList.push('codex');
+  if (state.agentsEnabled.ccc) enabledList.push('ccc');
   if (enabledList.length === 0) {
     lines.push('<div style="color:#ef4444">未启用任何 AI Agent</div>');
   } else {
-    var defaultLabel = state.defaultAgent === 'cursor' ? 'Cursor' : state.defaultAgent === 'codex' ? 'Codex' : 'Claude Code';
+    var defaultLabel = state.defaultAgent === 'cursor' ? 'Cursor' : state.defaultAgent === 'codex' ? 'Codex' : state.defaultAgent === 'ccc' ? 'CCC Agent' : 'Claude Code';
     lines.push('<div class="config-row"><span class="key">/new 默认 Agent</span><span class="val">' + defaultLabel + '</span></div>');
   }
   enabledList.forEach(function(t){
@@ -1601,6 +1697,12 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CODEX_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CODEX_EFFORT || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Fast 模式</span><span class="val">' + (vars.CHATCCC_CODEX_FAST_MODE ? '已启用' : '已禁用') + '</span></div>');
+    } else if (t === 'ccc') {
+      lines.push('<h4 style="margin:10px 0 4px;color:#334155">CCC Agent</h4>');
+      lines.push('<div class="config-row"><span class="key">API Key</span><span class="val">' + (vars.CHATCCC_CCC_API_KEY ? '***已设置***' : '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + (vars.CHATCCC_CCC_BASE_URL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CCC_MODEL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CCC_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
     }
   });
   document.getElementById('review-content').innerHTML = lines.join('');
@@ -1627,16 +1729,19 @@ async function setDashboardDefaultAgent(agent, enabled) {
   var vars = {
     CHATCCC_CLAUDE_DEFAULT_AGENT: agent === 'claude',
     CHATCCC_CURSOR_DEFAULT_AGENT: agent === 'cursor',
-    CHATCCC_CODEX_DEFAULT_AGENT: agent === 'codex'
+    CHATCCC_CODEX_DEFAULT_AGENT: agent === 'codex',
+    CHATCCC_CCC_DEFAULT_AGENT: agent === 'ccc'
   };
   var result = await api('/api/config', 'POST', { vars: vars });
   if (result.ok) {
     state.config.claude = state.config.claude || {};
     state.config.cursor = state.config.cursor || {};
     state.config.codex = state.config.codex || {};
+    state.config.ccc = state.config.ccc || {};
     state.config.claude.defaultAgent = agent === 'claude';
     state.config.cursor.defaultAgent = agent === 'cursor';
     state.config.codex.defaultAgent = agent === 'codex';
+    state.config.ccc.defaultAgent = agent === 'ccc';
     updateDefaultAgentToggles();
     toastConfigApplyResult(result, '默认 Agent 已更新');
   } else {
@@ -1753,8 +1858,9 @@ function updateDashboardUI() {
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
-  state.agentsEnabled = { claude: claudeOn, cursor: cursorOn, codex: codexOn };
-  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn);
+  var cccOn = isAgentEnabled(c.ccc, CCC_FALLBACK_KEYS);
+  state.agentsEnabled = { claude: claudeOn, cursor: cursorOn, codex: codexOn, ccc: cccOn };
+  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn);
 
   // 微信 iLink 平台开关：同步复选框和标签
   var ilinkEnabled = c.platforms && c.platforms.ilink ? c.platforms.ilink.enabled !== false : true;
@@ -1786,10 +1892,11 @@ function updateDashboardUI() {
   document.getElementById('dash-claude').style.display = claudeOn ? '' : 'none';
   document.getElementById('dash-cursor').style.display = cursorOn ? '' : 'none';
   document.getElementById('dash-codex').style.display = codexOn ? '' : 'none';
+  document.getElementById('dash-ccc').style.display = cccOn ? '' : 'none';
   updateDefaultAgentToggles();
-  // 三个都未启用时给一个空态提示，引导用户去配置向导启用
+  // 四个都未启用时给一个空态提示，引导用户去配置向导启用
   var emptyHint = document.getElementById('dash-no-agent-hint');
-  if (emptyHint) emptyHint.style.display = (!claudeOn && !cursorOn && !codexOn) ? '' : 'none';
+  if (emptyHint) emptyHint.style.display = (!claudeOn && !cursorOn && !codexOn && !cccOn) ? '' : 'none';
 
   document.getElementById('cfg-ANTHROPIC_MODEL').textContent = (c.claude && c.claude.model) || '(留空)';
   document.getElementById('cfg-ANTHROPIC_SUBAGENT_MODEL').textContent = (c.claude && c.claude.subagentModel) || '(留空)';
@@ -1810,6 +1917,10 @@ function updateDashboardUI() {
   document.getElementById('cfg-CODEX_ALTERNATIVE_MODEL').textContent = (c.codex && c.codex.alternativeModel) || '(留空)';
   document.getElementById('cfg-CODEX_EFFORT').textContent = (c.codex && c.codex.effort) || '(留空)';
   document.getElementById('cfg-CODEX_FAST_MODE').textContent = c.codex && c.codex.fastMode === true ? '已启用' : '已禁用';
+  document.getElementById('cfg-CCC_API_KEY').textContent = (c.ccc && c.ccc.DEEPSEEK_API_KEY) ? '***已设置***' : '(留空)';
+  document.getElementById('cfg-CCC_BASE_URL').textContent = (c.ccc && c.ccc.DEEPSEEK_BASE_URL) || '(留空)';
+  document.getElementById('cfg-CCC_MODEL').textContent = (c.ccc && c.ccc.model) || '(留空)';
+  document.getElementById('cfg-CCC_ALTERNATIVE_MODEL').textContent = (c.ccc && c.ccc.alternativeModel) || '(留空)';
 }
 
 function pollStatus() {
@@ -1865,7 +1976,7 @@ function editSection(section) {
   else if (section === 'chromeDevtools') fields = CHROME_DEVTOOLS_FIELDS;
   else fields = AGENT_FIELDS[section] || [];
 
-  var titleMap = { feishu: '飞书', webUi: 'Web UI', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent' };
+  var titleMap = { feishu: '飞书', webUi: 'Web UI', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent', ccc: 'CCC Agent' };
   document.getElementById('edit-modal-title').textContent = '编辑 ' + (titleMap[section] || section);
 
   document.getElementById('edit-modal-effect').textContent = configEffectHint(section);
@@ -1883,7 +1994,9 @@ function editSection(section) {
     'CHATCCC_CURSOR_AVATAR_BATTERY_MODE': '头像电池电量',
     'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月On demand use预算',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort',
-    'CHATCCC_CODEX_FAST_MODE': 'Fast 模式'
+    'CHATCCC_CODEX_FAST_MODE': 'Fast 模式',
+    'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
+    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
@@ -1928,6 +2041,11 @@ function editSection(section) {
         else if (key === 'CHATCCC_CODEX_ALTERNATIVE_MODEL') val = state.config.codex.alternativeModel || '';
         else if (key === 'CHATCCC_CODEX_EFFORT') val = state.config.codex.effort || '';
         else if (key === 'CHATCCC_CODEX_FAST_MODE') val = state.config.codex.fastMode === true ? 'true' : 'false';
+      } else if (section === 'ccc' && state.config.ccc) {
+        if (key === 'CHATCCC_CCC_API_KEY') val = state.config.ccc.DEEPSEEK_API_KEY || '';
+        else if (key === 'CHATCCC_CCC_BASE_URL') val = state.config.ccc.DEEPSEEK_BASE_URL || '';
+        else if (key === 'CHATCCC_CCC_MODEL') val = state.config.ccc.model || '';
+        else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');

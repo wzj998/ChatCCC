@@ -86,6 +86,28 @@ describe("unflattenConfig", () => {
     });
   });
 
+  it("maps CCC Agent settings into ccc config", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_CCC_ENABLED: true,
+        CHATCCC_CCC_DEFAULT_AGENT: true,
+        CHATCCC_CCC_API_KEY: "sk-test-ccc",
+        CHATCCC_CCC_BASE_URL: "https://api.deepseek.com/v1",
+        CHATCCC_CCC_MODEL: "deepseek-v4-flash",
+        CHATCCC_CCC_ALTERNATIVE_MODEL: "deepseek-v4-pro",
+      }),
+    ).toEqual({
+      ccc: {
+        enabled: true,
+        defaultAgent: true,
+        DEEPSEEK_API_KEY: "sk-test-ccc",
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
+        model: "deepseek-v4-flash",
+        alternativeModel: "deepseek-v4-pro",
+      },
+    });
+  });
+
   it("maps Chrome CDP guard fields into chromeDevtools config", () => {
     expect(
       unflattenConfig({
@@ -153,6 +175,14 @@ describe("getRestartRequiredReasons", () => {
       effort: "",
       fastMode: false,
     },
+    ccc: {
+      enabled: true,
+      defaultAgent: false,
+      DEEPSEEK_API_KEY: "sk-test-ccc",
+      DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
+      model: "deepseek-v4-pro",
+      alternativeModel: "",
+    },
   };
 
   it("does not require restart for agent and Chrome runtime settings", () => {
@@ -213,6 +243,16 @@ describe("dashboard edit modal", () => {
     expect(PAGE_HTML).toContain("field-CHATCCC_CURSOR_ALTERNATIVE_MODEL");
     expect(PAGE_HTML).toContain("field-CHATCCC_CODEX_ALTERNATIVE_MODEL");
     expect(PAGE_HTML).toContain("备选模型");
+  });
+
+  it("shows CCC Agent in the wizard and dashboard with model switching fields", () => {
+    expect(PAGE_HTML).toContain('id="agent-card-ccc"');
+    expect(PAGE_HTML).toContain('id="agent-enable-ccc"');
+    expect(PAGE_HTML).toContain('id="agent-default-ccc"');
+    expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_MODEL"');
+    expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_ALTERNATIVE_MODEL"');
+    expect(PAGE_HTML).toContain('id="dash-ccc"');
+    expect(PAGE_HTML).toContain("editSection('ccc')");
   });
 
   it("shows config effect scope hints", () => {

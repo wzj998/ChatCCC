@@ -104,12 +104,18 @@ export interface CodexConfig {
 }
 
 export interface CccConfig {
+  /** Whether the built-in CCC Agent is available for new sessions. */
+  enabled: boolean;
+  /** Whether /new without an explicit tool should use CCC Agent. */
+  defaultAgent: boolean;
   /** DeepSeek API Key for the ChatCCC self-developed agent. */
   DEEPSEEK_API_KEY: string;
   /** DeepSeek-compatible API Base URL for the ChatCCC self-developed agent. */
   DEEPSEEK_BASE_URL: string;
   /** Model used by the ChatCCC self-developed agent. */
   model: string;
+  /** Optional model exposed through /model for manual per-session switching. */
+  alternativeModel: string;
 }
 
 export interface FeishuConfig {
@@ -168,8 +174,8 @@ export interface AppConfig {
   ccc: CccConfig;
 }
 
-export type AgentTool = "claude" | "cursor" | "codex";
-export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex"];
+export type AgentTool = "claude" | "cursor" | "codex" | "ccc";
+export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex", "ccc"];
 export type CursorAvatarBatteryMode = "apiPercent" | "onDemandUse";
 
 /** 获取指定 agent 配置中所有模型相关的值（最多 100 个，去重） */
@@ -190,6 +196,7 @@ export function getAllModelsForTool(tool: string, cfg: AppConfig = config): stri
     collect(cfg.codex.alternativeModel);
   } else if (tool === "ccc") {
     collect(cfg.ccc.model);
+    collect(cfg.ccc.alternativeModel);
   }
 
   return Array.from(seen).slice(0, 100);
@@ -445,7 +452,14 @@ function loadConfig(): AppConfig {
       onDemandMonthlyBudget: 1000,
     },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", alternativeModel: "", effort: "", fastMode: false },
-    ccc: { DEEPSEEK_API_KEY: "", DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL, model: DEFAULT_CCC_MODEL },
+    ccc: {
+      enabled: false,
+      defaultAgent: false,
+      DEEPSEEK_API_KEY: "",
+      DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL,
+      model: DEFAULT_CCC_MODEL,
+      alternativeModel: "",
+    },
   };
 
   if (!IS_TEST_ENV) {
@@ -498,7 +512,14 @@ function loadConfig(): AppConfig {
       onDemandMonthlyBudget?: unknown;
     };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown; fastMode?: unknown };
-    ccc?: { DEEPSEEK_API_KEY?: unknown; DEEPSEEK_BASE_URL?: unknown; model?: unknown };
+    ccc?: {
+      enabled?: unknown;
+      defaultAgent?: unknown;
+      DEEPSEEK_API_KEY?: unknown;
+      DEEPSEEK_BASE_URL?: unknown;
+      model?: unknown;
+      alternativeModel?: unknown;
+    };
     webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
     rawStreamLogs?: unknown;
@@ -562,20 +583,27 @@ function loadConfig(): AppConfig {
       (typeof codexRaw.effort === "string" && (codexRaw.effort as string).trim()) ||
       codexRaw.fastMode === true,
     );
+  // 旧版 ccc 配置没有 enabled。只用 API Key 推断启用，避免 sample 中自带的
+  // 默认 Base URL / model 让升级用户在未配置凭证时意外启用 CCC Agent。
+  const cccNonEmpty = (): boolean =>
+    Boolean(typeof cccRaw.DEEPSEEK_API_KEY === "string" && cccRaw.DEEPSEEK_API_KEY.trim());
 
   const claudeEnabled = resolveEnabled(claude.enabled, claudeNonEmpty);
   const cursorEnabled = resolveEnabled(cursorRaw.enabled, cursorNonEmpty);
   const codexEnabled = resolveEnabled(codexRaw.enabled, codexNonEmpty);
+  const cccEnabled = resolveEnabled(cccRaw.enabled, cccNonEmpty);
   const chromeDevtoolsPort = Number(chromeDevtoolsRaw.port);
   const explicitDefaultTool: AgentTool | null =
     typeof claude.defaultAgent === "boolean" && claude.defaultAgent && claudeEnabled ? "claude" :
     typeof cursorRaw.defaultAgent === "boolean" && cursorRaw.defaultAgent && cursorEnabled ? "cursor" :
     typeof codexRaw.defaultAgent === "boolean" && codexRaw.defaultAgent && codexEnabled ? "codex" :
+    typeof cccRaw.defaultAgent === "boolean" && cccRaw.defaultAgent && cccEnabled ? "ccc" :
     null;
   const fallbackDefaultTool: AgentTool =
     claudeEnabled ? "claude" :
     cursorEnabled ? "cursor" :
     codexEnabled ? "codex" :
+    cccEnabled ? "ccc" :
     "claude";
   const defaultTool = explicitDefaultTool ?? fallbackDefaultTool;
 
@@ -655,12 +683,15 @@ function loadConfig(): AppConfig {
       fastMode: codexRaw.fastMode === true,
     },
     ccc: {
+      enabled: cccEnabled,
+      defaultAgent: defaultTool === "ccc",
       DEEPSEEK_API_KEY: normalizeOptionalConfigField(cccRaw.DEEPSEEK_API_KEY, { label: "ccc.DEEPSEEK_API_KEY" }),
       DEEPSEEK_BASE_URL: normalizeOptionalConfigField(cccRaw.DEEPSEEK_BASE_URL, {
         label: "ccc.DEEPSEEK_BASE_URL",
         fallback: DEFAULT_CCC_DEEPSEEK_BASE_URL,
       }),
       model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
+      alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
     },
   };
 }
@@ -981,7 +1012,7 @@ export const CLAUDE_SESSION_PREFIX = "Claude Code Session:";
 export const CURSOR_SESSION_PREFIX = "Cursor Session:";
 /** 群描述中用于识别 Codex 会话的前缀 */
 export const CODEX_SESSION_PREFIX = "Codex Session:";
-/** 群描述中用于识别 hidden ccc agent 会话的前缀 */
+/** 群描述中用于识别 CCC Agent 会话的前缀 */
 export const CCC_SESSION_PREFIX = "CCC Session:";
 
 /** 根据 tool 名称返回对应的群描述前缀 */
