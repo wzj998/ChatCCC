@@ -82,7 +82,7 @@ describe("BuiltinContextManager", () => {
     expect(context.buildModelMessages()).toEqual([
       {
         role: "user",
-        content: expect.stringContaining("较早对话摘要"),
+        content: expect.stringContaining("The following is an earlier conversation summary"),
       },
       { role: "assistant", content: "recent" },
     ]);

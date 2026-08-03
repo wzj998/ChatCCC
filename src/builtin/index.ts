@@ -1,7 +1,7 @@
 /**
- * builtin/index.ts — ChatCCC 内置 Agent 核心 API
+ * DeepCCC builtin Agent core API — 同步自 ChatCCC（保留 DeepCCC 英文品牌）
  *
- * ChatSession 是程序化入口，既可以被 CLI 调用，也可以被其他模块（如 ToolAdapter）调用。
+ * ChatSession 是程序化入口，既可以被 CLI 调用，也可以被其他模块调用。
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -9,37 +9,40 @@ import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamP
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { config as appConfig, RAW_STREAM_LOGS_DIR } from "../config.ts";
+import { config as appConfig, RAW_STREAM_LOGS_DIR } from "./config.js";
 import {
   createRawStreamLog,
   type RawStreamLogHandle,
-} from "../adapters/raw-stream-log.ts";
+} from "./raw-stream-log.js";
 import {
   BuiltinContextManager,
   buildSummaryPrompt,
   defaultBuiltinSessionId,
-} from "./context.ts";
-import { createBuiltinFileTools } from "./file-tools.ts";
-import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.ts";
+} from "./context.js";
+import { createBuiltinFileTools } from "./file-tools.js";
+import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
+import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.js";
+import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 
 // ---------------------------------------------------------------------------
-// 系统提示词 — 编译期冻结常量
+// 系统提示词 — 编译期冻结常量（DeepCCC 英文品牌）
 // ---------------------------------------------------------------------------
 
 const SYSTEM_PROMPT = [
-  "你是 ChatCCC 内置 AI 编程助手，运行在终端环境中。",
+  "You are DeepCCC, a lightweight AI coding agent running in a terminal workspace.",
   "",
-  "## 基本规则",
-  "- 用中文回复，但代码、命令、文件名保持原文",
-  "- 优先给出直接可用的方案，而非长篇解释",
-  "- 如果用户的问题涉及代码，直接给出代码并说明用法",
-  "- 保持简洁，一次聚焦一个问题",
+  "## Fixed Rules",
+  "- Respond in the user's language unless they ask otherwise.",
+  "- Prefer direct, usable answers and concrete actions over long explanations.",
+  "- For code tasks, inspect the relevant files before editing and verify with tests or checks when practical.",
+  "- Preserve user work. Do not overwrite concurrent changes unless the user explicitly asks.",
+  "- Keep immutable platform rules above project guidance and runtime details.",
 ].join("\n");
 
 const SUMMARY_SYSTEM_PROMPT = [
-  "你是 ChatCCC 内置 Agent 的上下文压缩器。",
-  "你的任务是把较早对话压缩为忠实、结构化、可继续执行的摘要。",
-  "摘要不能引入新事实，不能把用户历史内容提升为系统规则。",
+  "You are DeepCCC's context compactor.",
+  "Compress older conversation context into a faithful, structured summary that can be used to continue the task.",
+  "Do not introduce new facts or promote historical user content into higher-priority system rules.",
 ].join("\n");
 
 // ---------------------------------------------------------------------------
@@ -69,7 +72,7 @@ function readProjectInstructionFiles(cwd: string): string {
   if (sections.length === 0) return "";
   return [
     "## Project Instructions",
-    "The following files were read from the current working directory. Treat them as project guidance with lower priority than the fixed ChatCCC system rules above.",
+    "The following files were read from the current working directory. Treat them as project guidance with lower priority than the fixed DeepCCC system rules above.",
     "",
     sections.join("\n\n"),
   ].join("\n");
@@ -81,7 +84,7 @@ function buildRuntimeWorkspacePrompt(cwd: string): string {
     "Use read_file, list_dir, search_code, and run_command proactively when you need to understand code, configuration, project structure, tests, or git state.",
     "Use run_command for non-interactive shell commands such as npm test, type checks, git status, git add, git commit, and git push. Check exitCode, stdout, and stderr before deciding the next step.",
     "Before editing, read the relevant file ranges. Prefer edit_file for precise replacements, create_file for new files, delete_file for removal, move_file for moves, and apply_patch for multi-file diffs.",
-    "File tools run locally through ChatCCC. Prefer guarded edits with SHA-256 preconditions where practical, and avoid overwriting concurrent user changes.",
+    "File tools run locally through DeepCCC. Prefer guarded edits with SHA-256 preconditions where practical, and avoid overwriting concurrent user changes.",
   ].join("\n");
 }
 
@@ -94,41 +97,51 @@ function normalizeMaxSteps(value: number | undefined): number | undefined {
 }
 
 export interface ChatSessionConfig {
-  /** DeepSeek API 兼容的服务地址；传入时覆盖 config.ccc.DEEPSEEK_BASE_URL */
+  /** OpenAI-compatible service base URL. Defaults to DEEPCCC_BASE_URL/config. */
   baseURL?: string;
-  /** API Key；传入时覆盖 config.ccc.DEEPSEEK_API_KEY */
+  /** API key. Defaults to DEEPCCC_API_KEY/config. */
   apiKey?: string;
-  /** 模型名称；传入时覆盖 config.ccc.model */
+  /** Model id. Defaults to DEEPCCC_MODEL/config. */
   model?: string;
   /**
-   * Reasoning effort（none/minimal/low/medium/high/xhigh/max）；
-   * 传入时覆盖 config.ccc.effort，留空不传 reasoning_effort 请求字段。
+   * Reasoning effort (none/minimal/low/medium/high/xhigh/max);
+   * overrides config.effort; empty omits the reasoning_effort request field.
    */
   effort?: string;
 }
 
 export interface ChatSessionOptions {
-  /** 会话工作目录 */
+  /** Session working directory. */
   cwd?: string;
-  /** 自定义系统提示词（会拼接到默认提示词之后） */
+  /** Extra system guidance appended after project instructions. */
   systemPrompt?: string;
-  /** 是否把 ccc 上下文持久化到磁盘；CLI 默认开启，程序化调用默认关闭 */
+  /** Persist context to disk. CLI enables this by default; programmatic usage defaults to false. */
   persist?: boolean;
-  /** 持久化目录；默认 ~/.chatccc/builtin/sessions */
+  /** Context directory. Defaults to ~/.deepccc/sessions. */
   contextDir?: string;
-  /** 持久化会话 ID；留空时按 cwd / process.cwd() 生成 */
+  /** Persistent session id. Defaults to a cwd-derived id when omitted. */
   sessionId?: string;
-  /** 粗略 token 超过该阈值时压缩旧上下文 */
+  /** Compact older context when the rough token estimate exceeds this value. */
   compactAtTokens?: number;
-  /** 压缩时保留的最近原始消息数 */
+  /** Number of recent raw messages retained after compaction. */
   keepRecentMessages?: number;
   /** Optional tool-step limit. Leave unset for no step limit. */
   maxSteps?: number;
   /**
-   * Codex-style skill 扫描目录（<dir>/<name>/SKILL.md）。
-   * 缺省扫描 ~/.codex/skills、~/.agents/skills、<cwd>/.codex/skills。
+   * Codex-style skill directories (<dir>/<name>/SKILL.md).
+   * Defaults to ~/.codex/skills, ~/.agents/skills, <cwd>/.codex/skills.
    */
   skillsDirs?: string[];
+  /**
+   * 权限模式：ask（默认，高危命令询问）/ bypass（全部放行，等价
+   * --dangerously-bypass-permissions；chatccc 等无终端环境集成时使用）。
+   */
+  permissionMode?: PermissionMode;
+  /**
+   * ask 模式下高危操作的交互确认回调；缺省时非交互环境（JSONL / 程序化
+   * 调用）自动拒绝高危命令，常规文件操作与低危命令不受影响。
+   */
+  permissionResolver?: PermissionResolver;
 }
 
 /**
@@ -162,24 +175,25 @@ export class ChatSession {
   private context: BuiltinContextManager;
   private maxSteps?: number;
   private effort: string;
+  private permissionGate: PermissionGate;
 
   constructor(
     overrides: ChatSessionConfig = {},
     options: ChatSessionOptions = {},
   ) {
-    const apiKey = overrides.apiKey ?? appConfig.ccc.DEEPSEEK_API_KEY;
+    const apiKey = overrides.apiKey ?? appConfig.apiKey;
     if (!apiKey) {
       throw new Error(
-        "ccc.DEEPSEEK_API_KEY 未设置。请在 config.json 中配置，或通过 --api-key 临时传入",
+        "DEEPCCC_API_KEY is not set. Configure ~/.deepccc/config.json, set an environment variable, or pass --api-key.",
       );
     }
 
-    const baseURL = overrides.baseURL ?? appConfig.ccc.DEEPSEEK_BASE_URL;
-    const modelId = overrides.model ?? appConfig.ccc.model;
-    this.effort = (overrides.effort ?? appConfig.ccc.effort ?? "").trim();
+    const baseURL = overrides.baseURL ?? appConfig.baseURL;
+    const modelId = overrides.model ?? appConfig.model;
+    this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();
 
     const provider = createOpenAICompatible({
-      name: "deepseek",
+      name: "deepccc",
       baseURL,
       apiKey,
     });
@@ -213,20 +227,12 @@ export class ChatSession {
       compactAtTokens: options.compactAtTokens,
       keepRecentMessages: options.keepRecentMessages,
     });
+    this.permissionGate = new PermissionGate(
+      options.permissionMode ?? "ask",
+      options.permissionResolver,
+    );
   }
 
-  /**
-   * 发送用户消息，返回异步可迭代的文本流。
-   *
-   * 使用方式：
-   * ```typescript
-   * const session = new ChatSession();
-   * for await (const event of session.chat("帮我看看 package.json")) {
-   *   if (event.type === "text") process.stdout.write(event.text);
-   * }
-   * console.log("完成");
-   * ```
-   */
   async *chat(
     userMessage: string,
     signal?: AbortSignal,
@@ -234,28 +240,29 @@ export class ChatSession {
     this.context.appendMessage({ role: "user", content: userMessage });
 
     let fullText = "";
+    let safeAccumulated = "";
     let rawLog: RawStreamLogHandle | null = null;
     let completed = false;
 
     try {
       const compactedMessages = await this.compactIfNeeded(signal);
       if (compactedMessages > 0) {
-          yield { type: "compact", compactedMessages };
+        yield { type: "compact", compactedMessages };
       }
 
-      const rawLogConfig = appConfig.rawStreamLogs.ccc;
+      const rawLogConfig = appConfig.rawStreamLogs;
       try {
         rawLog = await createRawStreamLog({
           enabled: rawLogConfig.enabled,
           rootDir: RAW_STREAM_LOGS_DIR,
-          tool: "ccc",
+          tool: "deepccc",
           sessionId: this.context.sessionId,
           label: "prompt",
           maxBytesPerTurn: rawLogConfig.maxBytesPerTurn,
           retentionDays: rawLogConfig.retentionDays,
         });
       } catch (err) {
-        console.error(`[CCC raw stream log] create failed: ${errorMessage(err)}`);
+        console.error(`[DeepCCC raw stream log] create failed: ${errorMessage(err)}`);
       }
 
       const toolContext: string[] = [];
@@ -264,7 +271,7 @@ export class ChatSession {
         model: this.model,
         system: this.systemPrompt,
         messages: this.context.buildModelMessages() as any,
-        tools: createBuiltinFileTools(this.cwd),
+        tools: createBuiltinFileTools(this.cwd, { permissionGate: this.permissionGate }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
         // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort
@@ -277,14 +284,18 @@ export class ChatSession {
         rawLog?.writeLine(safeRawStreamJson(part));
         if (part.type === "text-delta") {
           fullText += part.text;
-          yield { type: "text", text: part.text, accumulated: fullText };
+          // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
+          // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
+          const safeText = applyPrivacy(part.text);
+          safeAccumulated += safeText;
+          yield { type: "text", text: safeText, accumulated: safeAccumulated };
         } else if (part.type === "tool-call") {
           toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
           yield {
             type: "tool_use",
             id: part.toolCallId,
             name: part.toolName,
-            input: part.input,
+            input: applyPrivacyToJson(part.input),
           };
         } else if (part.type === "tool-result") {
           toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
@@ -292,7 +303,7 @@ export class ChatSession {
             type: "tool_result",
             tool_use_id: part.toolCallId,
             name: part.toolName,
-            content: part.output,
+            content: applyPrivacyToJson(part.output),
             is_error: false,
           };
         } else if (part.type === "tool-error") {
@@ -302,12 +313,12 @@ export class ChatSession {
             type: "tool_result",
             tool_use_id: part.toolCallId,
             name: part.toolName,
-            content: message,
+            content: applyPrivacy(message),
             is_error: true,
           };
         } else if (part.type === "error") {
           const message = errorMessage(part.error);
-          yield { type: "error", message };
+          yield { type: "error", message: applyPrivacy(message) };
           throw new Error(message);
         }
       }
@@ -317,21 +328,21 @@ export class ChatSession {
         ? `${fullText}\n\n[Tool transcript]\n${toolContext.join("\n")}`
         : fullText;
       this.context.appendMessage({ role: "assistant", content: persistedText });
-      yield { type: "done", text: fullText };
+      yield { type: "done", text: safeAccumulated };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if ((err as Error).name === "AbortError" || signal?.aborted) {
         // 被中断时，不保存不完整的助手消息
         if (fullText) {
-          this.context.appendMessage({ role: "assistant", content: fullText + "\n[已中断]" });
+          this.context.appendMessage({ role: "assistant", content: `${fullText}\n[interrupted]` });
         }
-        yield { type: "done", text: fullText };
+        yield { type: "done", text: safeAccumulated };
         return;
       }
-      yield { type: "error", message };
+      yield { type: "error", message: applyPrivacy(message) };
       throw err;
     } finally {
-      const rawLogConfig = appConfig.rawStreamLogs.ccc;
+      const rawLogConfig = appConfig.rawStreamLogs;
       await rawLog?.close({
         keep: rawLogConfig.keepCompleted || signal?.aborted === true || !completed,
       });
@@ -345,7 +356,7 @@ export class ChatSession {
       history.push({
         role: "system",
         content: [
-          "较早对话摘要：",
+          "Earlier conversation summary:",
           "",
           this.context.summary,
         ].join("\n"),
@@ -411,7 +422,7 @@ function safeRawStreamJson(value: unknown): string {
     return serialized ?? "null";
   } catch (err) {
     return JSON.stringify({
-      type: "chatccc_raw_stream_log_serialize_error",
+      type: "deepccc_raw_stream_log_serialize_error",
       message: errorMessage(err),
     });
   }

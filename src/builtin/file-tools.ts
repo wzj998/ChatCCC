@@ -8,7 +8,8 @@ import { createInterface } from "node:readline";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
 
-import { killProcessTree } from "../adapters/proc-tree-kill.ts";
+import { isDangerousCommand, type PermissionGate, type PermissionRequest } from "./permissions.js";
+import { killProcessTree } from "./proc-tree-kill.js";
 
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_LIST_ENTRIES = 200;
@@ -1172,7 +1173,41 @@ export async function applyPatchForTool(cwd: string, input: ApplyPatchInput): Pr
   return { changedFiles };
 }
 
-export function createBuiltinFileTools(cwd: string): ToolSet {
+export interface BuiltinFileToolsOptions {
+  /** 权限门控：副作用工具（run_command/文件写操作）执行前会先经过 gate.check */
+  permissionGate?: PermissionGate;
+}
+
+export function createBuiltinFileTools(
+  cwd: string,
+  options: BuiltinFileToolsOptions = {},
+): ToolSet {
+  const gate = options.permissionGate;
+
+  /** 文件路径的候选匹配键：原始路径 + 绝对路径 + 相对 cwd 路径（正/反斜杠双版本，规则可任选其一） */
+  const pathKeys = (p: string): string[] => {
+    const abs = resolveToolPath(cwd, p);
+    const rel = relative(cwd, abs);
+    return [
+      p,
+      abs,
+      rel,
+      rel.split(sep).join("/"),
+      abs.split(sep).join("/"),
+    ];
+  };
+
+  /** 副作用工具执行前的权限守卫：gate 拒绝时抛错，工具不会真正执行 */
+  const guard = async (request: PermissionRequest): Promise<void> => {
+    if (!gate) return;
+    const decision = await gate.check(request);
+    if (decision === "deny") {
+      throw new Error(
+        `权限拒绝：${request.detail}（已按规则或用户选择拦截；如需放行请调整 ~/.deepccc/allow.json，或使用 --dangerously-bypass-permissions）`,
+      );
+    }
+  };
+
   return {
     read_file: tool<ReadFileInput, ReadFileOutput>({
       description: "Read a UTF-8 text file from the local filesystem. Use line ranges for large files.",
@@ -1226,7 +1261,15 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         },
         required: ["command"],
       }),
-      execute: (input, options) => runCommandForTool(cwd, input, options.abortSignal),
+      execute: async (input, options) => {
+        await guard({
+          tool: "run_command",
+          action: input.command,
+          reason: isDangerousCommand(input.command) ? "high-risk" : "rule",
+          detail: `运行命令: ${input.command}`,
+        });
+        return runCommandForTool(cwd, input, options.abortSignal);
+      },
     }),
     edit_file: tool<EditFileInput, EditFileOutput>({
       description: "Edit an existing UTF-8 text file by applying exact oldText -> newText replacements. Uses optional SHA-256 precondition to avoid overwriting concurrent edits.",
@@ -1253,7 +1296,16 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         },
         required: ["path", "edits"],
       }),
-      execute: (input) => editFileForTool(cwd, input),
+      execute: async (input) => {
+        await guard({
+          tool: "edit_file",
+          action: input.path,
+          altKeys: pathKeys(input.path),
+          reason: "rule",
+          detail: `编辑文件: ${input.path}`,
+        });
+        return editFileForTool(cwd, input);
+      },
     }),
     create_file: tool<CreateFileInput, FileWriteOutput>({
       description: "Create a UTF-8 text file, or overwrite an existing one when overwrite=true.",
@@ -1268,7 +1320,16 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         },
         required: ["path", "content"],
       }),
-      execute: (input) => createFileForTool(cwd, input),
+      execute: async (input) => {
+        await guard({
+          tool: "create_file",
+          action: input.path,
+          altKeys: pathKeys(input.path),
+          reason: "rule",
+          detail: `创建/覆盖文件: ${input.path}`,
+        });
+        return createFileForTool(cwd, input);
+      },
     }),
     delete_file: tool<DeleteFileInput, DeleteFileOutput>({
       description: "Delete an existing text file. Use expectedSha256 to avoid deleting a file that changed after reading.",
@@ -1281,7 +1342,16 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         },
         required: ["path"],
       }),
-      execute: (input) => deleteFileForTool(cwd, input),
+      execute: async (input) => {
+        await guard({
+          tool: "delete_file",
+          action: input.path,
+          altKeys: pathKeys(input.path),
+          reason: "rule",
+          detail: `删除文件: ${input.path}`,
+        });
+        return deleteFileForTool(cwd, input);
+      },
     }),
     move_file: tool<MoveFileInput, MoveFileOutput>({
       description: "Move or rename an existing text file. Can overwrite an existing destination only when overwrite=true.",
@@ -1297,7 +1367,16 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         },
         required: ["sourcePath", "destinationPath"],
       }),
-      execute: (input) => moveFileForTool(cwd, input),
+      execute: async (input) => {
+        await guard({
+          tool: "move_file",
+          action: input.sourcePath,
+          altKeys: pathKeys(input.sourcePath),
+          reason: "rule",
+          detail: `移动/重命名文件: ${input.sourcePath} → ${input.destinationPath}`,
+        });
+        return moveFileForTool(cwd, input);
+      },
     }),
     apply_patch: tool<ApplyPatchInput, ApplyPatchOutput>({
       description: "Apply a unified diff patch to one or more UTF-8 text files. Prefer edit_file for small targeted edits.",
@@ -1314,7 +1393,15 @@ export function createBuiltinFileTools(cwd: string): ToolSet {
         },
         required: ["patch"],
       }),
-      execute: (input) => applyPatchForTool(cwd, input),
+      execute: async (input) => {
+        await guard({
+          tool: "apply_patch",
+          action: "patch",
+          reason: "rule",
+          detail: "应用 unified diff patch",
+        });
+        return applyPatchForTool(cwd, input);
+      },
     }),
   };
 }

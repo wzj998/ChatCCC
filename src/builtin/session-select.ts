@@ -27,7 +27,7 @@ export function resolveBuiltinSession(options: ResolveBuiltinSessionOptions): Re
   if (options.resume === true) {
     const latest = latestBuiltinSessionForCwd(options.cwd, contextDir);
     if (!latest) {
-      throw new Error(`未找到当前目录可恢复的 ccc 会话: ${options.cwd}`);
+      throw new Error(`No resumable DeepCCC session found for cwd: ${options.cwd}`);
     }
     return { mode: "resumed", sessionId: latest.sessionId };
   }
@@ -36,7 +36,7 @@ export function resolveBuiltinSession(options: ResolveBuiltinSessionOptions): Re
     const sessionId = normalizeBuiltinSessionId(options.resume);
     const existing = getBuiltinContextSession(sessionId, contextDir);
     if (!existing) {
-      throw new Error(`未找到 ccc 会话: ${sessionId}`);
+      throw new Error(`DeepCCC session not found: ${sessionId}`);
     }
     return { mode: "resumed", sessionId };
   }

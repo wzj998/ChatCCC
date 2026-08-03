@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { config } from "../config.ts";
+import { config } from "../builtin/config.ts";
 
 const streamTextMock = vi.fn();
 const generateTextMock = vi.fn();
@@ -26,7 +26,7 @@ vi.mock("ai", () => ({
   tool: vi.fn((definition: unknown) => definition),
 }));
 
-vi.mock("../adapters/raw-stream-log.ts", () => ({
+vi.mock("../builtin/raw-stream-log.ts", () => ({
   createRawStreamLog: createRawStreamLogMock,
 }));
 
@@ -271,7 +271,7 @@ describe("ChatSession context management", () => {
 
   it("writes raw CCC fullStream parts when raw stream logs are enabled", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    config.rawStreamLogs.ccc = {
+    config.rawStreamLogs = {
       enabled: true,
       maxBytesPerTurn: 4096,
       retentionDays: 3,
@@ -304,7 +304,7 @@ describe("ChatSession context management", () => {
 
     expect(createRawStreamLogMock).toHaveBeenCalledWith(expect.objectContaining({
       enabled: true,
-      tool: "ccc",
+      tool: "deepccc",
       sessionId: "raw-log-session",
       label: "prompt",
       maxBytesPerTurn: 4096,
