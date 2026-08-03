@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cardJsonToPlainText } from "../card-plain-text.ts";
+import { progressView } from "../progress/view.ts";
 import {
   buildHelpCard,
   buildProgressCard,
@@ -30,7 +31,7 @@ describe("cardJsonToPlainText", () => {
   });
 
   it("converts schema 2.0 progress cards", () => {
-    const text = cardJsonToPlainText(buildProgressCard("stream body"));
+    const text = cardJsonToPlainText(buildProgressCard(progressView({ text: "stream body" })));
 
     expect(text).toContain("# 生成中...");
     expect(text).toContain("stream body");

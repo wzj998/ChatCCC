@@ -22,6 +22,7 @@ import {
   ts,
 } from "./config.ts";
 import { buildProgressCard, getToolEmoji, isCodeBlockOpen, truncateContent } from "./cards.ts";
+import { progressView } from "./progress/view.ts";
 import {
   createAgentActivityTracker,
   formatAgentActivityTitle,
@@ -115,7 +116,7 @@ async function createVisibleProgressCard(
     let cardId: string | null = null;
     try {
       cardId = await platform.cardCreate(
-        buildProgressCard("等待 Agent 输出...", { showStop: true, headerTitle }),
+        buildProgressCard(progressView({ text: "等待 Agent 输出...", showStop: true, headerTitle })),
       );
       if (!cardId) throw new Error("empty card id");
       await platform.cardSend(chatId, cardId);
@@ -1307,7 +1308,7 @@ export async function runAgentSession(
           const nextSeq = display.sequence + 1;
           const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status);
           const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
-          const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+          const doneCard = buildProgressCard(progressView({ text: cardContent, status: "done", showStop: false, headerTitle, headerTemplate }));
           await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(err => {
             console.error(`[${ts()}] [DISPLAY] prevState final cardUpdate failed: ${(err as Error).message}`);
           });
@@ -1963,7 +1964,7 @@ export function startUnifiedDisplayLoop(): void {
                 const nextSeq = display.sequence + 1;
                 const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
                 const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
-                const doneCard = buildProgressCard(cardContent, { showStop: false, headerTitle, headerTemplate });
+                const doneCard = buildProgressCard(progressView({ text: cardContent, status: "done", showStop: false, headerTitle, headerTemplate }));
                 await p.cardUpdate(display.cardId, doneCard, nextSeq).then(() => {
                   display.sequence = nextSeq;
                   terminalCardUpdateAccepted = true;
@@ -2072,7 +2073,7 @@ export function startUnifiedDisplayLoop(): void {
                   }
                   const oldSeqBase = display.sequence;
                   const oldContent = state.accumulatedContent + state.finalReply;
-                  const oldCard = buildProgressCard(truncateContent(oldContent) || " ", { showStop: false, headerTitle: "上一阶段记录" });
+                  const oldCard = buildProgressCard(progressView({ text: truncateContent(oldContent) || " ", status: "done", showStop: false, headerTitle: "上一阶段记录" }));
                   await p.cardUpdate(display.cardId, oldCard, oldSeqBase + 1).then(() => {
                     display.sequence = oldSeqBase + 1;
                   }).catch(err => {
@@ -2118,10 +2119,7 @@ export function startUnifiedDisplayLoop(): void {
 
                 display.lastSentContent = displayContent;
                 display.lastSentHeaderTitle = activityHeaderTitle;
-                const deltaCard = buildProgressCard(truncateContent(displayContent) || "等待 Agent 输出...", {
-                  showStop: true,
-                  headerTitle: activityHeaderTitle,
-                });
+                const deltaCard = buildProgressCard(progressView({ text: truncateContent(displayContent) || "等待 Agent 输出...", showStop: true, headerTitle: activityHeaderTitle }));
                 display.cardBusy = true;
                 const mySeq = display.sequence + 1;
                 try {
@@ -2157,7 +2155,7 @@ export function startUnifiedDisplayLoop(): void {
               display.cardBusy = true;
               const mySeq = display.sequence + 1;
               try {
-                const card = buildProgressCard(cardContent, { showStop: true, headerTitle: activityHeaderTitle });
+                const card = buildProgressCard(progressView({ text: cardContent, showStop: true, headerTitle: activityHeaderTitle }));
                 await p.cardUpdate(display.cardId, card, mySeq);
                 display.sequence = mySeq;
               } catch (err) {

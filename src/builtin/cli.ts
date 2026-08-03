@@ -5,6 +5,10 @@
  *   npx tsx src/builtin/cli.ts
  *   npx tsx src/builtin/cli.ts --model deepseek-v4-pro
  *   npx tsx src/builtin/cli.ts --stream-json --prompt "hello"
+ *
+ * 交互模式（TTY）下，单轮回复渲染为固定"过程区块"（飞书过程卡片的终端形态）：
+ * 状态行 + 折叠工具行 + 原地更新正文，不再滚屏刷 JSON；完成/停止/异常后定型
+ * 留在屏幕上。非 TTY（管道/CI）回退为纯文本流式输出；--stream-json 机器接口不变。
  */
 
 import * as readline from "node:readline";
@@ -15,6 +19,9 @@ import { fileURLToPath } from "node:url";
 import { listBuiltinContextSessions } from "./context.js";
 import { resolveBuiltinSession, type BuiltinResumeRequest } from "./session-select.js";
 import { createCtrlCState } from "./sigint.js";
+import { reduceProgress } from "../progress/reducer.ts";
+import { TerminalProgressRenderer } from "../progress/terminal-renderer.ts";
+import { progressView, type ProgressView } from "../progress/view.ts";
 import type { ChatEvent, ChatSessionConfig, ChatSessionOptions } from "./index.js";
 
 interface ParsedArgs {
@@ -373,10 +380,28 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     currentAbort = new AbortController();
     const signal = currentAbort.signal;
 
+    // TTY 下用"过程区块"（飞书过程卡片的终端形态）：固定区域原地更新、
+    // 工具调用折叠为单行；非 TTY（管道/CI）回退为纯文本流式输出。
+    const useTerminalBlock = process.stdout.isTTY === true;
+    const renderer = useTerminalBlock ? new TerminalProgressRenderer() : null;
+    let view: ProgressView | null = null;
+    if (renderer) {
+      view = progressView({ headerTitle: "生成中..." });
+      renderer.begin(view);
+    }
+    let rendererEnded = false;
+
     try {
       let lastAccumulated = "";
       for await (const event of session.chat(input, signal)) {
-        if (event.type === "text") {
+        if (renderer && view) {
+          view = reduceProgress(view, event);
+          if (event.type === "text" || event.type === "compact") {
+            renderer.render(view);
+          } else {
+            renderer.flush();
+          }
+        } else if (event.type === "text") {
           const newText = event.accumulated.slice(lastAccumulated.length);
           process.stdout.write(newText);
           lastAccumulated = event.accumulated;
@@ -395,8 +420,20 @@ async function runRepl(args: ParsedArgs): Promise<void> {
         }
       }
     } catch (err) {
+      if (renderer && view) {
+        const aborted = err instanceof Error && err.name === "AbortError";
+        view = progressView({ ...view, status: aborted ? "stopped" : "error", showStop: false });
+        renderer.end(view);
+        rendererEnded = true;
+        console.log("");
+      }
       console.log(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
     } finally {
+      if (renderer && view && !rendererEnded) {
+        // 定型终态区块（完成/已停止/异常结束）留在屏幕上，恢复光标
+        renderer.end(view);
+        console.log("");
+      }
       currentAbort = null;
       ctrlCState.reset();
     }
