@@ -13,6 +13,7 @@ import {
   buildButtons,
   truncateContent,
   getToolEmoji,
+  normalizeToolName,
 } from "../cards.ts";
 import { ABD_HELP_LINE } from "../shared-prefix.ts";
 
@@ -81,6 +82,25 @@ describe("getToolEmoji", () => {
     expect(getToolEmoji("Agent")).toBe("\u{1F916}");         // 🤖
     expect(getToolEmoji("NotebookEdit")).toBe("\u{1F4D3}");  // 📓
     expect(getToolEmoji("AskUserQuestion")).toBe("\u{2753}");// ❓
+  });
+
+  it("returns correct emoji for CCC builtin tool names (snake_case)", () => {
+    expect(getToolEmoji("read_file")).toBe("\u{1F4D6}");
+    expect(getToolEmoji("list_dir")).toBe("\u{1F4C2}");
+    expect(getToolEmoji("search_code")).toBe("\u{1F50E}");
+    expect(getToolEmoji("run_command")).toBe("\u{1F5A5}\u{FE0F}");
+    expect(getToolEmoji("edit_file")).toBe("\u{270F}\u{FE0F}");
+    expect(getToolEmoji("create_file")).toBe("\u{270D}\u{FE0F}");
+    expect(getToolEmoji("delete_file")).toBe("\u{1F5D1}\u{FE0F}");
+    expect(getToolEmoji("move_file")).toBe("\u{1F4E6}");
+    expect(getToolEmoji("apply_patch")).toBe("\u{1F4CB}");
+  });
+
+  it("normalizeToolName converts snake_case to PascalCase", () => {
+    expect(normalizeToolName("read_file")).toBe("ReadFile");
+    expect(normalizeToolName("run_command")).toBe("RunCommand");
+    expect(normalizeToolName("Read")).toBe("Read");
+    expect(normalizeToolName("")).toBe("");
   });
 
   it("returns wrench for unknown tool names", () => {

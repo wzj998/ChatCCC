@@ -70,10 +70,29 @@ const TOOL_EMOJI_MAP: Record<string, string> = {
   Agent: "\u{1F916}",         // 🤖
   NotebookEdit: "\u{1F4D3}",  // 📓
   AskUserQuestion: "\u{2753}",// ❓
+  // CCC 内置 Agent 下划线命名（getToolEmoji 会先把下划线转驼峰再查表，这里保留蛇形条目以便直接命中）
+  read_file: "\u{1F4D6}",          // 📖
+  list_dir: "\u{1F4C2}",          // 📂
+  search_code: "\u{1F50E}",       // 🔎
+  run_command: "\u{1F5A5}\u{FE0F}", // 🖥️
+  edit_file: "\u{270F}\u{FE0F}",  // ✏️
+  create_file: "\u{270D}\u{FE0F}", // ✍️
+  delete_file: "\u{1F5D1}\u{FE0F}", // 🗑️
+  move_file: "\u{1F4E6}",         // 📦
+  apply_patch: "\u{1F4CB}",       // 📋
 };
 
 export function getToolEmoji(name: string): string {
-  return TOOL_EMOJI_MAP[name] ?? "\u{1F527}"; // 🔧
+  return TOOL_EMOJI_MAP[name] ?? TOOL_EMOJI_MAP[normalizeToolName(name)] ?? "\u{1F527}"; // 🔧
+}
+
+/** 把下划线命名转成驼峰（read_file → ReadFile），用于兼容两种命名风格 */
+export function normalizeToolName(name: string): string {
+  return name
+    .split("_")
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
 }
 
 // ---------------------------------------------------------------------------

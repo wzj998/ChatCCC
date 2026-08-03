@@ -979,13 +979,19 @@ export async function editFileForTool(cwd: string, input: EditFileInput): Promis
   const before = await readEditableTextFile(filePath);
   assertExpectedSha256(filePath, before.sha, input.expectedSha256);
 
-  let text = before.text;
+  // Normalize line endings before matching so that LF-based oldText/newText
+  // (which is what models typically emit) works against CRLF files checked
+  // out on Windows. The file's dominant EOL style is restored on write.
+  const eol = detectEol(before.text);
+  let text = eol === "\r\n" ? before.text.replace(/\r\n/g, "\n") : before.text;
   let editsApplied = 0;
   for (const [index, edit] of input.edits.entries()) {
     if (!edit.oldText) {
       throw new Error(`edit ${index + 1} oldText must not be empty`);
     }
-    const count = countOccurrences(text, edit.oldText);
+    const oldText = edit.oldText.replace(/\r\n/g, "\n");
+    const newText = edit.newText.replace(/\r\n/g, "\n");
+    const count = countOccurrences(text, oldText);
     if (count === 0) {
       throw new Error(`edit ${index + 1} oldText was not found in ${filePath}`);
     }
@@ -993,9 +999,13 @@ export async function editFileForTool(cwd: string, input: EditFileInput): Promis
       throw new Error(`edit ${index + 1} oldText matched ${count} times in ${filePath}; set replaceAll=true or provide more context`);
     }
     text = edit.replaceAll
-      ? replaceAllLiteral(text, edit.oldText, edit.newText)
-      : text.replace(edit.oldText, edit.newText);
+      ? replaceAllLiteral(text, oldText, newText)
+      : text.replace(oldText, newText);
     editsApplied += edit.replaceAll ? count : 1;
+  }
+  if (eol === "\r\n") {
+    // After normalization above the buffer contains only \n, so this is safe.
+    text = text.replace(/\n/g, "\r\n");
   }
 
   assertTextSize(filePath, text, MAX_EDIT_BYTES);

@@ -158,6 +158,37 @@ describe("builtin file tools", () => {
     await expect(readFile(file, "utf8")).resolves.toBe("alpha\nBETA\ngamma\n");
   });
 
+  it("edits a CRLF file with LF oldText by normalizing line endings", async () => {
+    const dir = await makeTempDir();
+    const file = join(dir, "crlf.txt");
+    const crlfContent = "alpha\r\nbeta\r\ngamma\r\n";
+    await writeFile(file, crlfContent, "utf8");
+
+    const result = await editFileForTool(dir, {
+      path: "crlf.txt",
+      expectedSha256: sha256(crlfContent),
+      edits: [{ oldText: "alpha\nbeta", newText: "ALPHA\nBETA" }],
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      changed: true,
+      editsApplied: 1,
+      beforeSha256: sha256(crlfContent),
+      afterSha256: sha256("ALPHA\r\nBETA\r\ngamma\r\n"),
+    }));
+    await expect(readFile(file, "utf8")).resolves.toBe("ALPHA\r\nBETA\r\ngamma\r\n");
+  });
+
+  it("rejects a multi-line oldText that still does not match after EOL normalization", async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "crlf.txt"), "alpha\r\nbeta\r\n", "utf8");
+
+    await expect(editFileForTool(dir, {
+      path: "crlf.txt",
+      edits: [{ oldText: "alpha\ngamma", newText: "x" }],
+    })).rejects.toThrow("oldText was not found");
+  });
+
   it("rejects edits when the SHA-256 precondition does not match", async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, "edit.txt"), "current\n", "utf8");
