@@ -339,7 +339,7 @@ describe("ChatSession effort passthrough", () => {
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
 
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { apiKey: "sk-test", effort: "" },
       { cwd: dir, sessionId: "effort-none" },
     );
     await collect(session.chat("hi"));

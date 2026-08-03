@@ -1004,6 +1004,19 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <label>备选模型（选填）</label>
               <input type="text" id="field-CHATCCC_CCC_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
             </div>
+            <div class="form-group">
+              <label>Effort（推理强度，选填）</label>
+              <select id="field-CHATCCC_CCC_EFFORT">
+                <option value="">(留空/默认，服务端 medium)</option>
+                <option value="none">none - 直接作答，最省 token</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max - 最强推理</option>
+              </select>
+            </div>
           </fieldset>
         </div>
 
@@ -1196,7 +1209,7 @@ const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
-  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL']
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1531,6 +1544,7 @@ function renderStep2() {
     prefillNested('field-CHATCCC_CCC_BASE_URL', c.ccc.DEEPSEEK_BASE_URL);
     prefillNested('field-CHATCCC_CCC_MODEL', c.ccc.model);
     prefillNested('field-CHATCCC_CCC_ALTERNATIVE_MODEL', c.ccc.alternativeModel);
+    prefillNested('field-CHATCCC_CCC_EFFORT', c.ccc.effort);
   }
 
   // 按已有 config 决定每个 Agent 默认是否开启：优先 enabled 字段，缺省时按"任一字段非空"
@@ -1706,6 +1720,7 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + (vars.CHATCCC_CCC_BASE_URL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CCC_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CCC_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CCC_EFFORT || '(留空)') + '</span></div>');
     }
   });
   document.getElementById('review-content').innerHTML = lines.join('');
@@ -1999,7 +2014,7 @@ function editSection(section) {
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort',
     'CHATCCC_CODEX_FAST_MODE': 'Fast 模式',
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
-    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型'
+    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
@@ -2049,6 +2064,7 @@ function editSection(section) {
         else if (key === 'CHATCCC_CCC_BASE_URL') val = state.config.ccc.DEEPSEEK_BASE_URL || '';
         else if (key === 'CHATCCC_CCC_MODEL') val = state.config.ccc.model || '';
         else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
+        else if (key === 'CHATCCC_CCC_EFFORT') val = state.config.ccc.effort || '';
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');

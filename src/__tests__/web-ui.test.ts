@@ -95,6 +95,7 @@ describe("unflattenConfig", () => {
         CHATCCC_CCC_BASE_URL: "https://api.deepseek.com/v1",
         CHATCCC_CCC_MODEL: "deepseek-v4-flash",
         CHATCCC_CCC_ALTERNATIVE_MODEL: "deepseek-v4-pro",
+        CHATCCC_CCC_EFFORT: "max",
       }),
     ).toEqual({
       ccc: {
@@ -104,6 +105,7 @@ describe("unflattenConfig", () => {
         DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
         model: "deepseek-v4-flash",
         alternativeModel: "deepseek-v4-pro",
+        effort: "max",
       },
     });
   });
@@ -251,6 +253,7 @@ describe("dashboard edit modal", () => {
     expect(PAGE_HTML).toContain('id="agent-default-ccc"');
     expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_MODEL"');
     expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_ALTERNATIVE_MODEL"');
+    expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_EFFORT"');
     expect(PAGE_HTML).toContain('id="dash-ccc"');
     expect(PAGE_HTML).toContain("editSection('ccc')");
   });
