@@ -333,6 +333,19 @@ async function processFeishuMessageEvent(data: Evt): Promise<void> {
     if (delayNotice) {
       const delayToken = await getTenantAccessToken();
       await sendCardReply(delayToken, chatId, "延迟送达", delayNotice, "yellow").catch(() => {});
+      // 延迟送达的旧消息只发提醒、不转发给 agent 执行：
+      // 断线重连或补推时，早已过期的消息不应未经确认就触发新任务。
+      // 用户如需执行可自行重发。
+      logTrace(traceId, "DONE", {
+        outcome: "skip_delayed_feishu_message",
+        chatId,
+        msgTimestamp,
+        delayMinutes: Math.floor((Date.now() - msgTimestamp) / 60000),
+      });
+      console.log(
+        `[${ts()}] [SKIP] Delayed Feishu message not forwarded to agent: messageId=${messageId ?? "(missing id)"} chatId=${chatId} createTime=${msgTimestamp}`,
+      );
+      return;
     }
 
     await handleCommand(

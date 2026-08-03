@@ -80,4 +80,14 @@ describe("SimulatedPlatform", () => {
     // 近期消息不触发
     expect(SimulatedPlatform.formatDelayNotice(Date.now(), "test")).toBeNull();
   });
+
+  it("formatDelayNotice 边界：恰好 15 分钟触发，未来时间戳不触发", () => {
+    const now = Date.now();
+    // 恰好等于阈值（15 分钟）应触发提醒
+    expect(SimulatedPlatform.formatDelayNotice(now - 15 * 60 * 1000, "边界", now)).not.toBeNull();
+    // 14 分 59 秒不触发
+    expect(SimulatedPlatform.formatDelayNotice(now - (15 * 60 * 1000 - 1000), "边界", now)).toBeNull();
+    // 未来时间戳（时钟偏移）不触发
+    expect(SimulatedPlatform.formatDelayNotice(now + 60 * 1000, "边界", now)).toBeNull();
+  });
 });
