@@ -86,6 +86,7 @@ import {
   recordSessionRegistry,
   resetState,
   sessionInfoMap,
+  getEffectiveEffortForTool,
   getEffectiveFastModeForTool,
 } from "../session.ts";
 import {
@@ -908,6 +909,38 @@ describe("handleCommand WeChat processing ack", () => {
       expect.stringContaining("不支持 effort"),
       "red",
     );
+  });
+
+  it("switches CCC effort for the current session", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockResolvedValue({ name: "ccc-session", description: "CCC Session: sid-ccc-effort" });
+    vi.mocked(platform.extractSessionInfo).mockReturnValue({ sessionId: "sid-ccc-effort", tool: "ccc" });
+    _setAdapterForToolForTest("ccc", mockAdapter("sid-ccc-effort"));
+    await recordSessionRegistry({
+      chatId: "ccc-chat",
+      sessionId: "sid-ccc-effort",
+      tool: "ccc",
+      chatName: "ccc-session",
+      running: false,
+    });
+    sessionInfoMap.set("ccc-chat", {
+      sessionId: "sid-ccc-effort",
+      tool: "ccc",
+      turnCount: 0,
+      lastContextTokens: 0,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/effort max", "ccc-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "ccc-chat",
+      "Effort 切换",
+      expect.stringContaining("max"),
+      "green",
+    );
+
+    expect(getEffectiveEffortForTool("ccc", "sid-ccc-effort")).toBe("max");
   });
 
   it("handles /usage without creating a new Feishu group", async () => {

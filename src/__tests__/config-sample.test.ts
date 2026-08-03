@@ -45,7 +45,7 @@ describe("config.sample.json", () => {
   it("sets ccc agent DeepSeek defaults in the sample config", () => {
     const configSamplePath = join(process.cwd(), "config.sample.json");
     const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {
-      ccc?: { enabled?: unknown; defaultAgent?: unknown; DEEPSEEK_API_KEY?: unknown; DEEPSEEK_BASE_URL?: unknown; model?: unknown };
+      ccc?: { enabled?: unknown; defaultAgent?: unknown; DEEPSEEK_API_KEY?: unknown; DEEPSEEK_BASE_URL?: unknown; model?: unknown; effort?: unknown };
     };
 
     expect(sample.ccc?.enabled).toBe(false);
@@ -53,6 +53,7 @@ describe("config.sample.json", () => {
     expect(sample.ccc?.DEEPSEEK_API_KEY).toBe("");
     expect(sample.ccc?.DEEPSEEK_BASE_URL).toBe("https://api.deepseek.com/v1");
     expect(sample.ccc?.model).toBe("deepseek-v4-pro");
+    expect(sample.ccc?.effort).toBe("");
   });
 
   it("keeps Chrome CDP guard disabled by default with port 15166", () => {

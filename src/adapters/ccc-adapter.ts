@@ -41,6 +41,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
     ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
   };
 
   return {

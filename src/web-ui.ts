@@ -520,6 +520,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CCC_ALTERNATIVE_MODEL") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).alternativeModel = val;
+    } else if (key === "CHATCCC_CCC_EFFORT") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).effort = val;
     } else if (key === "CHATCCC_CCC_ENABLED") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).enabled = val === true || val === "true";

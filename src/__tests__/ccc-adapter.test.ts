@@ -113,4 +113,24 @@ describe("createCccAdapter", () => {
       { type: "assistant", blocks: [], isFinalResponse: true },
     ]);
   });
+
+  it("passes effort into ChatSession so streamText receives reasoningEffort", async () => {
+    const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
+    const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-effort-"));
+    const adapter = createCccAdapter({
+      apiKey: "sk-test",
+      contextDir,
+      effort: "xhigh",
+    });
+    const { sessionId } = await adapter.createSession("F:\\repo");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+
+    for await (const _message of adapter.prompt(sessionId, "hi", "F:\\repo")) {
+      // drain
+    }
+
+    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      providerOptions: { deepseek: { reasoningEffort: "xhigh" } },
+    }));
+  });
 });
