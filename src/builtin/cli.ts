@@ -13,6 +13,7 @@
 
 import * as readline from "node:readline";
 import * as process from "node:process";
+import { appendFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,11 +33,14 @@ interface ParsedArgs {
   help: boolean;
   streamJson: boolean;
   prompt: string | null;
+  /** 强制纯文本流式输出（不用过程区块渲染器），渲染异常时的兜底通道 */
+  plain: boolean;
 }
 
 interface RuntimeDeps {
   ChatSession: typeof import("./index.js").ChatSession;
   appConfig: typeof import("../config.ts").config;
+  fileLog: typeof import("../config.ts").fileLog;
 }
 
 interface JsonLine {
@@ -60,6 +64,7 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
   let help = false;
   let streamJson = false;
   let prompt: string | null = null;
+  let plain = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -96,20 +101,22 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--prompt" && next !== undefined) {
       prompt = next;
       i++;
+    } else if (arg === "--plain") {
+      plain = true;
     } else if (arg === "--help" || arg === "-h") {
       help = true;
     }
   }
 
-  return { config, options, listSessions, resume, help, streamJson, prompt };
+  return { config, options, listSessions, resume, help, streamJson, prompt, plain };
 }
 
 async function loadRuntime(): Promise<RuntimeDeps> {
-  const [{ ChatSession }, { config: appConfig }] = await Promise.all([
+  const [{ ChatSession }, { config: appConfig, fileLog }] = await Promise.all([
     import("./index.js"),
     import("../config.ts"),
   ]);
-  return { ChatSession, appConfig };
+  return { ChatSession, appConfig, fileLog };
 }
 
 function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
@@ -129,6 +136,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --list-sessions      List saved ccc sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
+    "  --plain              Force plain streaming output (no progress block renderer)",
     "  --help, -h           Show help",
     "",
     "Default config source:",
@@ -311,8 +319,32 @@ const C = {
   yellow: "\x1b[33m",
 };
 
+/**
+ * 交互模式下渲染器独占终端 stdout：普通日志只写日志文件、不回显到终端，
+ * 避免生成过程中任何 console 输出混入过程区块、破坏行数计数（导致重绘
+ * 上移不足、把上方历史内容"吃掉"）。错误提示（console.error）保留回显。
+ */
+function muteConsoleLogToFile(logPath: string): void {
+  const writeFile = (level: string, args: unknown[]): void => {
+    try {
+      const text = args
+        .map((a) =>
+          typeof a === "string" ? a
+            : a instanceof Error ? (a.stack ?? a.message)
+            : JSON.stringify(a))
+        .join(" ");
+      appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${text}\n`, "utf8");
+    } catch {
+      // 日志系统自身失败不影响主流程
+    }
+  };
+  console.log = (...args: unknown[]) => writeFile("LOG", args);
+  console.info = (...args: unknown[]) => writeFile("INFO", args);
+  console.warn = (...args: unknown[]) => writeFile("WARN", args);
+}
+
 async function runRepl(args: ParsedArgs): Promise<void> {
-  const { ChatSession, appConfig } = await loadRuntime();
+  const { ChatSession, appConfig, fileLog } = await loadRuntime();
 
   const cwd = resolvePath(args.options.cwd ?? process.cwd());
   let resolvedSession;
@@ -329,6 +361,12 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   console.log(`${C.dim}Session: ${resolvedSession.sessionId} (${resolvedSession.mode === "new" ? "new" : "resumed"})${C.reset}`);
   console.log(`${C.dim}Type a message to chat. Double Ctrl+C interrupts generation or exits. Type exit to quit.${C.reset}`);
   console.log("");
+
+  // 交互渲染模式下 console 输出只写日志文件、不回显到终端（渲染器独占 stdout，
+  // 避免生成中日志混入区块破坏行数）。--plain 无渲染器，不需要静音。
+  if (process.stdout.isTTY === true && !args.plain) {
+    muteConsoleLogToFile(fileLog.logPath);
+  }
 
   let session: InstanceType<typeof ChatSession>;
   try {
@@ -363,20 +401,20 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     }
 
     if (input === "exit") {
-      console.log(`${C.dim}bye${C.reset}`);
+      process.stdout.write(`${C.dim}bye${C.reset}\n`);
       rl.close();
       return;
     }
 
     if (input === "/clear") {
       session.reset();
-      console.log(`${C.dim}session cleared${C.reset}`);
+      process.stdout.write(`${C.dim}session cleared${C.reset}\n`);
       rl.prompt();
       return;
     }
 
     if (input === "/history") {
-      console.log(`${C.dim}${session.turnCount} conversation turns${C.reset}`);
+      process.stdout.write(`${C.dim}${session.turnCount} conversation turns${C.reset}\n`);
       rl.prompt();
       return;
     }
@@ -385,12 +423,16 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     const signal = currentAbort.signal;
 
     // TTY 下用"过程区块"（飞书过程卡片的终端形态）：固定区域原地更新、
-    // 工具调用折叠为单行；非 TTY（管道/CI）回退为纯文本流式输出。
-    const useTerminalBlock = process.stdout.isTTY === true;
+    // 工具调用折叠为单行；非 TTY（管道/CI）或 --plain 回退为纯文本流式输出。
+    const useTerminalBlock = process.stdout.isTTY === true && !args.plain;
     const renderer = useTerminalBlock ? new TerminalProgressRenderer() : null;
     let view: ProgressView | null = null;
     if (renderer) {
       view = progressView({ headerTitle: "生成中..." });
+      // 先回行首换行再 begin：让过程区块从输入行下方开始，避免首帧 \r\x1b[2K
+      // 清掉用户刚输入的问题行（历史文本不被刷掉）。\r\n 兼容 readline
+      // 行提交后光标仍停在输入行行尾的情况。
+      process.stdout.write("\r\n");
       renderer.begin(view);
     }
     let rendererEnded = false;
@@ -429,14 +471,14 @@ async function runRepl(args: ParsedArgs): Promise<void> {
         view = progressView({ ...view, status: aborted ? "stopped" : "error", showStop: false });
         renderer.end(view);
         rendererEnded = true;
-        console.log("");
+        process.stdout.write("\n");
       }
-      console.log(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
+      console.error(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
     } finally {
       if (renderer && view && !rendererEnded) {
         // 定型终态区块（完成/已停止/异常结束）留在屏幕上，恢复光标
         renderer.end(view);
-        console.log("");
+        process.stdout.write("\n");
       }
       currentAbort = null;
       ctrlCState.reset();
@@ -449,31 +491,31 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     const action = ctrlCState.press(currentAbort !== null);
 
     if (action === "exit") {
-      console.log(`\n${C.dim}bye${C.reset}`);
+      console.error(`\n${C.dim}bye${C.reset}`);
       rl.close();
       return;
     }
 
     if (action === "interrupt") {
-      console.log(`\n${C.yellow}[interrupting...]${C.reset}`);
+      console.error(`\n${C.yellow}[interrupting...]${C.reset}`);
       currentAbort?.abort();
       currentAbort = null;
       return;
     }
 
     if (action === "arm-interrupt") {
-      console.log(`\n${C.dim}Press Ctrl+C again to interrupt current response${C.reset}`);
+      console.error(`\n${C.dim}Press Ctrl+C again to interrupt current response${C.reset}`);
       return;
     }
 
     if (action === "arm-exit") {
-      console.log(`\n${C.dim}Press Ctrl+C again to exit, or type exit${C.reset}`);
+      console.error(`\n${C.dim}Press Ctrl+C again to exit, or type exit${C.reset}`);
       rl.prompt();
     }
   });
 
   rl.on("close", () => {
-    console.log("");
+    process.stdout.write("\n");
     process.exit(0);
   });
 }
