@@ -134,10 +134,11 @@ export function buildHelpCard(
     "发送 **/new claude** 创建新 Claude 会话",
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
+    "发送 **/new ccc** 创建新 CCC Agent 会话",
     "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
-    "发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡",
+    "发送 **/usage** 查看当前 Agent 的用量或余额",
     "发送 **/restart** 重启 ChatCCC 进程",
     "发送 **/update** 更新并重启（仅 npm 全局安装可用）",
     ABD_HELP_LINE,
@@ -153,6 +154,7 @@ export function buildHelpCard(
         { text: "新建 Claude 会话（/new claude）", value: JSON.stringify({ cmd: "new claude" }), type: "primary" },
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
         { text: "新建 Codex 会话（/new codex）", value: JSON.stringify({ cmd: "new codex" }), type: "primary" },
+        { text: "新建 CCC Agent 会话（/new ccc）", value: JSON.stringify({ cmd: "new ccc" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
         { text: "更新并重启（/update）", value: JSON.stringify({ cmd: "update" }), type: "danger" },
         { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
@@ -344,8 +346,8 @@ export function buildSessionsCard(sessions: Array<{
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
         { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
-          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；默认 Agent 变化后，下一条普通消息会创建对应 Agent 的新空会话。发送 **/new**、**/new claude**、**/new cursor** 或 **/new codex** 会另外创建会话群。`
-          : `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor** 或 **/new codex** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
+          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；默认 Agent 变化后，下一条普通消息会创建对应 Agent 的新空会话。发送 **/new**、**/new claude**、**/new cursor**、**/new codex** 或 **/new ccc** 会另外创建会话群。`
+          : `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor**、**/new codex** 或 **/new ccc** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
       ],

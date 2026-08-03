@@ -18,9 +18,12 @@ afterEach(() => {
 describe("builtin ChatSession config", () => {
   it("does not fall back to DEEPSEEK_API_KEY environment variable", () => {
     config.ccc = {
+      enabled: false,
+      defaultAgent: false,
       DEEPSEEK_API_KEY: "",
       DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
       model: "deepseek-v4-pro",
+      alternativeModel: "",
     };
     process.env.DEEPSEEK_API_KEY = "sk-env-should-not-be-used";
 

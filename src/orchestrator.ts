@@ -372,17 +372,60 @@ async function sendFastModeStatus(
   await platform.sendRawCard(chatId, buildFastModeCard(enabled));
 }
 
-async function resolveUsageTarget(chatId: string): Promise<{ tool: "codex" | "cursor"; sessionId?: string }> {
+async function resolveUsageTarget(chatId: string): Promise<{ tool: "codex" | "cursor" | "ccc"; sessionId?: string }> {
   try {
     const registry = await loadSessionRegistryForBinding();
     const record = registry[chatId];
-    return {
-      tool: record?.tool === "cursor" ? "cursor" : "codex",
-      sessionId: record?.sessionId,
-    };
+    const tool = record?.tool;
+    if (tool === "cursor") return { tool: "cursor", sessionId: record?.sessionId };
+    if (tool === "ccc") return { tool: "ccc", sessionId: record?.sessionId };
+    return { tool: "codex", sessionId: record?.sessionId };
   } catch {
     return { tool: "codex" };
   }
+}
+
+function isOfficialDeepSeek(baseURL: string): boolean {
+  try {
+    return new URL(baseURL).host === "api.deepseek.com";
+  } catch {
+    return false;
+  }
+}
+
+interface DeepSeekBalance {
+  is_available: boolean;
+  balance_infos?: Array<{
+    currency: string;
+    total_balance: string;
+    topped_up_balance: string;
+    granted_balance: string;
+  }>;
+}
+
+async function fetchDeepSeekBalance(apiKey: string, baseURL: string): Promise<DeepSeekBalance> {
+  const apiOrigin = new URL(baseURL).origin;
+  const resp = await fetch(`${apiOrigin}/user/balance`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!resp.ok) {
+    throw new Error(`DeepSeek 余额查询失败: HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as DeepSeekBalance;
+}
+
+function formatDeepSeekBalance(balance: DeepSeekBalance): string {
+  if (!balance.is_available) return "**DeepSeek 余额:** 暂无数据";
+  const infos = balance.balance_infos ?? [];
+  if (infos.length === 0) return "**DeepSeek 余额:** 暂无数据";
+  const lines = infos.map((info) => {
+    const parts = [`**${info.currency}:**`];
+    parts.push(`- 总余额: ${info.total_balance}`);
+    if (info.topped_up_balance) parts.push(`- 充值余额: ${info.topped_up_balance}`);
+    if (info.granted_balance) parts.push(`- 赠送余额: ${info.granted_balance}`);
+    return parts.join("\n");
+  });
+  return `**DeepSeek 余额:**\n${lines.join("\n")}`;
 }
 
 function refreshUsageAvatar(
@@ -401,10 +444,31 @@ function refreshUsageAvatar(
 async function sendUsageSummary(
   platform: PlatformAdapter,
   chatId: string,
-  tool: "codex" | "cursor",
+  tool: "codex" | "cursor" | "ccc",
   avatarStatus: "busy" | "idle" = "idle",
   sessionId?: string,
 ): Promise<void> {
+  if (tool === "ccc") {
+    const baseURL = config.ccc.DEEPSEEK_BASE_URL;
+    if (!isOfficialDeepSeek(baseURL)) {
+      const msg = "CCC 用量查询仅支持官方 DeepSeek API (api.deepseek.com)，当前使用的非官方接口不支持余额查询。";
+      if (platform.kind === "wechat") {
+        await platform.sendText(chatId, msg).catch(() => {});
+      } else {
+        await platform.sendCard(chatId, "CCC Usage", msg, "blue");
+      }
+      return;
+    }
+    const balance = await fetchDeepSeekBalance(config.ccc.DEEPSEEK_API_KEY, baseURL);
+    const content = formatDeepSeekBalance(balance);
+    if (platform.kind === "wechat") {
+      await platform.sendText(chatId, content).catch(() => {});
+    } else {
+      await platform.sendCard(chatId, "CCC Usage", content, "blue");
+    }
+    return;
+  }
+
   if (tool === "cursor") {
     const usage = await getCursorUsageSummary();
     const content = formatCursorUsageSummary(usage);
@@ -432,8 +496,8 @@ async function sendUsageSummary(
   refreshUsageAvatar(platform, chatId, tool, avatarStatus, { codexUsage: usage }, sessionId);
 }
 
-async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor", err: unknown): Promise<void> {
-  const toolLabel = tool === "cursor" ? "Cursor" : "Codex";
+async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor" | "ccc", err: unknown): Promise<void> {
+  const toolLabel = tool === "cursor" ? "Cursor" : tool === "ccc" ? "CCC" : "Codex";
   const message = `${toolLabel} 用量获取失败：${(err as Error).message}`;
   if (platform.kind === "wechat") {
     await platform.sendText(chatId, message).catch(() => {});
@@ -977,7 +1041,7 @@ export async function handleCommand(
       await platform.sendCard(
         chatId,
         "Error",
-        `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex)。`,
+        `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex), ccc (CCC Agent)。`,
         "red",
       );
       return;
@@ -2143,6 +2207,7 @@ export async function handleCommand(
     let currentModel = "";
     if (defaultTool === "cursor") currentModel = config.cursor.model;
     else if (defaultTool === "codex") currentModel = config.codex.model;
+    else if (defaultTool === "ccc") currentModel = config.ccc.model;
     else currentModel = CLAUDE_MODEL;
 
     if (platform.kind === "wechat") {

@@ -1,8 +1,8 @@
 # ChatCCC
 
-**用飞书或微信聊天控制 Claude Code / Cursor / Codex。**
+**用飞书或微信聊天控制 Claude Code / Cursor / Codex / CCC Agent。**
 
-ChatCCC 把本地 AI 编程工具接入即时通讯软件。你可以在手机上发消息，让 Claude Code、Cursor Agent 或 Codex 继续写代码、查问题、跑命令；不用一直守在电脑前。
+ChatCCC 把本地 AI 编程工具接入即时通讯软件。你可以在手机上发消息，让 Claude Code、Cursor Agent、Codex 或内置 CCC Agent 继续写代码、查问题、跑命令；不用一直守在电脑前。
 
 飞书是推荐入口：直接私聊机器人即可持续使用同一个专属会话，需要并行任务时再用 `/new` 创建独立会话群；卡片能流式更新，体验完整。微信 iLink 更适合快速试用或临时使用：扫码即可接入，但只能走私聊文本模式。
 
@@ -21,7 +21,7 @@ ChatCCC 把本地 AI 编程工具接入即时通讯软件。你可以在手机�
 - **手机上也能用 AI 编程工具**：在飞书或微信发消息，就像在终端给 Agent 下指令。
 - **飞书体验更完整**：私聊可持续对话，`/new` 创建的一群一会话支持多任务并行，CardKit 卡片可流式更新。
 - **微信接入更轻**：不用创建飞书应用，启动后扫码即可在微信私聊里使用。
-- **多 Agent 切换**：`/new` 使用默认 Agent，也可以用 `/new claude`、`/new cursor`、`/new codex` 指定工具。
+- **多 Agent 切换**：`/new` 使用默认 Agent，也可以用 `/new claude`、`/new cursor`、`/new codex`、`/new ccc` 指定工具。
 - **群里能跑 git**：`/git status`、`/git pull`、`/git log` 会在当前会话工作目录执行，并把输出发回聊天窗口。
 
 ## 飞书和微信的差异
@@ -208,7 +208,7 @@ chatccc
 
 ### 3. AI 工具配置
 
-ChatCCC 只负责把聊天消息转给本地 AI 工具，不捆绑这些 CLI。你只需要安装自己要用的 Agent。
+Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，只需配置 DeepSeek 兼容 API。
 
 #### Claude Code
 
@@ -238,6 +238,12 @@ codex --version
 ```
 
 Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理，也可以在 `config.json` 中覆盖。
+
+#### CCC Agent
+
+CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI。在首次配置向导或 Web 管理页中启用后，填写 DeepSeek 兼容 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
+
+`ccc.alternativeModel` 是单个备选模型，只会加入 `/model` 的人工切换列表，不会在请求失败时自动重试或切换，避免重复执行带副作用的工具调用。
 
 #### 可选：Chrome CDP
 
@@ -290,6 +296,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
     "defaultAgent": false,
     "path": "",
     "model": "",
+    "alternativeModel": "",
     "avatarBatteryMode": "apiPercent",
     "onDemandMonthlyBudget": 1000
   },
@@ -298,8 +305,17 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
     "defaultAgent": false,
     "path": "",
     "model": "",
+    "alternativeModel": "",
     "effort": "",
     "fastMode": false
+  },
+  "ccc": {
+    "enabled": false,
+    "defaultAgent": false,
+    "DEEPSEEK_API_KEY": "",
+    "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-pro",
+    "alternativeModel": ""
   }
 }
 ```
@@ -327,12 +343,15 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `claude.model` / `claude.subagentModel` / `claude.effort` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.apiKey` / `claude.baseUrl` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.maxTurn` | 选填；Claude 最大对话轮数，默认 0（无限制），可在 Web UI 编辑 |
+| `cursor.alternativeModel` / `codex.alternativeModel` / `ccc.alternativeModel` | 单个备选模型；加入 `/model` 人工切换列表，不会自动故障转移 |
+| `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 使用的 DeepSeek 兼容 API 凭证和服务地址 |
+| `ccc.model` | CCC Agent 默认模型 |
 
 > **权限控制**：普通消息以 `bypassPermissions` 模式运行，跳过 Agent 操作确认。使用 `/plan` 或 `/ask` 前缀时，ChatCCC 自动切换为只读模式：Claude SDK 仅放行 Read + stop-stuck-loop 网络请求，Codex 使用 `--sandbox read-only`，Cursor 使用 `--mode plan/ask`。请只在可信环境中使用。
 
 ### 5. 开始使用
 
-**飞书：** 找到机器人后直接发送普通消息，即可在当前私聊中创建并持续使用专属 AI 会话；私聊工作目录固定为运行 ChatCCC 的系统账号用户目录。默认 Agent 发生变化后，下一条私聊普通消息会触发切换并创建新的空会话；若旧 Agent 正在生成，该消息会先排队，待当前回复完成后再切换。命令不会触发自动切换。需要独立任务时，发送 `/new`、`/new claude`、`/new cursor` 或 `/new codex`，机器人会另外创建会话群。
+**飞书：** 找到机器人后直接发送普通消息，即可在当前私聊中创建并持续使用专属 AI 会话；私聊工作目录固定为运行 ChatCCC 的系统账号用户目录。默认 Agent 发生变化后，下一条私聊普通消息会触发切换并创建新的空会话；若旧 Agent 正在生成，该消息会先排队，待当前回复完成后再切换。命令不会触发自动切换。需要独立任务时，发送 `/new`、`/new claude`、`/new cursor`、`/new codex` 或 `/new ccc`，机器人会另外创建会话群。
 
 **微信：** 扫码登录后，在机器人私聊里发送 `/new` 或指定 Agent 的 `/new ...` 命令即可开始。功能与飞书基本一致，但展示为纯文本。
 
@@ -348,6 +367,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/new claude` | 创建 Claude Code 会话；飞书中会创建新群 |
 | `/new cursor` | 创建 Cursor 会话；飞书中会创建新群 |
 | `/new codex` | 创建 Codex 会话；飞书中会创建新群 |
+| `/new ccc` | 创建内置 CCC Agent 会话；飞书中会创建新群 |
 | `/newh` | 在当前聊天原地重置会话；群聊保留工作目录，飞书私聊固定使用系统用户目录 |
 | `/model` | 查看或切换当前会话的模型 |
 | `/fast` | 查看当前 Codex 会话的 Fast 模式；使用 `/fast on` 或 `/fast off` 切换 |
@@ -357,7 +377,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/cd` | 查看或设置后续新建会话的默认工作目录，不改变当前会话；飞书私聊自身始终使用系统用户目录 |
 | `/sessions` | 查看所有会话状态 |
 | `/session <数字>` | 将当前群聊切换到 `/sessions` 列表中的指定会话；飞书私聊不支持切换 |
-| `/usage` | 查看当前会话对应 Agent 的用量；Codex 按接口实际返回显示 5h/7天窗口（缺失窗口不显示），若 Chrome CDP 可用且 ChatGPT 已登录，会额外显示订阅到期时间；Cursor 显示当前周期用量 |
+| `/usage` | 查看当前会话对应 Agent 的用量；Codex 显示 5h/7天窗口，Cursor 显示当前周期用量，使用官方 DeepSeek API 的 CCC Agent 显示账户余额 |
 | `/git <子命令>` | 在当前会话工作目录执行 `git ...` 并回传输出 |
 | `/abd<内容>` | 去掉 `/abd` 前缀后把内容发给 Agent，并在消息末尾追加第一性原理需求澄清提示 |
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
@@ -368,7 +388,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 `/update` 会在执行 npm 更新前把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新 `/update` 因事件 ID 不同，仍可立即执行。该保护仅作用于 `/update`，普通消息与 `/restart` 的处理不变。
 
-> **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`，Cursor 使用 `cursor.model`，Codex 使用 `codex.model`。
+> **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex 和 CCC Agent 使用各自的 `model` / `alternativeModel`。
 
 > **Codex Fast 模式**：Web UI 中的“Fast 模式”设置新 Codex 会话的全局默认值，默认关闭。进入 Codex 会话后，`/fast` 查询当前状态，`/fast on` 和 `/fast off` 只覆盖当前会话并从下一条消息生效。ChatCCC 会显式向 Codex CLI 传入 `service_tier="fast"` 或 `service_tier="default"`，因此关闭时不会继承用户 `config.toml` 中可能开启的 Fast。
 
@@ -376,4 +396,4 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 ## 技术栈
 
-TypeScript / Node.js >= 20 / tsx / Anthropic Claude Agent SDK / Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
+TypeScript / Node.js >= 20 / tsx / AI SDK / Anthropic Claude Agent SDK / Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink

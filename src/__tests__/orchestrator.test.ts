@@ -148,6 +148,12 @@ describe("handleCommand WeChat processing ack", () => {
     config.cursor.defaultAgent = false;
     config.codex.defaultAgent = false;
     config.codex.fastMode = false;
+    config.ccc.enabled = true;
+    config.ccc.defaultAgent = false;
+    config.ccc.DEEPSEEK_API_KEY = "sk-test-ccc";
+    config.ccc.DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
+    config.ccc.model = "deepseek-v4-pro";
+    config.ccc.alternativeModel = "deepseek-v4-flash";
     mockStreamStates.clear();
     mockGetCodexUsageSummary.mockReset();
     mockGetCursorUsageSummary.mockReset();
@@ -205,6 +211,7 @@ describe("handleCommand WeChat processing ack", () => {
     _resetSessionRegistryFileForTest();
     _resetSessionToolsFileForTest();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     await rm(tempDir, { recursive: true, force: true });
   });
 
@@ -1113,6 +1120,64 @@ describe("handleCommand WeChat processing ack", () => {
     expect(claudeReadyCall?.[2]).not.toContain("/usage");
   });
 
+  it("handles /usage as DeepSeek balance in CCC Agent chats", async () => {
+    const platform = mockPlatform("feishu");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      is_available: true,
+      balance_infos: [{
+        currency: "CNY",
+        total_balance: "12.34",
+        topped_up_balance: "10.00",
+        granted_balance: "2.34",
+      }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await recordSessionRegistry({
+      chatId: "ccc-chat",
+      sessionId: "sid-ccc",
+      tool: "ccc",
+      chatName: "ccc-session",
+      running: false,
+    });
+
+    await handleCommand(platform, "/usage", "ccc-chat", "ou-user", Date.now(), "group");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.deepseek.com/user/balance",
+      expect.objectContaining({ headers: { Authorization: "Bearer sk-test-ccc" } }),
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "ccc-chat",
+      "CCC Usage",
+      expect.stringContaining("总余额: 12.34"),
+      "blue",
+    );
+  });
+
+  it("does not query balance for a non-official CCC API endpoint", async () => {
+    const platform = mockPlatform("feishu");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    config.ccc.DEEPSEEK_BASE_URL = "https://deepseek-proxy.example.com/v1";
+    await recordSessionRegistry({
+      chatId: "ccc-proxy-chat",
+      sessionId: "sid-ccc-proxy",
+      tool: "ccc",
+      chatName: "ccc-proxy-session",
+      running: false,
+    });
+
+    await handleCommand(platform, "/usage", "ccc-proxy-chat", "ou-user", Date.now(), "group");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "ccc-proxy-chat",
+      "CCC Usage",
+      expect.stringContaining("仅支持官方 DeepSeek API"),
+      "blue",
+    );
+  });
+
   it("reloads runtime config for the exact /reload command", async () => {
     const platform = mockPlatform("feishu");
 
@@ -1129,7 +1194,7 @@ describe("handleCommand WeChat processing ack", () => {
     );
   });
 
-  it("allows the hidden /new ccc entry without advertising it in normal help", async () => {
+  it("allows and advertises the /new ccc entry", async () => {
     const platform = mockPlatform("feishu");
     _setAdapterForToolForTest("ccc", mockAdapter("session-20260702-121530-a1b2c3"));
 
@@ -1150,7 +1215,21 @@ describe("handleCommand WeChat processing ack", () => {
     const helpPlatform = mockPlatform("feishu");
     await handleCommand(helpPlatform, "hello", "feishu-group-help", "ou-user", Date.now(), "group");
     const helpCard = vi.mocked(helpPlatform.sendRawCard).mock.calls.at(-1)?.[1] as string;
-    expect(helpCard).not.toContain("/new ccc");
-    expect(helpCard).not.toContain("CCC Agent");
+    expect(helpCard).toContain("/new ccc");
+    expect(helpCard).toContain("CCC Agent");
+  });
+
+  it("shows the CCC model list when CCC Agent is the unbound default", async () => {
+    const platform = mockPlatform("feishu");
+    config.claude.defaultAgent = false;
+    config.cursor.defaultAgent = false;
+    config.codex.defaultAgent = false;
+    config.ccc.defaultAgent = true;
+
+    await handleCommand(platform, "/model", "feishu-p2p-ccc-model", "ou-user", Date.now(), "p2p");
+
+    const card = vi.mocked(platform.sendRawCard).mock.calls.at(-1)?.[1] as string;
+    expect(card).toContain("deepseek-v4-pro");
+    expect(card).toContain("deepseek-v4-flash");
   });
 });

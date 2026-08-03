@@ -161,7 +161,7 @@ describe("buildHelpCard", () => {
     const parsed = JSON.parse(card);
     const action = parsed.elements[2];
     expect(action.tag).toBe("action");
-    expect(action.actions).toHaveLength(7);
+    expect(action.actions).toHaveLength(8);
   });
 
   it("adds ABD prefix help as the final help line", () => {
@@ -169,17 +169,17 @@ describe("buildHelpCard", () => {
     const parsed = JSON.parse(card);
     const lines = parsed.elements[1].text.content.split("\n");
 
-    expect(lines).toContain("发送 **/usage** 查看 Codex 实际存在的 5h/7天用量窗口，以及查询/使用主动重置卡");
+    expect(lines).toContain("发送 **/usage** 查看当前 Agent 的用量或余额");
     expect(lines.at(-1)).toBe(ABD_HELP_LINE);
   });
 
-  it("does not advertise the hidden ccc agent", () => {
+  it("advertises CCC Agent as a normal session option", () => {
     const card = buildHelpCard("test");
     const parsed = JSON.parse(card);
     const text = JSON.stringify(parsed);
 
-    expect(text).not.toContain("/new ccc");
-    expect(text).not.toContain("CCC Agent");
+    expect(text).toContain("/new ccc");
+    expect(text).toContain("CCC Agent");
   });
 });
 
@@ -419,7 +419,7 @@ describe("buildSessionsCard", () => {
     expect(content).not.toContain("Cursor 会话");
   });
 
-  it("labels hidden ccc sessions without grouping them as Claude Code", () => {
+  it("labels CCC sessions without grouping them as Claude Code", () => {
     const card = buildSessionsCard([
       { sessionId: "session-20260702-121530-a1b2c3", chatName: "", chatId: "oc_ccc", active: false, turnCount: 1, elapsedSeconds: null, model: "deepseek-v4-pro", tool: "ccc" },
     ]);
