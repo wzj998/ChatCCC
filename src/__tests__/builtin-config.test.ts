@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChatSession } from "../builtin/index.ts";
-import { config } from "../config.ts";
+import { config } from "../builtin/config.ts";
 
 const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
-const originalCccConfig = structuredClone(config.ccc);
+const originalDeepCccApiKey = config.apiKey;
 
 afterEach(() => {
   if (originalDeepSeekApiKey === undefined) {
@@ -12,23 +12,12 @@ afterEach(() => {
   } else {
     process.env.DEEPSEEK_API_KEY = originalDeepSeekApiKey;
   }
-  config.ccc = structuredClone(originalCccConfig);
+  config.apiKey = originalDeepCccApiKey;
 });
 
 describe("builtin ChatSession config", () => {
-  it("does not fall back to DEEPSEEK_API_KEY environment variable", () => {
-    config.ccc = {
-      enabled: false,
-      defaultAgent: false,
-      DEEPSEEK_API_KEY: "",
-      DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
-      model: "deepseek-v4-pro",
-      alternativeModel: "",
-      effort: "",
-    };
-    process.env.DEEPSEEK_API_KEY = "sk-env-should-not-be-used";
-
-    expect(() => new ChatSession()).toThrow("ccc.DEEPSEEK_API_KEY 未设置");
+  it("uses the builtin ~/.deepccc config when no apiKey is passed", () => {
+    expect(() => new ChatSession()).not.toThrow();
   });
 
   it("allows constructor parameters to override config defaults", () => {

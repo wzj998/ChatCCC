@@ -1,14 +1,14 @@
 /**
- * ChatCCC builtin Agent terminal REPL and JSONL streaming entrypoint.
+ * DeepCCC terminal REPL and JSONL streaming entrypoint — 同步自 ChatCCC
  *
  * Usage:
- *   npx tsx src/builtin/cli.ts
- *   npx tsx src/builtin/cli.ts --model deepseek-v4-pro
- *   npx tsx src/builtin/cli.ts --stream-json --prompt "hello"
+ *   node bin/deepccc.mjs
+ *   node bin/deepccc.mjs --model deepseek-v4-pro
+ *   node bin/deepccc.mjs --stream-json --prompt "hello"
  *
- * 交互模式（TTY）下，单轮回复渲染为固定"过程区块"（飞书过程卡片的终端形态）：
- * 状态行 + 折叠工具行 + 原地更新正文，不再滚屏刷 JSON；完成/停止/异常后定型
- * 留在屏幕上。非 TTY（管道/CI）回退为纯文本流式输出；--stream-json 机器接口不变。
+ * 交互模式（TTY）下，单轮回复渲染为固定"过程区块"：状态行 + 折叠工具行 +
+ * 原地更新正文，不再滚屏刷 JSON；完成/停止/异常后定型留在屏幕上。
+ * 非 TTY（管道/CI）或 --plain 回退为纯文本流式输出；--stream-json 机器接口不变。
  */
 
 import * as readline from "node:readline";
@@ -20,10 +20,12 @@ import { fileURLToPath } from "node:url";
 import { listBuiltinContextSessions } from "./context.js";
 import { resolveBuiltinSession, type BuiltinResumeRequest } from "./session-select.js";
 import { createCtrlCState } from "./sigint.js";
-import { reduceProgress } from "../progress/reducer.ts";
-import { TerminalProgressRenderer } from "../progress/terminal-renderer.ts";
-import { progressView, type ProgressView } from "../progress/view.ts";
+import { reduceProgress } from "./progress/reducer.js";
+import { TerminalProgressRenderer } from "./progress/terminal-renderer.js";
+import { progressView, type ProgressView } from "./progress/view.js";
+import { defaultLogDir, setupFileLogging } from "./file-log.js";
 import type { ChatEvent, ChatSessionConfig, ChatSessionOptions } from "./index.js";
+import type { PermissionRequest, PermissionResolver } from "./permissions.js";
 
 interface ParsedArgs {
   config: ChatSessionConfig;
@@ -39,8 +41,7 @@ interface ParsedArgs {
 
 interface RuntimeDeps {
   ChatSession: typeof import("./index.js").ChatSession;
-  appConfig: typeof import("../config.ts").config;
-  fileLog: typeof import("../config.ts").fileLog;
+  appConfig: typeof import("./config.js").config;
 }
 
 interface JsonLine {
@@ -103,6 +104,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
       i++;
     } else if (arg === "--plain") {
       plain = true;
+    } else if (arg === "--dangerously-bypass-permissions") {
+      // 仅保留一个 bypass 入口（对齐 chatccc 调 claude/codex 的 bypass 模式）
+      options.permissionMode = "bypass";
     } else if (arg === "--help" || arg === "-h") {
       help = true;
     }
@@ -112,35 +116,43 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
 }
 
 async function loadRuntime(): Promise<RuntimeDeps> {
-  const [{ ChatSession }, { config: appConfig, fileLog }] = await Promise.all([
+  const [{ ChatSession }, { config: appConfig }] = await Promise.all([
     import("./index.js"),
-    import("../config.ts"),
+    import("./config.js"),
   ]);
-  return { ChatSession, appConfig, fileLog };
+  return { ChatSession, appConfig };
 }
 
 function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
   console.log([
-    "ChatCCC builtin Agent terminal REPL",
+    "DeepCCC terminal agent",
     "",
-    "Usage: npx tsx src/builtin/cli.ts [options]",
+    "Usage: deepccc [options]",
     "",
     "Options:",
-    `  --model <name>       Model name (overrides config.ccc.model, current default ${appConfig.ccc.model})`,
-    `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.ccc.effort)`,
-    `  --base-url <url>     API base URL (current default ${appConfig.ccc.DEEPSEEK_BASE_URL})`,
-    "  --api-key <key>      API key (overrides config.ccc.DEEPSEEK_API_KEY)",
+    `  --model <name>       Model name (current default ${appConfig.model})`,
+    `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.effort)`,
+    `  --base-url <url>     OpenAI-compatible API base URL (current default ${appConfig.baseURL})`,
+    "  --api-key <key>      API key",
     "  --cwd <path>         Working directory",
     "  --max-steps <n>      Optional tool-step limit. Omit for no step limit",
     "  --resume [id]        Resume latest cwd session, or the explicit session id",
-    "  --list-sessions      List saved ccc sessions and exit",
+    "  --list-sessions      List saved sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
     "  --plain              Force plain streaming output (no progress block renderer)",
+    "  --dangerously-bypass-permissions  Skip all permission prompts (aligns with chatccc's bypass mode)",
     "  --help, -h           Show help",
     "",
+    "Permissions:",
+    "  Default mode asks before high-risk commands (rm -rf, git push --force, ...).",
+    "  Answer y = allow once, a = allow always (saved to ~/.deepccc/allow.json),",
+    "  n = deny, g = allow all for this session. Read-only tools and normal file",
+    "  edits never prompt. In non-interactive mode (--stream-json) high-risk",
+    "  commands are denied unless --dangerously-bypass-permissions is passed.",
+    "",
     "Default config source:",
-    "  ~/.chatccc/config.json ccc.DEEPSEEK_API_KEY / ccc.DEEPSEEK_BASE_URL / ccc.model",
+    "  ~/.deepccc/config.json, DEEPCCC_* environment variables, or DEEPSEEK_* aliases",
     "",
   ].join("\n"));
 }
@@ -167,7 +179,7 @@ function printSessions(streamJson = false): void {
   }
 
   if (sessions.length === 0) {
-    console.log("No saved ccc sessions");
+    console.log("No saved DeepCCC sessions");
     return;
   }
 
@@ -298,7 +310,7 @@ async function runStreamJson(args: ParsedArgs): Promise<number> {
     session_id: resolvedSession.sessionId,
     mode: resolvedSession.mode,
     cwd,
-    model: args.config.model ?? runtime.appConfig.ccc.model,
+    model: args.config.model ?? runtime.appConfig.model,
   });
 
   try {
@@ -344,7 +356,7 @@ function muteConsoleLogToFile(logPath: string): void {
 }
 
 async function runRepl(args: ParsedArgs): Promise<void> {
-  const { ChatSession, appConfig, fileLog } = await loadRuntime();
+  const { ChatSession, appConfig } = await loadRuntime();
 
   const cwd = resolvePath(args.options.cwd ?? process.cwd());
   let resolvedSession;
@@ -355,8 +367,8 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`${C.dim}ChatCCC builtin Agent${C.reset}`);
-  console.log(`${C.dim}Model: ${args.config.model ?? appConfig.ccc.model}${C.reset}`);
+  console.log(`${C.dim}DeepCCC agent${C.reset}`);
+  console.log(`${C.dim}Model: ${args.config.model ?? appConfig.model}${C.reset}`);
   console.log(`${C.dim}Directory: ${cwd}${C.reset}`);
   console.log(`${C.dim}Session: ${resolvedSession.sessionId} (${resolvedSession.mode === "new" ? "new" : "resumed"})${C.reset}`);
   console.log(`${C.dim}Type a message to chat. Double Ctrl+C interrupts generation or exits. Type exit to quit.${C.reset}`);
@@ -365,8 +377,39 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   // 交互渲染模式下 console 输出只写日志文件、不回显到终端（渲染器独占 stdout，
   // 避免生成中日志混入区块破坏行数）。--plain 无渲染器，不需要静音。
   if (process.stdout.isTTY === true && !args.plain) {
-    muteConsoleLogToFile(fileLog.logPath);
+    muteConsoleLogToFile(setupFileLogging(defaultLogDir(), "index").logPath);
   }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: `${C.green}>${C.reset} `,
+  });
+
+  // 权限交互：暂停过程区块渲染（恢复光标）→ readline 提问 → 恢复渲染。
+  // activeRenderer/activeView 由每轮 line 处理器维护，resolver 只在工具
+  // 执行期间被调用，此时当前轮的区块正处于运行中。
+  let activeRenderer: TerminalProgressRenderer | null = null;
+  let activeView: ProgressView | null = null;
+  const permissionResolver: PermissionResolver = async (request: PermissionRequest) => {
+    const renderer = activeRenderer;
+    const view = activeView;
+    if (renderer) renderer.dispose();
+    process.stdout.write(`\n${C.yellow}⚠️  高危操作需要确认${C.reset}\n`);
+    process.stdout.write(`${C.dim}${request.detail}${C.reset}\n`);
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(
+        `${C.green}允许一次(y) / 永远允许(a) / 拒绝(n) / 本会话允许所有(g) >${C.reset} `,
+        resolve,
+      );
+    });
+    if (renderer && view) renderer.begin(view);
+    const v = answer.trim().toLowerCase();
+    if (v === "y") return "allow";
+    if (v === "a") return "allow-always";
+    if (v === "g") return "allow-session";
+    return "deny";
+  };
 
   let session: InstanceType<typeof ChatSession>;
   try {
@@ -375,17 +418,12 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       cwd,
       persist: true,
       sessionId: resolvedSession.sessionId,
+      permissionResolver,
     });
   } catch (err) {
     console.error(`${C.yellow}${(err as Error).message}${C.reset}`);
     process.exit(1);
   }
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${C.green}>${C.reset} `,
-  });
 
   let currentAbort: AbortController | null = null;
   const ctrlCState = createCtrlCState();
@@ -429,6 +467,8 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     let view: ProgressView | null = null;
     if (renderer) {
       view = progressView({ headerTitle: "生成中..." });
+      activeRenderer = renderer;
+      activeView = view;
       // 先回行首换行再 begin：让过程区块从输入行下方开始，避免首帧 \r\x1b[2K
       // 清掉用户刚输入的问题行（历史文本不被刷掉）。\r\n 兼容 readline
       // 行提交后光标仍停在输入行行尾的情况。
@@ -475,6 +515,8 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       }
       console.error(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
     } finally {
+      activeRenderer = null;
+      activeView = null;
       if (renderer && view && !rendererEnded) {
         // 定型终态区块（完成/已停止/异常结束）留在屏幕上，恢复光标
         renderer.end(view);

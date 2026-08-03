@@ -69,7 +69,7 @@ describe("resolveBuiltinSession", () => {
       cwd: "C:\\repo",
       contextDir,
       resume: "missing",
-    })).toThrow("未找到 ccc 会话: missing");
+    })).toThrow("DeepCCC session not found: missing");
   });
 
   it("resumes the newest session for cwd when resume has no id", async () => {
@@ -111,6 +111,6 @@ describe("resolveBuiltinSession", () => {
       cwd: "C:\\repo",
       contextDir,
       resume: true,
-    })).toThrow("未找到当前目录可恢复的 ccc 会话");
+    })).toThrow("No resumable DeepCCC session found for cwd: C:\\repo");
   });
 });

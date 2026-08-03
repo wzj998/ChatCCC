@@ -33,6 +33,9 @@ function toChatSessionOptions(
     compactAtTokens: options.compactAtTokens,
     keepRecentMessages: options.keepRecentMessages,
     maxSteps: options.maxSteps,
+    // chatccc 无终端可交互，且对齐 claude/codex 适配器的 bypass 模式：
+    // 高危命令不询问，全部放行（与独立 deepccc CLI 的 ask 模式不同）
+    permissionMode: "bypass",
   };
 }
 
