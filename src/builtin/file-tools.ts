@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { createInterface } from "node:readline";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
 
@@ -19,6 +21,8 @@ const SEARCH_TIMEOUT_MS = 15_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_TIMEOUT_MS = 900_000;
+const requireFromHere = createRequire(import.meta.url);
+const FALLBACK_SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 
 export interface ReadFileInput {
   path: string;
@@ -75,6 +79,11 @@ export interface SearchCodeOutput {
   glob?: string;
   matches: SearchCodeMatch[];
   truncated: boolean;
+}
+
+/** @internal Allows tests to force the dependency-free fallback path. */
+export interface SearchCodeRuntimeOptions {
+  ripgrepCommands?: readonly string[];
 }
 
 export interface RunCommandInput {
@@ -546,32 +555,44 @@ function parseRgLine(line: string): SearchCodeMatch | null {
   };
 }
 
-export async function searchCodeForTool(
-  cwd: string,
-  input: SearchCodeInput,
-  signal?: AbortSignal,
-): Promise<SearchCodeOutput> {
-  const query = input.query?.trim();
-  if (!query) throw new Error("query is required");
+interface RipgrepOutput {
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}
 
-  const searchPath = resolveToolPath(cwd, input.path);
-  const maxResults = Math.min(toPositiveInt(input.maxResults) ?? 50, MAX_SEARCH_RESULTS);
-  const args = [
-    "--line-number",
-    "--column",
-    "--no-heading",
-    "--color",
-    "never",
-    "--max-count",
-    String(maxResults),
-  ];
-  if (input.glob?.trim()) {
-    args.push("--glob", input.glob.trim());
+function resolveBundledRipgrepPath(): string | undefined {
+  try {
+    const bundled = requireFromHere("@vscode/ripgrep") as { rgPath?: unknown };
+    return typeof bundled.rgPath === "string" && bundled.rgPath.trim()
+      ? bundled.rgPath
+      : undefined;
+  } catch {
+    // Unsupported platforms or damaged optional platform packages must not
+    // prevent ChatCCC itself from starting; system rg / Node fallback remain.
+    return undefined;
   }
-  args.push("--", query, searchPath);
+}
 
-  const output = await new Promise<{ stdout: string; stderr: string; truncated: boolean }>((resolvePromise, reject) => {
-    const child = spawn("rg", args, {
+function defaultRipgrepCommands(): string[] {
+  const bundled = resolveBundledRipgrepPath();
+  return [...new Set([bundled, "rg"].filter((value): value is string => !!value))];
+}
+
+function isUnavailableExecutableError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "EACCES" || code === "EPERM";
+}
+
+async function runRipgrep(
+  command: string,
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<RipgrepOutput> {
+  return new Promise<RipgrepOutput>((resolvePromise, reject) => {
+    let settled = false;
+    const child = spawn(command, args, {
       cwd,
       shell: false,
       windowsHide: true,
@@ -581,14 +602,23 @@ export async function searchCodeForTool(
     let stdout = "";
     let stderr = "";
     let truncated = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    };
+    const rejectOnce = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
     const timeout = setTimeout(() => {
       child.kill();
-      reject(new Error(`search_code timed out after ${SEARCH_TIMEOUT_MS}ms`));
+      rejectOnce(new Error(`search_code timed out after ${SEARCH_TIMEOUT_MS}ms`));
     }, SEARCH_TIMEOUT_MS);
-
     const abort = () => {
       child.kill();
-      reject(new Error("search_code aborted"));
+      rejectOnce(new Error("search_code aborted"));
     };
     signal?.addEventListener("abort", abort, { once: true });
 
@@ -606,14 +636,11 @@ export async function searchCodeForTool(
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", (err) => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-      reject(err);
-    });
+    child.on("error", (err) => rejectOnce(err));
     child.on("close", (code) => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
+      if (settled) return;
+      settled = true;
+      cleanup();
       if (code !== 0 && code !== 1) {
         reject(new Error(stderr.trim() || `rg exited with code ${code}`));
         return;
@@ -621,20 +648,231 @@ export async function searchCodeForTool(
       resolvePromise({ stdout, stderr, truncated });
     });
   });
+}
 
-  const matches = output.stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map(parseRgLine)
-    .filter((match): match is SearchCodeMatch => !!match)
-    .slice(0, maxResults);
+function expandGlobBraces(pattern: string): string[] {
+  const openIndex = pattern.indexOf("{");
+  if (openIndex < 0) return [pattern];
+  const closeIndex = pattern.indexOf("}", openIndex + 1);
+  if (closeIndex < 0) return [pattern];
+  const alternatives = pattern.slice(openIndex + 1, closeIndex).split(",");
+  if (alternatives.length < 2) return [pattern];
+  return alternatives.flatMap((alternative) => expandGlobBraces(
+    pattern.slice(0, openIndex) + alternative + pattern.slice(closeIndex + 1),
+  ));
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        index += 1;
+        if (pattern[index + 1] === "/") {
+          index += 1;
+          source += "(?:.*/)?";
+        } else {
+          source += ".*";
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function createGlobMatchers(glob: string | undefined): Array<{ regex: RegExp; basenameOnly: boolean }> {
+  if (!glob?.trim()) return [];
+  return expandGlobBraces(glob.trim().replaceAll("\\", "/")).map((pattern) => ({
+    regex: globToRegExp(pattern),
+    basenameOnly: !pattern.includes("/"),
+  }));
+}
+
+function matchesFallbackGlob(
+  filePath: string,
+  searchRoot: string,
+  matchers: Array<{ regex: RegExp; basenameOnly: boolean }>,
+): boolean {
+  if (matchers.length === 0) return true;
+  const relativePath = relative(searchRoot, filePath).split(sep).join("/");
+  return matchers.some(({ regex, basenameOnly }) => regex.test(
+    basenameOnly ? basename(filePath) : relativePath,
+  ));
+}
+
+async function searchCodeWithNode(
+  query: string,
+  searchPath: string,
+  glob: string | undefined,
+  maxResults: number,
+  signal?: AbortSignal,
+): Promise<{ matches: SearchCodeMatch[]; truncated: boolean }> {
+  let queryRegex: RegExp;
+  try {
+    queryRegex = new RegExp(query);
+  } catch (err) {
+    throw new Error(`invalid search regex: ${(err as Error).message}`);
+  }
+
+  const startedAt = Date.now();
+  const matches: SearchCodeMatch[] = [];
+  const rootInfo = await stat(searchPath);
+  const searchRoot = rootInfo.isDirectory() ? searchPath : dirname(searchPath);
+  const globMatchers = createGlobMatchers(glob);
+  let truncated = false;
+  let outputBytes = 0;
+
+  const ensureActive = () => {
+    if (signal?.aborted) throw new Error("search_code aborted");
+    if (Date.now() - startedAt >= SEARCH_TIMEOUT_MS) {
+      throw new Error(`search_code timed out after ${SEARCH_TIMEOUT_MS}ms`);
+    }
+  };
+
+  const searchFile = async (filePath: string) => {
+    if (!matchesFallbackGlob(filePath, searchRoot, globMatchers)) return;
+    ensureActive();
+    const input = createReadStream(filePath, { encoding: "utf8" });
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    let lineNumber = 0;
+    try {
+      for await (const line of lines) {
+        ensureActive();
+        lineNumber += 1;
+        if (line.includes("\0")) break;
+        const match = queryRegex.exec(line);
+        queryRegex.lastIndex = 0;
+        if (!match) continue;
+        const lineBytes = Buffer.byteLength(line, "utf8");
+        if (outputBytes + lineBytes > MAX_SEARCH_BYTES) {
+          truncated = true;
+          break;
+        }
+        outputBytes += lineBytes;
+        matches.push({
+          path: filePath,
+          line: lineNumber,
+          column: match.index + 1,
+          text: line,
+        });
+        if (matches.length >= maxResults) {
+          truncated = true;
+          break;
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) throw new Error("search_code aborted");
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EACCES" && code !== "EPERM" && code !== "ENOENT") throw err;
+    } finally {
+      lines.close();
+      input.destroy();
+    }
+  };
+
+  const visit = async (currentPath: string): Promise<void> => {
+    ensureActive();
+    if (truncated) return;
+    let info;
+    try {
+      info = currentPath === searchPath ? rootInfo : await stat(currentPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "EACCES" || code === "EPERM" || code === "ENOENT") return;
+      throw err;
+    }
+    if (info.isFile()) {
+      await searchFile(currentPath);
+      return;
+    }
+    if (!info.isDirectory()) return;
+
+    let entries;
+    try {
+      entries = await readdir(currentPath, { withFileTypes: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "EACCES" || code === "EPERM" || code === "ENOENT") return;
+      throw err;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      if (truncated) break;
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory() && FALLBACK_SKIPPED_DIRECTORIES.has(entry.name)) continue;
+      if (entry.isSymbolicLink()) continue;
+      await visit(resolve(currentPath, entry.name));
+    }
+  };
+
+  await visit(searchPath);
+  return { matches, truncated };
+}
+
+export async function searchCodeForTool(
+  cwd: string,
+  input: SearchCodeInput,
+  signal?: AbortSignal,
+  runtimeOptions: SearchCodeRuntimeOptions = {},
+): Promise<SearchCodeOutput> {
+  const query = input.query?.trim();
+  if (!query) throw new Error("query is required");
+  if (signal?.aborted) throw new Error("search_code aborted");
+
+  const searchPath = resolveToolPath(cwd, input.path);
+  const maxResults = Math.min(toPositiveInt(input.maxResults) ?? 50, MAX_SEARCH_RESULTS);
+  const args = [
+    "--line-number",
+    "--column",
+    "--no-heading",
+    "--color",
+    "never",
+    "--max-count",
+    String(maxResults),
+  ];
+  if (input.glob?.trim()) {
+    args.push("--glob", input.glob.trim());
+  }
+  args.push("--", query, searchPath);
+
+  const commands = runtimeOptions.ripgrepCommands ?? defaultRipgrepCommands();
+  let output: RipgrepOutput | undefined;
+  for (const command of commands) {
+    try {
+      output = await runRipgrep(command, args, cwd, signal);
+      break;
+    } catch (err) {
+      if (!isUnavailableExecutableError(err)) throw err;
+    }
+  }
+
+  const fallback = output
+    ? undefined
+    : await searchCodeWithNode(query, searchPath, input.glob?.trim(), maxResults, signal);
+  const matches = output
+    ? output.stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(parseRgLine)
+      .filter((match): match is SearchCodeMatch => !!match)
+      .slice(0, maxResults)
+    : fallback!.matches;
 
   return {
     query,
     path: searchPath,
     ...(input.glob?.trim() ? { glob: input.glob.trim() } : {}),
     matches,
-    truncated: output.truncated || matches.length >= maxResults,
+    truncated: output
+      ? output.truncated || matches.length >= maxResults
+      : fallback!.truncated,
   };
 }
 

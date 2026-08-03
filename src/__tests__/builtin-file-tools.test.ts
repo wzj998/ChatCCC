@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -19,22 +17,12 @@ import {
   searchCodeForTool,
 } from "../builtin/file-tools.ts";
 
-const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "chatccc-builtin-tools-"));
   tempDirs.push(dir);
   return dir;
-}
-
-async function hasRg(): Promise<boolean> {
-  try {
-    await execFileAsync("rg", ["--version"]);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function sha256(text: string): string {
@@ -75,20 +63,52 @@ describe("builtin file tools", () => {
     }));
   });
 
-  it("searches code with rg without using a shell", async () => {
-    if (!await hasRg()) return;
-
+  it("searches with the project-bundled ripgrep even when rg is absent from PATH", async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, "a.ts"), "const marker = 1;\n", "utf8");
+    const originalPath = process.env.PATH;
+    process.env.PATH = "";
 
-    const result = await searchCodeForTool(dir, { query: "marker", glob: "*.ts" });
+    try {
+      const result = await searchCodeForTool(dir, { query: "marker", glob: "*.ts" });
 
-    expect(result.matches).toEqual([
-      expect.objectContaining({
-        line: 1,
-        text: "const marker = 1;",
-      }),
-    ]);
+      expect(result.matches).toEqual([
+        expect.objectContaining({
+          line: 1,
+          column: 7,
+          text: "const marker = 1;",
+        }),
+      ]);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("falls back to Node search when no ripgrep executable can be used", async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "a.ts"), "const marker = 1;\n", "utf8");
+    await mkdir(join(dir, "nested"));
+    await writeFile(join(dir, "nested", "b.md"), "xx marker = 2\n", "utf8");
+    await writeFile(join(dir, "ignored.txt"), "marker = 3\n", "utf8");
+    const originalPath = process.env.PATH;
+    process.env.PATH = "";
+
+    try {
+      const result = await searchCodeForTool(
+        dir,
+        { query: "marker\\s*=\\s*\\d", glob: "**/*.{ts,md}", maxResults: 10 },
+        undefined,
+        { ripgrepCommands: [join(dir, "missing-rg")] },
+      );
+
+      expect(result.matches).toEqual([
+        expect.objectContaining({ path: join(dir, "a.ts"), line: 1, column: 7 }),
+        expect.objectContaining({ path: join(dir, "nested", "b.md"), line: 1, column: 4 }),
+      ]);
+      expect(result.truncated).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+    }
   });
 
   it("runs non-interactive shell commands in the requested cwd", async () => {

@@ -338,6 +338,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 **会话停滞保护：** 当 Agent 连续 3 分钟停在“正在启动 Agent”且没有任何事件，或停在“正在生成回复”且回复字符数没有变化，同时尚未报告权威终态时，ChatCCC 会结束旧 CLI，并优先补发一次“完成了吗？如果没完成继续”；恢复轮再次发生相同停滞时不再递归续跑。`/new claude` 和 `/new cursor` 在等待底层 init 事件时也使用 3 分钟超时并主动清理 SDK/CLI。思考、搜索和工具调用阶段不按回复字符数误判，由进程资源监控负责识别真正僵死。Codex 只有 `turn.completed` 才算权威终态，阶段性的 `agent_message` 不算；任一 Agent 报告权威终态后若输出流仍超过 10 秒未关闭，ChatCCC 会强制清理该 CLI 并按正常完成收尾，不会重复询问 Agent。
 
+**CCC Agent 代码搜索：** `search_code` 使用项目自带的跨平台 ripgrep，不要求系统另行安装 `rg`。如果当前平台没有可用的 bundled/system ripgrep，会自动降级为内置 Node 搜索，并继续支持常用正则、glob、结果上限、中止和超时控制。
+
 ## 可用指令
 
 | 指令 | 作用 |
