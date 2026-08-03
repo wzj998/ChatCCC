@@ -53,6 +53,46 @@ afterEach(() => {
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
 });
 
+describe("ChatSession codex-style skills", () => {
+  it("injects skill index into system prompt from skillsDirs", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-skills-"));
+    const skillsDir = join(dir, ".codex", "skills");
+    await mkdir(join(skillsDir, "demo-skill"), { recursive: true });
+    await writeFile(
+      join(skillsDir, "demo-skill", "SKILL.md"),
+      "---\nname: demo-skill\ndescription: 演示技能\n---\n\n# 演示",
+      "utf-8",
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { cwd: dir, sessionId: "skill-index", skillsDirs: [skillsDir] },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("## Available Skills");
+    expect(system).toContain("demo-skill");
+    expect(system).toContain("演示技能");
+  });
+
+  it("skips skill injection when no skills are found", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-no-skills-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { cwd: dir, sessionId: "no-skills", skillsDirs: [join(dir, "missing")] },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).not.toContain("## Available Skills");
+  });
+});
 describe("ChatSession context management", () => {
   it("injects cwd project instruction files before runtime workspace details", async () => {
     const { ChatSession } = await import("../builtin/index.ts");

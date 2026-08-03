@@ -20,6 +20,7 @@ import {
   defaultBuiltinSessionId,
 } from "./context.ts";
 import { createBuiltinFileTools } from "./file-tools.ts";
+import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.ts";
 
 // ---------------------------------------------------------------------------
 // 系统提示词 — 编译期冻结常量
@@ -118,6 +119,11 @@ export interface ChatSessionOptions {
   keepRecentMessages?: number;
   /** Optional tool-step limit. Leave unset for no step limit. */
   maxSteps?: number;
+  /**
+   * Codex-style skill 扫描目录（<dir>/<name>/SKILL.md）。
+   * 缺省扫描 ~/.codex/skills、~/.agents/skills、<cwd>/.codex/skills。
+   */
+  skillsDirs?: string[];
 }
 
 /**
@@ -179,6 +185,12 @@ export class ChatSession {
     const projectInstructions = readProjectInstructionFiles(this.cwd);
     if (projectInstructions) {
       systemContent.push("", projectInstructions);
+    }
+    // Codex-style skills 索引注入（name + description + 路径，模型按需 read_file 全文）
+    const skills = scanSkillsDirs(options.skillsDirs ?? buildDefaultSkillDirs(this.cwd));
+    const skillsPrompt = buildSkillsIndexPrompt(skills);
+    if (skillsPrompt) {
+      systemContent.push("", skillsPrompt);
     }
     if (options.systemPrompt) {
       systemContent.push("", options.systemPrompt);
