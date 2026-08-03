@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { ABD_HELP_LINE } from "./shared-prefix.ts";
+import type { ProgressView } from "./progress/view.ts";
 
 export interface ButtonDef {
   text: string;
@@ -100,13 +101,17 @@ export function normalizeToolName(name: string): string {
 // ---------------------------------------------------------------------------
 
 // CardKit schema 2.0 进度卡片（带停止按钮，支持流式更新）
-export function buildProgressCard(
-  text: string,
-  opts: { showStop?: boolean; headerTitle?: string; headerTemplate?: string } = {}
-): string {
-  const { showStop = true, headerTitle = "生成中...", headerTemplate = "blue" } = opts;
+// 输入是平台无关的 ProgressView（与终端过程区块共享同一视图模型）：
+//   - view.text           → main_content（正文）
+//   - view.showStop       → 是否展示状态/停止按钮
+//   - view.headerTitle    → 卡片头部标题（生成中阶段的动态标题）
+//   - view.headerTemplate → 卡片头部颜色模板
+export function buildProgressCard(view: ProgressView): string {
+  const showStop = view.showStop;
+  const headerTitle = view.headerTitle;
+  const headerTemplate = view.headerTemplate;
   const elements: object[] = [
-    { tag: "markdown", content: truncateContent(text), element_id: "main_content" },
+    { tag: "markdown", content: truncateContent(view.text), element_id: "main_content" },
   ];
   if (showStop) {
     elements.push({ tag: "hr" });

@@ -16,6 +16,7 @@ import {
   normalizeToolName,
 } from "../cards.ts";
 import { ABD_HELP_LINE } from "../shared-prefix.ts";
+import { progressView } from "../progress/view.ts";
 
 // ---------------------------------------------------------------------------
 // truncateContent
@@ -116,7 +117,7 @@ describe("getToolEmoji", () => {
 
 describe("buildProgressCard", () => {
   it("returns valid JSON with correct schema", () => {
-    const card = buildProgressCard("test content");
+    const card = buildProgressCard(progressView({ text: "test content" }));
     const parsed = JSON.parse(card);
     expect(parsed.schema).toBe("2.0");
     expect(parsed.config.update_multi).toBe(true);
@@ -124,14 +125,14 @@ describe("buildProgressCard", () => {
   });
 
   it("uses default header title '生成中...'", () => {
-    const card = buildProgressCard("hello");
+    const card = buildProgressCard(progressView({ text: "hello" }));
     const parsed = JSON.parse(card);
     expect(parsed.header.title.content).toBe("生成中...");
     expect(parsed.header.template).toBe("blue");
   });
 
   it("includes stop button by default", () => {
-    const card = buildProgressCard("hello");
+    const card = buildProgressCard(progressView({ text: "hello" }));
     const parsed = JSON.parse(card);
     const buttons = parsed.body.elements.filter((e: any) => e.tag === "button");
     expect(buttons).toHaveLength(2);
@@ -142,21 +143,21 @@ describe("buildProgressCard", () => {
   });
 
   it("hides stop button when showStop is false", () => {
-    const card = buildProgressCard("hello", { showStop: false });
+    const card = buildProgressCard(progressView({ text: "hello", showStop: false }));
     const parsed = JSON.parse(card);
     const buttons = parsed.body.elements.filter((e: any) => e.tag === "button");
     expect(buttons).toHaveLength(0);
   });
 
   it("uses custom header title and template", () => {
-    const card = buildProgressCard("hello", { headerTitle: "已完成", headerTemplate: "green" });
+    const card = buildProgressCard(progressView({ text: "hello", headerTitle: "已完成", headerTemplate: "green" }));
     const parsed = JSON.parse(card);
     expect(parsed.header.title.content).toBe("已完成");
     expect(parsed.header.template).toBe("green");
   });
 
   it("includes markdown element with truncated content", () => {
-    const card = buildProgressCard("markdown text");
+    const card = buildProgressCard(progressView({ text: "markdown text" }));
     const parsed = JSON.parse(card);
     const md = parsed.body.elements.find((e: any) => e.tag === "markdown");
     expect(md).toBeDefined();
