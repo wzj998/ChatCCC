@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.217",
+  "version": "0.2.218",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -51,6 +51,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.2.133",
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "@openilink/openilink-sdk-node": "^0.6.0",
+    "@vscode/ripgrep": "^1.18.0",
     "ai": "^6.0.184",
     "nodemailer": "^8.0.7",
     "qrcode-terminal": "^0.12.0",
