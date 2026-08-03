@@ -24,6 +24,7 @@ describe("builtin ChatSession config", () => {
       DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
       model: "deepseek-v4-pro",
       alternativeModel: "",
+      effort: "",
     };
     process.env.DEEPSEEK_API_KEY = "sk-env-should-not-be-used";
 

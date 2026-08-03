@@ -126,6 +126,8 @@ import {
   _setFinalResponseCloseTimeoutForTest,
   _resetFinalResponseCloseTimeoutForTest,
   setSessionEffortOverride,
+  clearSessionEffortOverride,
+  getEffectiveEffortForTool,
   getEffectiveFastModeForTool,
   setSessionFastModeOverride,
   RESPONSE_STALL_RECOVERY_PROMPT,
@@ -1886,6 +1888,14 @@ describe("getSessionStatus", () => {
     const status = await getSessionStatus("chat-codex");
 
     expect(status!.effort).toBe("xhigh");
+  });
+
+  it("CCC 会话：effort 默认取 config.ccc.effort，session override 优先", async () => {
+    expect(getEffectiveEffortForTool("ccc")).toBe(config.ccc.effort);
+    setSessionEffortOverride("sid-ccc-effort-default", "low");
+    expect(getEffectiveEffortForTool("ccc", "sid-ccc-effort-default")).toBe("low");
+    clearSessionEffortOverride("sid-ccc-effort-default");
+    expect(getEffectiveEffortForTool("ccc", "sid-ccc-effort-default")).toBe(config.ccc.effort);
   });
 
   it("Cursor 会话：effort 恒为 null（卡片渲染时隐藏该行，避免显示无意义的 effort）", async () => {

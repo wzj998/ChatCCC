@@ -67,6 +67,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     if (arg === "--model" && next !== undefined) {
       config.model = next;
       i++;
+    } else if (arg === "--effort" && next !== undefined) {
+      config.effort = next;
+      i++;
     } else if (arg === "--base-url" && next !== undefined) {
       config.baseURL = next;
       i++;
@@ -117,6 +120,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "",
     "Options:",
     `  --model <name>       Model name (overrides config.ccc.model, current default ${appConfig.ccc.model})`,
+    `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.ccc.effort)`,
     `  --base-url <url>     API base URL (current default ${appConfig.ccc.DEEPSEEK_BASE_URL})`,
     "  --api-key <key>      API key (overrides config.ccc.DEEPSEEK_API_KEY)",
     "  --cwd <path>         Working directory",

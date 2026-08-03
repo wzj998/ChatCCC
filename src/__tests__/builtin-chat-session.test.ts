@@ -315,3 +315,36 @@ describe("ChatSession context management", () => {
     expect(rawLogCloseMock).toHaveBeenCalledWith({ keep: true });
   });
 });
+
+describe("ChatSession effort passthrough", () => {
+  it("passes reasoningEffort via providerOptions when effort is configured", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-effort-high-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test", effort: "high" },
+      { cwd: dir, sessionId: "effort-high" },
+    );
+    await collect(session.chat("hi"));
+
+    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      providerOptions: { deepseek: { reasoningEffort: "high" } },
+    }));
+  });
+
+  it("omits providerOptions when effort is not set", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-effort-none-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { cwd: dir, sessionId: "effort-none" },
+    );
+    await collect(session.chat("hi"));
+
+    const lastCall = streamTextMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(lastCall.providerOptions).toBeUndefined();
+  });
+});

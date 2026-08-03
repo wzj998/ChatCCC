@@ -116,6 +116,11 @@ export interface CccConfig {
   model: string;
   /** Optional model exposed through /model for manual per-session switching. */
   alternativeModel: string;
+  /**
+   * Reasoning effort (none/minimal/low/medium/high/xhigh/max)，透传到
+   * DeepSeek reasoning_effort 请求字段；留空表示不传（服务端默认 medium）。
+   */
+  effort: string;
 }
 
 export interface FeishuConfig {
@@ -204,16 +209,19 @@ export function getAllModelsForTool(tool: string, cfg: AppConfig = config): stri
 
 export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const CODEX_EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export const CCC_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export function getAllEffortsForTool(tool: string): string[] {
   if (tool === "claude") return [...CLAUDE_EFFORT_LEVELS];
   if (tool === "codex") return [...CODEX_EFFORT_LEVELS];
+  if (tool === "ccc") return [...CCC_EFFORT_LEVELS];
   return [];
 }
 
 export function getDefaultEffortForTool(tool: AgentTool, cfg: AppConfig = config): string {
   if (tool === "claude") return cfg.claude.effort;
   if (tool === "codex") return cfg.codex.effort;
+  if (tool === "ccc") return cfg.ccc.effort;
   return "";
 }
 
@@ -459,6 +467,7 @@ function loadConfig(): AppConfig {
       DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL,
       model: DEFAULT_CCC_MODEL,
       alternativeModel: "",
+      effort: "",
     },
   };
 
@@ -519,6 +528,7 @@ function loadConfig(): AppConfig {
       DEEPSEEK_BASE_URL?: unknown;
       model?: unknown;
       alternativeModel?: unknown;
+      effort?: unknown;
     };
     webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
@@ -692,6 +702,7 @@ function loadConfig(): AppConfig {
       }),
       model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
+      effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
     },
   };
 }

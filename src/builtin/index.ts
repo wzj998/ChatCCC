@@ -100,6 +100,11 @@ export interface ChatSessionConfig {
   apiKey?: string;
   /** 模型名称；传入时覆盖 config.ccc.model */
   model?: string;
+  /**
+   * Reasoning effort（none/minimal/low/medium/high/xhigh/max）；
+   * 传入时覆盖 config.ccc.effort，留空不传 reasoning_effort 请求字段。
+   */
+  effort?: string;
 }
 
 export interface ChatSessionOptions {
@@ -156,6 +161,7 @@ export class ChatSession {
   private cwd: string;
   private context: BuiltinContextManager;
   private maxSteps?: number;
+  private effort: string;
 
   constructor(
     overrides: ChatSessionConfig = {},
@@ -170,6 +176,7 @@ export class ChatSession {
 
     const baseURL = overrides.baseURL ?? appConfig.ccc.DEEPSEEK_BASE_URL;
     const modelId = overrides.model ?? appConfig.ccc.model;
+    this.effort = (overrides.effort ?? appConfig.ccc.effort ?? "").trim();
 
     const provider = createOpenAICompatible({
       name: "deepseek",
@@ -260,6 +267,9 @@ export class ChatSession {
         tools: createBuiltinFileTools(this.cwd),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
+        // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort
+        // 由 @ai-sdk/openai-compatible 自动映射为请求体 reasoning_effort 字段
+        ...(this.effort ? { providerOptions: { deepseek: { reasoningEffort: this.effort } } } : {}),
       });
 
       const stream = result.fullStream ?? textStreamToFullStream(result.textStream);

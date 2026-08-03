@@ -526,7 +526,7 @@ export function getEffectiveEffortForTool(tool: string, sessionId?: string): str
     const override = sessionEffortOverrides.get(sessionId);
     if (override) return override;
   }
-  if (tool === "claude" || tool === "codex") {
+  if (tool === "claude" || tool === "codex" || tool === "ccc") {
     return getDefaultEffortForTool(tool);
   }
   return "";
@@ -597,7 +597,10 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       fastMode: effectiveFastMode,
     });
   } else if (tool === "ccc") {
-    adapter = createCccAdapter({ model: effectiveModel || undefined });
+    adapter = createCccAdapter({
+      model: effectiveModel || undefined,
+      effort: effectiveEffort || undefined,
+    });
   } else {
     adapter = createClaudeAdapter({
       model: effectiveModel,
