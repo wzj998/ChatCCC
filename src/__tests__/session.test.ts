@@ -907,7 +907,7 @@ describe("runAgentSession response stall watchdog", () => {
     });
   });
 
-  it("auto-ends an Agent that stays in starting state without emitting any event", async () => {
+  it("does not apply the reply-stall timeout while an Agent is compacting context", async () => {
     vi.setSystemTime(0);
     _setResponseStallTimeoutForTest(180_000);
     _setResponseStallCheckIntervalForTest(1_000);
@@ -934,6 +934,7 @@ describe("runAgentSession response stall watchdog", () => {
       ) {
         options?.onSessionCreated?.(closeSession);
         options?.onProcessStart?.({ pid: 4343 });
+        yield { type: "assistant", blocks: [{ type: "agent_status", status: "compacting" }] };
         await new Promise<void>((resolve) => {
           if (signal?.aborted) {
             resolve();
@@ -958,11 +959,8 @@ describe("runAgentSession response stall watchdog", () => {
     await vi.waitFor(() => {
       expect(activePrompts.get("sid-starting-stall")).toMatchObject({
         processPid: 4343,
-        responseProgress: {
-          totalChars: 0,
-          unchangedSince: expect.any(Number),
-        },
       });
+      expect(activePrompts.get("sid-starting-stall")?.responseProgress).toBeUndefined();
       expect(closeSession).toHaveBeenCalledTimes(0);
     });
 
@@ -974,19 +972,16 @@ describe("runAgentSession response stall watchdog", () => {
       .length;
 
     // 旧实现不会结束真正的零事件启动；先清理测试会话，避免失败用例悬挂。
-    if (stateAfterDeadline?.status !== "auto_ended") {
-      stopSession("sid-starting-stall");
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
+    stopSession("sid-starting-stall");
+    await vi.advanceTimersByTimeAsync(1_000);
     await runPromise;
 
     expect(stateAfterDeadline).toMatchObject({
-      status: "auto_ended",
-      finalReply: "",
-      autoEndedAt: expect.any(Number),
+      status: "running",
+      activity: { kind: "compacting" },
     });
-    expect(closeCountAfterDeadline).toBe(1);
-    expect(treeKillCountAfterDeadline).toBeGreaterThanOrEqual(1);
+    expect(closeCountAfterDeadline).toBe(0);
+    expect(treeKillCountAfterDeadline).toBe(0);
   });
 
   it("self-heals a missing trigger-chat binding and gives automatic recovery the normal card lifecycle", async () => {
@@ -1430,7 +1425,7 @@ describe("runAgentSession response stall watchdog", () => {
     expect(receivedPrompts[1]).toContain(recoveryPrompt);
     expect(platform.sendText).toHaveBeenCalledWith(
       "chat-recovery-limit",
-      "⚠️ 自动续跑仍连续 3 分钟没有启动进展或新回复，本次不再自动继续。",
+      "⚠️ 自动续跑仍连续 3 分钟没有生成新回复，本次不再自动继续。",
     );
   });
 
@@ -1689,7 +1684,7 @@ describe("unified display loop terminal card update", () => {
     expect(card.header.template).toBe("orange");
     expect(platform.sendText).toHaveBeenCalledWith(
       "chat-auto-ended",
-      "⚠️ 已自动结束：连续 3 分钟没有启动进展或回复字符变化。本轮没有可发送的回复内容。",
+      "⚠️ 已自动结束：生成回复阶段连续 3 分钟没有字符变化。本轮没有可发送的回复内容。",
     );
     expect(displayCards.has("chat-auto-ended")).toBe(false);
   });

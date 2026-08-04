@@ -51,6 +51,10 @@ export interface BuiltinContextOptions {
 export const DEFAULT_BUILTIN_CONTEXT_DIR = join(homedir(), ".deepccc", "sessions");
 export const DEFAULT_COMPACT_AT_TOKENS = 48_000;
 export const DEFAULT_KEEP_RECENT_MESSAGES = 16;
+const RECENT_CONTEXT_BUDGET_RATIO = 0.6;
+const MAX_COMPACTION_SUMMARY_CHARS = 16_000;
+const MAX_COMPACTION_MESSAGE_CHARS = 24_000;
+const MAX_COMPACTION_SOURCE_CHARS = 64_000;
 
 export function normalizeBuiltinSessionId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "default";
@@ -202,6 +206,38 @@ export function serializeMessagesForSummary(messages: readonly BuiltinContextMes
     .join("\n\n");
 }
 
+function truncateMiddle(value: string, maxChars: number, marker: string): string {
+  if (value.length <= maxChars) return value;
+  const available = Math.max(0, maxChars - marker.length - 2);
+  const headChars = Math.ceil(available / 2);
+  const tailChars = Math.floor(available / 2);
+  return `${value.slice(0, headChars)}\n${marker}\n${value.slice(-tailChars)}`;
+}
+
+function serializeMessagesForCompaction(messages: readonly BuiltinContextMessage[]): string {
+  const sections: string[] = [];
+  let remaining = MAX_COMPACTION_SOURCE_CHARS;
+
+  for (let index = 0; index < messages.length && remaining > 0; index += 1) {
+    const message = messages[index];
+    const header = `### ${index + 1}. ${message.role}\n`;
+    if (header.length >= remaining) break;
+    const maxContentChars = Math.min(MAX_COMPACTION_MESSAGE_CHARS, remaining - header.length);
+    const content = truncateMiddle(
+      message.content,
+      maxContentChars,
+      "...[truncated for compaction]...",
+    );
+    sections.push(`${header}${content}`);
+    remaining -= header.length + content.length + 2;
+  }
+
+  if (sections.length < messages.length) {
+    sections.push(`...[${messages.length - sections.length} additional messages omitted for compaction]...`);
+  }
+  return sections.join("\n\n");
+}
+
 export function buildSummaryPrompt(plan: BuiltinCompactionPlan): string {
   const sections = [
     "Compress the older DeepCCC conversation context.",
@@ -215,10 +251,18 @@ export function buildSummaryPrompt(plan: BuiltinCompactionPlan): string {
   ];
 
   if (plan.previousSummary.trim()) {
-    sections.push("## Existing Summary", plan.previousSummary.trim(), "");
+    sections.push(
+      "## Existing Summary",
+      truncateMiddle(
+        plan.previousSummary.trim(),
+        MAX_COMPACTION_SUMMARY_CHARS,
+        "...[existing summary truncated for compaction]...",
+      ),
+      "",
+    );
   }
 
-  sections.push("## Messages To Compress", serializeMessagesForSummary(plan.oldMessages));
+  sections.push("## Messages To Compress", serializeMessagesForCompaction(plan.oldMessages));
   return sections.join("\n");
 }
 
@@ -289,8 +333,22 @@ export class BuiltinContextManager {
     const estimated = estimateBuiltinContextTokens(this.state.summary, this.state.messages);
     if (estimated <= this.compactAtTokens) return null;
 
-    const splitAt = this.state.messages.length - this.keepRecentMessages;
-    if (splitAt <= 0) return null;
+    const messages = this.state.messages;
+    if (messages.length <= 1) return null;
+
+    const earliestAllowed = Math.max(0, messages.length - this.keepRecentMessages);
+    const recentTokenBudget = Math.max(1, Math.floor(this.compactAtTokens * RECENT_CONTEXT_BUDGET_RATIO));
+    let splitAt = messages.length - 1;
+    for (let index = messages.length - 2; index >= earliestAllowed; index -= 1) {
+      const candidate = messages.slice(index);
+      if (estimateBuiltinContextTokens("", candidate) > recentTokenBudget) break;
+      splitAt = index;
+    }
+
+    // A large existing summary can put the total over budget even when every raw
+    // message fits. Always leave at least one old message to re-summarize so the
+    // compaction pass can still make progress.
+    if (splitAt <= 0) splitAt = 1;
 
     return {
       previousSummary: this.state.summary,

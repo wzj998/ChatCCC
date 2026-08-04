@@ -17,6 +17,7 @@ export interface CccAdapterOptions extends ChatSessionConfig {
   contextDir?: string;
   compactAtTokens?: number;
   keepRecentMessages?: number;
+  compactionTimeoutMs?: number;
   maxSteps?: number;
 }
 
@@ -32,6 +33,7 @@ function toChatSessionOptions(
     contextDir: options.contextDir,
     compactAtTokens: options.compactAtTokens,
     keepRecentMessages: options.keepRecentMessages,
+    compactionTimeoutMs: options.compactionTimeoutMs,
     maxSteps: options.maxSteps,
     // chatccc 无终端可交互，且对齐 claude/codex 适配器的 bypass 模式：
     // 高危命令不询问，全部放行（与独立 deepccc CLI 的 ask 模式不同）
@@ -75,7 +77,15 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
       );
 
       for await (const event of session.chat(userText, signal)) {
-        if (event.type === "text") {
+        if (event.type === "status") {
+          yield {
+            type: "assistant",
+            blocks: [{
+              type: "agent_status",
+              status: event.phase === "compacting" ? "compacting" : "responding",
+            }],
+          };
+        } else if (event.type === "text") {
           yield {
             type: "assistant",
             blocks: [{ type: "text", text: event.text }],

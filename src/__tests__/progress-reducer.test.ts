@@ -9,6 +9,17 @@ function feed(events: ChatEvent[]) {
 }
 
 describe("reduceProgress", () => {
+  it("renders explicit compaction and generation phases", () => {
+    const compacting = reduceProgress(
+      progressView({ headerTitle: "Generating..." }),
+      { type: "status", phase: "compacting" },
+    );
+    expect(compacting.headerTitle).toBe("压缩上下文中...");
+
+    const generating = reduceProgress(compacting, { type: "status", phase: "generating" });
+    expect(generating.headerTitle).toBe("生成回复中...");
+  });
+
   it("accumulates text via accumulated field", () => {
     const view = feed([
       { type: "text", text: "Hello", accumulated: "Hello" },

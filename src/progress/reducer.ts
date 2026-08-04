@@ -54,6 +54,11 @@ export function summarizeToolResult(content: unknown, maxChars = 120): string {
  */
 export function reduceProgress(prev: ProgressView, event: ChatEvent): ProgressView {
   switch (event.type) {
+    case "status":
+      return withProgressView(prev, {
+        headerTitle: event.phase === "compacting" ? "压缩上下文中..." : "生成回复中...",
+      });
+
     case "text":
       // accumulated 是全文累积，直接全量替换，天然幂等
       return withProgressView(prev, { text: event.accumulated });

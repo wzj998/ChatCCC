@@ -182,7 +182,7 @@ export const RESPONSE_STALL_RECOVERY_PROMPT = "完成了吗？如果没完成继
 export const RESPONSE_STALL_RECOVERY_NOTICE =
   `检测到会话停滞，正在自动确认并继续。\n\n${RESPONSE_STALL_RECOVERY_PROMPT}`;
 export const RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE =
-  "⚠️ 自动续跑仍连续 3 分钟没有启动进展或新回复，本次不再自动继续。";
+  "⚠️ 自动续跑仍连续 3 分钟没有生成新回复，本次不再自动继续。";
 const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
 let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
@@ -331,18 +331,18 @@ function turnFinalStatus(status: "running" | "done" | "stopped" | "error" | "aut
 }
 
 function formatAutoEndedReply(finalReply: string): string {
-  const reason = "⚠️ 已自动结束：连续 3 分钟没有启动进展或回复字符变化。";
+  const reason = "⚠️ 已自动结束：生成回复阶段连续 3 分钟没有字符变化。";
   return finalReply
     ? `${reason}以下回复可能不完整。\n\n${finalReply}`
     : `${reason}本轮没有可发送的回复内容。`;
 }
 
 /**
- * 只监控用户无法判断是否仍有进展的两个阶段。思考、工具调用和搜索可能合法地
- * 长时间不产生回复字符，由资源监控负责识别真正僵死，不能在这里误杀。
+ * 只监控明确的回复生成阶段。启动、压缩、思考、工具调用和搜索都有各自的
+ * 状态或资源保护，不能把它们消耗的时间算入回复停滞窗口。
  */
 function monitorsOutputProgress(kind: AgentActivityKind): boolean {
-  return kind === "starting" || kind === "responding";
+  return kind === "responding";
 }
 
 function formatTerminalReply(
@@ -954,6 +954,8 @@ export function accumulateBlockContent(
         `\n\n🔄 上下文压缩(${triggerLabel}): **${block.pre_tokens}** → **${block.post_tokens}** tokens\n`; // 🔄 / →
       break;
     }
+    case "agent_status":
+      break;
   }
 }
 
@@ -1454,12 +1456,11 @@ export async function runAgentSession(
 
   const runningPrompt = activePrompts.get(sessionId);
   if (runningPrompt) {
-    // 必须在消费第一个事件前建立零字符基线。部分 CLI 卡死时只启动了进程，
-    // 甚至一个事件都不会 yield；若等循环体更新进度，这种会话会永久停在
-    // “正在启动 Agent”，也永远触发不了三分钟保护。
+    // 在消费第一个事件前建立阶段感知的零字符基线；启动阶段不计时，只有后续
+    // 收到明确的 responding 状态后才会启动三分钟回复停滞保护。
     runningPrompt.responseProgress = observeResponseProgress(
       undefined,
-      true,
+      monitorsOutputProgress(activityTracker.activity.kind),
       0,
       activityTracker.activity.startedAt,
     );
@@ -1532,7 +1533,7 @@ export async function runAgentSession(
       current.controller.abort();
       await killProcessTree(current.processPid);
       console.warn(
-        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after 3 minutes without startup or reply progress`,
+        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after 3 minutes without reply progress`,
       );
     };
 
@@ -1795,7 +1796,7 @@ export async function runAgentSession(
           autoRecoveryTarget = { chatId: activeAutoEnded, platform: pp };
         }
       }
-      console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled startup or response output (content chunks: ${state.chunkCount})`);
+      console.warn(`[${ts()}] Session ${sessionId} auto-ended after stalled response output (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "response_stall", chunks: state.chunkCount });
     } else if (wasAbnormalExit) {
       for (const cid of finalizationChatIds) {

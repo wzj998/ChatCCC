@@ -70,6 +70,16 @@ describe("agent activity", () => {
     expect(formatAgentActivityTitle(tracker.activity, 5_000)).toBe("正在整理上下文 · 1秒");
   });
 
+  it("uses explicit DeepCCC phase events before text is emitted", () => {
+    const tracker = createAgentActivityTracker(1_000);
+
+    expect(updateAgentActivity(tracker, { type: "agent_status", status: "compacting" }, 2_000)).toBe(true);
+    expect(tracker.activity).toEqual({ kind: "compacting", startedAt: 2_000 });
+
+    expect(updateAgentActivity(tracker, { type: "agent_status", status: "responding" }, 5_000)).toBe(true);
+    expect(tracker.activity).toEqual({ kind: "responding", startedAt: 5_000 });
+  });
+
   it("formats longer elapsed time without decorative animation", () => {
     expect(formatAgentActivityTitle({ kind: "thinking", startedAt: 1_000 }, 74_000)).toBe("思考中 · 1分13秒");
   });
