@@ -230,21 +230,26 @@ export class ChatSession {
     );
   }
 
-  /** 组装系统提示词：固定规则 + 项目指令 + 技能索引 + 用户补充 + 运行时上下文 */
+  /**
+   * 组装系统提示词。顺序遵循“稳定性优先”原则（缓存命中友好）：
+   * 固定规则 → 项目指令 → runtime 上下文 → 用户补充 → 技能索引（最后）。
+   * 技能索引是最易变的部分（热加载，任何 SKILL.md 变化都会改前缀），
+   * 放最后可以让前面的稳定内容尽量命中缓存，只丢尾段。
+   */
   private buildSystemPrompt(skills: BuiltinSkill[]): string {
     const systemContent = [SYSTEM_PROMPT];
     const projectInstructions = readProjectInstructionFiles(this.cwd);
     if (projectInstructions) {
       systemContent.push("", projectInstructions);
     }
+    systemContent.push("", buildRuntimeWorkspacePrompt(this.cwd));
+    if (this.customSystemPrompt) {
+      systemContent.push("", this.customSystemPrompt);
+    }
     const skillsPrompt = buildSkillsIndexPrompt(skills);
     if (skillsPrompt) {
       systemContent.push("", skillsPrompt);
     }
-    if (this.customSystemPrompt) {
-      systemContent.push("", this.customSystemPrompt);
-    }
-    systemContent.push("", buildRuntimeWorkspacePrompt(this.cwd));
     return systemContent.join("\n");
   }
 
@@ -405,6 +410,8 @@ export class ChatSession {
       system: SUMMARY_SYSTEM_PROMPT,
       messages: [{ role: "user", content: buildSummaryPrompt(plan) }],
       abortSignal: signal,
+      // 温度 0：相同输入尽量产出相同摘要，避免压缩后上下文前缀随机漂移破坏缓存
+      temperature: 0,
     });
 
     if (!result.text.trim()) return 0;

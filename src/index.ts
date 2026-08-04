@@ -32,6 +32,7 @@ import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode
 import {
   buildWebUiUrl,
   createServiceLifecycleGuard,
+  INTERNAL_RESTART_ENV_VAR,
   openWebUiInDefaultBrowser,
   shouldAutoOpenWebUi,
 } from "./startup-lifecycle.ts";
@@ -953,10 +954,14 @@ async function main(): Promise<void> {
   // 启动 HTTP server（同时挂 UI router，供 dashboard / setup / agent image/file 使用）
   appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
   const killed = freeRelayListenPort(CHATCCC_PORT);
-  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT, killed });
-  if (killed > 0) {
-    await waitForPortFree(CHATCCC_PORT);
-    appendStartupTrace("main: port free confirmed", { CHATCCC_PORT });
+  const isInternalRestart = process.env[INTERNAL_RESTART_ENV_VAR] === "1";
+  appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT, killed, isInternalRestart });
+  // 内部自重启（/restart、/update）时父进程还占着端口（祖先链 PID 不会被杀）：
+  // 无条件等待端口释放再 listen，避免子进程一上来就 EADDRINUSE 秒退
+  // （Windows 端口释放有额外延迟，重试窗口容易不够）。
+  if (killed > 0 || isInternalRestart) {
+    await waitForPortFree(CHATCCC_PORT, isInternalRestart ? 5000 : undefined);
+    appendStartupTrace("main: port free confirmed", { CHATCCC_PORT, isInternalRestart });
   }
   const httpServer = createServer(createUiRouter());
   await listenWithRetry(httpServer, CHATCCC_PORT, "127.0.0.1").catch((err: NodeJS.ErrnoException) => {

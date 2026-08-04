@@ -17,7 +17,6 @@ import { readdirSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
 export type SkillSource = "deepccc" | "codex" | "cursor" | "claude";
 export type SkillScope = "global" | "project";
 
@@ -141,10 +140,26 @@ export function buildDefaultSkillDirs(cwd: string): SkillDirSpec[] {
 }
 
 /**
+ * 把技能绝对路径转成 prompt 展示形式：主目录下的路径缩写为 `~/...`（跨机器、
+ * 跨用户稳定，避免用户名/盘符差异导致 system 前缀变化破坏缓存命中）；
+ * 分隔符统一为 `/`。主目录外的路径保持绝对路径（仅统一分隔符）。
+ */
+export function normalizeSkillPathForPrompt(skillPath: string): string {
+  const home = homedir().replace(/[\\/]+$/, "").replace(/\\/g, "/");
+  const normalized = skillPath.replace(/\\/g, "/");
+  if (normalized === home) return "~";
+  if (normalized.startsWith(home + "/")) {
+    return "~" + normalized.slice(home.length);
+  }
+  return normalized;
+}
+
+/**
  * 生成 skill 索引提示词（注入 system prompt）。
  * 索引只含 name + description + 来源 + 路径，并指示模型在任务匹配时
  * 先用 read_file 读取 SKILL.md 全文再执行；同时声明"创建技能"约定
  * （模型在对话中应把新技能创建到 ~/.deepccc/skills 或项目 .deepccc/skills）。
+ * 路径经 normalizeSkillPathForPrompt 缩写，保持跨机器前缀稳定。
  */
 export function buildSkillsIndexPrompt(skills: BuiltinSkill[]): string {
   if (skills.length === 0) return "";
@@ -155,7 +170,7 @@ export function buildSkillsIndexPrompt(skills: BuiltinSkill[]): string {
     "On name conflicts: DeepCCC > Codex > Cursor > Claude wins; within one source, project scope wins over global.",
     "When a user request matches a skill's description, first read its full SKILL.md with read_file, then follow the instructions in it exactly.",
     "",
-    ...skills.map((s) => `- **${s.name}** [${s.source}:${s.scope}] (\`${s.skillPath}\`): ${s.description || "(no description)"}`),
+    ...skills.map((s) => `- **${s.name}** [${s.source}:${s.scope}] (\`${normalizeSkillPathForPrompt(s.skillPath)}\`): ${s.description || "(no description)"}`),
     "",
     "## Creating Skills",
     "When the user asks to create a skill, create it as a Codex-style directory skill at",

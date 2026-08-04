@@ -5,7 +5,7 @@
  * 所有 IM 平台操作通过 PlatformAdapter 接口注入，不直接依赖 feishu-platform.ts。
  */
 
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -707,7 +707,7 @@ function updLog(msg: string): void {
 }
 
 /** 同步更新 npm 全局包并 spawn 新进程重启。不依赖 systemd 或任何服务管理器。 */
-function syncUpdateAndRestart(): void {
+function syncUpdateAndRestart(): ChildProcess | undefined {
   updLog(`sync update start, pid=${process.pid}`);
   appendStartupTrace("update: sync update start", { pid: process.pid });
 
@@ -752,25 +752,132 @@ function syncUpdateAndRestart(): void {
   updLog(`bin path: npmPrefix=${npmPrefix || "(empty)"}, binPath=${binPath}`);
   appendStartupTrace("update: spawn begin", { npmPrefix: npmPrefix || "(empty)", binPath });
 
-  // 3. spawn new chatccc
+  // 3. spawn new chatccc：优先 node + 全局包入口绝对路径（不依赖 PATH/shell），
+  //    避免继承环境 PATH 异常时秒退；失败时回退到 binPath（走 shell）。
   try {
-    const child = spawn(binPath, [], {
-      detached: true,
-      stdio: "ignore",
-      shell: true,
-      env: createInternalRestartEnv(),
-    });
+    let spawnSpec: { command: string; args: string[] } | null = null;
+    if (npmPrefix) {
+      const entry = join(npmPrefix, "node_modules", "chatccc", "bin", "chatccc.mjs");
+      if (existsSync(entry)) {
+        spawnSpec = { command: process.execPath, args: [entry] };
+      }
+    }
+    const child = spawnSpec
+      ? spawn(spawnSpec.command, spawnSpec.args, {
+          detached: true,
+          stdio: "ignore",
+          shell: false,
+          env: createInternalRestartEnv(),
+        })
+      : spawn(binPath, [], {
+          detached: true,
+          stdio: "ignore",
+          shell: true,
+          env: createInternalRestartEnv(),
+        });
     child.unref();
-    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${binPath}`);
-    appendStartupTrace("update: spawn OK", { childPid: child.pid, binPath });
+    const spawnedAs = spawnSpec ? `${spawnSpec.command} ${spawnSpec.args.join(" ")}` : binPath;
+    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${spawnedAs}`);
+    appendStartupTrace("update: spawn OK", {
+      childPid: child.pid,
+      binPath: spawnSpec ? spawnSpec.args[0] : binPath,
+    });
+    return child;
   } catch (e) {
     const errMsg = (e as Error).message;
     updLog(`spawn new chatccc failed: ${errMsg}`);
     appendStartupTrace("update: spawn failed", { error: errMsg });
+    return undefined;
   }
+}
 
-  updLog("sync update done, parent exiting in 2s");
-  appendStartupTrace("update: sync update done, exiting", { pid: process.pid });
+// ---------------------------------------------------------------------------
+// /restart — 自重启子进程（不经过 npx/npm，避免 PATH 注入秒退；防空窗兜底）
+// ---------------------------------------------------------------------------
+
+/** 父进程等待子进程稳定启动的时间窗口（毫秒）。 */
+export const RESTART_CHILD_READY_MS = 3000;
+
+/**
+ * 构建自重启的 spawn 参数：直接使用 node 可执行文件 + 本地 tsx CLI 绝对路径，
+ * 不经过 npx/npm。原实现 spawn("npx", ["tsx", "src/index.ts"], { shell: true })
+ * 在继承环境 PATH 异常（npm 子进程找不到 node/tsx）时会秒退，且错误被
+ * stdio:"ignore" 吞掉，导致 restart 静默失败、服务空窗。
+ */
+export function buildRestartSpawnSpec(
+  projectRoot: string = PROJECT_ROOT,
+): { command: string; args: string[] } {
+  const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  return { command: process.execPath, args: [tsxCli, "src/index.ts"] };
+}
+
+export interface RestartSpawnDeps {
+  projectRoot?: string;
+  spawnImpl?: typeof spawn;
+  trace?: typeof appendStartupTrace;
+}
+
+/**
+ * spawn 自重启子进程。stdio 第三位用 pipe 收集 stderr（原 "ignore" 会吞掉
+ * 所有错误，导致失败原因不可见），退出时把收集到的 stderr 写入 startup-trace。
+ */
+export function spawnRestartChild(deps: RestartSpawnDeps = {}): ChildProcess {
+  const projectRoot = deps.projectRoot ?? PROJECT_ROOT;
+  const spawnImpl = deps.spawnImpl ?? spawn;
+  const trace = deps.trace ?? appendStartupTrace;
+  const { command, args } = buildRestartSpawnSpec(projectRoot);
+  const child = spawnImpl(command, args, {
+    cwd: projectRoot,
+    detached: true,
+    stdio: ["ignore", "ignore", "pipe"],
+    shell: false,
+    env: createInternalRestartEnv(),
+  });
+  let stderrBuf = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    if (stderrBuf.length < 4096) {
+      stderrBuf += chunk.toString("utf8");
+    }
+  });
+  child.on("error", (err) => {
+    trace("restart: spawn error", { error: err.message, stderr: stderrBuf.slice(0, 2000) });
+  });
+  child.on("exit", (code, signal) => {
+    trace("restart: child exit", {
+      childPid: child.pid,
+      code,
+      signal,
+      stderr: stderrBuf.slice(0, 2000),
+    });
+  });
+  return child;
+}
+
+/**
+ * 决定父进程是否应退出（防空窗兜底）：
+ * - 窗口内子进程已退出（死亡或信号终止）→ 返回 false，父进程留下继续服务；
+ * - 子进程存活满整个窗口 → 返回 true，父进程退出并把端口让给新进程。
+ */
+export async function decideRestartParentExit(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  timeoutMs: number,
+  pollMs = 500,
+  trace: typeof appendStartupTrace = appendStartupTrace,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      trace("restart: child died during window, keeping parent", {
+        childPid: child.pid,
+        exitCode: child.exitCode,
+        signalCode: child.signalCode,
+      });
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  trace("restart: child alive after window, parent exiting", { childPid: child.pid });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -822,33 +929,16 @@ export async function handleCommand(
     logTrace(tid, "DONE", { outcome: "restart" });
 
     appendStartupTrace("restart: spawn begin", { fromPid: process.pid });
-    const child = spawn("npx", ["tsx", "src/index.ts"], {
-      cwd: PROJECT_ROOT,
-      detached: true,
-      stdio: "ignore",
-      shell: true,
-      env: createInternalRestartEnv(),
-    });
-
-    child.on("error", (err) => {
-      appendStartupTrace("restart: spawn error", { error: err.message });
-    });
-
-    child.on("exit", (code, signal) => {
-      appendStartupTrace("restart: child exit", {
-        childPid: child.pid,
-        code,
-        signal,
-      });
-    });
-
+    const child = spawnRestartChild();
     child.unref();
 
-    // 给子进程 2 秒启动窗口，期间若立即 crash 则 exit handler 已写入 trace
-    setTimeout(() => {
+    // 子进程存活满窗口才退出父进程；若子进程在窗口内死亡，父进程留下继续
+    // 服务（防空窗），并已把子进程 stderr 写入 startup-trace 供排查。
+    void decideRestartParentExit(child, RESTART_CHILD_READY_MS).then((shouldExit) => {
+      if (!shouldExit) return;
       appendStartupTrace("restart: parent exit", { childPid: child.pid });
       process.exit(0);
-    }, 2000);
+    });
     return;
   }
 
@@ -888,8 +978,19 @@ export async function handleCommand(
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
     logTrace(tid, "DONE", { outcome: "update" });
     appendStartupTrace("update: sync update begin", { fromPid: process.pid });
-    syncUpdateAndRestart();
-    setTimeout(() => process.exit(0), 2000);
+    const child = syncUpdateAndRestart();
+    if (child) {
+      // 子进程存活满窗口才退出父进程；若子进程在窗口内死亡，父进程留下继续
+      // 服务（防空窗）。
+      void decideRestartParentExit(child, RESTART_CHILD_READY_MS).then((shouldExit) => {
+        if (!shouldExit) return;
+        appendStartupTrace("update: parent exit", { childPid: child.pid });
+        process.exit(0);
+      });
+    } else {
+      // spawn 失败：没有子进程可等，给残留日志写入时间后退出
+      setTimeout(() => process.exit(0), 2000);
+    }
     return;
   }
 
