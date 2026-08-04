@@ -52,6 +52,7 @@ afterEach(() => {
   rawLogWriteLineMock.mockReset();
   rawLogCloseMock.mockReset();
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
+  vi.useRealTimers();
 });
 
 describe("ChatSession context management", () => {
@@ -223,8 +224,47 @@ describe("ChatSession context management", () => {
         expect.objectContaining({ role: "user", content: "new question" }),
       ]),
     }));
-    expect(events).toContainEqual({ type: "compact", compactedMessages: 2 });
+    expect(events.slice(0, 3)).toEqual([
+      { type: "status", phase: "compacting" },
+      { type: "compact", compactedMessages: 2 },
+      { type: "status", phase: "generating" },
+    ]);
     expect(restored.history.map((m) => m.content).join("\n")).toContain("new answer");
+  });
+
+  it("times out context compaction independently before reply generation", async () => {
+    vi.useFakeTimers();
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-compaction-timeout-"));
+    const seed = new ChatSession(
+      { apiKey: "sk-test" },
+      { persist: true, contextDir: dir, sessionId: "timeout", compactAtTokens: 10_000 },
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("old answer") });
+    await collect(seed.chat("old question"));
+
+    generateTextMock.mockImplementationOnce(({ abortSignal }: { abortSignal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        abortSignal.addEventListener("abort", () => reject(abortSignal.reason), { once: true });
+      }));
+    const restored = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        persist: true,
+        contextDir: dir,
+        sessionId: "timeout",
+        compactAtTokens: 1,
+        keepRecentMessages: 1,
+        compactionTimeoutMs: 100,
+      },
+    );
+
+    const result = collect(restored.chat("new question"));
+    const timeoutAssertion = expect(result).rejects.toThrow("Context compaction timed out");
+    await vi.waitFor(() => expect(generateTextMock).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(101);
+    await timeoutAssertion;
+    expect(streamTextMock).toHaveBeenCalledTimes(1);
   });
 
   it("streams tool calls and tool results from fullStream", async () => {
@@ -263,6 +303,30 @@ describe("ChatSession context management", () => {
       is_error: false,
     });
     expect(events).toContainEqual({ type: "text", text: "done", accumulated: "done" });
+  });
+
+  it("caps the total persisted tool transcript for a turn", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-tool-cap-"));
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { persist: true, contextDir: dir, sessionId: "tool-cap" },
+    );
+    const parts = Array.from({ length: 12 }, (_, index) => ({
+      type: "tool-result",
+      toolCallId: `call-${index}`,
+      toolName: "read_file",
+      output: { content: "x".repeat(8_000) },
+    }));
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(...parts, { type: "text-delta", text: "done" }),
+    });
+
+    await collect(session.chat("read many files"));
+
+    const persisted = session.history.at(-1)?.content ?? "";
+    expect(persisted.length).toBeLessThan(40_000);
+    expect(persisted).toContain("tool transcript truncated");
   });
 
   it("writes raw DeepCCC fullStream parts when raw stream logs are enabled", async () => {

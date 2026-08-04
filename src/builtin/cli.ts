@@ -216,7 +216,12 @@ function writeJsonLine(event: JsonLine): void {
 }
 
 function streamJsonEvent(event: ChatEvent): void {
-  if (event.type === "text") {
+  if (event.type === "status") {
+    writeJsonLine({
+      type: "status",
+      phase: event.phase,
+    });
+  } else if (event.type === "text") {
     writeJsonLine({
       type: "text_delta",
       text: event.text,
@@ -484,11 +489,13 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       for await (const event of session.chat(input, signal)) {
         if (renderer && view) {
           view = reduceProgress(view, event);
-          if (event.type === "text" || event.type === "compact") {
+          if (event.type === "text" || event.type === "compact" || event.type === "status") {
             renderer.render(view);
           } else {
             renderer.flush();
           }
+        } else if (event.type === "status") {
+          console.log(`${C.dim}[${event.phase === "compacting" ? "compacting context" : "generating reply"}]${C.reset}`);
         } else if (event.type === "text") {
           const newText = event.accumulated.slice(lastAccumulated.length);
           process.stdout.write(newText);

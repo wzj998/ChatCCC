@@ -71,6 +71,7 @@ describe("createCccAdapter", () => {
     }
 
     expect(messages).toEqual([
+      { type: "assistant", blocks: [{ type: "agent_status", status: "responding" }] },
       { type: "assistant", blocks: [{ type: "text", text: "hello" }] },
       { type: "assistant", blocks: [{ type: "text", text: " world" }] },
       { type: "assistant", blocks: [], isFinalResponse: true },
@@ -102,6 +103,7 @@ describe("createCccAdapter", () => {
     }
 
     expect(messages).toEqual([
+      { type: "assistant", blocks: [{ type: "agent_status", status: "responding" }] },
       {
         type: "assistant",
         blocks: [{ type: "tool_use", id: "call-1", name: "read_file", input: { path: "README.md" } }],
@@ -112,6 +114,38 @@ describe("createCccAdapter", () => {
       },
       { type: "assistant", blocks: [], isFinalResponse: true },
     ]);
+  });
+
+  it("maps DeepCCC compaction and generation phases to unified activity blocks", async () => {
+    const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
+    const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-status-"));
+    const adapter = createCccAdapter({
+      apiKey: "sk-test",
+      contextDir,
+      compactAtTokens: 1,
+      keepRecentMessages: 1,
+    });
+    const { sessionId } = await adapter.createSession("F:\\repo");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("old") });
+    for await (const _message of adapter.prompt(sessionId, "old question", "F:\\repo")) {
+      // drain
+    }
+
+    generateTextMock.mockResolvedValueOnce({ text: "summary" });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("new") });
+    const messages = [];
+    for await (const message of adapter.prompt(sessionId, "new question", "F:\\repo")) {
+      messages.push(message);
+    }
+
+    expect(messages[0]).toEqual({
+      type: "assistant",
+      blocks: [{ type: "agent_status", status: "compacting" }],
+    });
+    expect(messages).toContainEqual({
+      type: "assistant",
+      blocks: [{ type: "agent_status", status: "responding" }],
+    });
   });
 
   it("passes effort into ChatSession so streamText receives reasoningEffort", async () => {

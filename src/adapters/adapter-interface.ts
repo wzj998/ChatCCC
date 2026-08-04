@@ -73,7 +73,13 @@ export interface UnifiedCompactBoundaryBlock {
   post_tokens?: number;
 }
 
+export interface UnifiedAgentStatusBlock {
+  type: "agent_status";
+  status: "compacting" | "responding";
+}
+
 export type UnifiedBlock =
+  | UnifiedAgentStatusBlock
   | UnifiedThinkingBlock
   | UnifiedTextBlock
   | UnifiedTextFinalBlock
