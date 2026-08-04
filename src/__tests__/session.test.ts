@@ -23,6 +23,12 @@ const mockStreamStates = new Map<string, {
   turnCount?: number;
   finalReplySentTurn?: number;
   finalReplySentAt?: number;
+  terminalError?: {
+    kind: "network_timeout" | "network" | "authentication" | "rate_limit" | "provider" | "process" | "resource" | "unknown";
+    title: string;
+    message: string;
+    occurredAt: number;
+  };
 }>();
 vi.mock("../stream-state.ts", () => ({
   readStreamState: async (sid: string) => {
@@ -35,6 +41,7 @@ vi.mock("../stream-state.ts", () => ({
       activity: state.activity,
       finalReplySentTurn: state.finalReplySentTurn,
       finalReplySentAt: state.finalReplySentAt,
+      terminalError: state.terminalError,
       autoEndedAt: state.autoEndedAt,
       status: state.status ?? "running",
       chunkCount: 0,
@@ -60,6 +67,12 @@ vi.mock("../stream-state.ts", () => ({
     turnCount?: number;
     finalReplySentTurn?: number;
     finalReplySentAt?: number;
+    terminalError?: {
+      kind: "network_timeout" | "network" | "authentication" | "rate_limit" | "provider" | "process" | "resource" | "unknown";
+      title: string;
+      message: string;
+      occurredAt: number;
+    };
   }) => {
     mockStreamStates.set(state.sessionId, {
       accumulatedContent: state.accumulatedContent,
@@ -70,6 +83,7 @@ vi.mock("../stream-state.ts", () => ({
       turnCount: state.turnCount,
       finalReplySentTurn: state.finalReplySentTurn,
       finalReplySentAt: state.finalReplySentAt,
+      terminalError: state.terminalError,
     });
   },
   createEmptyStreamState: (sid: string, cwd: string, tool: string, turnCount: number) => ({
@@ -507,6 +521,51 @@ describe("runAgentSession process monitor", () => {
     expect(platform.sendText).toHaveBeenCalledWith(
       "chat-process",
       expect.stringContaining("进程异常结束"),
+    );
+  });
+
+  it("persists and sends the root cause when the agent stream fails before producing output", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const platform = mockPlatform("feishu");
+    platform.cardCreate = vi.fn(async () => {
+      throw new Error("CardKit unavailable");
+    });
+    setSessionPlatform(platform);
+    bindChatToSession("sid-stream-error", "chat-stream-error");
+    recordLastActiveChat("sid-stream-error", "chat-stream-error");
+
+    const adapter: ToolAdapter = {
+      displayName: "CCC Agent",
+      sessionDescPrefix: "CCC Session:",
+      createSession: async () => ({ sessionId: "sid-stream-error" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "/tmp" }),
+      closeSession: async () => {},
+      prompt: async function* () {
+        throw new Error(
+          "Failed after 3 attempts. Last error: Cannot connect to API: " +
+          "Connect Timeout Error (timeout: 10000ms)",
+        );
+      },
+    };
+    _setAdapterForToolForTest("ccc", adapter);
+
+    const outcome = await runAgentSession(
+      "sid-stream-error",
+      "prompt",
+      platform,
+      "chat-stream-error",
+      Date.now(),
+      "ccc",
+    );
+
+    const state = mockStreamStates.get("sid-stream-error");
+    expect(outcome).toBe("error");
+    expect(state?.status).toBe("error");
+    expect(state?.terminalError?.kind).toBe("network_timeout");
+    expect(state?.terminalError?.message).toContain("已重试 3 次");
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-stream-error",
+      expect.stringContaining("网络连接超时"),
     );
   });
 
@@ -1633,6 +1692,110 @@ describe("unified display loop terminal card update", () => {
       "⚠️ 已自动结束：连续 3 分钟没有启动进展或回复字符变化。本轮没有可发送的回复内容。",
     );
     expect(displayCards.has("chat-auto-ended")).toBe(false);
+  });
+
+  it("shows the stream root cause in the error card without a duplicate text notice", async () => {
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-network-error", "chat-network-error");
+    recordLastActiveChat("sid-network-error", "chat-network-error");
+    sessionInfoMap.set("chat-network-error", {
+      sessionId: "sid-network-error",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "ccc",
+    });
+    displayCards.set("chat-network-error", {
+      cardId: "card-network-error",
+      sequence: 1,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-network-error",
+      turnCount: 1,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-network-error", {
+      accumulatedContent: "",
+      finalReply: "",
+      status: "error",
+      turnCount: 1,
+      terminalError: {
+        kind: "network_timeout",
+        title: "网络连接超时",
+        message: "连接模型服务失败，已重试 3 次，单次连接等待 10 秒。请检查网络、VPN或模型服务状态后重试。",
+        occurredAt: Date.now(),
+      },
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const payload = vi.mocked(platform.cardUpdate).mock.calls[0]?.[1];
+    const card = JSON.parse(payload as string) as {
+      header: { title: { content: string }; template?: string };
+      body: { elements: Array<{ content?: string }> };
+    };
+    expect(card.header.title.content).toBe("异常结束 · 网络连接超时");
+    expect(card.header.template).toBe("red");
+    expect(card.body.elements[0]?.content).toContain("已重试 3 次");
+    expect(platform.sendText).not.toHaveBeenCalled();
+    expect(mockStreamStates.get("sid-network-error")?.finalReplySentTurn).toBe(1);
+    expect(displayCards.has("chat-network-error")).toBe(false);
+  });
+
+  it("falls back to a root-cause text when the error card cannot be updated", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const platform = mockPlatform("feishu");
+    platform.cardUpdate = vi.fn(async () => {
+      throw new Error("CardKit unavailable");
+    });
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-error-fallback", "chat-error-fallback");
+    recordLastActiveChat("sid-error-fallback", "chat-error-fallback");
+    sessionInfoMap.set("chat-error-fallback", {
+      sessionId: "sid-error-fallback",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "ccc",
+    });
+    displayCards.set("chat-error-fallback", {
+      cardId: "card-error-fallback",
+      sequence: 1,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-error-fallback",
+      turnCount: 1,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-error-fallback", {
+      accumulatedContent: "",
+      finalReply: "",
+      status: "error",
+      turnCount: 1,
+      terminalError: {
+        kind: "network_timeout",
+        title: "网络连接超时",
+        message: "连接模型服务失败，已重试 3 次。",
+        occurredAt: Date.now(),
+      },
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "chat-error-fallback",
+      expect.stringContaining("异常结束：网络连接超时"),
+    );
+    expect(displayCards.has("chat-error-fallback")).toBe(false);
   });
 
   it("does not repeat the same terminal CardKit sequence while the prompt is still active", async () => {

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { USER_DATA_DIR, ts } from "./config.ts";
 import { createAgentActivityTracker } from "./agent-activity.ts";
 import type { AgentActivity } from "./agent-activity.ts";
+import type { TerminalErrorInfo } from "./terminal-error.ts";
 
 // ---------------------------------------------------------------------------
 // stream-state.json — 每个 session 的流式输出持久化文件
@@ -35,6 +36,8 @@ export interface StreamState {
   stuckAt?: number;
   /** Set when the shared response watchdog ends a turn after three minutes without new characters. */
   autoEndedAt?: number;
+  /** 脱敏后的用户可见根因；完整原始异常只保留在运行日志中。 */
+  terminalError?: TerminalErrorInfo;
 }
 
 function getStreamStatePath(sessionId: string): string {

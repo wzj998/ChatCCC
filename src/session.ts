@@ -44,6 +44,12 @@ import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { hasResponseStalled, observeResponseProgress } from "./response-stall.ts";
 import {
+  classifyTerminalError,
+  formatTerminalErrorNotice,
+  formatTerminalErrorReason,
+  type TerminalErrorInfo,
+} from "./terminal-error.ts";
+import {
   MAX_PROCESSED,
   clearFeishuMessageLedgerMemory,
   processedMessages,
@@ -305,13 +311,18 @@ function scheduleFinalResponseCloseGuard(
   runningPrompt.finalResponseCloseTimer = handle;
 }
 
-function formatTerminalHeader(status: "running" | "done" | "stopped" | "error" | "auto_ended"): {
+function formatTerminalHeader(
+  status: "running" | "done" | "stopped" | "error" | "auto_ended",
+  terminalError?: TerminalErrorInfo,
+): {
   title: string;
   template?: string;
 } {
   if (status === "auto_ended") return { title: "已自动结束 · 3分钟无新内容", template: "orange" };
   if (status === "stopped") return { title: "已停止", template: "red" };
-  if (status === "error") return { title: "异常结束", template: "red" };
+  if (status === "error") {
+    return { title: terminalError ? `异常结束 · ${terminalError.title}` : "异常结束", template: "red" };
+  }
   return { title: "完成" };
 }
 
@@ -337,9 +348,40 @@ function monitorsOutputProgress(kind: AgentActivityKind): boolean {
 function formatTerminalReply(
   status: "running" | "done" | "stopped" | "error" | "auto_ended",
   finalReply: string,
+  terminalError?: TerminalErrorInfo,
 ): string | null {
   if (status === "auto_ended") return formatAutoEndedReply(finalReply);
+  if (status === "error") {
+    const error = terminalError ?? {
+      kind: "unknown" as const,
+      title: "原因未记录",
+      message: "当前状态中没有可用的错误详情，请查看运行日志。",
+      occurredAt: Date.now(),
+    };
+    return formatTerminalErrorNotice(error, finalReply);
+  }
   return finalReply || null;
+}
+
+function formatTerminalCardContent(state: {
+  status: "running" | "done" | "stopped" | "error" | "auto_ended";
+  accumulatedContent: string;
+  finalReply: string;
+  terminalError?: TerminalErrorInfo;
+}): string {
+  const content = state.accumulatedContent + state.finalReply;
+  if (state.status !== "error") return content;
+
+  const error = state.terminalError ?? {
+    kind: "unknown" as const,
+    title: "原因未记录",
+    message: "当前状态中没有可用的错误详情，请查看运行日志。",
+    occurredAt: Date.now(),
+  };
+  const reason = formatTerminalErrorReason(error);
+  return content.trim()
+    ? `${content}\n\n${reason}\n以上内容可能不完整。`
+    : reason;
 }
 
 function isCardKitSequenceConflict(err: unknown): boolean {
@@ -1110,7 +1152,7 @@ export async function resumeAndPrompt(
   msgTimestamp: number,
   tool: string,
   traceId?: string,
-): Promise<void> {
+): Promise<SessionRunOutcome> {
   return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId);
 }
 
@@ -1126,6 +1168,8 @@ interface RunAgentSessionOptions {
   autoRecovery?: boolean;
 }
 
+export type SessionRunOutcome = "busy" | "done" | "stopped" | "error" | "auto_ended";
+
 export async function runAgentSession(
   sessionId: string,
   userText: string,
@@ -1135,7 +1179,7 @@ export async function runAgentSession(
   tool: string,
   traceId?: string,
   options: RunAgentSessionOptions = {},
-): Promise<void> {
+): Promise<SessionRunOutcome> {
   const tid = traceId ?? "";
 
   // runAgentSession 是飞书用户消息、队列消息与内部自动恢复共同使用的唯一
@@ -1162,7 +1206,7 @@ export async function runAgentSession(
       ? "当前正在生成回复中，请等待完成后再发送消息。也可以发送 /stop 结束，已完成的步骤不会丢失。"
       : "该会话正在生成回复中，请等待完成后再发送消息。也可以发送 /stop 结束，已完成的步骤不会丢失。";
     await platform.sendText(_chatId, busyMsg).catch(() => {});
-    return;
+    return "busy";
   }
 
   // 立即标记活跃，确保 /sessions、isSessionRunning 等查询在异步准备阶段就能看到运行状态。
@@ -1290,7 +1334,7 @@ export async function runAgentSession(
   // 再开始缓存问题对应的任务"。
   const prevState = await readStreamState(sessionId);
   if (prevState && prevState.status !== "running") {
-    const prevTerminalReply = formatTerminalReply(prevState.status, prevState.finalReply);
+    const prevTerminalReply = formatTerminalReply(prevState.status, prevState.finalReply, prevState.terminalError);
     const displayChatId = pickDisplayChat(sessionId);
     if (displayChatId) {
       const pp = platformForChat(displayChatId);
@@ -1309,8 +1353,8 @@ export async function runAgentSession(
           setSessionChatAvatar(pp, displayChatId, prevState.tool, "idle", sessionId).catch(() => {});
         } else {
           const nextSeq = display.sequence + 1;
-          const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status);
-          const cardContent = truncateContent(prevState.accumulatedContent + prevState.finalReply) || " ";
+          const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status, prevState.terminalError);
+          const cardContent = truncateContent(formatTerminalCardContent(prevState)) || " ";
           const doneCard = buildProgressCard(progressView({ text: cardContent, status: "done", showStop: false, headerTitle, headerTemplate }));
           await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(err => {
             console.error(`[${ts()}] [DISPLAY] prevState final cardUpdate failed: ${(err as Error).message}`);
@@ -1405,6 +1449,8 @@ export async function runAgentSession(
   const FILE_WRITE_INTERVAL_MS = 2000;
   const toolCallMap = new Map<string, { name: string; input: unknown }>();
   let streamErrored = false;
+  let streamTerminalError: TerminalErrorInfo | undefined;
+  let runOutcome: SessionRunOutcome = "error";
 
   const runningPrompt = activePrompts.get(sessionId);
   if (runningPrompt) {
@@ -1580,6 +1626,7 @@ export async function runAgentSession(
     }
   } catch (streamErr) {
     streamErrored = true;
+    streamTerminalError = classifyTerminalError(streamErr);
     console.error(`[${ts()}] [STREAM] Error in stream loop for ${sessionId}: ${(streamErr as Error).message}`);
   } finally {
     // 标记 prompt 结束
@@ -1629,6 +1676,23 @@ export async function runAgentSession(
               ? "stopped"
               : "done";
       const finalReply = pickFinalReply(state).trim();
+      const terminalError = streamTerminalError
+        ?? (wasAbnormalExit
+          ? {
+              kind: "process" as const,
+              title: "Agent 进程意外退出",
+              message: "Agent CLI 进程已退出。若回复不完整，请重新发送上一条指令。",
+              occurredAt: Date.now(),
+            }
+          : wasResourceStuck
+            ? {
+                kind: "resource" as const,
+                title: "Agent 进程失去响应",
+                message: "Agent 进程长时间没有 CPU 或内存变化，已被强制停止。若回复不完整，请重新发送上一条指令。",
+                occurredAt: Date.now(),
+              }
+            : undefined);
+      runOutcome = finalStatus;
 
     // stop-stuck-loop 接口可能在 fire-and-forget 中已写入带 final_reply 的
     // stream state，finally 不应覆盖它。同时保留 stuckAt 标记，防止
@@ -1659,6 +1723,7 @@ export async function runAgentSession(
       tool,
       ...(preserveStuckAt ? { stuckAt: preserveStuckAt } : {}),
       ...(autoEndedAt !== undefined ? { autoEndedAt } : {}),
+      ...(terminalError ? { terminalError } : {}),
     });
 
     // display loop 下一轮会读到最终状态并发送消息
@@ -1749,6 +1814,52 @@ export async function runAgentSession(
       if (activeErr) setSessionChatAvatar(platform, activeErr, tool, "idle", sessionId).catch(() => {});
       console.log(`[${ts()}] Session ${sessionId} process exited unexpectedly (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "process_missing", chunks: state.chunkCount });
+    } else if (streamErrored || wasResourceStuck) {
+      for (const cid of finalizationChatIds) {
+        const finfo = sessionInfoMap.get(cid);
+        await recordSessionRegistry({
+          chatId: cid,
+          sessionId,
+          tool,
+          turnCount: finfo?.turnCount ?? nextTurnCount,
+          lastContextTokens: finfo?.lastContextTokens ?? nextContextTokens,
+          startTime: finfo?.startTime ?? now,
+          running: false,
+        });
+      }
+      const activeErr = getLastActiveChat(sessionId) ?? finalizationChatIds[0];
+      if (activeErr) {
+        const pp = platformForChat(activeErr) ?? platform;
+        const terminalState = await readStreamState(sessionId);
+        if (
+          terminalError
+          && !displayCards.has(activeErr)
+          && (!terminalState || !isFinalReplySentForTurn(terminalState))
+        ) {
+          await sendFinalReplyTextOnce(
+            pp,
+            activeErr,
+            sessionId,
+            nextTurnCount,
+            formatTerminalErrorNotice(terminalError, finalReplyToWrite),
+          );
+        }
+        setSessionChatAvatar(pp, activeErr, tool, "idle", sessionId).catch(() => {});
+      }
+      const errorOutcome = wasResourceStuck ? "resource_stuck" : "stream_error";
+      console.error(
+        `[${ts()}] Session ${sessionId} ended with ${errorOutcome}` +
+        `${terminalError ? ` (${terminalError.kind}: ${terminalError.title})` : ""} (content chunks: ${state.chunkCount})`,
+      );
+      if (tid) {
+        logTrace(tid, "SESSION_END", {
+          sessionId,
+          outcome: errorOutcome,
+          errorKind: terminalError?.kind,
+          errorTitle: terminalError?.title,
+          chunks: state.chunkCount,
+        });
+      }
     } else {
       for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
@@ -1862,6 +1973,7 @@ export async function runAgentSession(
       clearSessionFinalizing(sessionId);
     }
   }
+  return runOutcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -1941,9 +2053,11 @@ export function startUnifiedDisplayLoop(): void {
               const tail = "━━━ 回答结束 ━━━";
               const finalMsg = state.status === "auto_ended"
                 ? formatAutoEndedReply(remaining)
-                : remaining
-                  ? remaining + "\n" + tail
-                  : tail;
+                : state.status === "error"
+                  ? formatTerminalReply(state.status, remaining, state.terminalError) ?? tail
+                  : remaining
+                    ? remaining + "\n" + tail
+                    : tail;
               if (!isFinalReplySentForTurn(state)) {
                 await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, finalMsg);
               }
@@ -1965,8 +2079,8 @@ export function startUnifiedDisplayLoop(): void {
               let terminalCardUpdateAccepted = terminalCardAlreadyUpdated;
               if (!terminalCardAlreadyUpdated) {
                 const nextSeq = display.sequence + 1;
-                const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status);
-                const cardContent = truncateContent(state.accumulatedContent + state.finalReply) || " ";
+                const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status, state.terminalError);
+                const cardContent = truncateContent(formatTerminalCardContent(state)) || " ";
                 const doneCard = buildProgressCard(progressView({ text: cardContent, status: "done", showStop: false, headerTitle, headerTemplate }));
                 await p.cardUpdate(display.cardId, doneCard, nextSeq).then(() => {
                   display.sequence = nextSeq;
@@ -1993,8 +2107,16 @@ export function startUnifiedDisplayLoop(): void {
               }
 
               let terminalTextDelivered = true;
-              const terminalReply = formatTerminalReply(state.status, state.finalReply);
-              if (terminalReply) {
+              const terminalReply = formatTerminalReply(state.status, state.finalReply, state.terminalError);
+              const errorWasDeliveredByCard =
+                state.status === "error"
+                && !state.finalReply.trim()
+                && terminalCardUpdateAccepted;
+              if (errorWasDeliveredByCard) {
+                if (!isFinalReplySentForTurn(state)) {
+                  await markFinalReplySent(sessionId, state.turnCount);
+                }
+              } else if (terminalReply) {
                 if (!isFinalReplySentForTurn(state)) {
                   terminalTextDelivered = await sendFinalReplyTextOnce(p, chatId, sessionId, state.turnCount, terminalReply);
                 }
