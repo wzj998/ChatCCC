@@ -2246,7 +2246,7 @@ export async function handleCommand(
 
     try {
       logTrace(tid, "RESUME", { sessionId, tool: descriptionTool });
-      await resumeAndPrompt(
+      const resumeOutcome = await resumeAndPrompt(
         sessionId,
         promptText,
         platform,
@@ -2255,8 +2255,13 @@ export async function handleCommand(
         descriptionTool,
         tid,
       );
-      logTrace(tid, "DONE", { outcome: "resume_done", sessionId });
-      console.log(`[${ts()}] [RESUME] Session ${sessionId} done`);
+      if (resumeOutcome === "error") {
+        logTrace(tid, "DONE", { outcome: "resume_error", sessionId });
+        console.error(`[${ts()}] [RESUME] Session ${sessionId} ended with an Agent error`);
+      } else {
+        logTrace(tid, "DONE", { outcome: "resume_done", sessionId, sessionOutcome: resumeOutcome });
+        console.log(`[${ts()}] [RESUME] Session ${sessionId} done (${resumeOutcome})`);
+      }
     } catch (err) {
       logTrace(tid, "DONE", {
         outcome: "resume_fail",
