@@ -1,10 +1,11 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPersistedAssistantMessage,
   buildSummaryPrompt,
   BuiltinContextManager,
   estimateBuiltinContextTokens,
@@ -125,6 +126,122 @@ describe("BuiltinContextManager", () => {
       },
       { role: "assistant", content: "recent" },
     ]);
+  });
+
+  it("persists structured tool calls and restores them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-builtin-context-tools-"));
+
+    const first = new BuiltinContextManager({
+      persist: true,
+      contextDir: dir,
+      sessionId: "tool-persisted",
+    });
+    first.appendMessage({
+      role: "assistant",
+      content: "回复\n\n[Tool transcript]\ntool_call run_command: {}\ntool_result run_command: {}",
+      toolCalls: [
+        { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+        { name: "read_file", input: "{\"path\":\"a.ts\"}", output: "...", is_error: true },
+      ],
+    });
+    first.save();
+
+    const restored = new BuiltinContextManager({
+      persist: true,
+      contextDir: dir,
+      sessionId: "tool-persisted",
+    });
+
+    expect(restored.messages[0].toolCalls).toEqual([
+      { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      { name: "read_file", input: "{\"path\":\"a.ts\"}", output: "...", is_error: true },
+    ]);
+  });
+
+  it("loads legacy context files without toolCalls and filters malformed entries", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-builtin-context-legacy-"));
+    const state = {
+      version: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      sessionId: "legacy",
+      summary: "",
+      totalMessages: 2,
+      compactedMessages: 0,
+      messages: [
+        { role: "assistant", content: "老消息" },
+        {
+          role: "assistant",
+          content: "带 toolCalls",
+          toolCalls: [
+            { name: "ok", input: "{\"a\":1}" },
+            { name: "" }, // 非法：空 name 应被过滤
+            { input: "no-name" }, // 非法：缺 name 应被过滤
+            { name: "bad-type", input: 42 }, // 非法：input 非 string 应被忽略字段
+          ],
+        },
+      ],
+    };
+    await mkdir(join(dir, "legacy"));
+    await writeFile(join(dir, "legacy", "context.json"), JSON.stringify(state), "utf8");
+
+    const restored = new BuiltinContextManager({
+      persist: true,
+      contextDir: dir,
+      sessionId: "legacy",
+    });
+
+    expect(restored.messages[0].toolCalls).toBeUndefined();
+    expect(restored.messages[1].toolCalls).toEqual([
+      { name: "ok", input: "{\"a\":1}" },
+      { name: "bad-type" },
+    ]);
+    expect(restored.totalMessages).toBe(2);
+  });
+
+  it("builds a persisted assistant message with transcript text plus structured tool calls", () => {
+    const message = buildPersistedAssistantMessage({
+      fullText: "回复正文",
+      transcriptLines: [
+        "tool_call run_command: {\"command\":\"npm test\"}",
+        "tool_result run_command: {\"exitCode\":0}",
+      ],
+      toolCalls: [
+        { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      ],
+    });
+
+    expect(message.role).toBe("assistant");
+    expect(message.content).toContain("回复正文");
+    expect(message.content).toContain("[Tool transcript]");
+    expect(message.content).toContain("tool_call run_command");
+    expect(message.toolCalls).toEqual([
+      { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+    ]);
+  });
+
+  it("builds a plain assistant message without tool transcript when no tools ran", () => {
+    const message = buildPersistedAssistantMessage({
+      fullText: "纯文本回复",
+      transcriptLines: [],
+    });
+
+    expect(message.content).toBe("纯文本回复");
+    expect(message.content).not.toContain("[Tool transcript]");
+    expect(message.toolCalls).toBeUndefined();
+  });
+
+  it("caps both assistant text and tool transcript in persisted messages", () => {
+    const message = buildPersistedAssistantMessage({
+      fullText: "a".repeat(10_000),
+      transcriptLines: Array.from({ length: 12 }, () => "x".repeat(8_000)),
+      maxAssistantChars: 2_000,
+      maxTranscriptChars: 4_000,
+    });
+
+    expect(message.content.length).toBeLessThan(7_000);
+    expect(message.content).toContain("assistant response truncated");
+    expect(message.content).toContain("tool transcript truncated");
   });
 
   it("reset clears memory and the persisted context file", async () => {

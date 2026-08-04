@@ -15,8 +15,9 @@ import {
   type RawStreamLogHandle,
 } from "./raw-stream-log.js";
 import {
-  BuiltinContextManager,
+  buildPersistedAssistantMessage,
   buildSummaryPrompt,
+  BuiltinContextManager,
   defaultBuiltinSessionId,
 } from "./context.js";
 import { createBuiltinFileTools } from "./file-tools.js";
@@ -53,8 +54,6 @@ const SUMMARY_SYSTEM_PROMPT = [
 
 export const DEFAULT_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_COMPACTION_PASSES = 8;
-const MAX_PERSISTED_ASSISTANT_TEXT_CHARS = 32_000;
-const MAX_PERSISTED_TOOL_TRANSCRIPT_CHARS = 24_000;
 
 // ---------------------------------------------------------------------------
 // 类型定义
@@ -273,6 +272,10 @@ export class ChatSession {
     let safeAccumulated = "";
     let rawLog: RawStreamLogHandle | null = null;
     let completed = false;
+    // 结构化工具调用存档：按 toolCallId 关联入参/出参/错误，落盘到 context.json 的
+    // assistant 消息 toolCalls 字段；[Tool transcript] 文本视图仍按原格式生成。
+    const toolCallsById = new Map<string, { name: string; input?: string; output?: string; is_error?: boolean }>();
+    const toolCallOrder: string[] = [];
 
     try {
       if (this.context.planCompaction()) {
@@ -330,6 +333,8 @@ export class ChatSession {
           yield { type: "text", text: safeText, accumulated: safeAccumulated };
         } else if (part.type === "tool-call") {
           toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
+          toolCallsById.set(part.toolCallId, { name: part.toolName, input: safeJson(part.input) });
+          toolCallOrder.push(part.toolCallId);
           yield {
             type: "tool_use",
             id: part.toolCallId,
@@ -338,6 +343,10 @@ export class ChatSession {
           };
         } else if (part.type === "tool-result") {
           toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
+          const call = toolCallsById.get(part.toolCallId);
+          if (call) {
+            call.output = truncateToolContext(safeJson(part.output));
+          }
           yield {
             type: "tool_result",
             tool_use_id: part.toolCallId,
@@ -348,6 +357,11 @@ export class ChatSession {
         } else if (part.type === "tool-error") {
           const message = errorMessage(part.error);
           toolContext.push(`tool_error ${part.toolName}: ${message}`);
+          const call = toolCallsById.get(part.toolCallId);
+          if (call) {
+            call.output = message;
+            call.is_error = true;
+          }
           yield {
             type: "tool_result",
             tool_use_id: part.toolCallId,
@@ -363,19 +377,14 @@ export class ChatSession {
       }
       completed = true;
 
-      const persistedAssistantText = truncateMiddle(
+      const collectedToolCalls = toolCallOrder
+        .map((id) => toolCallsById.get(id))
+        .filter((call): call is { name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
+      this.context.appendMessage(buildPersistedAssistantMessage({
         fullText,
-        MAX_PERSISTED_ASSISTANT_TEXT_CHARS,
-        "...[assistant response truncated in context]...",
-      );
-      const persistedText = toolContext.length > 0
-        ? `${persistedAssistantText}\n\n[Tool transcript]\n${truncateMiddle(
-          toolContext.join("\n"),
-          MAX_PERSISTED_TOOL_TRANSCRIPT_CHARS,
-          "...[tool transcript truncated]...",
-        )}`
-        : persistedAssistantText;
-      this.context.appendMessage({ role: "assistant", content: persistedText });
+        transcriptLines: toolContext,
+        toolCalls: collectedToolCalls,
+      }));
       yield { type: "done", text: safeAccumulated };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -507,14 +516,6 @@ function safeRawStreamJson(value: unknown): string {
 
 function truncateToolContext(value: string): string {
   return value.length > 8000 ? `${value.slice(0, 8000)}...[truncated]` : value;
-}
-
-function truncateMiddle(value: string, maxChars: number, marker: string): string {
-  if (value.length <= maxChars) return value;
-  const available = Math.max(0, maxChars - marker.length - 2);
-  const headChars = Math.ceil(available / 2);
-  const tailChars = Math.floor(available / 2);
-  return `${value.slice(0, headChars)}\n${marker}\n${value.slice(-tailChars)}`;
 }
 
 function formatDuration(ms: number): string {

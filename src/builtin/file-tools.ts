@@ -12,6 +12,11 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 import { isDangerousCommand, type PermissionGate, type PermissionRequest } from "./permissions.js";
 import { killProcessTree } from "./proc-tree-kill.js";
 import {
+  searchBuiltinSessions,
+  type SessionSearchInput,
+  type SessionSearchOutput,
+} from "./session-search.js";
+import {
   webFetchForTool,
   webSearchForTool,
   type WebFetchInput,
@@ -1199,6 +1204,11 @@ export async function applyPatchForTool(cwd: string, input: ApplyPatchInput): Pr
 export interface BuiltinFileToolsOptions {
   /** 权限门控：副作用工具（run_command/文件写操作）执行前会先经过 gate.check */
   permissionGate?: PermissionGate;
+  /** session_search 工具的会话/原始日志目录（默认 ~/.deepccc/sessions 与 raw-stream-logs；测试可注入） */
+  sessionSearch?: {
+    contextDir?: string;
+    rawLogsDir?: string;
+  };
 }
 
 export function createBuiltinFileTools(
@@ -1454,6 +1464,30 @@ export function createBuiltinFileTools(
         required: ["url"],
       }),
       execute: (input, options) => webFetchForTool(input, { abortSignal: options.abortSignal }),
+    }),
+    // 会话历史检索：只读 ~/.deepccc 存档，无需权限询问
+    session_search: tool<SessionSearchInput, SessionSearchOutput>({
+      description:
+        "Search DeepCCC session archives by keyword and return matching snippets. Use when you need to recall old user messages, assistant replies, or tool calls from previous sessions. Multiple terms must all appear in the same message (AND, case-insensitive). Set include_raw_logs to also scan gzipped raw stream logs (slower).",
+      inputSchema: jsonSchema<SessionSearchInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string", description: "Keywords to search for (space-separated, all must match)." },
+          session_id: { type: "string", description: "Optional session id to restrict the search to." },
+          include_raw_logs: { type: "boolean", description: "Also scan gzipped raw stream logs under ~/.deepccc/raw-stream-logs. Default false." },
+          max_results: { type: "number", description: "Maximum number of matches, capped at 50." },
+        },
+        required: ["query"],
+      }),
+      execute: (input) =>
+        searchBuiltinSessions(input.query, {
+          contextDir: options.sessionSearch?.contextDir,
+          rawLogsDir: options.sessionSearch?.rawLogsDir,
+          includeRawLogs: input.include_raw_logs ?? false,
+          sessionId: input.session_id,
+          maxResults: input.max_results,
+        }),
     }),
   };
 }
