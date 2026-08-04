@@ -10,6 +10,14 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 
 import { isDangerousCommand, type PermissionGate, type PermissionRequest } from "./permissions.js";
 import { killProcessTree } from "./proc-tree-kill.js";
+import {
+  webFetchForTool,
+  webSearchForTool,
+  type WebFetchInput,
+  type WebFetchOutput,
+  type WebSearchInput,
+  type WebSearchOutput,
+} from "./web-tools.js";
 
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_LIST_ENTRIES = 200;
@@ -1402,6 +1410,35 @@ export function createBuiltinFileTools(
         });
         return applyPatchForTool(cwd, input);
       },
+    }),
+    // 联网工具：只读外部网络操作，不触碰本地文件系统，无需权限询问
+    websearch: tool<WebSearchInput, WebSearchOutput>({
+      description:
+        "Search the web (DuckDuckGo, no API key) and return matching titles, URLs, and snippets. Use when you need current or external information not available locally, e.g. latest docs, news, or package versions.",
+      inputSchema: jsonSchema<WebSearchInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string", description: "Search query." },
+          maxResults: { type: "number", description: "Optional result count, default 5, capped at 10." },
+        },
+        required: ["query"],
+      }),
+      execute: (input, options) => webSearchForTool(input, { abortSignal: options.abortSignal }),
+    }),
+    webfetch: tool<WebFetchInput, WebFetchOutput>({
+      description:
+        "Fetch a URL and return its readable text content (HTML stripped, truncated). Use for documentation pages, articles, or API docs. Only http/https URLs are allowed.",
+      inputSchema: jsonSchema<WebFetchInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          url: { type: "string", description: "http/https URL to fetch." },
+          maxChars: { type: "number", description: "Optional text length cap, default 10000, capped at 100000." },
+        },
+        required: ["url"],
+      }),
+      execute: (input, options) => webFetchForTool(input, { abortSignal: options.abortSignal }),
     }),
   };
 }
