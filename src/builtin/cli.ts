@@ -13,13 +13,15 @@
 
 import * as readline from "node:readline";
 import * as process from "node:process";
-import { appendFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { listBuiltinContextSessions } from "./context.js";
 import { resolveBuiltinSession, type BuiltinResumeRequest } from "./session-select.js";
 import { createCtrlCState } from "./sigint.js";
+import { buildSkillTemplate } from "./skills.js";
 import { reduceProgress } from "./progress/reducer.js";
 import { TerminalProgressRenderer } from "./progress/terminal-renderer.js";
 import { progressView, type ProgressView } from "./progress/view.js";
@@ -562,7 +564,64 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   });
 }
 
+/**
+ * skill create 子命令：deepccc skill create <name> [--scope global|project] [--description "..."]
+ * 默认创建为全局技能（~/.deepccc/skills/<name>/SKILL.md，Codex 结构）；
+ * --scope project 创建为项目技能（<cwd>/.deepccc/skills/<name>/SKILL.md）。
+ * 新技能在下一次对话自动生效（技能索引每次 chat() 前重扫）。
+ */
+function runSkillCreate(argv: string[]): void {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  const name = positional[0];
+  if (!name) {
+    console.error(
+      "usage: deepccc skill create <name> [--scope global|project] [--description \"...\"]",
+    );
+    process.exit(1);
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
+    console.error(`invalid skill name: ${name}（允许字母/数字/._-，不能以 . 或 - 开头）`);
+    process.exit(1);
+  }
+
+  const scopeIdx = argv.indexOf("--scope");
+  const scope = scopeIdx !== -1 && argv[scopeIdx + 1] === "project" ? "project" : "global";
+  const descIdx = argv.indexOf("--description");
+  const description = descIdx !== -1 ? (argv[descIdx + 1] ?? "") : "";
+
+  const base =
+    scope === "project"
+      ? join(process.cwd(), ".deepccc", "skills")
+      : join(homedir(), ".deepccc", "skills");
+  const skillPath = join(base, name, "SKILL.md");
+
+  if (existsSync(skillPath)) {
+    console.error(`skill already exists: ${skillPath}`);
+    process.exit(1);
+  }
+
+  try {
+    mkdirSync(join(base, name), { recursive: true });
+    writeFileSync(skillPath, buildSkillTemplate(name, description), "utf8");
+  } catch (err) {
+    console.error(`failed to create skill: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  console.log(`created skill: ${skillPath}`);
+  console.log(`scope: ${scope === "project" ? "project（仅当前项目生效）" : "global（所有项目生效）"}`);
+  if (description) console.log(`description: ${description}`);
+  console.log("hot reload: 下一次对话自动生效，无需重启");
+}
+
 async function main(): Promise<void> {
+  // skill create 子命令：deepccc skill create <name> [--scope global|project] [--description "..."]
+  // 默认创建在全局 ~/.deepccc/skills（Codex 目录结构），--scope project 创建到 <cwd>/.deepccc/skills。
+  if (process.argv[2] === "skill" && process.argv[3] === "create") {
+    runSkillCreate(process.argv.slice(4));
+    return;
+  }
+
   const args = parseArgs();
 
   if (args.streamJson) {

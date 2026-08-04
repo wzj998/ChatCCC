@@ -21,7 +21,13 @@ import {
 } from "./context.js";
 import { createBuiltinFileTools } from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
-import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.js";
+import {
+  buildDefaultSkillDirs,
+  buildSkillsIndexPrompt,
+  scanSkillsDirs,
+  type BuiltinSkill,
+  type SkillDirSpec,
+} from "./skills.js";
 import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 
 // ---------------------------------------------------------------------------
@@ -128,8 +134,9 @@ export interface ChatSessionOptions {
   /** Optional tool-step limit. Leave unset for no step limit. */
   maxSteps?: number;
   /**
-   * Codex-style skill directories (<dir>/<name>/SKILL.md).
-   * Defaults to ~/.codex/skills, ~/.agents/skills, <cwd>/.codex/skills.
+   * Custom skill directories (<dir>/<name>/SKILL.md). When set, these are
+   * scanned with the highest priority (deepccc source). Defaults to the
+   * combined Claude/Codex/Cursor/DeepCCC directories (see buildDefaultSkillDirs).
    */
   skillsDirs?: string[];
   /**
@@ -170,12 +177,15 @@ interface ChatMessage {
 
 export class ChatSession {
   private model: any;
-  private systemPrompt: string;
   private cwd: string;
   private context: BuiltinContextManager;
   private maxSteps?: number;
   private effort: string;
   private permissionGate: PermissionGate;
+  private skillDirs: SkillDirSpec[];
+  private customSystemPrompt: string;
+  /** 最近一次 chat() 使用的 system prompt（供 history 等读取） */
+  private systemPrompt = "";
 
   constructor(
     overrides: ChatSessionConfig = {},
@@ -200,25 +210,12 @@ export class ChatSession {
     this.model = provider(modelId);
     this.cwd = options.cwd ?? process.cwd();
     this.maxSteps = normalizeMaxSteps(options.maxSteps);
-
-    // 构建系统提示词
-    const systemContent = [SYSTEM_PROMPT];
-    const projectInstructions = readProjectInstructionFiles(this.cwd);
-    if (projectInstructions) {
-      systemContent.push("", projectInstructions);
-    }
-    // Codex-style skills 索引注入（name + description + 路径，模型按需 read_file 全文）
-    const skills = scanSkillsDirs(options.skillsDirs ?? buildDefaultSkillDirs(this.cwd));
-    const skillsPrompt = buildSkillsIndexPrompt(skills);
-    if (skillsPrompt) {
-      systemContent.push("", skillsPrompt);
-    }
-    if (options.systemPrompt) {
-      systemContent.push("", options.systemPrompt);
-    }
-    systemContent.push("", buildRuntimeWorkspacePrompt(this.cwd));
-
-    this.systemPrompt = systemContent.join("\n");
+    this.customSystemPrompt = options.systemPrompt ?? "";
+    // 技能目录在构造时确定；技能内容在每次 chat() 前重新扫描（mtime 热加载），
+    // 因此创建/修改技能后下一次对话自动生效，无需重启。
+    this.skillDirs =
+      options.skillsDirs?.map((d) => ({ dir: d, source: "deepccc" as const, scope: "project" as const })) ??
+      buildDefaultSkillDirs(this.cwd);
     this.context = new BuiltinContextManager({
       persist: options.persist ?? false,
       contextDir: options.contextDir,
@@ -231,6 +228,24 @@ export class ChatSession {
       options.permissionMode ?? "ask",
       options.permissionResolver,
     );
+  }
+
+  /** 组装系统提示词：固定规则 + 项目指令 + 技能索引 + 用户补充 + 运行时上下文 */
+  private buildSystemPrompt(skills: BuiltinSkill[]): string {
+    const systemContent = [SYSTEM_PROMPT];
+    const projectInstructions = readProjectInstructionFiles(this.cwd);
+    if (projectInstructions) {
+      systemContent.push("", projectInstructions);
+    }
+    const skillsPrompt = buildSkillsIndexPrompt(skills);
+    if (skillsPrompt) {
+      systemContent.push("", skillsPrompt);
+    }
+    if (this.customSystemPrompt) {
+      systemContent.push("", this.customSystemPrompt);
+    }
+    systemContent.push("", buildRuntimeWorkspacePrompt(this.cwd));
+    return systemContent.join("\n");
   }
 
   async *chat(
@@ -267,9 +282,14 @@ export class ChatSession {
 
       const toolContext: string[] = [];
       const maxSteps = this.maxSteps;
+      // 每次对话前重新扫描技能索引（并行 + mtime 缓存，开销极小）：
+      // 新技能/修改的技能在下一次对话自动生效（热加载）。
+      const skills = await scanSkillsDirs(this.skillDirs);
+      const system = this.buildSystemPrompt(skills);
+      this.systemPrompt = system;
       const result = streamText({
         model: this.model,
-        system: this.systemPrompt,
+        system,
         messages: this.context.buildModelMessages() as any,
         tools: createBuiltinFileTools(this.cwd, { permissionGate: this.permissionGate }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
