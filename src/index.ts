@@ -27,7 +27,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { WSClient, EventDispatcher, Domain } from "@larksuiteoapi/node-sdk";
 import WebSocket from "ws";
 
-import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, waitForPortFree } from "./shared.ts";
+import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, installEpipeGuard, waitForPortFree } from "./shared.ts";
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
 import {
   buildWebUiUrl,
@@ -803,6 +803,11 @@ async function main(): Promise<void> {
     flush: () => fileLog.flush(),
     onBeforeExit: (code) => serviceLifecycle.handleBeforeExit(code),
   });
+
+  // stdout/stderr 管道读端消失（如 /restart 旧进程退出后）时，第三方 SDK 写
+  // stderr 会 EPIPE；无监听会抛 uncaughtException 杀死整个服务。挂守卫把这类
+  // IO 错误降级为一条非致命 trace。
+  installEpipeGuard();
 
   // 模拟模式：独立端口 18079，不与 SDK 实例冲突，不走飞书凭证/权限/WSClient
   if (USE_SIMULATE) {

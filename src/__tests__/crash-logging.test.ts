@@ -1,9 +1,15 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 
-import { buildCrashLoggingHandlers, installCrashLogging, setupFileLogging } from "../shared.ts";
+import {
+  buildCrashLoggingHandlers,
+  installCrashLogging,
+  installEpipeGuard,
+  setupFileLogging,
+} from "../shared.ts";
 
 describe("buildCrashLoggingHandlers", () => {
   it("uncaughtException: 写诊断、刷新日志、调用 onFatal", () => {
@@ -212,6 +218,69 @@ describe("installCrashLogging", () => {
   });
 });
 
+describe("installEpipeGuard", () => {
+  function fakeStream(): EventEmitter & { on: typeof EventEmitter.prototype.on; off: typeof EventEmitter.prototype.off } {
+    return new EventEmitter() as unknown as EventEmitter & {
+      on: typeof EventEmitter.prototype.on;
+      off: typeof EventEmitter.prototype.off;
+    };
+  }
+
+  it("吞掉 EPIPE 写错误并记录非致命 trace，不抛出", () => {
+    const stream = fakeStream();
+    const tracer = vi.fn();
+    const cleanup = installEpipeGuard([stream as never], { tracer });
+
+    const err = Object.assign(new Error("broken pipe"), { code: "EPIPE" });
+    expect(() => stream.emit("error", err)).not.toThrow();
+    expect(tracer).toHaveBeenCalledWith(
+      "stdio write error (non-fatal)",
+      expect.objectContaining({ code: "EPIPE" }),
+    );
+
+    cleanup();
+  });
+
+  it("其它 IO 错误同样非致命（日志失败不能拖垮服务）", () => {
+    const stream = fakeStream();
+    const tracer = vi.fn();
+    const cleanup = installEpipeGuard([stream as never], { tracer });
+
+    const err = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    expect(() => stream.emit("error", err)).not.toThrow();
+    expect(tracer).toHaveBeenCalledWith(
+      "stdio write error (non-fatal)",
+      expect.objectContaining({ code: "EACCES" }),
+    );
+
+    cleanup();
+  });
+
+  it("cleanup 后不再监听，错误可正常传播", () => {
+    const stream = fakeStream();
+    const tracer = vi.fn();
+    const cleanup = installEpipeGuard([stream as never], { tracer });
+    cleanup();
+
+    expect(() => stream.emit("error", new Error("boom"))).toThrow("boom");
+    expect(tracer).not.toHaveBeenCalled();
+  });
+
+  it("默认同时守护 stdout 与 stderr", () => {
+    const stdoutBefore = process.stdout.listenerCount("error");
+    const stderrBefore = process.stderr.listenerCount("error");
+    const cleanup = installEpipeGuard(undefined, { tracer: () => {} });
+    try {
+      expect(process.stdout.listenerCount("error")).toBe(stdoutBefore + 1);
+      expect(process.stderr.listenerCount("error")).toBe(stderrBefore + 1);
+    } finally {
+      cleanup();
+      expect(process.stdout.listenerCount("error")).toBe(stdoutBefore);
+      expect(process.stderr.listenerCount("error")).toBe(stderrBefore);
+    }
+  });
+});
+
 describe("setupFileLogging", () => {
   it("flush 后继续写日志不会触发 write after end，且日志已落盘", async () => {
     const originalLog = console.log;
@@ -260,6 +329,31 @@ describe("setupFileLogging", () => {
     } finally {
       console.log = originalLog;
       console.error = originalError;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("console.warn 也会落盘并包含 WARN 级别标记", async () => {
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    console.log = vi.fn() as never;
+    console.error = vi.fn() as never;
+    console.warn = vi.fn() as never;
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-log-"));
+
+    try {
+      const fileLog = setupFileLogging(dir, "index");
+
+      expect(() => console.warn("sdk warning")).not.toThrow();
+      fileLog.flush();
+
+      const content = await readFile(fileLog.logPath, "utf8");
+      expect(content).toContain("[WARN] sdk warning");
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      console.warn = originalWarn;
       await rm(dir, { recursive: true, force: true });
     }
   });

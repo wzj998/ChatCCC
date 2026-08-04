@@ -5,9 +5,9 @@
  * 所有 IM 平台操作通过 PlatformAdapter 接口注入，不直接依赖 feishu-platform.ts。
  */
 
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { execSync, spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -27,6 +27,7 @@ import {
   getAllModelsForTool,
   getDefaultEffortForTool,
   getDefaultCwd,
+  LOG_DIR,
   setDefaultCwd,
   getRecentDirs,
   addRecentDir,
@@ -815,39 +816,61 @@ export interface RestartSpawnDeps {
   projectRoot?: string;
   spawnImpl?: typeof spawn;
   trace?: typeof appendStartupTrace;
+  /** restart 子进程 stderr 的落盘目录；默认 ~/.chatccc/logs */
+  restartLogDir?: string;
 }
 
 /**
- * spawn 自重启子进程。stdio 第三位用 pipe 收集 stderr（原 "ignore" 会吞掉
- * 所有错误，导致失败原因不可见），退出时把收集到的 stderr 写入 startup-trace。
+ * spawn 自重启子进程。
+ *
+ * stderr 不用 pipe 收集：pipe 读端随父进程退出关闭后，子进程（尤其经 tsx
+ * 包装）再写 stderr（如飞书 SDK 内部 console.warn）会 EPIPE → uncaughtException
+ * → 整个服务崩溃。改为把 stderr 重定向到磁盘日志文件：子进程继承文件句柄，
+ * 父进程退出不影响写入，启动诊断同样留痕。若日志文件打开失败，退回 pipe
+ * 收集（旧行为），并记录 trace。
  */
 export function spawnRestartChild(deps: RestartSpawnDeps = {}): ChildProcess {
   const projectRoot = deps.projectRoot ?? PROJECT_ROOT;
   const spawnImpl = deps.spawnImpl ?? spawn;
   const trace = deps.trace ?? appendStartupTrace;
+  const restartLogDir = deps.restartLogDir ?? LOG_DIR;
   const { command, args } = buildRestartSpawnSpec(projectRoot);
+
+  let stderrFd: number | undefined;
+  const stdio: StdioOptions = ["ignore", "ignore", "pipe"];
+  try {
+    mkdirSync(restartLogDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const restartLogPath = join(restartLogDir, `restart-${timestamp}.log`);
+    stderrFd = openSync(restartLogPath, "a");
+    stdio[2] = stderrFd;
+  } catch (err) {
+    trace("restart: stderr log open failed, falling back to pipe", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const child = spawnImpl(command, args, {
     cwd: projectRoot,
     detached: true,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio,
     shell: false,
     env: createInternalRestartEnv(),
   });
-  let stderrBuf = "";
-  child.stderr?.on("data", (chunk: Buffer) => {
-    if (stderrBuf.length < 4096) {
-      stderrBuf += chunk.toString("utf8");
-    }
-  });
+  // 子进程已继承 stderr 文件句柄；父进程关闭自己的副本，避免"子进程早退、
+  // 父进程留下继续服务"时 fd 泄漏。
+  if (stderrFd !== undefined) {
+    try { closeSync(stderrFd); } catch { /* ignore */ }
+  }
+
   child.on("error", (err) => {
-    trace("restart: spawn error", { error: err.message, stderr: stderrBuf.slice(0, 2000) });
+    trace("restart: spawn error", { error: err.message });
   });
   child.on("exit", (code, signal) => {
     trace("restart: child exit", {
       childPid: child.pid,
       code,
       signal,
-      stderr: stderrBuf.slice(0, 2000),
     });
   });
   return child;
