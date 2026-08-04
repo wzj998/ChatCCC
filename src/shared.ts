@@ -341,6 +341,39 @@ export interface InstallCrashLoggingResult {
 }
 
 /**
+ * 常驻服务不能因 stdout/stderr 管道读端消失而 EPIPE 崩溃。
+ *
+ * 背景：`/restart` 后旧进程退出会关闭 stderr pipe 读端，但新进程（尤其经过
+ * tsx 包装层）的 stderr 仍指向该管道写端；一旦第三方 SDK（如飞书）打
+ * console.warn 就会 EPIPE。Node 对 stdout/stderr 的 EPIPE 若无 error 监听会
+ * 抛成 uncaughtException → 默认 onFatal 直接 process.exit(1) 杀死整个服务。
+ *
+ * 这里挂上 error 监听把这类 IO 错误降级为一条同步 trace（写磁盘，不走
+ * stdout/stderr，不会递归崩溃），服务继续运行。返回 cleanup 用于移除监听。
+ */
+export interface EpipeGuardOptions {
+  /** 用于写入诊断的同步函数，默认 appendStartupTrace */
+  tracer?: (message: string, extra?: Record<string, unknown>) => void;
+}
+
+export function installEpipeGuard(
+  streams: NodeJS.WriteStream[] = [process.stdout, process.stderr],
+  options: EpipeGuardOptions = {},
+): () => void {
+  const tracer = options.tracer ?? appendStartupTrace;
+  const onError = (err: NodeJS.ErrnoException): void => {
+    safeCall(tracer, "stdio write error (non-fatal)", {
+      code: err.code ?? "",
+      message: (err.message ?? String(err)).slice(0, 200),
+    });
+  };
+  for (const stream of streams) stream.on("error", onError);
+  return () => {
+    for (const stream of streams) stream.off("error", onError);
+  };
+}
+
+/**
  * 把崩溃黑匣子 handler 装到 process 上，返回 cleanup。
  *
  * 注意：本函数只负责 trace + 默认 fatal 退出，**不**接管原有 SIGINT/SIGTERM 清理逻辑
@@ -389,6 +422,7 @@ export function setupFileLogging(logDir: string, prefix: string): { logPath: str
   writeFileSync(logPath, "", { flag: "a", encoding: "utf8" });
   const origConsoleLog = console.log.bind(console);
   const origConsoleError = console.error.bind(console);
+  const origConsoleWarn = console.warn.bind(console);
   const formatArg = (arg: unknown): string => {
     if (typeof arg === "string") return arg;
     if (arg instanceof Error) return arg.stack ?? arg.message;
@@ -418,6 +452,16 @@ export function setupFileLogging(logDir: string, prefix: string): { logPath: str
     writeLine("ERR", args);
     try {
       origConsoleError(...args);
+    } catch {
+      // 控制台输出失败也不能拖垮服务
+    }
+  };
+  // warn 同样落盘并兜底：飞书 SDK 等第三方库内部用 console.warn 打日志，
+  // 若不走这里（直接写 stderr），restart 后管道断开时会 EPIPE 崩溃。
+  console.warn = (...args: unknown[]) => {
+    writeLine("WARN", args);
+    try {
+      origConsoleWarn(...args);
     } catch {
       // 控制台输出失败也不能拖垮服务
     }

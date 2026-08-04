@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 
 import {
   buildRestartSpawnSpec,
@@ -36,12 +38,25 @@ describe("spawnRestartChild", () => {
     stderr = new EventEmitter();
   }
 
-  it("spawns without a shell, captures stderr, and marks the internal restart env", () => {
+  let tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
+    tmpDirs = [];
+  });
+
+  async function tmpLogDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-restart-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  it("spawns without a shell, redirects stderr to a restart log file, and marks the internal restart env", async () => {
+    const logDir = await tmpLogDir();
     const fake = new FakeChild();
     const spawnImpl = vi.fn(() => fake as never);
     const trace = vi.fn();
 
-    const child = spawnRestartChild({ projectRoot: "F:/proj", spawnImpl, trace });
+    const child = spawnRestartChild({ projectRoot: "F:/proj", spawnImpl, trace, restartLogDir: logDir });
 
     expect(child).toBe(fake);
     expect(spawnImpl).toHaveBeenCalledWith(
@@ -49,7 +64,6 @@ describe("spawnRestartChild", () => {
       [join("F:/proj", "node_modules", "tsx", "dist", "cli.mjs"), "src/index.ts"],
       expect.objectContaining({
         detached: true,
-        stdio: ["ignore", "ignore", "pipe"],
         env: expect.objectContaining({ [INTERNAL_RESTART_ENV_VAR]: "1" }),
         // 不使用 shell：避免 npm/npx 的 PATH 注入问题
         shell: false,
@@ -59,17 +73,28 @@ describe("spawnRestartChild", () => {
     const firstCall = spawnImpl.mock.calls[0] as unknown as [string, string[]];
     const [cmd, args] = firstCall;
     expect([cmd, ...args].join(" ")).not.toMatch(/npx|npm/i);
+
+    // stderr 指向磁盘日志文件（fd），而不是 pipe：pipe 读端随父进程退出关闭后，
+    // 子进程写 stderr 会 EPIPE 崩溃（飞书 SDK console.warn 崩溃根因）。
+    const callArgs = spawnImpl.mock.calls[0] as unknown as Array<unknown>;
+    const stdio = (callArgs[2] as { stdio: unknown[] }).stdio;
+    expect(stdio[0]).toBe("ignore");
+    expect(stdio[1]).toBe("ignore");
+    expect(typeof stdio[2]).toBe("number");
+    expect(stdio[2] as number).toBeGreaterThan(2);
+
+    const files = await readdir(logDir);
+    expect(files.some((f) => f.startsWith("restart-") && f.endsWith(".log"))).toBe(true);
   });
 
-  it("writes captured stderr into the trace on child exit", () => {
+  it("records child exit code/signal in trace without pipe capture", async () => {
+    const logDir = await tmpLogDir();
     const fake = new FakeChild();
     const spawnImpl = vi.fn(() => fake as never);
     const trace = vi.fn();
 
-    spawnRestartChild({ projectRoot: "F:/proj", spawnImpl, trace });
+    spawnRestartChild({ projectRoot: "F:/proj", spawnImpl, trace, restartLogDir: logDir });
 
-    fake.stderr.emit("data", Buffer.from("tsx error line 1\n"));
-    fake.stderr.emit("data", Buffer.from("tsx error line 2\n"));
     fake.exitCode = 1;
     fake.emit("exit", 1, null);
 
@@ -80,8 +105,28 @@ describe("spawnRestartChild", () => {
       code: 1,
       signal: null,
     }));
-    expect(exitCall![1].stderr).toContain("tsx error line 1");
-    expect(exitCall![1].stderr).toContain("tsx error line 2");
+    // 不再用 pipe 收集 stderr，trace 里不再有 stderr 字段
+    expect(exitCall![1]).not.toHaveProperty("stderr");
+  });
+
+  it("falls back to pipe capture when the stderr log file cannot be opened", async () => {
+    const dir = await tmpLogDir();
+    // 用普通文件顶替目录：mkdir/open 日志文件必然失败
+    const blocker = join(dir, "blocker");
+    await writeFile(blocker, "x");
+    const fake = new FakeChild();
+    const spawnImpl = vi.fn(() => fake as never);
+    const trace = vi.fn();
+
+    spawnRestartChild({ projectRoot: "F:/proj", spawnImpl, trace, restartLogDir: blocker });
+
+    const callArgs = spawnImpl.mock.calls[0] as unknown as Array<unknown>;
+    expect((callArgs[2] as { stdio: unknown[] }).stdio[2]).toBe("pipe");
+    const failCall = trace.mock.calls.find(
+      ([name]) => name === "restart: stderr log open failed, falling back to pipe",
+    );
+    expect(failCall).toBeTruthy();
+    expect(typeof (failCall![1] as { error: unknown }).error).toBe("string");
   });
 });
 
