@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
@@ -188,10 +189,24 @@ export interface ApplyPatchOutput {
   changedFiles: ApplyPatchFileChange[];
 }
 
+/**
+ * 把 `~` / `~/x`（含反斜杠 `~\\x`）展开为用户主目录绝对路径。
+ * `~user/x` 形式不展开（Node 无内置支持），保持原样交给后续解析。
+ * 供路径工具共用：技能索引里 `~/...` 路径可直接传给 read_file 等工具。
+ */
+export function expandHomePath(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return join(homedir(), value.slice(2));
+  }
+  return value;
+}
+
 function resolveToolPath(cwd: string, value: string | undefined): string {
   const raw = value?.trim();
   if (!raw) return resolve(cwd);
-  return isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
+  const expanded = expandHomePath(raw);
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
 }
 
 function toPositiveInt(value: number | undefined): number | undefined {

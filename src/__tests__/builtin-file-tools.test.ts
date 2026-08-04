@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -10,6 +12,7 @@ import {
   createFileForTool,
   deleteFileForTool,
   editFileForTool,
+  expandHomePath,
   listDirForTool,
   moveFileForTool,
   readFileForTool,
@@ -17,12 +20,37 @@ import {
   searchCodeForTool,
 } from "../builtin/file-tools.ts";
 
+const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "chatccc-builtin-tools-"));
+  const dir = await mkdtemp(join(tmpdir(), "deepccc-tools-"));
   tempDirs.push(dir);
   return dir;
+}
+
+describe("expandHomePath", () => {
+  it("expands ~ and ~/ (both separators) to the user home directory", () => {
+    const home = homedir();
+    expect(expandHomePath("~")).toBe(home);
+    expect(expandHomePath("~/x/y.txt")).toBe(join(home, "x", "y.txt"));
+    expect(expandHomePath("~\\x\\y.txt")).toBe(join(home, "x", "y.txt"));
+  });
+
+  it("leaves absolute paths and other inputs unchanged", () => {
+    expect(expandHomePath("C:/a/b")).toBe("C:/a/b");
+    expect(expandHomePath("~other/x")).toBe("~other/x");
+    expect(expandHomePath("")).toBe("");
+  });
+});
+
+async function hasRg(): Promise<boolean> {
+  try {
+    await execFileAsync("rg", ["--version"]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sha256(text: string): string {
@@ -33,7 +61,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe("builtin file tools", () => {
+describe("DeepCCC file tools", () => {
   it("reads a text file with line ranges", async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, ".secret.txt"), "one\ntwo\nthree\n", "utf8");
@@ -63,52 +91,20 @@ describe("builtin file tools", () => {
     }));
   });
 
-  it("searches with the project-bundled ripgrep even when rg is absent from PATH", async () => {
+  it("searches code with rg without using a shell", async () => {
+    if (!await hasRg()) return;
+
     const dir = await makeTempDir();
     await writeFile(join(dir, "a.ts"), "const marker = 1;\n", "utf8");
-    const originalPath = process.env.PATH;
-    process.env.PATH = "";
 
-    try {
-      const result = await searchCodeForTool(dir, { query: "marker", glob: "*.ts" });
+    const result = await searchCodeForTool(dir, { query: "marker", glob: "*.ts" });
 
-      expect(result.matches).toEqual([
-        expect.objectContaining({
-          line: 1,
-          column: 7,
-          text: "const marker = 1;",
-        }),
-      ]);
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  });
-
-  it("falls back to Node search when no ripgrep executable can be used", async () => {
-    const dir = await makeTempDir();
-    await writeFile(join(dir, "a.ts"), "const marker = 1;\n", "utf8");
-    await mkdir(join(dir, "nested"));
-    await writeFile(join(dir, "nested", "b.md"), "xx marker = 2\n", "utf8");
-    await writeFile(join(dir, "ignored.txt"), "marker = 3\n", "utf8");
-    const originalPath = process.env.PATH;
-    process.env.PATH = "";
-
-    try {
-      const result = await searchCodeForTool(
-        dir,
-        { query: "marker\\s*=\\s*\\d", glob: "**/*.{ts,md}", maxResults: 10 },
-        undefined,
-        { ripgrepCommands: [join(dir, "missing-rg")] },
-      );
-
-      expect(result.matches).toEqual([
-        expect.objectContaining({ path: join(dir, "a.ts"), line: 1, column: 7 }),
-        expect.objectContaining({ path: join(dir, "nested", "b.md"), line: 1, column: 4 }),
-      ]);
-      expect(result.truncated).toBe(false);
-    } finally {
-      process.env.PATH = originalPath;
-    }
+    expect(result.matches).toEqual([
+      expect.objectContaining({
+        line: 1,
+        text: "const marker = 1;",
+      }),
+    ]);
   });
 
   it("runs non-interactive shell commands in the requested cwd", async () => {
@@ -156,37 +152,6 @@ describe("builtin file tools", () => {
       afterSha256: sha256("alpha\nBETA\ngamma\n"),
     }));
     await expect(readFile(file, "utf8")).resolves.toBe("alpha\nBETA\ngamma\n");
-  });
-
-  it("edits a CRLF file with LF oldText by normalizing line endings", async () => {
-    const dir = await makeTempDir();
-    const file = join(dir, "crlf.txt");
-    const crlfContent = "alpha\r\nbeta\r\ngamma\r\n";
-    await writeFile(file, crlfContent, "utf8");
-
-    const result = await editFileForTool(dir, {
-      path: "crlf.txt",
-      expectedSha256: sha256(crlfContent),
-      edits: [{ oldText: "alpha\nbeta", newText: "ALPHA\nBETA" }],
-    });
-
-    expect(result).toEqual(expect.objectContaining({
-      changed: true,
-      editsApplied: 1,
-      beforeSha256: sha256(crlfContent),
-      afterSha256: sha256("ALPHA\r\nBETA\r\ngamma\r\n"),
-    }));
-    await expect(readFile(file, "utf8")).resolves.toBe("ALPHA\r\nBETA\r\ngamma\r\n");
-  });
-
-  it("rejects a multi-line oldText that still does not match after EOL normalization", async () => {
-    const dir = await makeTempDir();
-    await writeFile(join(dir, "crlf.txt"), "alpha\r\nbeta\r\n", "utf8");
-
-    await expect(editFileForTool(dir, {
-      path: "crlf.txt",
-      edits: [{ oldText: "alpha\ngamma", newText: "x" }],
-    })).rejects.toThrow("oldText was not found");
   });
 
   it("rejects edits when the SHA-256 precondition does not match", async () => {

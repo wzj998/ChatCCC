@@ -181,9 +181,19 @@ export function latestBuiltinSessionForCwd(
   ) ?? null;
 }
 
+/**
+ * 估算上下文的 token 数（用于决定何时压缩）。
+ * 按字符类型加权，比旧版 chars/3 更接近真实：CJK 字符 ≈ 1 token/字，
+ * 其他字符 ≈ 3.5 chars/token。避免中文长上下文被严重低估导致压缩过晚。
+ */
 export function estimateBuiltinContextTokens(summary: string, messages: readonly BuiltinContextMessage[]): number {
-  const chars = summary.length + messages.reduce((sum, m) => sum + m.role.length + m.content.length, 0);
-  return Math.ceil(chars / 3);
+  const text = summary + messages.reduce((sum, m) => sum + `${m.role}\n${m.content}\n`, "");
+  let cjk = 0;
+  for (const ch of text) {
+    if (/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]/.test(ch)) cjk++;
+  }
+  const other = text.length - cjk;
+  return Math.ceil(cjk + other / 3.5);
 }
 
 export function serializeMessagesForSummary(messages: readonly BuiltinContextMessage[]): string {

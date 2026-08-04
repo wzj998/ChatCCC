@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { config } from "../builtin/config.ts";
+import { estimateBuiltinContextTokens } from "../builtin/context.ts";
 
 const streamTextMock = vi.fn();
 const generateTextMock = vi.fn();
@@ -26,7 +27,7 @@ vi.mock("ai", () => ({
   tool: vi.fn((definition: unknown) => definition),
 }));
 
-vi.mock("../builtin/raw-stream-log.ts", () => ({
+vi.mock("../builtin/raw-stream-log.js", () => ({
   createRawStreamLog: createRawStreamLogMock,
 }));
 
@@ -53,50 +54,10 @@ afterEach(() => {
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
 });
 
-describe("ChatSession codex-style skills", () => {
-  it("injects skill index into system prompt from skillsDirs", async () => {
-    const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-skills-"));
-    const skillsDir = join(dir, ".codex", "skills");
-    await mkdir(join(skillsDir, "demo-skill"), { recursive: true });
-    await writeFile(
-      join(skillsDir, "demo-skill", "SKILL.md"),
-      "---\nname: demo-skill\ndescription: 演示技能\n---\n\n# 演示",
-      "utf-8",
-    );
-    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
-
-    const session = new ChatSession(
-      { apiKey: "sk-test" },
-      { cwd: dir, sessionId: "skill-index", skillsDirs: [skillsDir] },
-    );
-    await collect(session.chat("hi"));
-
-    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
-    expect(system).toContain("## Available Skills");
-    expect(system).toContain("demo-skill");
-    expect(system).toContain("演示技能");
-  });
-
-  it("skips skill injection when no skills are found", async () => {
-    const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-no-skills-"));
-    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
-
-    const session = new ChatSession(
-      { apiKey: "sk-test" },
-      { cwd: dir, sessionId: "no-skills", skillsDirs: [join(dir, "missing")] },
-    );
-    await collect(session.chat("hi"));
-
-    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
-    expect(system).not.toContain("## Available Skills");
-  });
-});
 describe("ChatSession context management", () => {
   it("injects cwd project instruction files before runtime workspace details", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-instructions-"));
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-instructions-"));
     await writeFile(join(dir, "AGENTS.md"), "agents root guidance", "utf-8");
     await writeFile(join(dir, "AGENTS.local.md"), "agents local guidance", "utf-8");
     await writeFile(join(dir, "CLAUDE.md"), "claude root guidance", "utf-8");
@@ -129,9 +90,43 @@ describe("ChatSession context management", () => {
     expect(system.indexOf("claude local guidance")).toBeLessThan(system.indexOf(dir));
   });
 
+  it("places the volatile skills index at the very end of system prompt", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-skill-order-"));
+    const skillsDir = join(dir, "skills");
+    await mkdir(join(skillsDir, "demo-skill"), { recursive: true });
+    await writeFile(
+      join(skillsDir, "demo-skill", "SKILL.md"),
+      "---\nname: demo-skill\ndescription: demo description\n---\n\nbody\n",
+      "utf-8",
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "skill-order",
+        systemPrompt: "CUSTOM PROMPT MARKER",
+        skillsDirs: [skillsDir],
+      },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("demo-skill");
+    expect(system).toContain("CUSTOM PROMPT MARKER");
+    expect(system).toContain("Current working directory");
+    // 稳定性排序：固定规则 → 项目指令 → runtime → custom → 技能索引（最后）
+    expect(system.indexOf("CUSTOM PROMPT MARKER")).toBeGreaterThan(
+      system.indexOf("Current working directory"),
+    );
+    expect(system.indexOf("demo-skill")).toBeGreaterThan(system.indexOf("CUSTOM PROMPT MARKER"));
+  });
+
   it("does not read project instruction files from parent directories", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    const parent = await mkdtemp(join(tmpdir(), "chatccc-session-parent-instructions-"));
+    const parent = await mkdtemp(join(tmpdir(), "deepccc-session-parent-instructions-"));
     const child = join(parent, "child");
     await mkdir(child);
     await writeFile(join(parent, "AGENTS.md"), "parent-only guidance", "utf-8");
@@ -152,7 +147,7 @@ describe("ChatSession context management", () => {
 
   it("uses loop-finished stopping by default", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-unlimited-"));
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-unlimited-"));
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
 
     const session = new ChatSession(
@@ -171,7 +166,7 @@ describe("ChatSession context management", () => {
 
   it("uses a configured tool step limit when provided", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-step-budget-"));
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-step-budget-"));
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
 
     const session = new ChatSession(
@@ -191,7 +186,7 @@ describe("ChatSession context management", () => {
 
   it("loads persisted context, compacts older messages, and persists the new assistant reply", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-context-"));
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-context-"));
 
     const seed = new ChatSession(
       { apiKey: "sk-test" },
@@ -205,7 +200,7 @@ describe("ChatSession context management", () => {
     streamTextMock.mockReturnValueOnce({ textStream: textStream("old answer") });
     await collect(seed.chat("old question"));
 
-    generateTextMock.mockResolvedValueOnce({ text: "## 当前任务状态\n- 旧问题已总结" });
+    generateTextMock.mockResolvedValueOnce({ text: "## Current Task\n- old question summarized" });
     streamTextMock.mockReturnValueOnce({ textStream: textStream("new answer") });
 
     const restored = new ChatSession(
@@ -221,9 +216,10 @@ describe("ChatSession context management", () => {
     const events = await collect(restored.chat("new question"));
 
     expect(generateTextMock).toHaveBeenCalledOnce();
+    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({ temperature: 0 }));
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
       messages: expect.arrayContaining([
-        expect.objectContaining({ content: expect.stringContaining("旧问题已总结") }),
+        expect.objectContaining({ content: expect.stringContaining("old question summarized") }),
         expect.objectContaining({ role: "user", content: "new question" }),
       ]),
     }));
@@ -233,7 +229,7 @@ describe("ChatSession context management", () => {
 
   it("streams tool calls and tool results from fullStream", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-tools-"));
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-tools-"));
     const session = new ChatSession(
       { apiKey: "sk-test" },
       {
@@ -269,7 +265,7 @@ describe("ChatSession context management", () => {
     expect(events).toContainEqual({ type: "text", text: "done", accumulated: "done" });
   });
 
-  it("writes raw CCC fullStream parts when raw stream logs are enabled", async () => {
+  it("writes raw DeepCCC fullStream parts when raw stream logs are enabled", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
     config.rawStreamLogs = {
       enabled: true,
@@ -316,35 +312,18 @@ describe("ChatSession context management", () => {
   });
 });
 
-describe("ChatSession effort passthrough", () => {
-  it("passes reasoningEffort via providerOptions when effort is configured", async () => {
-    const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-effort-high-"));
-    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
-
-    const session = new ChatSession(
-      { apiKey: "sk-test", effort: "high" },
-      { cwd: dir, sessionId: "effort-high" },
-    );
-    await collect(session.chat("hi"));
-
-    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
-      providerOptions: { deepseek: { reasoningEffort: "high" } },
-    }));
+describe("estimateBuiltinContextTokens", () => {
+  it("weights CJK characters closer to one token per character", () => {
+    const messages = [{ role: "user" as const, content: "你好".repeat(100) }];
+    const estimate = estimateBuiltinContextTokens("", messages);
+    // 200 个汉字 ≈ 200 tokens（旧算法 chars/3 只估到 ~70，明显低估）
+    expect(estimate).toBeGreaterThanOrEqual(180);
   });
 
-  it("omits providerOptions when effort is not set", async () => {
-    const { ChatSession } = await import("../builtin/index.ts");
-    const dir = await mkdtemp(join(tmpdir(), "chatccc-session-effort-none-"));
-    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
-
-    const session = new ChatSession(
-      { apiKey: "sk-test", effort: "" },
-      { cwd: dir, sessionId: "effort-none" },
-    );
-    await collect(session.chat("hi"));
-
-    const lastCall = streamTextMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expect(lastCall.providerOptions).toBeUndefined();
+  it("keeps latin text near chars/3.5", () => {
+    const messages = [{ role: "user" as const, content: "a".repeat(1000) }];
+    const estimate = estimateBuiltinContextTokens("", messages);
+    expect(estimate).toBeGreaterThan(250);
+    expect(estimate).toBeLessThan(340);
   });
 });

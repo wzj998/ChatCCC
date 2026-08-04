@@ -1,9 +1,10 @@
-﻿import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  normalizeSkillPathForPrompt,
   parseSkillFrontmatter,
   scanSkillsDirs,
   buildDefaultSkillDirs,
@@ -47,14 +48,14 @@ describe("parseSkillFrontmatter", () => {
     const content = [
       "---",
       "name: feishu-doc-download-md",
-      "description: 涓嬭浇椋炰功鏂囨。涓?Markdown",
+      "description: 下载飞书文档为 Markdown",
       "---",
       "",
-      "# 姝ｆ枃",
+      "# 正文",
     ].join("\n");
     expect(parseSkillFrontmatter(content)).toEqual({
       name: "feishu-doc-download-md",
-      description: "涓嬭浇椋炰功鏂囨。涓?Markdown",
+      description: "下载飞书文档为 Markdown",
     });
   });
 
@@ -70,10 +71,10 @@ describe("parseSkillFrontmatter", () => {
   });
 
   it("handles CRLF line endings", () => {
-    const content = "---\r\nname: crlf-skill\r\ndescription: CRLF 鎻忚堪\r\n---\r\n\r\nbody";
+    const content = "---\r\nname: crlf-skill\r\ndescription: CRLF 描述\r\n---\r\n\r\nbody";
     expect(parseSkillFrontmatter(content)).toEqual({
       name: "crlf-skill",
-      description: "CRLF 鎻忚堪",
+      description: "CRLF 描述",
     });
   });
 });
@@ -158,7 +159,7 @@ describe("scanSkillsDirs hot reload (mtime cache)", () => {
     expect(first.find((s) => s.name === "live")?.description).toBe("v1");
 
     writeFileSync(skillPath, "---\nname: live\ndescription: v2\n---\n\nbody\n", "utf8");
-    utimesSync(skillPath, new Date(Date.now() + 3000), new Date(Date.now() + 3000)); // 寮哄埗 mtime 鍓嶈繘
+    utimesSync(skillPath, new Date(Date.now() + 3000), new Date(Date.now() + 3000)); // 强制 mtime 前进
 
     const second = await scanSkillsDirs([spec(dir, "deepccc")]);
     expect(second.find((s) => s.name === "live")?.description).toBe("v2");
@@ -171,7 +172,7 @@ describe("scanSkillsDirs hot reload (mtime cache)", () => {
     const first = await scanSkillsDirs([spec(dir, "deepccc")]);
     expect(first).toHaveLength(1);
 
-    makeSkill(dir, "b", "B"); // 鏂版妧鑳斤紝鏃犻渶鏀?mtime锛堢洰褰曟灇涓炬瘡娆￠兘鍋氾級
+    makeSkill(dir, "b", "B"); // 新技能，无需改 mtime（目录枚举每次都做）
     const second = await scanSkillsDirs([spec(dir, "deepccc")]);
     expect(second.map((s) => s.name).sort()).toEqual(["a", "b"]);
   });
@@ -211,12 +212,27 @@ describe("buildDefaultSkillDirs", () => {
   });
 });
 
+describe("normalizeSkillPathForPrompt", () => {
+  it("abbreviates home-directory paths with ~ and normalizes separators", () => {
+    const home = homedir();
+    const abs = join(home, ".codex", "skills", "x", "SKILL.md");
+    expect(normalizeSkillPathForPrompt(abs)).toBe("~/.codex/skills/x/SKILL.md");
+    expect(normalizeSkillPathForPrompt(home)).toBe("~");
+  });
+
+  it("keeps paths outside the home directory unchanged (separators normalized)", () => {
+    expect(normalizeSkillPathForPrompt("C:\\proj\\.claude\\skills\\x\\SKILL.md")).toBe(
+      "C:/proj/.claude/skills/x/SKILL.md",
+    );
+  });
+});
+
 describe("buildSkillsIndexPrompt", () => {
   it("renders index with source markers and the skill creation convention", () => {
     const prompt = buildSkillsIndexPrompt([
       {
         name: "feishu-doc",
-        description: "涓嬭浇椋炰功鏂囨。",
+        description: "下载飞书文档",
         skillPath: "C:/x/feishu-doc/SKILL.md",
         source: "codex",
         scope: "global",
@@ -229,6 +245,22 @@ describe("buildSkillsIndexPrompt", () => {
     expect(prompt).toContain("## Creating Skills");
     expect(prompt).toContain(".deepccc/skills");
     expect(prompt).toContain("read_file");
+  });
+
+  it("renders home-abbreviated skill paths so the prompt stays stable across machines", () => {
+    const home = homedir();
+    const prompt = buildSkillsIndexPrompt([
+      {
+        name: "demo",
+        description: "d",
+        skillPath: join(home, ".codex", "skills", "demo", "SKILL.md"),
+        source: "codex",
+        scope: "global",
+      },
+    ]);
+
+    expect(prompt).toContain("~/.codex/skills/demo/SKILL.md");
+    expect(prompt).not.toContain(home);
   });
 
   it("returns empty string for no skills", () => {
