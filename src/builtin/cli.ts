@@ -464,6 +464,12 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       return;
     }
 
+    if (input === "/sessions") {
+      printSessions();
+      rl.prompt();
+      return;
+    }
+
     currentAbort = new AbortController();
     const signal = currentAbort.signal;
 

@@ -5,9 +5,24 @@ import { join } from "node:path";
 
 export type BuiltinContextRole = "user" | "assistant";
 
+/**
+ * 结构化工具调用存档（与 content 里的 [Tool transcript] 文本互为冗余视图）：
+ * content 文本保持不变供模型消费；toolCalls 数组提供可检索、可回放的结构化数据。
+ */
+export interface BuiltinContextToolCall {
+  name: string;
+  /** 工具入参（JSON 文本，已截断到安全上限） */
+  input?: string;
+  /** 工具出参（JSON 文本或错误消息，已截断到安全上限） */
+  output?: string;
+  is_error?: boolean;
+}
+
 export interface BuiltinContextMessage {
   role: BuiltinContextRole;
   content: string;
+  /** 可选结构化工具调用记录（assistant 消息专用） */
+  toolCalls?: BuiltinContextToolCall[];
 }
 
 export interface BuiltinContextState {
@@ -84,10 +99,29 @@ export function newBuiltinSessionId(now: Date = new Date(), suffix: string = ran
 
 function normalizeMessage(value: unknown): BuiltinContextMessage | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as { role?: unknown; content?: unknown };
+  const raw = value as { role?: unknown; content?: unknown; toolCalls?: unknown };
   if (raw.role !== "user" && raw.role !== "assistant") return null;
   if (typeof raw.content !== "string") return null;
-  return { role: raw.role, content: raw.content };
+  const message: BuiltinContextMessage = { role: raw.role, content: raw.content };
+  const toolCalls = normalizeToolCalls(raw.toolCalls);
+  if (toolCalls.length > 0) message.toolCalls = toolCalls;
+  return message;
+}
+
+function normalizeToolCalls(value: unknown): BuiltinContextToolCall[] {
+  if (!Array.isArray(value)) return [];
+  const calls: BuiltinContextToolCall[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as { name?: unknown; input?: unknown; output?: unknown; is_error?: unknown };
+    if (typeof raw.name !== "string" || raw.name.length === 0) continue;
+    const call: BuiltinContextToolCall = { name: raw.name };
+    if (typeof raw.input === "string") call.input = raw.input;
+    if (typeof raw.output === "string") call.output = raw.output;
+    if (typeof raw.is_error === "boolean") call.is_error = raw.is_error;
+    calls.push(call);
+  }
+  return calls;
 }
 
 function emptyState(sessionId: string, cwd?: string): BuiltinContextState {
@@ -212,6 +246,46 @@ function truncateMiddle(value: string, maxChars: number, marker: string): string
   const headChars = Math.ceil(available / 2);
   const tailChars = Math.floor(available / 2);
   return `${value.slice(0, headChars)}\n${marker}\n${value.slice(-tailChars)}`;
+}
+
+export const DEFAULT_PERSISTED_ASSISTANT_TEXT_CHARS = 32_000;
+export const DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS = 24_000;
+const ASSISTANT_TRUNCATED_MARKER = "...[assistant response truncated in context]...";
+const TOOL_TRANSCRIPT_TRUNCATED_MARKER = "...[tool transcript truncated]...";
+
+/**
+ * 构造持久化的 assistant 消息：content 保持既有"正文 + [Tool transcript]"文本格式
+ * （模型上下文行为不变），同时附加结构化 toolCalls 存档（供 session-search 等检索）。
+ */
+export function buildPersistedAssistantMessage(params: {
+  fullText: string;
+  /** [Tool transcript] 的文本行（按原始流顺序，含 tool_call / tool_result / tool_error） */
+  transcriptLines: readonly string[];
+  /** 结构化工具调用（按调用顺序）；有则写入消息的 toolCalls 字段 */
+  toolCalls?: readonly BuiltinContextToolCall[];
+  maxAssistantChars?: number;
+  maxTranscriptChars?: number;
+}): BuiltinContextMessage {
+  const maxAssistantChars = params.maxAssistantChars ?? DEFAULT_PERSISTED_ASSISTANT_TEXT_CHARS;
+  const maxTranscriptChars = params.maxTranscriptChars ?? DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS;
+
+  const persistedAssistantText = truncateMiddle(
+    params.fullText,
+    maxAssistantChars,
+    ASSISTANT_TRUNCATED_MARKER,
+  );
+  const content = params.transcriptLines.length > 0
+    ? `${persistedAssistantText}\n\n[Tool transcript]\n${truncateMiddle(
+      params.transcriptLines.join("\n"),
+      maxTranscriptChars,
+      TOOL_TRANSCRIPT_TRUNCATED_MARKER,
+    )}`
+    : persistedAssistantText;
+
+  const message: BuiltinContextMessage = { role: "assistant", content };
+  const toolCalls = normalizeToolCalls(params.toolCalls);
+  if (toolCalls.length > 0) message.toolCalls = toolCalls;
+  return message;
 }
 
 function serializeMessagesForCompaction(messages: readonly BuiltinContextMessage[]): string {

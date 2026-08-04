@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -327,6 +327,62 @@ describe("ChatSession context management", () => {
     const persisted = session.history.at(-1)?.content ?? "";
     expect(persisted.length).toBeLessThan(40_000);
     expect(persisted).toContain("tool transcript truncated");
+  });
+
+  it("persists structured tool calls alongside the text transcript", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-structured-tools-"));
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { persist: true, contextDir: dir, sessionId: "structured-tools" },
+    );
+
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "package.json" } },
+        { type: "tool-result", toolCallId: "call-1", toolName: "read_file", output: { content: "{}" } },
+        { type: "text-delta", text: "done" },
+      ),
+    });
+
+    await collect(session.chat("read package"));
+
+    const raw = await readFile(join(dir, "structured-tools", "context.json"), "utf8");
+    const state = JSON.parse(raw) as { messages: Array<{ content: string; toolCalls?: unknown }> };
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[1].toolCalls).toEqual([
+      { name: "read_file", input: "{\"path\":\"package.json\"}", output: "{\"content\":\"{}\"}" },
+    ]);
+    expect(state.messages[1].content).toContain("[Tool transcript]");
+  });
+
+  it("records tool errors and preserves tool call order in structured tool calls", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-structured-tools-order-"));
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { persist: true, contextDir: dir, sessionId: "structured-tools-order" },
+    );
+
+    // AI SDK 流中工具调用先全部到达（tool-call），结果后到达（tool-result/tool-error）
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "tool-call", toolCallId: "c1", toolName: "run_command", input: { command: "npm test" } },
+        { type: "tool-call", toolCallId: "c2", toolName: "read_file", input: { path: "a.ts" } },
+        { type: "tool-result", toolCallId: "c1", toolName: "run_command", output: { exitCode: 0 } },
+        { type: "tool-error", toolCallId: "c2", toolName: "read_file", error: new Error("boom") },
+        { type: "text-delta", text: "failed" },
+      ),
+    });
+
+    await collect(session.chat("run tests"));
+
+    const raw = await readFile(join(dir, "structured-tools-order", "context.json"), "utf8");
+    const state = JSON.parse(raw) as { messages: Array<{ toolCalls?: unknown[] }> };
+    expect(state.messages[1].toolCalls).toEqual([
+      { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      { name: "read_file", input: "{\"path\":\"a.ts\"}", output: "boom", is_error: true },
+    ]);
   });
 
   it("writes raw DeepCCC fullStream parts when raw stream logs are enabled", async () => {
