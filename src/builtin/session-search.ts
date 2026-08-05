@@ -300,8 +300,15 @@ async function searchGzipFileLines(
   try {
     const source = createReadStream(filePath);
     const gunzip = createGunzip();
+    // 防崩溃（线上事故）：截断/损坏的 gzip 会在 zlib 层 emit 'error'（如
+    // "unexpected end of file"）。若无人监听，错误事件会升级为 uncaughtException
+    // 直接杀死整个服务（崩溃黑匣子 exit(1)）。显式挂监听把错误降级为
+    // “跳过该文件”：destroy 流让 for await 正常结束，不再冒泡。
     source.on("error", () => gunzip.destroy());
+    gunzip.on("error", () => gunzip.destroy());
     const reader = createInterface({ input: source.pipe(gunzip), crlfDelay: Infinity });
+    // readline 会把 input 流的 error 转发到自己身上，同样需要监听避免冒泡
+    reader.on("error", () => {});
     for await (const line of reader) {
       bytes += Buffer.byteLength(line, "utf-8");
       if (bytes > maxBytes) break;
