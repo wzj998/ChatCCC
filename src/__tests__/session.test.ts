@@ -133,6 +133,8 @@ import {
   _resetProcessAliveForTest,
   _setProcessMonitorIntervalForTest,
   _resetProcessMonitorIntervalForTest,
+  _setAvatarRefreshIntervalForTest,
+  _resetAvatarRefreshIntervalForTest,
   _setResponseStallTimeoutForTest,
   _resetResponseStallTimeoutForTest,
   _setResponseStallCheckIntervalForTest,
@@ -804,6 +806,98 @@ describe("runAgentSession process monitor", () => {
     expect(sentTexts[0]).toContain("first prompt");
     expect(sentTexts[1]).toContain("second prompt");
   });
+});
+
+describe("runAgentSession periodic avatar refresh", () => {
+  let registryFile = "";
+  let toolsFile = "";
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-avatar-refresh-"));
+    registryFile = join(dir, "session-registry.json");
+    toolsFile = join(dir, "session-tools.json");
+    _setSessionRegistryFileForTest(registryFile);
+    _setSessionToolsFileForTest(toolsFile);
+    _setAvatarRefreshIntervalForTest(50);
+  });
+
+  afterEach(async () => {
+    _resetSessionRegistryFileForTest();
+    _resetSessionToolsFileForTest();
+    _resetAvatarRefreshIntervalForTest();
+    _clearAdapterCacheForTest();
+    resetState();
+    resetBindingState();
+    vi.useRealTimers();
+    if (registryFile) await rm(dirname(registryFile), { recursive: true, force: true });
+  });
+
+  it.each(["codex", "cursor", "claude", "ccc"])(
+    "refreshes the busy avatar for %s every interval and stops after completion",
+    async (tool) => {
+      const sessionId = `sid-avatar-${tool}`;
+      const chatId = `chat-avatar-${tool}`;
+      const platform = mockPlatform("feishu");
+      setSessionPlatform(platform);
+      bindChatToSession(sessionId, chatId);
+      recordLastActiveChat(sessionId, chatId);
+
+      let finishPrompt: (() => void) | undefined;
+      const adapter: ToolAdapter = {
+        displayName: tool,
+        sessionDescPrefix: `${tool} Session:`,
+        createSession: async () => ({ sessionId }),
+        getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "/tmp" }),
+        closeSession: async () => {},
+        prompt: async function* () {
+          yield { type: "assistant", blocks: [{ type: "text", text: "working" }] };
+          await new Promise<void>((resolve) => {
+            finishPrompt = resolve;
+          });
+          yield { type: "assistant", blocks: [{ type: "text", text: "done" }] };
+        },
+      };
+      _setAdapterForToolForTest(tool, adapter);
+
+      const runPromise = runAgentSession(
+        sessionId,
+        "prompt",
+        platform,
+        chatId,
+        Date.now(),
+        tool,
+      );
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(platform.setChatAvatar).mock.calls.some(
+          ([calledChatId, calledTool, status]) =>
+            calledChatId === chatId && calledTool === tool && status === "busy",
+        )).toBe(true);
+        expect(finishPrompt).toBeTypeOf("function");
+      });
+      const initialBusyCalls = vi.mocked(platform.setChatAvatar).mock.calls.filter(
+        ([calledChatId, calledTool, status]) =>
+          calledChatId === chatId && calledTool === tool && status === "busy",
+      ).length;
+
+      await vi.advanceTimersByTimeAsync(51);
+      expect(vi.mocked(platform.setChatAvatar).mock.calls.filter(
+        ([calledChatId, calledTool, status]) =>
+          calledChatId === chatId && calledTool === tool && status === "busy",
+      )).toHaveLength(initialBusyCalls + 1);
+
+      finishPrompt?.();
+      await runPromise;
+      const callsAfterCompletion = vi.mocked(platform.setChatAvatar).mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(platform.setChatAvatar).toHaveBeenCalledTimes(callsAfterCompletion);
+    },
+  );
 });
 
 describe("runAgentSession response stall watchdog", () => {

@@ -111,6 +111,7 @@ export interface ActivePrompt {
   processPid?: number;
   processMonitor?: ReturnType<typeof setInterval>;
   responseStallMonitor?: ReturnType<typeof setInterval>;
+  avatarRefreshTimer?: ReturnType<typeof setInterval>;
   /** Grace timer that force-closes a stream which stays open after its authoritative final event. */
   finalResponseCloseTimer?: ReturnType<typeof setTimeout>;
   /** Character-count progress observed only while the activity is "responding". */
