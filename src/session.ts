@@ -175,6 +175,7 @@ function platformForChat(chatId: string): PlatformAdapter | null {
 }
 
 const DEFAULT_PROCESS_MONITOR_INTERVAL_MS = 5000;
+const DEFAULT_AVATAR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_RESPONSE_STALL_TIMEOUT_MS = 3 * 60 * 1000;
 const DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS = 5000;
 const DEFAULT_FINAL_RESPONSE_CLOSE_TIMEOUT_MS = 10_000;
@@ -185,6 +186,7 @@ export const RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE =
   "⚠️ 自动续跑仍连续 3 分钟没有生成新回复，本次不再自动继续。";
 const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
+let avatarRefreshIntervalMs = DEFAULT_AVATAR_REFRESH_INTERVAL_MS;
 let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
 let responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
 let finalResponseCloseTimeoutMs = DEFAULT_FINAL_RESPONSE_CLOSE_TIMEOUT_MS;
@@ -218,6 +220,14 @@ export function _setProcessMonitorIntervalForTest(ms: number): void {
 
 export function _resetProcessMonitorIntervalForTest(): void {
   processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
+}
+
+export function _setAvatarRefreshIntervalForTest(ms: number): void {
+  avatarRefreshIntervalMs = ms;
+}
+
+export function _resetAvatarRefreshIntervalForTest(): void {
+  avatarRefreshIntervalMs = DEFAULT_AVATAR_REFRESH_INTERVAL_MS;
 }
 
 export function _setResponseStallTimeoutForTest(ms: number): void {
@@ -256,6 +266,13 @@ function clearPromptResponseStallMonitor(sessionId: string): void {
   if (!prompt?.responseStallMonitor) return;
   clearInterval(prompt.responseStallMonitor);
   prompt.responseStallMonitor = undefined;
+}
+
+function clearPromptAvatarRefreshTimer(sessionId: string): void {
+  const prompt = activePrompts.get(sessionId);
+  if (!prompt?.avatarRefreshTimer) return;
+  clearInterval(prompt.avatarRefreshTimer);
+  prompt.avatarRefreshTimer = undefined;
 }
 
 function clearPromptFinalResponseCloseTimer(sessionId: string): void {
@@ -516,6 +533,7 @@ export function resetState(): void {
   for (const prompt of activePrompts.values()) {
     if (prompt.processMonitor) clearInterval(prompt.processMonitor);
     if (prompt.responseStallMonitor) clearInterval(prompt.responseStallMonitor);
+    if (prompt.avatarRefreshTimer) clearInterval(prompt.avatarRefreshTimer);
     if (prompt.finalResponseCloseTimer) clearTimeout(prompt.finalResponseCloseTimer);
   }
   activePrompts.clear();
@@ -592,6 +610,57 @@ function setSessionChatAvatar(
   return getEffectiveFastModeForTool(tool, sessionId)
     ? platform.setChatAvatar(chatId, tool, status, { fastMode: true })
     : platform.setChatAvatar(chatId, tool, status);
+}
+
+async function refreshBusySessionAvatar(
+  sessionId: string,
+  tool: string,
+  fallbackPlatform: PlatformAdapter,
+): Promise<void> {
+  const chatId = pickDisplayChat(sessionId) ?? getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
+  if (!chatId) return;
+  const platform = platformForChat(chatId) ?? fallbackPlatform;
+  await setSessionChatAvatar(platform, chatId, tool, "busy", sessionId);
+}
+
+function startPromptAvatarRefresh(
+  sessionId: string,
+  tool: string,
+  fallbackPlatform: PlatformAdapter,
+  runningPrompt: NonNullable<ReturnType<typeof activePrompts.get>>,
+): void {
+  let refreshInFlight = false;
+  const timer = setInterval(() => {
+    const current = activePrompts.get(sessionId);
+    if (!current || current !== runningPrompt) {
+      clearInterval(timer);
+      if (runningPrompt.avatarRefreshTimer === timer) {
+        runningPrompt.avatarRefreshTimer = undefined;
+      }
+      return;
+    }
+    if (
+      refreshInFlight
+      || current.stopped
+      || current.abnormalExit
+      || current.resourceStuck
+      || current.autoEnded
+      || current.finalResponseObserved
+    ) {
+      return;
+    }
+
+    refreshInFlight = true;
+    void refreshBusySessionAvatar(sessionId, tool, fallbackPlatform)
+      .catch((err) => {
+        console.warn(`[${ts()}] [AVATAR] Periodic refresh failed for ${sessionId}: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        refreshInFlight = false;
+      });
+  }, avatarRefreshIntervalMs);
+  timer.unref?.();
+  runningPrompt.avatarRefreshTimer = timer;
 }
 
 /** 为指定 session 设置模型覆盖（/model <name>） */
@@ -1435,10 +1504,7 @@ export async function runAgentSession(
   }
 
   // 设置最后活跃群头像为 busy
-  const activeCid = getLastActiveChat(sessionId) ?? getChatsForSession(sessionId)[0];
-  if (activeCid) {
-    setSessionChatAvatar(platform, activeCid, tool, "busy", sessionId).catch(() => {});
-  }
+  refreshBusySessionAvatar(sessionId, tool, platform).catch(() => {});
 
   const state: AccumulatorState = {
     accumulatedContent: "",
@@ -1456,6 +1522,8 @@ export async function runAgentSession(
 
   const runningPrompt = activePrompts.get(sessionId);
   if (runningPrompt) {
+    startPromptAvatarRefresh(sessionId, tool, platform, runningPrompt);
+
     // 在消费第一个事件前建立阶段感知的零字符基线；启动阶段不计时，只有后续
     // 收到明确的 responding 状态后才会启动三分钟回复停滞保护。
     runningPrompt.responseProgress = observeResponseProgress(
@@ -1644,6 +1712,7 @@ export async function runAgentSession(
     const autoEndedAt = wasAutoEnded ? prompt?.autoEndedAt : undefined;
     clearPromptResponseStallMonitor(sessionId);
     clearPromptProcessMonitor(sessionId);
+    clearPromptAvatarRefreshTimer(sessionId);
     clearPromptFinalResponseCloseTimer(sessionId);
     markSessionFinalizing(sessionId);
     activePrompts.delete(sessionId);
@@ -2354,6 +2423,7 @@ export function stopSession(sessionId: string): boolean {
   prompt.stopped = true;
   clearPromptResponseStallMonitor(sessionId);
   clearPromptProcessMonitor(sessionId);
+  clearPromptAvatarRefreshTimer(sessionId);
   clearPromptFinalResponseCloseTimer(sessionId);
   cancelQueuedMessage(sessionId);
 
