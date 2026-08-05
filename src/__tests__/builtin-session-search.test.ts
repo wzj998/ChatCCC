@@ -210,6 +210,40 @@ describe("searchBuiltinSessions (raw stream logs)", () => {
     expect(enabled.scannedRawLogFiles).toBe(1);
   });
 
+  it("skips truncated/corrupt gzip files without crashing (unexpected end of file)", async () => {
+    // 护栏：线上事故——截断的 gzip 解压报 "unexpected end of file"，若 error 事件
+    // 无人监听会升级为 uncaughtException 杀死整个服务。必须跳过并继续。
+    const contextDir = await mkdtemp(join(tmpdir(), "deepccc-search-raw-trunc-"));
+    const rawLogsDir = await mkdtemp(join(tmpdir(), "deepccc-search-raw-trunc-logs-"));
+    await writeContextSession(contextDir, "trunc", {
+      messages: [{ role: "user", content: "kw-trunc" }],
+    });
+
+    const sessionDir = join(rawLogsDir, "deepccc", "trunc");
+    await mkdir(sessionDir, { recursive: true });
+    const good = gzipSync(JSON.stringify({ type: "text-delta", text: "关键词 kw-good" }));
+    await writeFile(join(sessionDir, "2026-08-04T00-00-00-000Z-a.jsonl.gz"), good, "utf8");
+    // 截断一半：必然触发 zlib unexpected end of file
+    const truncated = gzipSync(JSON.stringify({ type: "text-delta", text: "关键词 kw-trunc-in-gzip" }));
+    await writeFile(join(sessionDir, "2026-08-04T00-00-00-000Z-b.jsonl.gz"), truncated.subarray(0, Math.floor(truncated.length / 2)), "utf8");
+
+    let output;
+    try {
+      output = await searchBuiltinSessions("kw-good", {
+        contextDir,
+        rawLogsDir,
+        includeRawLogs: true,
+      });
+    } catch (err) {
+      // 若损坏 gzip 导致 reject，这里直接断言失败并暴露错误
+      expect.fail(`searchBuiltinSessions 不应 reject: ${String(err)}`);
+    }
+
+    // 好文件正常命中；截断文件被跳过但不崩溃
+    expect(output!.matches.map((m) => m.snippet).join("\n")).toContain("kw-good");
+    expect(output!.scannedRawLogFiles).toBe(2);
+  });
+
   it("ignores missing raw log roots", async () => {
     const contextDir = await mkdtemp(join(tmpdir(), "deepccc-search-raw-missing-"));
     await writeContextSession(contextDir, "s", {
