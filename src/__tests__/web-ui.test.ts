@@ -362,8 +362,13 @@ describe("Claude SDK install routes", () => {
       const body = await response.json();
       expect(typeof body.installed).toBe("boolean");
       expect(typeof body.running).toBe("boolean");
+      // 契约护栏：前端轮询读顶层 phase/message（若只嵌套在 progress 里，
+      // 前端 s.phase 恒为 undefined，进度条永不渲染——历史回归点）
       expect(body.progress).toBeDefined();
       expect(body.progress.phase).toBeDefined();
+      expect(body.phase).toBeDefined();
+      expect(typeof body.message).toBe("string");
+      expect(typeof body.percent).toBe("number");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     }
@@ -389,6 +394,26 @@ describe("Claude SDK install routes", () => {
     expect(PAGE_HTML).toContain("claude-engine-progress-bar");
     expect(PAGE_HTML).toContain("installClaudeEngine()");
     expect(PAGE_HTML).toContain("claudeEngineRefreshStatus");
+    // 开关接入弹窗确认（SDK 必装才能使用）
+    expect(PAGE_HTML).toContain("onClaudeToggle(this)");
+    // 按钮文案：安装 Claude Code SDK，且不再显示体积提示
+    expect(PAGE_HTML).toContain("安装 Claude Code SDK");
+    expect(PAGE_HTML).not.toContain("约 220MB");
+  });
+
+  it("全新用户（四个 Agent 均未启用）时 wizard 只默认勾选 DeepCCC（ccc）", () => {
+    // 护栏：renderStep2() 必须包含「全未启用 → 只勾 ccc」的逻辑片段
+    expect(PAGE_HTML).toContain("// 全新用户：四个 Agent 均无启用/配置痕迹时，只默认勾选 DeepCCC（ccc），其余不勾");
+    expect(PAGE_HTML).toContain("if (!claudeOn && !cursorOn && !codexOn && !cccOn)");
+    expect(PAGE_HTML).toContain("cccOn = true;");
+  });
+
+  it("Claude 开关打开时实时检测 SDK 安装状态（已装不重复安装）", () => {
+    // 护栏：onClaudeToggle() 必须实时查询 /api/claude-sdk/status 而非仅依赖缓存
+    expect(PAGE_HTML).toContain("// 实时查询后端安装状态");
+    expect(PAGE_HTML).toContain("var sdkReady = s.installed === true || s.phase === 'done'");
+    // 已安装/安装中直接打开，不触发 installClaudeEngine()
+    expect(PAGE_HTML).toContain("// 已安装 / 正在安装 / 正在检测：直接打开开关，不再触发安装");
   });
 
   it("设置页卡片顺序：CCC 置顶于 Claude 之前", () => {

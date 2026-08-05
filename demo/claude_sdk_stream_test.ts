@@ -1,12 +1,46 @@
-import {
-  unstable_v2_createSession,
-  type SDKSessionOptions,
-} from "@anthropic-ai/claude-agent-sdk";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
 
-type ClaudeSdkSessionOptions = Omit<SDKSessionOptions, "model"> & {
-  model?: string;
+// Claude Code 引擎（Agent SDK）不随 chatccc 安装：按需安装到
+// ~/.chatccc/claude-sdk/ 后动态加载（与 src/claude-sdk-installer.ts 一致）。
+const CLAUDE_SDK_ENTRY = join(
+  homedir(),
+  ".chatccc",
+  "claude-sdk",
+  "node_modules",
+  "@anthropic-ai",
+  "claude-agent-sdk",
+  "sdk.mjs",
+);
+
+if (!existsSync(CLAUDE_SDK_ENTRY)) {
+  console.error(
+    "Claude Code 引擎（SDK）未安装。请在 chatccc 设置页「Claude Code」卡片点击「安装引擎」后重试。",
+  );
+  process.exit(1);
+}
+
+const sdk = (await import(pathToFileURL(CLAUDE_SDK_ENTRY).href)) as {
+  unstable_v2_createSession(options: unknown): unknown;
+};
+
+// 本地最小类型（与 claude-adapter.ts 中的 ClaudeSdkSessionOptions 对齐）
+type SdkSessionOptions = {
+  permissionMode?: string;
+  allowDangerouslySkipPermissions?: boolean;
+  settingSources?: string[];
   autoCompactEnabled?: boolean;
   maxTurns?: number;
+  model?: string;
+  [key: string]: unknown;
+};
+
+type ClaudeSdkSessionLike = {
+  send(text: string): Promise<void>;
+  stream(): AsyncIterable<unknown>;
+  close(): void;
 };
 
 type SdkMessageLike = {
@@ -54,7 +88,7 @@ async function main(): Promise<void> {
   console.error(colorize(`Prompt: ${prompt}`, 36));
   console.error("");
 
-  const options: ClaudeSdkSessionOptions = {
+  const options: SdkSessionOptions = {
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     settingSources: ["user", "project", "local"],
@@ -64,7 +98,7 @@ async function main(): Promise<void> {
   if (process.env.CLAUDE_MODEL?.trim()) {
     options.model = process.env.CLAUDE_MODEL.trim();
   }
-  const session = unstable_v2_createSession(options as SDKSessionOptions);
+  const session = sdk.unstable_v2_createSession(options) as ClaudeSdkSessionLike;
 
   try {
     await session.send(prompt);

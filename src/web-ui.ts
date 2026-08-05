@@ -637,11 +637,16 @@ async function handleForgetIlink(_req: IncomingMessage, res: ServerResponse): Pr
 }
 
 async function handleClaudeSdkStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const progress = getLastInstallProgress();
   jsonReply(res, 200, {
     installed: isClaudeSdkInstalled(),
     version: getClaudeSdkInstalledVersion(),
     running: isInstallRunning(),
-    progress: getLastInstallProgress(),
+    // 展开到顶层：前端轮询 JS 读顶层 phase/message/percent/error（历史契约），
+    // 若只放在 progress 嵌套里，前端 s.phase 恒为 undefined → 进度条永不渲染。
+    ...progress,
+    // 保留嵌套结构，兼容其它调用方。
+    progress,
   });
 }
 
@@ -935,7 +940,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <!-- Claude 卡片 -->
         <div class="agent-card" id="agent-card-claude">
           <div class="agent-card-header">
-            <input type="checkbox" class="agent-toggle" id="agent-enable-claude" onchange="onAgentToggle('claude', this.checked)">
+            <input type="checkbox" class="agent-toggle" id="agent-enable-claude" onchange="onClaudeToggle(this)">
             <div class="meta">
               <div class="name">Claude Code</div>
               <div class="desc">Anthropic Claude Code CLI<br>模型、effort 均为选填</div>
@@ -975,7 +980,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
                 </div>
                 <div id="claude-engine-progress-text" style="font-size:12px;color:#64748b;margin-top:4px"></div>
               </div>
-              <button class="btn btn-outline" id="claude-engine-install-btn" onclick="installClaudeEngine()">安装引擎（约 220MB）</button>
+              <button class="btn btn-outline" id="claude-engine-install-btn" onclick="installClaudeEngine()">安装 Claude Code SDK</button>
               <div class="hint" style="margin-top:6px">ChatCCC 通过 Claude Agent SDK 调用 Claude Code；SDK 引擎按需下载到本机（仅启用 Claude Code 时需要），安装期间请保持网络畅通。</div>
             </div>
           </fieldset>
@@ -1596,6 +1601,10 @@ function renderStep2() {
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
   var cccOn = isAgentEnabled(c.ccc, CCC_FALLBACK_KEYS);
+  // 全新用户：四个 Agent 均无启用/配置痕迹时，只默认勾选 DeepCCC（ccc），其余不勾
+  if (!claudeOn && !cursorOn && !codexOn && !cccOn) {
+    cccOn = true;
+  }
   state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn);
   document.getElementById('agent-enable-claude').checked = claudeOn;
   document.getElementById('agent-enable-cursor').checked = cursorOn;
@@ -2228,6 +2237,38 @@ function validateCli(tool) {
 
 // ---- Claude Code 引擎（Agent SDK）按需安装 ----
 var claudeEnginePollTimer = null;
+var claudeEngineState = null;
+
+// Claude Code 开关：从关闭 → 打开时弹窗确认（SDK 必装才能使用）。
+// 页面初始化（按已有 config 设置开关）直接调 onAgentToggle，不经由此函数，不会误弹窗。
+function onClaudeToggle(el) {
+  var enabled = el.checked;
+  if (!enabled) {
+    onAgentToggle('claude', false);
+    return;
+  }
+  // 实时查询后端安装状态（不依赖可能过期的 claudeEngineState 缓存），
+  // 已安装/正在安装时直接打开开关，不重复安装。
+  api('/api/claude-sdk/status', 'GET').then(function(s){
+    if (!s || !s.phase) { el.checked = false; return; }
+    claudeEngineState = s;
+    var sdkReady = s.installed === true || s.phase === 'done' ||
+      s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting';
+    if (sdkReady) {
+      // 已安装 / 正在安装 / 正在检测：直接打开开关，不再触发安装
+      onAgentToggle('claude', true);
+      return;
+    }
+    if (!confirm('Claude Code 必须先安装 Claude Code SDK 才能使用（必装）。是否立即安装？')) {
+      el.checked = false; // 用户取消 → 回滚开关为关闭
+      return;
+    }
+    onAgentToggle('claude', true);
+    installClaudeEngine();
+  }).catch(function(){
+    el.checked = false; // 状态查询失败 → 回滚开关，避免误判
+  });
+}
 
 function claudeEngineEl(id) { return document.getElementById(id); }
 
@@ -2240,6 +2281,10 @@ function claudeEngineRenderStatus(s) {
   if (phase === 'done') color = '#16a34a';
   else if (phase === 'error') color = '#ef4444';
   else if (phase === 'downloading' || phase === 'installing') color = '#3b82f6';
+  if (!text && phase === 'idle') {
+    // 初始/空闲状态给出明确文案，而不是“未知状态”
+    text = s.installed ? ('已安装 v' + (s.version || '未知版本')) : '未安装'; 
+  }
   el.innerHTML = '<span style="color:' + color + '">' + (text ? text : '未知状态') + '</span>';
   if (s.error) el.innerHTML += '<br><span style="color:#ef4444;font-size:12px">' + s.error + '</span>';
 }
@@ -2259,18 +2304,19 @@ function claudeEngineRenderProgress(p) {
 function claudeEngineRefreshStatus() {
   api('/api/claude-sdk/status', 'GET').then(function(s){
     if (!s || !s.phase) return;
+    claudeEngineState = s;
     claudeEngineRenderStatus(s);
     claudeEngineRenderProgress(s);
     var btn = claudeEngineEl('claude-engine-install-btn');
     if (btn) {
       if (s.phase === 'done' || s.installed) {
-        btn.textContent = '重新安装引擎';
+        btn.textContent = '重新安装 Claude Code SDK';
         btn.disabled = false;
       } else if (s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting') {
         btn.textContent = '安装中…';
         btn.disabled = true;
       } else {
-        btn.textContent = '安装引擎（约 220MB）';
+        btn.textContent = '安装 Claude Code SDK';
         btn.disabled = false;
       }
     }

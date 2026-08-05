@@ -230,7 +230,7 @@ CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱
 
 #### Claude Code
 
-ChatCCC 通过 Anthropic Claude Agent SDK 调用 Claude Code 能力。SDK 引擎（含 Claude Code CLI 原生二进制，约 220MB）**按需下载**：在首次配置向导或 Web 管理页的「Claude Code」卡片点「安装引擎」，页面会显示下载进度条，完成后即可使用。**只有启用 Claude Code 的用户才需要下载**，不使用 Claude Code 的安装不包含该引擎，chatccc 主包体积保持精简。
+ChatCCC 通过 Anthropic Claude Agent SDK 调用 Claude Code 能力。SDK 引擎（含 Claude Code CLI 原生二进制，约 220MB）**按需下载**：在首次配置向导或 Web 管理页的「Claude Code」卡片点「安装 Claude Code SDK」（开关从关闭切到打开时也会弹出安装确认），页面会显示下载进度条，完成后即可使用。**只有启用 Claude Code 的用户才需要下载**，不使用 Claude Code 的安装不包含该引擎，chatccc 主包体积保持精简。
 
 SDK 始终使用其内置的 Claude Code CLI（档位 b），不依赖用户自行安装的 `claude` 命令。本机完成 Claude Code 登录后即可使用（SDK 复用 `~/.claude` 登录态）；同时支持官方和第三方 Anthropic 兼容 API：使用官方服务无需额外配置，使用第三方 API 则填写 `claude.apiKey` 和 `claude.baseUrl`。`claude.model`、`claude.subagentModel`、`claude.effort`、`claude.apiKey`、`claude.baseUrl` 均为选填；`claude.maxTurn` 控制每次对话的最大轮数（默认 0，即无限制）。填写后会把对应配置传给 Claude Agent SDK；留空则以 `~/.claude/settings.json` 为准。
 

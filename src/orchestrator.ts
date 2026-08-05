@@ -818,37 +818,63 @@ export interface RestartSpawnDeps {
   trace?: typeof appendStartupTrace;
   /** restart 子进程 stderr 的落盘目录；默认 ~/.chatccc/logs */
   restartLogDir?: string;
+  /** 终端检测（默认按 process.stdout/stderr.isTTY）；测试注入 */
+  isTty?: () => boolean;
 }
 
 /**
  * spawn 自重启子进程。
  *
- * stderr 不用 pipe 收集：pipe 读端随父进程退出关闭后，子进程（尤其经 tsx
- * 包装）再写 stderr（如飞书 SDK 内部 console.warn）会 EPIPE → uncaughtException
- * → 整个服务崩溃。改为把 stderr 重定向到磁盘日志文件：子进程继承文件句柄，
- * 父进程退出不影响写入，启动诊断同样留痕。若日志文件打开失败，退回 pipe
- * 收集（旧行为），并记录 trace。
+ * stdout/stderr 按启动方式分流：
+ * - **终端（TTY）场景**（用户从 cmd/PowerShell/node.exe 窗口启动）：stdio 用
+ *   ["ignore", "inherit", "inherit"] 直接继承终端句柄，restart 后窗口日志不中断。
+ *   终端句柄的生命周期不随父进程退出而关闭，因此不存在 EPIPE 风险。
+ * - **非终端场景**（守护进程/黑匣子等管道或文件启动）：stderr 重定向到磁盘日志
+ *   文件（restart-*.log），子进程继承文件句柄，父进程退出不影响写入。
+ *   不能用 pipe 收集：pipe 读端随父进程退出关闭后，子进程（尤其经 tsx 包装）
+ *   再写 stderr（如飞书 SDK 内部 console.warn）会 EPIPE → uncaughtException
+ *   → 整个服务崩溃。若日志文件打开失败，退回 pipe 收集（旧行为），并记录 trace。
  */
 export function spawnRestartChild(deps: RestartSpawnDeps = {}): ChildProcess {
   const projectRoot = deps.projectRoot ?? PROJECT_ROOT;
   const spawnImpl = deps.spawnImpl ?? spawn;
   const trace = deps.trace ?? appendStartupTrace;
   const restartLogDir = deps.restartLogDir ?? LOG_DIR;
+  const isTty = deps.isTty ?? (() => process.stdout.isTTY === true || process.stderr.isTTY === true);
   const { command, args } = buildRestartSpawnSpec(projectRoot);
 
   let stderrFd: number | undefined;
   const stdio: StdioOptions = ["ignore", "ignore", "pipe"];
-  try {
-    mkdirSync(restartLogDir, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const restartLogPath = join(restartLogDir, `restart-${timestamp}.log`);
-    stderrFd = openSync(restartLogPath, "a");
-    stdio[2] = stderrFd;
-  } catch (err) {
-    trace("restart: stderr log open failed, falling back to pipe", {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  const tty = isTty();
+  if (tty) {
+    // 终端场景：全部 inherit（含 stdin）。注意 stdin 不能是 "ignore"：
+    // Windows 上 detached + stdio[0]=ignore 的组合（DETACHED_PROCESS）会让
+    // 子进程丢失控制台关联，或在部分 Node/libuv 组合下触发 CREATE_NEW_CONSOLE
+    // 弹出新窗口——日志全跑到新窗口，用户当前窗口反而看不到。
+    // 全 inherit 让子进程直接复用当前终端句柄，父进程退出后窗口日志不中断，
+    // 且终端句柄不随父进程退出关闭，天然无 EPIPE 风险。
+    stdio[0] = "inherit";
+    stdio[1] = "inherit";
+    stdio[2] = "inherit";
+  } else {
+    try {
+      mkdirSync(restartLogDir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const restartLogPath = join(restartLogDir, `restart-${timestamp}.log`);
+      stderrFd = openSync(restartLogPath, "a");
+      stdio[2] = stderrFd;
+    } catch (err) {
+      trace("restart: stderr log open failed, falling back to pipe", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
+
+  // 运行时自检：记录本次 restart 子进程的启动方式，便于确认日志走向。
+  trace("restart: spawn child", {
+    isTty: tty,
+    stdio: JSON.stringify(stdio),
+  });
 
   const child = spawnImpl(command, args, {
     cwd: projectRoot,
