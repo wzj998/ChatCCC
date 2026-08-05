@@ -128,6 +128,61 @@ describe("spawnRestartChild", () => {
     expect(failCall).toBeTruthy();
     expect(typeof (failCall![1] as { error: unknown }).error).toBe("string");
   });
+
+  it("inherits the full terminal stdio when launched from a TTY (visible window logs, no EPIPE)", async () => {
+    const logDir = await tmpLogDir();
+    const fake = new FakeChild();
+    const spawnImpl = vi.fn(() => fake as never);
+    const trace = vi.fn();
+
+    spawnRestartChild({
+      projectRoot: "F:/proj",
+      spawnImpl,
+      trace,
+      restartLogDir: logDir,
+      isTty: () => true,
+    });
+
+    const callArgs = spawnImpl.mock.calls[0] as unknown as Array<unknown>;
+    const stdio = (callArgs[2] as { stdio: unknown[] }).stdio;
+    // 全部 inherit（含 stdin）：避免 detached + stdin=ignore 在 Windows 上
+    // 弹新控制台/丢失控制台关联，日志必须留在用户当前窗口
+    expect(stdio).toEqual(["inherit", "inherit", "inherit"]);
+    // TTY 场景 stderr 走终端，不再生成 restart-*.log 文件
+    const files = await readdir(logDir);
+    expect(files.filter((f) => f.startsWith("restart-") && f.endsWith(".log"))).toHaveLength(0);
+    // 运行时自检 trace：记录 isTty 判定与最终 stdio
+    const spawnCall = trace.mock.calls.find(([name]) => name === "restart: spawn child");
+    expect(spawnCall).toBeTruthy();
+    expect(spawnCall![1]).toEqual({
+      isTty: true,
+      stdio: JSON.stringify(["inherit", "inherit", "inherit"]),
+    });
+  });
+
+  it("still redirects stderr to a file when explicitly not a TTY", async () => {
+    const logDir = await tmpLogDir();
+    const fake = new FakeChild();
+    const spawnImpl = vi.fn(() => fake as never);
+    const trace = vi.fn();
+
+    spawnRestartChild({
+      projectRoot: "F:/proj",
+      spawnImpl,
+      trace,
+      restartLogDir: logDir,
+      isTty: () => false,
+    });
+
+    const callArgs = spawnImpl.mock.calls[0] as unknown as Array<unknown>;
+    const stdio = (callArgs[2] as { stdio: unknown[] }).stdio;
+    expect(stdio[0]).toBe("ignore");
+    expect(stdio[1]).toBe("ignore");
+    expect(typeof stdio[2]).toBe("number");
+    expect(stdio[2] as number).toBeGreaterThan(2);
+    const files = await readdir(logDir);
+    expect(files.some((f) => f.startsWith("restart-") && f.endsWith(".log"))).toBe(true);
+  });
 });
 
 describe("decideRestartParentExit", () => {
