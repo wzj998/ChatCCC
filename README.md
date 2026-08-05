@@ -208,7 +208,7 @@ chatccc
 
 ### 3. AI 工具配置
 
-Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，只需配置 DeepSeek 兼容 API。
+Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，开箱即用，**模型接入不限于 DeepSeek**——它走 OpenAI 兼容协议，任意兼容端点都可以直接替换（详见下文 CCC Agent）。
 
 #### Claude Code
 
@@ -241,7 +241,19 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 #### CCC Agent
 
-CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI。在首次配置向导或 Web 管理页中启用后，填写 DeepSeek 兼容 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
+CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
+
+**API 支持不限于 DeepSeek。** CCC Agent 底层使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点。`ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` 可以指向**任意 OpenAI 兼容服务**，例如：
+
+| 服务 | Base URL 示例 | 说明 |
+| --- | --- | --- |
+| DeepSeek（默认） | `https://api.deepseek.com/v1` | 官方端点，支持 `/usage` 余额查询 |
+| OpenAI | `https://api.openai.com/v1` | 官方模型 |
+| Kimi / Moonshot | `https://api.moonshot.cn/v1` | 国内直连 |
+| 通义千问 / 智谱 GLM / 豆包 / MiniMax | 各家 `…/v1` 端点 | 国内 OpenAI 兼容服务 |
+| Ollama / vLLM / LM Studio | `http://localhost:11434/v1` | 本地或自建推理服务 |
+
+更换服务只需把 `ccc.DEEPSEEK_BASE_URL` 改为对应端点、`ccc.DEEPSEEK_API_KEY` 改为对应 Key、`ccc.model` 改为目标模型名即可。`reasoning_effort` 等 DeepSeek 扩展字段对不认识的模型会自动忽略，不影响其他服务。余额查询仅对官方 DeepSeek 域名（`api.deepseek.com`）生效，指向其他端点时自动跳过，不影响对话。
 
 `ccc.alternativeModel` 是单个备选模型，只会加入 `/model` 的人工切换列表，不会在请求失败时自动重试或切换，避免重复执行带副作用的工具调用。
 
@@ -344,7 +356,7 @@ CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI。在首
 | `claude.apiKey` / `claude.baseUrl` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.maxTurn` | 选填；Claude 最大对话轮数，默认 0（无限制），可在 Web UI 编辑 |
 | `cursor.alternativeModel` / `codex.alternativeModel` / `ccc.alternativeModel` | 单个备选模型；加入 `/model` 人工切换列表，不会自动故障转移 |
-| `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 使用的 DeepSeek 兼容 API 凭证和服务地址 |
+| `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 的 API Key 和服务地址；**不限于 DeepSeek**——可填任意 OpenAI 兼容端点（OpenAI、Kimi、通义、智谱、Ollama 本地等） |
 | `ccc.model` | CCC Agent 默认模型 |
 
 > **权限控制**：普通消息以 `bypassPermissions` 模式运行，跳过 Agent 操作确认。使用 `/plan` 或 `/ask` 前缀时，ChatCCC 自动切换为只读模式：Claude SDK 仅放行 Read + stop-stuck-loop 网络请求，Codex 使用 `--sandbox read-only`，Cursor 使用 `--mode plan/ask`。请只在可信环境中使用。
@@ -377,7 +389,7 @@ CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI。在首
 | `/cd` | 查看或设置后续新建会话的默认工作目录，不改变当前会话；飞书私聊自身始终使用系统用户目录 |
 | `/sessions` | 查看所有会话状态 |
 | `/session <数字>` | 将当前群聊切换到 `/sessions` 列表中的指定会话；飞书私聊不支持切换 |
-| `/usage` | 查看当前会话对应 Agent 的用量；Codex 显示 5h/7天窗口，Cursor 显示当前周期用量，使用官方 DeepSeek API 的 CCC Agent 显示账户余额 |
+| `/usage` | 查看当前会话对应 Agent 的用量；Codex 显示 5h/7天窗口，Cursor 显示当前周期用量，CCC Agent 仅在官方 DeepSeek 端点时显示账户余额（其他兼容端点自动跳过） |
 | `/git <子命令>` | 在当前会话工作目录执行 `git ...` 并回传输出 |
 | `/abd<内容>` | 去掉 `/abd` 前缀后把内容发给 Agent，并在消息末尾追加第一性原理需求澄清提示 |
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
