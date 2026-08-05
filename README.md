@@ -210,9 +210,29 @@ chatccc
 
 Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，开箱即用，**模型接入不限于 DeepSeek**——它走 OpenAI 兼容协议，任意兼容端点都可以直接替换（详见下文 CCC Agent）。
 
+#### CCC Agent
+
+CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
+
+**API 支持不限于 DeepSeek。** CCC Agent 底层使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点。`ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` 可以指向**任意 OpenAI 兼容服务**，例如：
+
+| 服务 | Base URL 示例 | 说明 |
+| --- | --- | --- |
+| DeepSeek（默认） | `https://api.deepseek.com/v1` | 官方端点，支持 `/usage` 余额查询 |
+| OpenAI | `https://api.openai.com/v1` | 官方模型 |
+| Kimi / Moonshot | `https://api.moonshot.cn/v1` | 国内直连 |
+| 通义千问 / 智谱 GLM / 豆包 / MiniMax | 各家 `…/v1` 端点 | 国内 OpenAI 兼容服务 |
+| Ollama / vLLM / LM Studio | `http://localhost:11434/v1` | 本地或自建推理服务 |
+
+更换服务只需把 `ccc.DEEPSEEK_BASE_URL` 改为对应端点、`ccc.DEEPSEEK_API_KEY` 改为对应 Key、`ccc.model` 改为目标模型名即可。`reasoning_effort` 等 DeepSeek 扩展字段对不认识的模型会自动忽略，不影响其他服务。余额查询仅对官方 DeepSeek 域名（`api.deepseek.com`）生效，指向其他端点时自动跳过，不影响对话。
+
+`ccc.alternativeModel` 是单个备选模型，只会加入 `/model` 的人工切换列表，不会在请求失败时自动重试或切换，避免重复执行带副作用的工具调用。
+
 #### Claude Code
 
-本机完成 Claude Code 登录后即可使用。ChatCCC 通过 Anthropic Claude Agent SDK 调用 Claude Code 能力，同时支持官方和第三方 Anthropic 兼容 API：使用官方服务无需额外配置，使用第三方 API 则填写 `claude.apiKey` 和 `claude.baseUrl`。`claude.model`、`claude.subagentModel`、`claude.effort`、`claude.apiKey`、`claude.baseUrl` 均为选填；`claude.maxTurn` 控制每次对话的最大轮数（默认 0，即无限制）。填写后会把对应配置传给 Claude Agent SDK；留空则以 `~/.claude/settings.json` 为准。
+ChatCCC 通过 Anthropic Claude Agent SDK 调用 Claude Code 能力。SDK 引擎（含 Claude Code CLI 原生二进制，约 220MB）**按需下载**：在首次配置向导或 Web 管理页的「Claude Code」卡片点「安装引擎」，页面会显示下载进度条，完成后即可使用。**只有启用 Claude Code 的用户才需要下载**，不使用 Claude Code 的安装不包含该引擎，chatccc 主包体积保持精简。
+
+SDK 始终使用其内置的 Claude Code CLI（档位 b），不依赖用户自行安装的 `claude` 命令。本机完成 Claude Code 登录后即可使用（SDK 复用 `~/.claude` 登录态）；同时支持官方和第三方 Anthropic 兼容 API：使用官方服务无需额外配置，使用第三方 API 则填写 `claude.apiKey` 和 `claude.baseUrl`。`claude.model`、`claude.subagentModel`、`claude.effort`、`claude.apiKey`、`claude.baseUrl` 均为选填；`claude.maxTurn` 控制每次对话的最大轮数（默认 0，即无限制）。填写后会把对应配置传给 Claude Agent SDK；留空则以 `~/.claude/settings.json` 为准。
 
 #### Cursor Agent CLI
 
@@ -238,24 +258,6 @@ codex --version
 ```
 
 Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理，也可以在 `config.json` 中覆盖。
-
-#### CCC Agent
-
-CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
-
-**API 支持不限于 DeepSeek。** CCC Agent 底层使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点。`ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` 可以指向**任意 OpenAI 兼容服务**，例如：
-
-| 服务 | Base URL 示例 | 说明 |
-| --- | --- | --- |
-| DeepSeek（默认） | `https://api.deepseek.com/v1` | 官方端点，支持 `/usage` 余额查询 |
-| OpenAI | `https://api.openai.com/v1` | 官方模型 |
-| Kimi / Moonshot | `https://api.moonshot.cn/v1` | 国内直连 |
-| 通义千问 / 智谱 GLM / 豆包 / MiniMax | 各家 `…/v1` 端点 | 国内 OpenAI 兼容服务 |
-| Ollama / vLLM / LM Studio | `http://localhost:11434/v1` | 本地或自建推理服务 |
-
-更换服务只需把 `ccc.DEEPSEEK_BASE_URL` 改为对应端点、`ccc.DEEPSEEK_API_KEY` 改为对应 Key、`ccc.model` 改为目标模型名即可。`reasoning_effort` 等 DeepSeek 扩展字段对不认识的模型会自动忽略，不影响其他服务。余额查询仅对官方 DeepSeek 域名（`api.deepseek.com`）生效，指向其他端点时自动跳过，不影响对话。
-
-`ccc.alternativeModel` 是单个备选模型，只会加入 `/model` 的人工切换列表，不会在请求失败时自动重试或切换，避免重复执行带副作用的工具调用。
 
 #### 可选：Chrome CDP
 
@@ -408,4 +410,4 @@ CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱
 
 ## 技术栈
 
-TypeScript / Node.js >= 20 / tsx / AI SDK / Anthropic Claude Agent SDK / Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
+TypeScript / Node.js >= 20 / tsx / AI SDK / Anthropic Claude Agent SDK（按需下载，仅启用 Claude Code 时安装）/ Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
