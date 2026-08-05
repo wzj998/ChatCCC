@@ -1,17 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import {
-  getSessionInfo as sdkGetSessionInfo,
-  unstable_v2_createSession,
-  unstable_v2_resumeSession,
-  type SDKMessage,
-  type SDKSession,
-  type SDKSessionOptions,
-  type EffortLevel,
-} from "@anthropic-ai/claude-agent-sdk";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type {
   CreateSessionResult,
@@ -31,6 +21,7 @@ import {
   createRawStreamLog,
   type RawStreamLogHandle,
 } from "./raw-stream-log.ts";
+import { getClaudeSdkEntryPath } from "../claude-sdk-installer.ts";
 
 const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CLAUDE_SPECIFIC_PROMPT_PATH = join(
@@ -303,16 +294,78 @@ export function buildClaudePromptText(
   ].join("\n");
 }
 
-type ClaudeSdkSessionOptions = Omit<SDKSessionOptions, "model"> & {
+export interface ClaudeSdkSessionOptions {
+  cwd?: string;
   model?: string;
   abortController?: AbortController;
   autoCompactEnabled?: boolean;
-  effort?: EffortLevel | number;
+  effort?: string | number;
   maxTurns?: number;
   mcpServers?: Record<string, unknown>;
   skills?: "all";
   stderr?: (data: string) => void;
-};
+  settingSources?: SettingSource[];
+  permissionMode?: string;
+  settings?: unknown;
+  allowDangerouslySkipPermissions?: boolean;
+  env?: Record<string, string | undefined>;
+}
+
+/** SDK 会话的最小接口（实际由动态加载的 @anthropic-ai/claude-agent-sdk 提供） */
+export interface ClaudeSdkSession {
+  send(text: string): Promise<void>;
+  stream(): AsyncIterable<SdkMessageLike>;
+  close(): void;
+}
+
+/** SDK getSessionInfo 的返回形状（只取本项目用到的字段） */
+export interface ClaudeSdkSessionInfo {
+  sessionId: string;
+  cwd?: string;
+  summary: string;
+  lastModified: number;
+  [key: string]: unknown;
+}
+
+/** 动态加载的 SDK 模块接口（unstable_v2_* API 保持与 SDK 0.2.133 一致） */
+export interface ClaudeSdkModule {
+  unstable_v2_createSession(options: unknown): ClaudeSdkSession;
+  unstable_v2_resumeSession(sessionId: string, options: unknown): ClaudeSdkSession;
+  getSessionInfo(
+    sessionId: string,
+    opts?: { dir?: string },
+  ): Promise<ClaudeSdkSessionInfo | null | undefined>;
+}
+
+let sdkModulePromise: Promise<ClaudeSdkModule> | null = null;
+
+/**
+ * 按需加载 Claude Code 引擎（Agent SDK）。SDK 不在 chatccc 的 dependencies 中，
+ * 首次使用前需在设置页「Claude Code」卡片点「安装引擎」下载到 ~/.chatccc/claude-sdk/。
+ */
+export function loadClaudeSdkModule(): Promise<ClaudeSdkModule> {
+  if (!sdkModulePromise) {
+    sdkModulePromise = import(pathToFileURL(getClaudeSdkEntryPath()).href)
+      .then((m) => m as unknown as ClaudeSdkModule)
+      .catch((err: unknown) => {
+        sdkModulePromise = null;
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Claude Code 引擎（SDK）未安装或加载失败：${detail}。` +
+            "请在设置页「Claude Code」卡片点击「安装引擎」后重试。",
+        );
+      });
+  }
+  return sdkModulePromise;
+}
+
+/**
+ * 测试钩子：注入假 SDK 模块（vitest 的 vi.mock 无法拦截变量路径的动态 import）。
+ * 传入 null 恢复为真实按需加载。
+ */
+export function __setClaudeSdkModuleForTest(module: ClaudeSdkModule | null): void {
+  sdkModulePromise = module ? Promise.resolve(module) : null;
+}
 
 function buildSdkOptions(args: {
   cwd: string;
@@ -392,10 +445,6 @@ function buildSdkOptions(args: {
   return options;
 }
 
-function toMessageLike(message: SDKMessage): SdkMessageLike {
-  return message as unknown as SdkMessageLike;
-}
-
 function safeRawStreamJson(value: unknown): string {
   try {
     return JSON.stringify(value) ?? "null";
@@ -421,12 +470,12 @@ function bridgeAbortSignal(
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-function closeSdkSession(session: SDKSession): void {
+function closeSdkSession(session: ClaudeSdkSession): void {
   session.close();
 }
 
-function toSdkSessionOptions(options: ClaudeSdkSessionOptions): SDKSessionOptions {
-  return options as SDKSessionOptions;
+function toSdkSessionOptions(options: ClaudeSdkSessionOptions): unknown {
+  return options;
 }
 
 class ClaudeAdapter implements ToolAdapter {
@@ -460,8 +509,9 @@ class ClaudeAdapter implements ToolAdapter {
       removeAbortListener?.();
       throw new Error("Claude session creation aborted");
     }
+    const sdk = await loadClaudeSdkModule();
     let sessionId: string | undefined;
-    const session = unstable_v2_createSession(
+    const session = sdk.unstable_v2_createSession(
       toSdkSessionOptions(buildSdkOptions({
         cwd,
         model: this.model,
@@ -479,7 +529,7 @@ class ClaudeAdapter implements ToolAdapter {
     try {
       await session.send("ok");
       for await (const raw of session.stream()) {
-        const msg = toMessageLike(raw);
+        const msg = raw;
         if (msg.session_id && !sessionId) {
           sessionId = msg.session_id;
           await this.metaStore.set(sessionId, {
@@ -514,7 +564,9 @@ class ClaudeAdapter implements ToolAdapter {
     const rawLogConfig = config.rawStreamLogs.claude;
     let rawLog: RawStreamLogHandle | null = null;
 
-    const session = unstable_v2_resumeSession(
+    const sdk = await loadClaudeSdkModule();
+
+    const session = sdk.unstable_v2_resumeSession(
       sessionId,
       toSdkSessionOptions(buildSdkOptions({
         cwd,
@@ -554,7 +606,7 @@ class ClaudeAdapter implements ToolAdapter {
           break;
         }
 
-        const msg = toMessageLike(raw);
+        const msg = raw;
         rawLog?.writeLine(safeRawStreamJson(msg));
         if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
           const meta: { cwd?: string; model?: string } = {};
@@ -585,7 +637,8 @@ class ClaudeAdapter implements ToolAdapter {
     const meta = await this.metaStore.get(sessionId);
 
     try {
-      const sdkInfo = await sdkGetSessionInfo(
+      const sdk = await loadClaudeSdkModule();
+      const sdkInfo = await sdk.getSessionInfo(
         sessionId,
         meta?.cwd ? { dir: meta.cwd } : undefined,
       );

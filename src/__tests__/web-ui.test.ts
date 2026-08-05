@@ -1,6 +1,17 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// 关键：mock installer 模块，避免 /api/claude-sdk/install 触发真实 npm 下载（220MB）
+const installClaudeSdkMock = vi.hoisted(() => vi.fn());
+vi.mock("../claude-sdk-installer.ts", () => ({
+  getClaudeSdkInstalledVersion: () => null,
+  getLastInstallProgress: () => ({ phase: "idle", percent: 0, message: "" }),
+  installClaudeSdk: installClaudeSdkMock,
+  isClaudeSdkInstalled: () => false,
+  isInstallRunning: () => false,
+}));
+
 import {
   AGENT_TEAM_PAGE_HTML,
   PAGE_HTML,
@@ -322,5 +333,79 @@ describe("chooseStartPath", () => {
         isServiceRunning: false,
       }),
     ).toBe("spawn");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claude Code 引擎（Agent SDK）按需安装路由
+// 护栏：/api/claude-sdk/status 与 /api/claude-sdk/install 必须可路由，且
+//   install 在“正在安装”时返回 alreadyRunning 而不是再起一个任务。
+// ---------------------------------------------------------------------------
+
+describe("Claude SDK install routes", () => {
+  beforeEach(() => {
+    installClaudeSdkMock.mockReset();
+    installClaudeSdkMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    installClaudeSdkMock.mockReset();
+  });
+
+  it("GET /api/claude-sdk/status 返回安装状态与进度", async () => {
+    const server = createServer(createUiRouter());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/claude-sdk/status`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(typeof body.installed).toBe("boolean");
+      expect(typeof body.running).toBe("boolean");
+      expect(body.progress).toBeDefined();
+      expect(body.progress.phase).toBeDefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  });
+
+  it("POST /api/claude-sdk/install 启动后台安装（不真实下载）", async () => {
+    const server = createServer(createUiRouter());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/claude-sdk/install`, { method: "POST" });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.ok).toBe(true);
+      expect(installClaudeSdkMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  });
+
+  it("设置页 HTML 包含 Claude 引擎安装 UI（进度条 + 按钮）", () => {
+    expect(PAGE_HTML).toContain("claude-engine-install-btn");
+    expect(PAGE_HTML).toContain("claude-engine-progress-bar");
+    expect(PAGE_HTML).toContain("installClaudeEngine()");
+    expect(PAGE_HTML).toContain("claudeEngineRefreshStatus");
+  });
+
+  it("设置页卡片顺序：CCC 置顶于 Claude 之前", () => {
+    const cccIdx = PAGE_HTML.indexOf('id="agent-card-ccc"');
+    const claudeIdx = PAGE_HTML.indexOf('id="agent-card-claude"');
+    const cursorIdx = PAGE_HTML.indexOf('id="agent-card-cursor"');
+    const codexIdx = PAGE_HTML.indexOf('id="agent-card-codex"');
+    expect(cccIdx).toBeGreaterThan(-1);
+    expect(claudeIdx).toBeGreaterThan(-1);
+    expect(cursorIdx).toBeGreaterThan(-1);
+    expect(codexIdx).toBeGreaterThan(-1);
+    expect(cccIdx).toBeLessThan(claudeIdx);
+    expect(claudeIdx).toBeLessThan(cursorIdx);
+    expect(cursorIdx).toBeLessThan(codexIdx);
+  });
+
+  it("CCC 卡片文案强调 OpenAI 兼容（不限于 DeepSeek）", () => {
+    expect(PAGE_HTML).toContain("OpenAI 兼容 API（不限于 DeepSeek）");
   });
 });

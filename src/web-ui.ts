@@ -18,6 +18,13 @@ import {
   createInternalRestartEnv,
   openWebUiInDefaultBrowser,
 } from "./startup-lifecycle.ts";
+import {
+  getClaudeSdkInstalledVersion,
+  getLastInstallProgress,
+  installClaudeSdk,
+  isClaudeSdkInstalled,
+  isInstallRunning,
+} from "./claude-sdk-installer.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -629,6 +636,31 @@ async function handleForgetIlink(_req: IncomingMessage, res: ServerResponse): Pr
   }
 }
 
+async function handleClaudeSdkStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+  jsonReply(res, 200, {
+    installed: isClaudeSdkInstalled(),
+    version: getClaudeSdkInstalledVersion(),
+    running: isInstallRunning(),
+    progress: getLastInstallProgress(),
+  });
+}
+
+async function handleClaudeSdkInstall(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (isInstallRunning()) {
+    jsonReply(res, 200, { ok: true, alreadyRunning: true });
+    return;
+  }
+  try {
+    // 后台执行，不阻塞响应；前端通过 /api/claude-sdk/status 轮询进度
+    installClaudeSdk().catch((err: unknown) => {
+      console.error(`[WEB-UI] Claude SDK 安装失败: ${(err as Error).message}`);
+    });
+    jsonReply(res, 200, { ok: true });
+  } catch (err) {
+    jsonReply(res, 500, { ok: false, error: (err as Error).message });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // HTML page (embedded template)
 // ---------------------------------------------------------------------------
@@ -854,6 +886,52 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 
       <div class="agent-cards">
 
+        <!-- CCC Agent 卡片（置顶：ChatCCC 内置 Agent，开箱即用） -->
+        <div class="agent-card" id="agent-card-ccc">
+          <div class="agent-card-header">
+            <input type="checkbox" class="agent-toggle" id="agent-enable-ccc" onchange="onAgentToggle('ccc', this.checked)">
+            <div class="meta">
+              <div class="name">CCC Agent</div>
+              <div class="desc">ChatCCC 内置 Agent<br>OpenAI 兼容 API（不限于 DeepSeek）</div>
+            </div>
+          </div>
+          <label class="agent-default-row">
+            <input type="checkbox" id="agent-default-ccc" onchange="onDefaultAgentToggle('ccc', this.checked)">
+            设为默认 Agent
+          </label>
+          <fieldset class="agent-body" id="agent-body-ccc" disabled>
+            <div class="form-group">
+              <label>API Key</label>
+              <input type="password" id="field-CHATCCC_CCC_API_KEY" placeholder="OpenAI 兼容 API Key（如 DeepSeek）">
+            </div>
+            <div class="form-group">
+              <label>Base URL</label>
+              <input type="text" id="field-CHATCCC_CCC_BASE_URL" placeholder="https://api.deepseek.com/v1（可填任意 OpenAI 兼容端点）">
+            </div>
+            <div class="form-group">
+              <label>模型</label>
+              <input type="text" id="field-CHATCCC_CCC_MODEL" placeholder="deepseek-v4-pro">
+            </div>
+            <div class="form-group">
+              <label>备选模型（选填）</label>
+              <input type="text" id="field-CHATCCC_CCC_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
+            </div>
+            <div class="form-group">
+              <label>Effort（推理强度，选填）</label>
+              <select id="field-CHATCCC_CCC_EFFORT">
+                <option value="">(留空/默认，服务端 medium)</option>
+                <option value="none">none - 直接作答，最省 token</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max - 最强推理</option>
+              </select>
+            </div>
+          </fieldset>
+        </div>
+
         <!-- Claude 卡片 -->
         <div class="agent-card" id="agent-card-claude">
           <div class="agent-card-header">
@@ -887,6 +965,18 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <div class="form-group">
               <label>Base URL（选填）</label>
               <input type="text" id="field-CHATCCC_ANTHROPIC_BASE_URL" placeholder="留空使用默认端点">
+            </div>
+            <div class="form-group" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-top:4px">
+              <label>Claude Code 引擎（Agent SDK）</label>
+              <div id="claude-engine-status" style="font-size:13px;color:#64748b;margin-bottom:8px">检测中...</div>
+              <div id="claude-engine-progress-wrap" style="display:none;margin-bottom:8px">
+                <div style="background:#e2e8f0;border-radius:6px;height:8px;overflow:hidden">
+                  <div id="claude-engine-progress-bar" style="width:0%;height:100%;background:#3b82f6;transition:width .3s"></div>
+                </div>
+                <div id="claude-engine-progress-text" style="font-size:12px;color:#64748b;margin-top:4px"></div>
+              </div>
+              <button class="btn btn-outline" id="claude-engine-install-btn" onclick="installClaudeEngine()">安装引擎（约 220MB）</button>
+              <div class="hint" style="margin-top:6px">ChatCCC 通过 Claude Agent SDK 调用 Claude Code；SDK 引擎按需下载到本机（仅启用 Claude Code 时需要），安装期间请保持网络畅通。</div>
             </div>
           </fieldset>
         </div>
@@ -971,52 +1061,6 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             </div>
             <button class="btn btn-outline" onclick="validateCli('codex')" style="margin-bottom:12px">检测 Codex CLI</button>
             <div id="codex-validate-result"></div>
-          </fieldset>
-        </div>
-
-        <!-- CCC Agent 卡片 -->
-        <div class="agent-card" id="agent-card-ccc">
-          <div class="agent-card-header">
-            <input type="checkbox" class="agent-toggle" id="agent-enable-ccc" onchange="onAgentToggle('ccc', this.checked)">
-            <div class="meta">
-              <div class="name">CCC Agent</div>
-              <div class="desc">ChatCCC 内置 Agent<br>使用 DeepSeek 兼容 API</div>
-            </div>
-          </div>
-          <label class="agent-default-row">
-            <input type="checkbox" id="agent-default-ccc" onchange="onDefaultAgentToggle('ccc', this.checked)">
-            设为默认 Agent
-          </label>
-          <fieldset class="agent-body" id="agent-body-ccc" disabled>
-            <div class="form-group">
-              <label>API Key</label>
-              <input type="password" id="field-CHATCCC_CCC_API_KEY" placeholder="DeepSeek 兼容 API Key">
-            </div>
-            <div class="form-group">
-              <label>Base URL</label>
-              <input type="text" id="field-CHATCCC_CCC_BASE_URL" placeholder="https://api.deepseek.com/v1">
-            </div>
-            <div class="form-group">
-              <label>模型</label>
-              <input type="text" id="field-CHATCCC_CCC_MODEL" placeholder="deepseek-v4-pro">
-            </div>
-            <div class="form-group">
-              <label>备选模型（选填）</label>
-              <input type="text" id="field-CHATCCC_CCC_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
-            </div>
-            <div class="form-group">
-              <label>Effort（推理强度，选填）</label>
-              <select id="field-CHATCCC_CCC_EFFORT">
-                <option value="">(留空/默认，服务端 medium)</option>
-                <option value="none">none - 直接作答，最省 token</option>
-                <option value="minimal">minimal</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-                <option value="max">max - 最强推理</option>
-              </select>
-            </div>
           </fieldset>
         </div>
 
@@ -2182,8 +2226,87 @@ function validateCli(tool) {
   });
 }
 
+// ---- Claude Code 引擎（Agent SDK）按需安装 ----
+var claudeEnginePollTimer = null;
+
+function claudeEngineEl(id) { return document.getElementById(id); }
+
+function claudeEngineRenderStatus(s) {
+  var el = claudeEngineEl('claude-engine-status');
+  if (!el) return;
+  var phase = s.phase;
+  var text = s.message || '';
+  var color = '#64748b';
+  if (phase === 'done') color = '#16a34a';
+  else if (phase === 'error') color = '#ef4444';
+  else if (phase === 'downloading' || phase === 'installing') color = '#3b82f6';
+  el.innerHTML = '<span style="color:' + color + '">' + (text ? text : '未知状态') + '</span>';
+  if (s.error) el.innerHTML += '<br><span style="color:#ef4444;font-size:12px">' + s.error + '</span>';
+}
+
+function claudeEngineRenderProgress(p) {
+  var wrap = claudeEngineEl('claude-engine-progress-wrap');
+  if (!wrap) return;
+  if (p && (p.phase === 'downloading' || p.phase === 'installing' || p.phase === 'detecting')) {
+    wrap.style.display = 'block';
+    claudeEngineEl('claude-engine-progress-bar').style.width = (p.percent || 0) + '%';
+    claudeEngineEl('claude-engine-progress-text').textContent = p.message || '';
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
+function claudeEngineRefreshStatus() {
+  api('/api/claude-sdk/status', 'GET').then(function(s){
+    if (!s || !s.phase) return;
+    claudeEngineRenderStatus(s);
+    claudeEngineRenderProgress(s);
+    var btn = claudeEngineEl('claude-engine-install-btn');
+    if (btn) {
+      if (s.phase === 'done' || s.installed) {
+        btn.textContent = '重新安装引擎';
+        btn.disabled = false;
+      } else if (s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting') {
+        btn.textContent = '安装中…';
+        btn.disabled = true;
+      } else {
+        btn.textContent = '安装引擎（约 220MB）';
+        btn.disabled = false;
+      }
+    }
+    if (s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting') {
+      claudeEnginePollTimer = setTimeout(claudeEngineRefreshStatus, 600);
+    } else if (claudeEnginePollTimer) {
+      clearTimeout(claudeEnginePollTimer);
+      claudeEnginePollTimer = null;
+    }
+  }).catch(function(){
+    // 网络/服务异常时停止轮询，避免无限重试
+    if (claudeEnginePollTimer) { clearTimeout(claudeEnginePollTimer); claudeEnginePollTimer = null; }
+  });
+}
+
+function installClaudeEngine() {
+  var btn = claudeEngineEl('claude-engine-install-btn');
+  if (btn) btn.disabled = true;
+  api('/api/claude-sdk/install', 'POST').then(function(r){
+    if (r.ok) {
+      claudeEngineRefreshStatus();
+    } else {
+      claudeEngineRenderStatus({ phase: 'error', message: '启动安装失败', error: r.error || '' });
+      if (btn) btn.disabled = false;
+    }
+  }).catch(function(e){
+    claudeEngineRenderStatus({ phase: 'error', message: '请求失败', error: String(e) });
+    if (btn) btn.disabled = false;
+  });
+}
+
 // ---- Start ----
 init();
+
+// 进入 dashboard/向导后初始化 Claude 引擎状态（页面元素此时已存在）
+setTimeout(claudeEngineRefreshStatus, 300);
 </script>
 </body>
 </html>`;
@@ -2209,6 +2332,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/restart" && method === "POST") return handleRestartService(req, res);
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);
   if (url === "/api/ilink/forget" && method === "POST") return handleForgetIlink(req, res);
+  if (url === "/api/claude-sdk/status" && method === "GET") return handleClaudeSdkStatus(req, res);
+  if (url === "/api/claude-sdk/install" && method === "POST") return handleClaudeSdkInstall(req, res);
 
   if (method === "GET" && (pathname === "/agent-team" || pathname === "/agent-team/")) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

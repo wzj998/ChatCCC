@@ -1,22 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const resumeSessionMock = vi.hoisted(() => vi.fn());
 const createRawStreamLogMock = vi.hoisted(() => vi.fn());
 const rawLogWriteLineMock = vi.hoisted(() => vi.fn());
 const rawLogCloseMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  getSessionInfo: vi.fn(),
-  unstable_v2_createSession: vi.fn(),
-  unstable_v2_resumeSession: resumeSessionMock,
-}));
+// 注意：SDK 已从 chatccc 依赖中移除，改为按需安装 + 动态 import（变量路径），
+// vi.mock 无法拦截；这里通过 __setClaudeSdkModuleForTest 注入假 SDK 模块。
 
 vi.mock("../adapters/raw-stream-log.ts", () => ({
   createRawStreamLog: createRawStreamLogMock,
 }));
 
 import { config } from "../config.ts";
-import { createClaudeAdapter } from "../adapters/claude-adapter.ts";
+import {
+  __setClaudeSdkModuleForTest,
+  createClaudeAdapter,
+} from "../adapters/claude-adapter.ts";
 
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
 
@@ -26,7 +26,16 @@ async function collect(iterable: AsyncIterable<unknown>): Promise<unknown[]> {
   return events;
 }
 
+beforeEach(() => {
+  __setClaudeSdkModuleForTest({
+    getSessionInfo: vi.fn(),
+    unstable_v2_createSession: vi.fn(),
+    unstable_v2_resumeSession: resumeSessionMock,
+  });
+});
+
 afterEach(() => {
+  __setClaudeSdkModuleForTest(null);
   resumeSessionMock.mockReset();
   createRawStreamLogMock.mockReset();
   rawLogWriteLineMock.mockReset();
