@@ -15,6 +15,28 @@ import {
 } from "../context.js";
 
 describe("BuiltinContextManager", () => {
+  it("defaults the compaction threshold to 128K tokens (one third of the 384K model window)", () => {
+    const context = new BuiltinContextManager();
+
+    expect(context.compactAtTokens).toBe(128_000);
+  });
+
+  it("caps existing summaries at 8K chars when rebuilding the compaction prompt", () => {
+    const context = new BuiltinContextManager({
+      compactAtTokens: 100,
+      keepRecentMessages: 1,
+      persist: false,
+    });
+    context.setSummary("previous ".repeat(30_000));
+    context.appendMessage({ role: "user", content: "earlier request" });
+    context.appendMessage({ role: "user", content: "latest request" });
+
+    const prompt = buildSummaryPrompt(context.planCompaction()!);
+
+    expect(prompt).toContain("existing summary truncated for compaction");
+    expect(prompt.length).toBeLessThan(40_000);
+  });
+
   it("keeps recent messages within the token budget instead of a fixed count", () => {
     const context = new BuiltinContextManager({
       compactAtTokens: 300,

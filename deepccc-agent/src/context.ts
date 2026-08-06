@@ -64,10 +64,10 @@ export interface BuiltinContextOptions {
 }
 
 export const DEFAULT_BUILTIN_CONTEXT_DIR = join(homedir(), ".deepccc", "sessions");
-export const DEFAULT_COMPACT_AT_TOKENS = 48_000;
+export const DEFAULT_COMPACT_AT_TOKENS = 128_000;
 export const DEFAULT_KEEP_RECENT_MESSAGES = 16;
 const RECENT_CONTEXT_BUDGET_RATIO = 0.6;
-const MAX_COMPACTION_SUMMARY_CHARS = 16_000;
+const MAX_COMPACTION_SUMMARY_CHARS = 8_000;
 const MAX_COMPACTION_MESSAGE_CHARS = 24_000;
 const MAX_COMPACTION_SOURCE_CHARS = 64_000;
 

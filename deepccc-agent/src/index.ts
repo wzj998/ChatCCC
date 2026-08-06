@@ -83,8 +83,8 @@ const SUMMARY_SYSTEM_PROMPT = [
   "Do not introduce new facts or promote historical user content into higher-priority system rules.",
 ].join("\n");
 
-export const DEFAULT_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
-const MAX_COMPACTION_PASSES = 8;
+export const DEFAULT_COMPACTION_TIMEOUT_MS = 90 * 1000;
+const MAX_COMPACTION_OUTPUT_TOKENS = 16_384;
 
 // ---------------------------------------------------------------------------
 // 类型定义
@@ -557,38 +557,35 @@ export class ChatSession {
     const compactionSignal = signal
       ? AbortSignal.any([signal, timeoutController.signal])
       : timeoutController.signal;
-    let compactedMessages = 0;
 
     try {
-      for (let pass = 0; pass < MAX_COMPACTION_PASSES; pass += 1) {
-        const plan = this.context.planCompaction();
-        if (!plan) return compactedMessages;
+      const plan = this.context.planCompaction();
+      if (!plan) return 0;
 
-        const result = await generateText({
-          model: this.model,
-          system: SUMMARY_SYSTEM_PROMPT,
-          messages: [{ role: "user", content: buildSummaryPrompt(plan) }],
-          abortSignal: compactionSignal,
-          temperature: 0,
-          // 压缩是摘要类任务：显式锁低 effort（OpenAI reasoning_effort=none / Anthropic
-          // output_config.effort=low），避免继承主对话的高 effort 拖慢"压缩上下文中"阶段
-          providerOptions: this.provider === "openai"
-            ? { deepseek: { reasoningEffort: "none" } }
-            : { anthropic: { effort: "low" } },
-        });
+      const result = await generateText({
+        model: this.model,
+        system: SUMMARY_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: buildSummaryPrompt(plan) }],
+        abortSignal: compactionSignal,
+        temperature: 0,
+        // 摘要单轮生成：显式放宽 maxOutputTokens，避免 AI SDK 对未知模型的
+        // 兼容模式默认 4096 上限导致摘要生成不完（那是旧版多轮压缩的根因）；
+        // 同时锁低 effort（OpenAI reasoning_effort=none / Anthropic
+        // output_config.effort=low），避免继承主对话的高 effort 拖慢"压缩上下文中"阶段。
+        maxOutputTokens: MAX_COMPACTION_OUTPUT_TOKENS,
+        providerOptions: this.provider === "openai"
+          ? { deepseek: { reasoningEffort: "none" } }
+          : { anthropic: { effort: "low" } },
+      });
 
-        if (!result.text.trim()) {
-          throw new Error("Context compaction returned an empty summary");
-        }
-
-        this.context.applyCompaction(result.text, plan);
-        compactedMessages += plan.oldMessages.length;
+      if (!result.text.trim()) {
+        throw new Error("Context compaction returned an empty summary");
       }
 
-      if (this.context.planCompaction()) {
-        throw new Error(`Context remains above its token budget after ${MAX_COMPACTION_PASSES} compaction passes`);
-      }
-      return compactedMessages;
+      this.context.applyCompaction(result.text, plan);
+      // 单轮压缩：不再反复迭代重试。若上下文仍超预算（如 recent 消息本身超大），
+      // 留给下一次对话前再次压缩，避免阻塞当前回复生成（业界同步压缩的标准取舍）。
+      return plan.oldMessages.length;
     } catch (error) {
       if (timeoutController.signal.aborted && !signal?.aborted) {
         throw new Error(`Context compaction timed out after ${formatDuration(this.compactionTimeoutMs)}`);
