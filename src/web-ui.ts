@@ -68,6 +68,9 @@ interface AppConfig {
     DEEPSEEK_BASE_URL?: string;
     model?: string;
     alternativeModel?: string;
+    effort?: string;
+    /** 留空（""）= 不 override，跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER） */
+    provider?: "" | "openai" | "anthropic";
   };
 }
 
@@ -530,6 +533,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CCC_EFFORT") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).effort = val;
+    } else if (key === "CHATCCC_CCC_PROVIDER") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).provider = val;
     } else if (key === "CHATCCC_CCC_ENABLED") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).enabled = val === true || val === "true";
@@ -922,6 +928,15 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <input type="text" id="field-CHATCCC_CCC_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
             </div>
             <div class="form-group">
+              <label>API 协议（选填）</label>
+              <select id="field-CHATCCC_CCC_PROVIDER">
+                <option value="">跟随 DeepCCC 内核配置（默认）</option>
+                <option value="openai">openai - OpenAI 兼容协议</option>
+                <option value="anthropic">anthropic - Anthropic Messages 协议</option>
+              </select>
+              <div class="hint">与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空时使用 ~/.deepccc/config.json 或 DEEPCCC_PROVIDER 的值。</div>
+            </div>
+            <div class="form-group">
               <label>Effort（推理强度，选填）</label>
               <select id="field-CHATCCC_CCC_EFFORT">
                 <option value="">(留空/默认，服务端 medium)</option>
@@ -1206,6 +1221,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       <div class="section-detail">
         <div class="config-row"><span class="key">API Key</span><span class="val" id="cfg-CCC_API_KEY">-</span></div>
         <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-CCC_BASE_URL">-</span></div>
+        <div class="config-row"><span class="key">API 协议</span><span class="val" id="cfg-CCC_PROVIDER">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CCC_MODEL">-</span></div>
         <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CCC_ALTERNATIVE_MODEL">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-ccc" onchange="setDashboardDefaultAgent('ccc', this.checked)"> 设为默认 Agent</label>
@@ -1258,7 +1274,7 @@ const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
-  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT']
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1591,6 +1607,7 @@ function renderStep2() {
   if (c.ccc) {
     prefillNested('field-CHATCCC_CCC_API_KEY', c.ccc.DEEPSEEK_API_KEY);
     prefillNested('field-CHATCCC_CCC_BASE_URL', c.ccc.DEEPSEEK_BASE_URL);
+    prefillNested('field-CHATCCC_CCC_PROVIDER', c.ccc.provider);
     prefillNested('field-CHATCCC_CCC_MODEL', c.ccc.model);
     prefillNested('field-CHATCCC_CCC_ALTERNATIVE_MODEL', c.ccc.alternativeModel);
     prefillNested('field-CHATCCC_CCC_EFFORT', c.ccc.effort);
@@ -1990,6 +2007,7 @@ function updateDashboardUI() {
   document.getElementById('cfg-CODEX_FAST_MODE').textContent = c.codex && c.codex.fastMode === true ? '已启用' : '已禁用';
   document.getElementById('cfg-CCC_API_KEY').textContent = (c.ccc && c.ccc.DEEPSEEK_API_KEY) ? '***已设置***' : '(留空)';
   document.getElementById('cfg-CCC_BASE_URL').textContent = (c.ccc && c.ccc.DEEPSEEK_BASE_URL) || '(留空)';
+  document.getElementById('cfg-CCC_PROVIDER').textContent = (c.ccc && c.ccc.provider) ? c.ccc.provider : '(跟随 DeepCCC 内核配置)';
   document.getElementById('cfg-CCC_MODEL').textContent = (c.ccc && c.ccc.model) || '(留空)';
   document.getElementById('cfg-CCC_ALTERNATIVE_MODEL').textContent = (c.ccc && c.ccc.alternativeModel) || '(留空)';
 }
@@ -2067,13 +2085,15 @@ function editSection(section) {
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort',
     'CHATCCC_CODEX_FAST_MODE': 'Fast 模式',
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
+    'CHATCCC_CCC_PROVIDER': 'API 协议（选填）',
     'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
     'CHATCCC_CHROME_DEVTOOLS_ENABLED': '依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。',
     'CHATCCC_CHROME_DEVTOOLS_PORT': '默认 15166，健康检查端点为 http://127.0.0.1:15166/json/version。',
-    'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。'
+    'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。',
+    'CHATCCC_CCC_PROVIDER': '与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER），改动需重启 ChatCCC 生效。'
   };
 
   if (section === 'chromeDevtools') {
@@ -2115,6 +2135,7 @@ function editSection(section) {
       } else if (section === 'ccc' && state.config.ccc) {
         if (key === 'CHATCCC_CCC_API_KEY') val = state.config.ccc.DEEPSEEK_API_KEY || '';
         else if (key === 'CHATCCC_CCC_BASE_URL') val = state.config.ccc.DEEPSEEK_BASE_URL || '';
+        else if (key === 'CHATCCC_CCC_PROVIDER') val = state.config.ccc.provider || '';
         else if (key === 'CHATCCC_CCC_MODEL') val = state.config.ccc.model || '';
         else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
         else if (key === 'CHATCCC_CCC_EFFORT') val = state.config.ccc.effort || '';
@@ -2134,6 +2155,16 @@ function editSection(section) {
       html += '<option value="apiPercent"' + (modeVal === 'apiPercent' ? ' selected' : '') + '>API 使用比例</option>';
       html += '<option value="onDemandUse"' + (modeVal === 'onDemandUse' ? ' selected' : '') + '>On demand use 金额</option>';
       html += '</select></div>';
+    } else if (key === 'CHATCCC_CCC_PROVIDER') {
+      var providerVal = val || '';
+      html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
+      html += '<select id="edit-' + key + '" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
+      html += '<option value=""' + (providerVal === '' ? ' selected' : '') + '>跟随 DeepCCC 内核配置（默认）</option>';
+      html += '<option value="openai"' + (providerVal === 'openai' ? ' selected' : '') + '>openai - OpenAI 兼容协议</option>';
+      html += '<option value="anthropic"' + (providerVal === 'anthropic' ? ' selected' : '') + '>anthropic - Anthropic Messages 协议</option>';
+      html += '</select>';
+      if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
+      html += '</div>';
     } else {
       var rowId = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'
         ? ' id="edit-cursor-on-demand-budget-row"'
