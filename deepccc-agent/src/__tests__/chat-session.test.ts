@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -574,5 +575,43 @@ describe("estimateBuiltinContextTokens", () => {
     const estimate = estimateBuiltinContextTokens("", messages);
     expect(estimate).toBeGreaterThan(250);
     expect(estimate).toBeLessThan(340);
+  });
+});
+
+describe("loadPlatformCommandPrompt", () => {
+  // 测试文件在 src/__tests__/，上两级即包根 os-prompts/
+  const builtinDir = fileURLToPath(new URL("../../os-prompts/", import.meta.url));
+
+  async function loadPrompt(
+    platform: string,
+    dirs?: { builtinDir?: string; userDir?: string },
+  ): Promise<string> {
+    const mod = (await import("../index.js")) as {
+      loadPlatformCommandPrompt: (
+        platform: string,
+        dirs?: { builtinDir?: string; userDir?: string },
+      ) => string;
+    };
+    return mod.loadPlatformCommandPrompt(platform, dirs);
+  }
+
+  it("loads builtin guidance from os-prompts/<platform>.md", async () => {
+    const text = await loadPrompt("win32", { builtinDir });
+    expect(text).toContain("## Windows Command-Line Notes");
+    expect(text).toContain("cmd.exe");
+    expect(text).toMatch(/double quotes/i);
+    expect(text).toMatch(/single quotes/i);
+  });
+
+  it("prefers the user override at ~/.deepccc/prompts/<platform>.md", async () => {
+    const userDir = await mkdtemp(join(tmpdir(), "deepccc-os-prompt-override-"));
+    await writeFile(join(userDir, "win32.md"), "CUSTOM OVERRIDE GUIDANCE", "utf-8");
+    const text = await loadPrompt("win32", { builtinDir, userDir });
+    expect(text).toBe("CUSTOM OVERRIDE GUIDANCE");
+  });
+
+  it("returns empty string for unknown platforms or missing files", async () => {
+    expect(await loadPrompt("freebsd", { builtinDir })).toBe("");
+    expect(await loadPrompt("linux", { builtinDir: join(builtinDir, "missing") })).toBe("");
   });
 });
