@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { ChatEvent } from "../../deepccc-agent/src/index.ts";
-import { reduceProgress, summarizeToolInput, summarizeToolResult } from "../progress/reducer.ts";
-import { progressView } from "../progress/view.ts";
+import type { ChatEvent } from "../index.js";
+import { reduceProgress, summarizeToolInput, summarizeToolResult } from "../progress/reducer.js";
+import { progressView } from "../progress/view.js";
 
 function feed(events: ChatEvent[]) {
   return events.reduce(reduceProgress, progressView({ headerTitle: "生成中..." }));

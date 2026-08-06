@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.241",
+  "version": "0.2.242",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -11,6 +11,7 @@
   },
   "files": [
     "src/",
+    "deepccc-agent/",
     "bin/",
     "scripts/postinstall-sharp-check.mjs",
     "demo/ilink_echo_probe.ts",
@@ -43,6 +44,7 @@
     "demo:ilink-echo": "tsx demo/ilink_echo_probe.ts",
     "claude-proxy": "tsx src/litellm-proxy.ts",
     "test": "vitest run",
+    "test:deepccc": "vitest run --root deepccc-agent",
     "test:watch": "vitest",
     "postinstall": "node scripts/postinstall-sharp-check.mjs"
   },

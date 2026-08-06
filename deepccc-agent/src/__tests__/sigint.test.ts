@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createCtrlCState } from "../../deepccc-agent/src/sigint.ts";
+import { createCtrlCState } from "../sigint.js";
 
 describe("builtin CLI Ctrl+C state", () => {
   it("requires two presses to interrupt an active generation", () => {

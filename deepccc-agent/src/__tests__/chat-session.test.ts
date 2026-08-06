@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { config } from "../../deepccc-agent/src/config.ts";
-import { estimateBuiltinContextTokens } from "../../deepccc-agent/src/context.ts";
+import { config } from "../config.js";
+import { estimateBuiltinContextTokens } from "../context.js";
 
 const streamTextMock = vi.fn();
 const generateTextMock = vi.fn();
@@ -27,7 +27,7 @@ vi.mock("ai", () => ({
   tool: vi.fn((definition: unknown) => definition),
 }));
 
-vi.mock("../../deepccc-agent/src/raw-stream-log.js", () => ({
+vi.mock("../raw-stream-log.js", () => ({
   createRawStreamLog: createRawStreamLogMock,
 }));
 
@@ -57,7 +57,7 @@ afterEach(() => {
 
 describe("ChatSession context management", () => {
   it("keeps the generalized evidence gate in the stable system prompt prefix", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-evidence-gate-"));
     await writeFile(join(dir, "AGENTS.md"), "PROJECT GUIDANCE MARKER", "utf-8");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
@@ -93,7 +93,7 @@ describe("ChatSession context management", () => {
   });
 
   it("keeps execution discipline sections in the stable system prompt prefix", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-discipline-"));
     await writeFile(join(dir, "AGENTS.md"), "PROJECT GUIDANCE MARKER", "utf-8");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
@@ -130,7 +130,7 @@ describe("ChatSession context management", () => {
   });
 
   it("injects cwd project instruction files before runtime workspace details", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-instructions-"));
     await writeFile(join(dir, "AGENTS.md"), "agents root guidance", "utf-8");
     await writeFile(join(dir, "AGENTS.local.md"), "agents local guidance", "utf-8");
@@ -165,7 +165,7 @@ describe("ChatSession context management", () => {
   });
 
   it("places the volatile skills index at the very end of system prompt", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-skill-order-"));
     const skillsDir = join(dir, "skills");
     await mkdir(join(skillsDir, "demo-skill"), { recursive: true });
@@ -199,7 +199,7 @@ describe("ChatSession context management", () => {
   });
 
   it("does not read project instruction files from parent directories", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const parent = await mkdtemp(join(tmpdir(), "deepccc-session-parent-instructions-"));
     const child = join(parent, "child");
     await mkdir(child);
@@ -220,7 +220,7 @@ describe("ChatSession context management", () => {
   });
 
   it("uses loop-finished stopping by default", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-unlimited-"));
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
 
@@ -239,7 +239,7 @@ describe("ChatSession context management", () => {
   });
 
   it("uses a configured tool step limit when provided", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-step-budget-"));
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
 
@@ -259,7 +259,7 @@ describe("ChatSession context management", () => {
   });
 
   it("loads persisted context, compacts older messages, and persists the new assistant reply", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-context-"));
 
     const seed = new ChatSession(
@@ -307,7 +307,7 @@ describe("ChatSession context management", () => {
 
   it("times out context compaction independently before reply generation", async () => {
     vi.useFakeTimers();
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-compaction-timeout-"));
     const seed = new ChatSession(
       { apiKey: "sk-test" },
@@ -341,7 +341,7 @@ describe("ChatSession context management", () => {
   });
 
   it("streams tool calls and tool results from fullStream", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-tools-"));
     const session = new ChatSession(
       { apiKey: "sk-test" },
@@ -379,7 +379,7 @@ describe("ChatSession context management", () => {
   });
 
   it("caps the total persisted tool transcript for a turn", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-tool-cap-"));
     const session = new ChatSession(
       { apiKey: "sk-test" },
@@ -403,7 +403,7 @@ describe("ChatSession context management", () => {
   });
 
   it("persists structured tool calls alongside the text transcript", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-structured-tools-"));
     const session = new ChatSession(
       { apiKey: "sk-test" },
@@ -430,7 +430,7 @@ describe("ChatSession context management", () => {
   });
 
   it("records tool errors and preserves tool call order in structured tool calls", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-structured-tools-order-"));
     const session = new ChatSession(
       { apiKey: "sk-test" },
@@ -459,7 +459,7 @@ describe("ChatSession context management", () => {
   });
 
   it("writes raw DeepCCC fullStream parts when raw stream logs are enabled", async () => {
-    const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
+    const { ChatSession } = await import("../index.js");
     config.rawStreamLogs = {
       enabled: true,
       maxBytesPerTurn: 4096,

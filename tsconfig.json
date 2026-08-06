@@ -11,5 +11,5 @@
     "declaration": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "demo"]
+  "include": ["src", "demo", "deepccc-agent/src"]
 }

@@ -8,7 +8,7 @@ import {
   webFetchForTool,
   webSearchForTool,
   type FetchLike,
-} from "../../deepccc-agent/src/web-tools.ts";
+} from "../web-tools.js";
 
 const DDG_HTML = `<!DOCTYPE html>
 <html>

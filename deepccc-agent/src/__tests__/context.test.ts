@@ -12,7 +12,7 @@ import {
   listBuiltinContextSessions,
   newBuiltinSessionId,
   serializeMessagesForSummary,
-} from "../../deepccc-agent/src/context.ts";
+} from "../context.js";
 
 describe("BuiltinContextManager", () => {
   it("keeps recent messages within the token budget instead of a fixed count", () => {
