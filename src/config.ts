@@ -13,6 +13,7 @@ import {
   autoDetectCursorPath,
   normalizeOptionalConfigField,
   readToolCliPath,
+  resolveCccEnabled,
 } from "./config-utils.ts";
 
 // 重新导出 config-utils 中的纯函数/常量，保持对外 API 不变
@@ -25,6 +26,7 @@ export {
   normalizeOptionalConfigField,
   isAnthropicConfigEmpty,
   anthropicConfigDisplay,
+  resolveCccEnabled,
 } from "./config-utils.ts";
 export type { ParsedGitTimeout } from "./config-utils.ts";
 
@@ -595,13 +597,10 @@ function loadConfig(): AppConfig {
     );
   // 旧版 ccc 配置没有 enabled。只用 API Key 推断启用，避免 sample 中自带的
   // 默认 Base URL / model 让升级用户在未配置凭证时意外启用 CCC Agent。
-  const cccNonEmpty = (): boolean =>
-    Boolean(typeof cccRaw.DEEPSEEK_API_KEY === "string" && cccRaw.DEEPSEEK_API_KEY.trim());
-
   const claudeEnabled = resolveEnabled(claude.enabled, claudeNonEmpty);
   const cursorEnabled = resolveEnabled(cursorRaw.enabled, cursorNonEmpty);
   const codexEnabled = resolveEnabled(codexRaw.enabled, codexNonEmpty);
-  const cccEnabled = resolveEnabled(cccRaw.enabled, cccNonEmpty);
+  const cccEnabled = resolveCccEnabled(cccRaw.enabled, cccRaw.DEEPSEEK_API_KEY);
   const chromeDevtoolsPort = Number(chromeDevtoolsRaw.port);
   const explicitDefaultTool: AgentTool | null =
     typeof claude.defaultAgent === "boolean" && claude.defaultAgent && claudeEnabled ? "claude" :

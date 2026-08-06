@@ -42,8 +42,12 @@ function toChatSessionOptions(
 }
 
 export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
+  if (!options.apiKey?.trim()) {
+    throw new Error("ChatCCC 未配置 CCC Agent API Key。请先填写 ccc.DEEPSEEK_API_KEY 后再启用 CCC Agent。");
+  }
+
   const chatConfig: ChatSessionConfig = {
-    ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+    apiKey: options.apiKey,
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),

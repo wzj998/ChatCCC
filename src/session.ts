@@ -709,6 +709,8 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
     });
   } else if (tool === "ccc") {
     adapter = createCccAdapter({
+      apiKey: config.ccc.DEEPSEEK_API_KEY,
+      baseURL: config.ccc.DEEPSEEK_BASE_URL,
       model: effectiveModel || undefined,
       effort: effectiveEffort || undefined,
     });
