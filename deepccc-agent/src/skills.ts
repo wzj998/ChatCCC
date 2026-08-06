@@ -165,17 +165,17 @@ export function buildSkillsIndexPrompt(skills: BuiltinSkill[]): string {
   if (skills.length === 0) return "";
 
   const lines = [
-    "## Available Skills",
-    "Skills are scanned in parallel from Claude/Codex/Cursor/DeepCCC skill directories.",
-    "On name conflicts: DeepCCC > Codex > Cursor > Claude wins; within one source, project scope wins over global.",
-    "When a user request matches a skill's description, first read its full SKILL.md with read_file, then follow the instructions in it exactly.",
+    "## 可用技能",
+    "技能会从 Claude/Codex/Cursor/DeepCCC 技能目录并行扫描。",
+    "名称冲突时：DeepCCC > Codex > Cursor > Claude 优先；同一来源内，项目级优先于全局。",
+    "当用户请求匹配某个技能的描述时，先用 read_file 读取其完整 SKILL.md，然后严格按其指令执行。",
     "",
-    ...skills.map((s) => `- **${s.name}** [${s.source}:${s.scope}] (\`${normalizeSkillPathForPrompt(s.skillPath)}\`): ${s.description || "(no description)"}`),
+    ...skills.map((s) => `- **${s.name}** [${s.source}:${s.scope}] (\`${normalizeSkillPathForPrompt(s.skillPath)}\`): ${s.description || "(无描述)"}`),
     "",
-    "## Creating Skills",
-    "When the user asks to create a skill, create it as a Codex-style directory skill at",
-    "~/.deepccc/skills/<name>/SKILL.md (global, default) or <cwd>/.deepccc/skills/<name>/SKILL.md (project, only when the user explicitly asks for a project-scoped skill).",
-    "SKILL.md format:",
+    "## 创建技能",
+    "当用户要求创建技能时，按 Codex 风格的目录技能创建：",
+    "~/.deepccc/skills/<name>/SKILL.md（全局，默认）或 <cwd>/.deepccc/skills/<name>/SKILL.md（项目级，仅当用户明确要求项目级技能时）。",
+    "SKILL.md 格式：",
     "```",
     "---",
     "name: <skill-name>",
@@ -184,7 +184,7 @@ export function buildSkillsIndexPrompt(skills: BuiltinSkill[]): string {
     "",
     "<instructions>",
     "```",
-    "New skills are picked up automatically on the next message (hot reload); no restart is needed.",
+    "新技能会在下一条消息自动生效（热加载）；无需重启。",
   ];
   return lines.join("\n");
 }

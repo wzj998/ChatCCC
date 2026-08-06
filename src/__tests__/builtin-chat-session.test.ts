@@ -83,21 +83,21 @@ describe("ChatSession context management", () => {
     await collect(session.chat("diagnose a consequential problem"));
 
     const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
-    expect(system).toContain("## Evidence-Gated Conclusions");
-    expect(system).toContain("source of truth");
-    expect(system).toContain("direct observations from inferences");
-    expect(system).toContain("plausible alternative explanations");
-    expect(system).toContain("runtime behavior for runtime claims");
-    expect(system).toContain("state uncertainty");
-    expect(system).toContain("Do not repeat checks once decisive evidence exists");
+    expect(system).toContain("## 证据门控结论");
+    expect(system).toContain("权威事实来源");
+    expect(system).toContain("区分直接观察与推断");
+    expect(system).toContain("合理的替代解释");
+    expect(system).toContain("运行时结论用运行时行为");
+    expect(system).toContain("说明不确定性");
+    expect(system).toContain("一旦已有决定性证据");
     expect(system).not.toContain("CodesForUnity");
-    expect(system.indexOf("## Evidence-Gated Conclusions")).toBeLessThan(
+    expect(system.indexOf("## 证据门控结论")).toBeLessThan(
       system.indexOf("PROJECT GUIDANCE MARKER"),
     );
-    expect(system.indexOf("## Evidence-Gated Conclusions")).toBeLessThan(
-      system.indexOf("Current working directory"),
+    expect(system.indexOf("## 证据门控结论")).toBeLessThan(
+      system.indexOf("当前工作目录"),
     );
-    expect(system.indexOf("## Evidence-Gated Conclusions")).toBeLessThan(
+    expect(system.indexOf("## 证据门控结论")).toBeLessThan(
       system.indexOf("CUSTOM PROMPT MARKER"),
     );
   });
@@ -120,21 +120,21 @@ describe("ChatSession context management", () => {
 
     const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
     // 先盘点再动手：动手前低开销盘点 + 输出含验证策略的计划
-    expect(system).toContain("## Survey Before Acting");
-    expect(system).toContain("map the landscape");
-    expect(system).toContain("how you will verify the result");
+    expect(system).toContain("## 行动前先调查");
+    expect(system).toContain("以低成本盘点环境");
+    expect(system).toContain("如何验证结果");
     // 授权自主：用户委托决策后只问真正阻塞项，不抛实现级选择题
-    expect(system).toContain("## Delegated Authority");
-    expect(system).toContain("irreversible actions");
-    expect(system).toContain("Do not bounce implementation-level multiple-choice");
+    expect(system).toContain("## 授权范围");
+    expect(system).toContain("不可逆操作");
+    expect(system).toContain("不要把实现级选择题抛回给用户");
     // 交付自检：声明做了什么/如何验证/未验证项
-    expect(system).toContain("## Pre-Delivery Self-Check");
-    expect(system).toContain("remains unverified or risky");
+    expect(system).toContain("## 交付前自检");
+    expect(system).toContain("未验证或有风险");
     // 稳定前缀全部位于项目指令与 runtime 上下文之前
-    for (const section of ["## Survey Before Acting", "## Delegated Authority", "## Pre-Delivery Self-Check"]) {
+    for (const section of ["## 行动前先调查", "## 授权范围", "## 交付前自检"]) {
       expect(system.indexOf(section)).toBeGreaterThan(0);
       expect(system.indexOf(section)).toBeLessThan(system.indexOf("PROJECT GUIDANCE MARKER"));
-      expect(system.indexOf(section)).toBeLessThan(system.indexOf("Current working directory"));
+      expect(system.indexOf(section)).toBeLessThan(system.indexOf("当前工作目录"));
       expect(system.indexOf(section)).toBeLessThan(system.indexOf("CUSTOM PROMPT MARKER"));
     }
   });
@@ -158,7 +158,7 @@ describe("ChatSession context management", () => {
     await collect(session.chat("hi"));
 
     const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
-    expect(system).toContain("## Project Instructions");
+    expect(system).toContain("## 项目指令");
     expect(system).toContain("### AGENTS.md");
     expect(system).toContain("agents root guidance");
     expect(system).toContain("### AGENTS.local.md");
@@ -200,10 +200,10 @@ describe("ChatSession context management", () => {
     const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
     expect(system).toContain("demo-skill");
     expect(system).toContain("CUSTOM PROMPT MARKER");
-    expect(system).toContain("Current working directory");
+    expect(system).toContain("当前工作目录");
     // 稳定性排序：固定规则 → 项目指令 → runtime → custom → 技能索引（最后）
     expect(system.indexOf("CUSTOM PROMPT MARKER")).toBeGreaterThan(
-      system.indexOf("Current working directory"),
+      system.indexOf("当前工作目录"),
     );
     expect(system.indexOf("demo-skill")).toBeGreaterThan(system.indexOf("CUSTOM PROMPT MARKER"));
   });
@@ -409,7 +409,7 @@ describe("ChatSession context management", () => {
 
     const persisted = session.history.at(-1)?.content ?? "";
     expect(persisted.length).toBeLessThan(40_000);
-    expect(persisted).toContain("tool transcript truncated");
+    expect(persisted).toContain("工具记录已截断");
   });
 
   it("persists structured tool calls alongside the text transcript", async () => {
@@ -436,7 +436,7 @@ describe("ChatSession context management", () => {
     expect(state.messages[1].toolCalls).toEqual([
       { name: "read_file", input: "{\"path\":\"package.json\"}", output: "{\"content\":\"{}\"}" },
     ]);
-    expect(state.messages[1].content).toContain("[Tool transcript]");
+    expect(state.messages[1].content).toContain("[工具记录]");
   });
 
   it("records tool errors and preserves tool call order in structured tool calls", async () => {

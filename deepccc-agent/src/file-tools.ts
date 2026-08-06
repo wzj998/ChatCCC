@@ -1243,54 +1243,54 @@ export function createBuiltinFileTools(
 
   return {
     read_file: tool<ReadFileInput, ReadFileOutput>({
-      description: "Read a UTF-8 text file from the local filesystem. Use line ranges for large files.",
+      description: "从本地文件系统读取 UTF-8 文本文件。大文件请使用行范围。",
       inputSchema: jsonSchema<ReadFileInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Absolute path or path relative to the session cwd." },
-          startLine: { type: "number", description: "Optional 1-based first line to return." },
-          endLine: { type: "number", description: "Optional 1-based last line to return." },
+          path: { type: "string", description: "绝对路径或相对于会话工作目录的路径。" },
+          startLine: { type: "number", description: "可选，从第几行开始返回（从 1 开始）。" },
+          endLine: { type: "number", description: "可选，返回到第几行（从 1 开始）。" },
         },
         required: ["path"],
       }),
       execute: (input) => readFileForTool(cwd, input),
     }),
     list_dir: tool<ListDirInput, ListDirOutput>({
-      description: "List files in a local directory.",
+      description: "列出本地目录中的文件。",
       inputSchema: jsonSchema<ListDirInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Directory path. Defaults to the session cwd." },
+          path: { type: "string", description: "目录路径。默认为会话工作目录。" },
         },
       }),
       execute: (input) => listDirForTool(cwd, input),
     }),
     search_code: tool<SearchCodeInput, SearchCodeOutput>({
-      description: "Search local files with ripgrep without invoking a shell.",
+      description: "用 ripgrep 搜索本地文件，无需调用 shell。",
       inputSchema: jsonSchema<SearchCodeInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          query: { type: "string", description: "Text or regex query passed to ripgrep." },
-          path: { type: "string", description: "File or directory to search. Defaults to the session cwd." },
-          glob: { type: "string", description: "Optional ripgrep glob filter, for example **/*.ts." },
-          maxResults: { type: "number", description: "Maximum result lines, capped internally." },
+          query: { type: "string", description: "传递给 ripgrep 的文本或正则查询。" },
+          path: { type: "string", description: "要搜索的文件或目录。默认为会话工作目录。" },
+          glob: { type: "string", description: "可选的 ripgrep glob 过滤器，例如 **/*.ts。" },
+          maxResults: { type: "number", description: "最大结果行数，内部设有上限。" },
         },
         required: ["query"],
       }),
       execute: (input, options) => searchCodeForTool(cwd, input, options.abortSignal),
     }),
     run_command: tool<RunCommandInput, RunCommandOutput>({
-      description: "Run a non-interactive shell command in the local workspace. Use for tests, git, and package scripts. Returns stdout/stderr and exitCode; non-zero exit codes are not tool errors.",
+      description: "在本地工作区运行非交互式 shell 命令。用于测试、git 和包脚本。返回 stdout/stderr 和 exitCode；非零退出码不是工具错误。",
       inputSchema: jsonSchema<RunCommandInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          command: { type: "string", description: "Command line to run in the platform shell." },
-          cwd: { type: "string", description: "Optional working directory. Defaults to the session cwd." },
-          timeoutMs: { type: "number", description: `Optional timeout in milliseconds, capped at ${MAX_COMMAND_TIMEOUT_MS}.` },
+          command: { type: "string", description: "要在平台 shell 中运行的命令行。" },
+          cwd: { type: "string", description: "可选的工作目录。默认为会话工作目录。" },
+          timeoutMs: { type: "number", description: `可选超时（毫秒），上限为 ${MAX_COMMAND_TIMEOUT_MS}。` },
         },
         required: ["command"],
       }),
@@ -1305,13 +1305,13 @@ export function createBuiltinFileTools(
       },
     }),
     edit_file: tool<EditFileInput, EditFileOutput>({
-      description: "Edit an existing UTF-8 text file by applying exact oldText -> newText replacements. Uses optional SHA-256 precondition to avoid overwriting concurrent edits.",
+      description: "通过精确的 oldText -> newText 替换编辑现有 UTF-8 文本文件。可行时使用 SHA-256 前置条件以避免覆盖并发编辑。",
       inputSchema: jsonSchema<EditFileInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Absolute path or path relative to the session cwd." },
-          expectedSha256: { type: "string", description: "Optional SHA-256 hash of the current file content." },
+          path: { type: "string", description: "绝对路径或相对于会话工作目录的路径。" },
+          expectedSha256: { type: "string", description: "当前文件内容的可选 SHA-256 哈希。" },
           edits: {
             type: "array",
             minItems: 1,
@@ -1319,9 +1319,9 @@ export function createBuiltinFileTools(
               type: "object",
               additionalProperties: false,
               properties: {
-                oldText: { type: "string", description: "Exact text to replace. Include enough context to make it unique." },
-                newText: { type: "string", description: "Replacement text." },
-                replaceAll: { type: "boolean", description: "Replace every occurrence when oldText appears multiple times." },
+                oldText: { type: "string", description: "要替换的精确文本。包含足够的上下文使其唯一。" },
+                newText: { type: "string", description: "替换文本。" },
+                replaceAll: { type: "boolean", description: "当 oldText 出现多次时替换所有出现。" },
               },
               required: ["oldText", "newText"],
             },
@@ -1341,15 +1341,15 @@ export function createBuiltinFileTools(
       },
     }),
     create_file: tool<CreateFileInput, FileWriteOutput>({
-      description: "Create a UTF-8 text file, or overwrite an existing one when overwrite=true.",
+      description: "创建 UTF-8 文本文件，或在 overwrite=true 时覆盖现有文件。",
       inputSchema: jsonSchema<CreateFileInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Absolute path or path relative to the session cwd." },
-          content: { type: "string", description: "Complete file content to write." },
-          overwrite: { type: "boolean", description: "Allow replacing an existing file." },
-          expectedSha256: { type: "string", description: "Optional SHA-256 hash required when overwriting an existing file." },
+          path: { type: "string", description: "绝对路径或相对于会话工作目录的路径。" },
+          content: { type: "string", description: "要写入的完整文件内容。" },
+          overwrite: { type: "boolean", description: "允许替换现有文件。" },
+          expectedSha256: { type: "string", description: "覆盖现有文件时需要的可选 SHA-256 哈希。" },
         },
         required: ["path", "content"],
       }),
@@ -1365,13 +1365,13 @@ export function createBuiltinFileTools(
       },
     }),
     delete_file: tool<DeleteFileInput, DeleteFileOutput>({
-      description: "Delete an existing text file. Use expectedSha256 to avoid deleting a file that changed after reading.",
+      description: "删除现有的文本文件。使用 expectedSha256 避免删除读取后已更改的文件。",
       inputSchema: jsonSchema<DeleteFileInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Absolute path or path relative to the session cwd." },
-          expectedSha256: { type: "string", description: "Optional SHA-256 hash of the file that must be deleted." },
+          path: { type: "string", description: "绝对路径或相对于会话工作目录的路径。" },
+          expectedSha256: { type: "string", description: "必须删除的文件的可选 SHA-256 哈希。" },
         },
         required: ["path"],
       }),
@@ -1387,16 +1387,16 @@ export function createBuiltinFileTools(
       },
     }),
     move_file: tool<MoveFileInput, MoveFileOutput>({
-      description: "Move or rename an existing text file. Can overwrite an existing destination only when overwrite=true.",
+      description: "移动或重命名现有文本文件。仅在 overwrite=true 时可覆盖现有目标。",
       inputSchema: jsonSchema<MoveFileInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          sourcePath: { type: "string", description: "Existing source file path." },
-          destinationPath: { type: "string", description: "Destination file path." },
-          overwrite: { type: "boolean", description: "Allow replacing an existing destination file." },
-          expectedSourceSha256: { type: "string", description: "Optional SHA-256 hash of the source file." },
-          expectedDestinationSha256: { type: "string", description: "Optional SHA-256 hash of the destination file when overwriting." },
+          sourcePath: { type: "string", description: "现有源文件路径。" },
+          destinationPath: { type: "string", description: "目标文件路径。" },
+          overwrite: { type: "boolean", description: "允许覆盖现有目标文件。" },
+          expectedSourceSha256: { type: "string", description: "源文件的可选 SHA-256 哈希。" },
+          expectedDestinationSha256: { type: "string", description: "覆盖目标时目标文件的可选 SHA-256 哈希。" },
         },
         required: ["sourcePath", "destinationPath"],
       }),
@@ -1412,15 +1412,15 @@ export function createBuiltinFileTools(
       },
     }),
     apply_patch: tool<ApplyPatchInput, ApplyPatchOutput>({
-      description: "Apply a unified diff patch to one or more UTF-8 text files. Prefer edit_file for small targeted edits.",
+      description: "将统一差异补丁应用于一个或多个 UTF-8 文本文件。小范围精确编辑优先使用 edit_file。",
       inputSchema: jsonSchema<ApplyPatchInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          patch: { type: "string", description: "Unified diff patch text." },
+          patch: { type: "string", description: "统一差异补丁文本。" },
           expectedSha256ByPath: {
             type: "object",
-            description: "Optional map of patch path or absolute path to expected SHA-256 before applying.",
+            description: "补丁路径或绝对路径到预期 SHA-256 的可选映射。",
             additionalProperties: { type: "string" },
           },
         },
