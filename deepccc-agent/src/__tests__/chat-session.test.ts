@@ -457,6 +457,7 @@ describe("ChatSession context management", () => {
     expect(generateTextMock).toHaveBeenCalledOnce();
     expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
       temperature: 0,
+      maxOutputTokens: 16_384,
       providerOptions: { deepseek: { reasoningEffort: "none" } },
     }));
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -501,8 +502,43 @@ describe("ChatSession context management", () => {
 
     expect(generateTextMock).toHaveBeenCalledOnce();
     expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
+      maxOutputTokens: 16_384,
       providerOptions: { anthropic: { effort: "low" } },
     }));
+  });
+
+  it("compacts in a single pass and keeps the conversation alive when the budget is still exceeded", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-compaction-single-pass-"));
+
+    const seed = new ChatSession(
+      { apiKey: "sk-test" },
+      { persist: true, contextDir: dir, sessionId: "single-pass", compactAtTokens: 10_000 },
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("old answer") });
+    await collect(seed.chat("old question"));
+
+    // 摘要故意无法满足紧凑预算（compactAtTokens=1 时保留的 recent 消息本身就超预算）：
+    // 单轮压缩后不应抛"仍超预算"错误中断对话，而是继续生成回复，下次对话前再压缩。
+    generateTextMock.mockResolvedValueOnce({ text: "## Current Task\n- short summary" });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("new answer") });
+
+    const restored = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        persist: true,
+        contextDir: dir,
+        sessionId: "single-pass",
+        compactAtTokens: 1,
+        keepRecentMessages: 1,
+      },
+    );
+    const events = await collect(restored.chat("new question"));
+
+    // 单轮：generateText 只调用一次（不再 8 轮重试），且不抛错，对话正常完成
+    expect(generateTextMock).toHaveBeenCalledOnce();
+    expect(events).toContainEqual({ type: "compact", compactedMessages: expect.any(Number) });
+    expect(events.at(-1)).toEqual({ type: "done", text: "new answer" });
   });
 
   it("times out context compaction independently before reply generation", async () => {
