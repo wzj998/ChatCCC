@@ -120,6 +120,24 @@ function buildRuntimeWorkspacePrompt(cwd: string): string {
   ].join("\n");
 }
 
+/**
+ * Windows 专属命令行指引（仅 win32 注入）：cmd.exe 的引号语义与 bash 不同，
+ * 模型按 bash 习惯写命令时会被 cmd 拆坏（引号保留为字面量、单引号不生效、
+ * 多行/嵌套引号脚本崩坏）。这段提示放在固定规则区（项目指令之前）。
+ */
+function buildPlatformCommandPrompt(): string {
+  if (process.platform !== "win32") return "";
+  return [
+    "## Windows Command-Line Notes",
+    "You are running on Windows. run_command executes through cmd.exe, not bash. cmd quoting differs from bash and breaks common habits:",
+    "- Double quotes are NOT stripped: `echo \"hello world\"` prints `\"hello world\"` (quotes included), and `\"a b\" \"c\"` passes the literal arguments `\"a b\"` and `\"c\"` (quotes included) to the program.",
+    "- Single quotes are NOT quoting characters in cmd.exe: `'a b'` is parsed as two arguments (`'a` and `b'`).",
+    "- Multi-line or quote-heavy inline scripts (python -c \"...\\n...\", ssh host \"bash -c '...'\") frequently break under cmd quoting; write the script to a temporary file and execute that file instead.",
+    "- PowerShell-only syntax (Get-Item, 2>$null, Select-Object) is unavailable; the shell is cmd.exe unless you explicitly invoke powershell.",
+    "- To pass an argument containing spaces, use double quotes and expect the quotes to reach the program literally; when the target accepts file input, prefer writing the value to a file.",
+  ].join("\n");
+}
+
 function normalizeMaxSteps(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
   if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
@@ -269,6 +287,10 @@ export class ChatSession {
    */
   private buildSystemPrompt(skills: BuiltinSkill[]): string {
     const systemContent = [SYSTEM_PROMPT];
+    const platformPrompt = buildPlatformCommandPrompt();
+    if (platformPrompt) {
+      systemContent.push("", platformPrompt);
+    }
     const projectInstructions = readProjectInstructionFiles(this.cwd);
     if (projectInstructions) {
       systemContent.push("", projectInstructions);
