@@ -505,6 +505,62 @@ describe("ChatSession context management", () => {
   });
 });
 
+describe("platform-specific system prompt injection", () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+  const setPlatform = (value: string) => {
+    Object.defineProperty(process, "platform", { value, configurable: true });
+  };
+
+  afterEach(() => {
+    if (originalPlatform) {
+      Object.defineProperty(process, "platform", originalPlatform);
+    }
+  });
+
+  it("injects Windows command-line guidance only on win32", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-win32-prompt-"));
+    setPlatform("win32");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { cwd: dir, sessionId: "win32-prompt" },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("## Windows Command-Line Notes");
+    expect(system).toContain("cmd.exe");
+    expect(system).toMatch(/double quotes/i);
+    expect(system).toMatch(/single quotes/i);
+    // 平台指引属于固定规则区，位于 runtime workspace 上下文之前
+    expect(system.indexOf("## Windows Command-Line Notes")).toBeGreaterThan(
+      system.indexOf("## Fixed Rules"),
+    );
+    expect(system.indexOf("## Windows Command-Line Notes")).toBeLessThan(
+      system.indexOf("Current working directory"),
+    );
+  });
+
+  it("omits Windows guidance on non-Windows platforms", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-posix-prompt-"));
+    setPlatform("linux");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      { cwd: dir, sessionId: "posix-prompt" },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).not.toContain("## Windows Command-Line Notes");
+  });
+});
+
 describe("estimateBuiltinContextTokens", () => {
   it("weights CJK characters closer to one token per character", () => {
     const messages = [{ role: "user" as const, content: "你好".repeat(100) }];
