@@ -29,6 +29,10 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: vi.fn(() => (modelId: string) => ({ modelId })),
 }));
 
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: vi.fn(() => (modelId: string) => ({ modelId })),
+}));
+
 vi.mock("ai", () => ({
   streamText: aiMocks.streamText,
   generateText: aiMocks.generateText,

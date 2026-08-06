@@ -11,6 +11,10 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: vi.fn(() => (modelId: string) => ({ modelId })),
 }));
 
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: vi.fn(() => (modelId: string) => ({ modelId })),
+}));
+
 vi.mock("ai", () => ({
   streamText: streamTextMock,
   generateText: generateTextMock,
@@ -54,6 +58,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-meta-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
+      provider: "openai",
       contextDir,
       model: "deepseek-v4-pro",
     });
@@ -74,6 +79,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-stream-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
+      provider: "openai",
       contextDir,
       model: "deepseek-v4-flash",
     });
@@ -101,6 +107,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-tools-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
+      provider: "openai",
       contextDir,
       model: "deepseek-v4-flash",
     });
@@ -136,6 +143,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-status-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
+      provider: "openai",
       contextDir,
       compactAtTokens: 1,
       keepRecentMessages: 1,
@@ -168,6 +176,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-effort-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
+      provider: "openai",
       contextDir,
       effort: "xhigh",
     });

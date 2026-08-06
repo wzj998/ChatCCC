@@ -15,10 +15,16 @@ const rawLogWriteLineMock = vi.fn();
 const rawLogCloseMock = vi.fn();
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
 const originalStreaming = config.streaming;
+const originalProvider = config.provider;
 const createOpenAICompatibleMock = vi.fn(() => (modelId: string) => ({ modelId }));
+const createAnthropicMock = vi.fn(() => (modelId: string) => ({ modelId, provider: "anthropic" }));
 
 vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: createOpenAICompatibleMock,
+}));
+
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: createAnthropicMock,
 }));
 
 vi.mock("ai", () => ({
@@ -49,6 +55,7 @@ async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
 }
 
 beforeEach(() => {
+  config.provider = "openai";
   config.streaming = true;
 });
 
@@ -59,12 +66,64 @@ afterEach(() => {
   rawLogWriteLineMock.mockReset();
   rawLogCloseMock.mockReset();
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
+  config.provider = originalProvider;
   config.streaming = originalStreaming;
   createOpenAICompatibleMock.mockClear();
+  createAnthropicMock.mockClear();
   vi.useRealTimers();
 });
 
 describe("ChatSession response transport", () => {
+  it("uses the OpenAI-compatible provider by default", async () => {
+    const { ChatSession } = await import("../index.js");
+
+    new ChatSession({ apiKey: "sk-test", baseURL: "https://gateway.example", model: "model-a" });
+
+    expect(createOpenAICompatibleMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseURL: "https://gateway.example",
+      apiKey: "sk-test",
+    }));
+    expect(createAnthropicMock).not.toHaveBeenCalled();
+  });
+
+  it("uses Anthropic Messages with the same base URL and appends /v1 when needed", async () => {
+    const { ChatSession } = await import("../index.js");
+
+    new ChatSession({
+      provider: "anthropic",
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example/",
+      model: "model-a",
+    });
+
+    expect(createAnthropicMock).toHaveBeenLastCalledWith({
+      baseURL: "https://gateway.example/v1",
+      apiKey: "sk-test",
+    });
+    expect(createOpenAICompatibleMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing /v1 suffix for Anthropic and streams without OpenAI-only effort options", async () => {
+    const { ChatSession } = await import("../index.js");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+    const session = new ChatSession({
+      provider: "anthropic",
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example/v1/",
+      model: "model-a",
+      effort: "high",
+    });
+
+    await collect(session.chat("hello"));
+
+    expect(createAnthropicMock).toHaveBeenLastCalledWith({
+      baseURL: "https://gateway.example/v1",
+      apiKey: "sk-test",
+    });
+    expect(streamTextMock).toHaveBeenCalledOnce();
+    expect(streamTextMock.mock.calls[0]?.[0]).not.toHaveProperty("providerOptions");
+  });
+
   it("asks the provider to include usage in streaming responses", async () => {
     const { ChatSession } = await import("../index.js");
 

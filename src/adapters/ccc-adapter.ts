@@ -49,6 +49,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
 
   const chatConfig: ChatSessionConfig = {
     apiKey: options.apiKey,
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),

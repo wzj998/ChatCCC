@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.245",
+  "version": "0.2.246",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -49,6 +49,7 @@
     "postinstall": "node scripts/postinstall-sharp-check.mjs"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.105",
     "@ai-sdk/openai-compatible": "^2.0.47",
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "@openilink/openilink-sdk-node": "^0.6.0",

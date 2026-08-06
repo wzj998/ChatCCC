@@ -59,6 +59,12 @@ function parsePositiveIntegerOption(name: string, value: string): number {
   return parsed;
 }
 
+function parseProviderOption(value: string): "openai" | "anthropic" {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "openai" || normalized === "anthropic") return normalized;
+  throw new Error(`--provider must be "openai" or "anthropic", received: ${value}`);
+}
+
 function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
   const config: ChatSessionConfig = {};
   const options: ChatSessionOptions = {};
@@ -72,7 +78,10 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === "--model" && next !== undefined) {
+    if (arg === "--provider" && next !== undefined) {
+      config.provider = parseProviderOption(next);
+      i++;
+    } else if (arg === "--model" && next !== undefined) {
       config.model = next;
       i++;
     } else if (arg === "--effort" && next !== undefined) {
@@ -132,9 +141,10 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "Usage: deepccc [options]",
     "",
     "Options:",
+    `  --provider <name>    API protocol: openai or anthropic (current default ${appConfig.provider})`,
     `  --model <name>       Model name (current default ${appConfig.model})`,
     `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.effort)`,
-    `  --base-url <url>     OpenAI-compatible API base URL (current default ${appConfig.baseURL})`,
+    `  --base-url <url>     Provider API base URL (current default ${appConfig.baseURL})`,
     "  --api-key <key>      API key",
     "  --cwd <path>         Working directory",
     "  --max-steps <n>      Optional tool-step limit. Omit for no step limit",
@@ -375,6 +385,7 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   }
 
   console.log(`${C.dim}DeepCCC agent${C.reset}`);
+  console.log(`${C.dim}Provider: ${args.config.provider ?? appConfig.provider}${C.reset}`);
   console.log(`${C.dim}Model: ${args.config.model ?? appConfig.model}${C.reset}`);
   console.log(`${C.dim}Directory: ${cwd}${C.reset}`);
   console.log(`${C.dim}Session: ${resolvedSession.sessionId} (${resolvedSession.mode === "new" ? "new" : "resumed"})${C.reset}`);

@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+export type DeepCccProvider = "openai" | "anthropic";
+
 export interface DeepCccConfig {
+  /** API protocol/provider. Defaults to OpenAI-compatible. */
+  provider: DeepCccProvider;
   apiKey: string;
   baseURL: string;
   model: string;
@@ -23,6 +27,7 @@ export const RAW_STREAM_LOGS_DIR = join(DEEPCCC_HOME, "raw-stream-logs");
 const CONFIG_PATH = join(DEEPCCC_HOME, "config.json");
 
 const DEFAULT_CONFIG: DeepCccConfig = {
+  provider: "openai",
   apiKey: "",
   baseURL: "https://api.deepseek.com/v1",
   model: "deepseek-v4-pro",
@@ -60,6 +65,13 @@ function numberEnv(name: string): number | undefined {
   return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+export function normalizeDeepCccProvider(value: unknown): DeepCccProvider {
+  if (value === undefined || value === null || String(value).trim() === "") return "openai";
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "openai" || normalized === "anthropic") return normalized;
+  throw new Error(`DEEPCCC_PROVIDER/provider must be "openai" or "anthropic", received: ${String(value)}`);
+}
+
 function loadConfig(): DeepCccConfig {
   const file = readConfigFile();
   const rawLogs: Partial<DeepCccConfig["rawStreamLogs"]> = file.rawStreamLogs && typeof file.rawStreamLogs === "object"
@@ -67,6 +79,7 @@ function loadConfig(): DeepCccConfig {
     : {};
 
   return {
+    provider: normalizeDeepCccProvider(env("DEEPCCC_PROVIDER") ?? file.provider ?? DEFAULT_CONFIG.provider),
     apiKey: env("DEEPCCC_API_KEY") ?? env("DEEPSEEK_API_KEY") ?? file.apiKey ?? DEFAULT_CONFIG.apiKey,
     baseURL: env("DEEPCCC_BASE_URL") ?? env("DEEPSEEK_BASE_URL") ?? file.baseURL ?? DEFAULT_CONFIG.baseURL,
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,

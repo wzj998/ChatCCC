@@ -22,6 +22,10 @@ vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: vi.fn(() => (modelId: string) => ({ modelId })),
 }));
 
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: vi.fn(() => (modelId: string) => ({ modelId })),
+}));
+
 vi.mock("ai", () => ({
   streamText: aiMocks.streamText,
   generateText: aiMocks.generateText,
@@ -170,7 +174,7 @@ describe("builtin file-tools permission integration", () => {
 describe("builtin ChatSession permission integration", () => {
   it("permissionMode bypass lets high-risk run_command execute", async () => {
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { apiKey: "sk-test", provider: "openai" },
       { sessionId: "perm-bypass", permissionMode: "bypass" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
@@ -182,7 +186,7 @@ describe("builtin ChatSession permission integration", () => {
 
   it("default ask mode without resolver denies high-risk run_command", async () => {
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { apiKey: "sk-test", provider: "openai" },
       { sessionId: "perm-ask" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
@@ -197,7 +201,11 @@ describe("builtin ChatSession permission integration", () => {
 describe("ccc-adapter uses bypass mode (aligns with claude/codex)", () => {
   it("tools created via ccc adapter run high-risk commands without asking", async () => {
     const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
-    const adapter = createCccAdapter({ apiKey: "sk-test", contextDir: testHome.dir });
+    const adapter = createCccAdapter({
+      apiKey: "sk-test",
+      provider: "openai",
+      contextDir: testHome.dir,
+    });
     const { sessionId } = await adapter.createSession(testHome.dir);
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
 
