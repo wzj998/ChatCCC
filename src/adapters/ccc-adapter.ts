@@ -1,9 +1,9 @@
-import { ChatSession, type ChatSessionConfig, type ChatSessionOptions } from "../builtin/index.ts";
+import { ChatSession, type ChatSessionConfig, type ChatSessionOptions } from "../../deepccc-agent/src/index.ts";
 import {
   getBuiltinContextSession,
   newBuiltinSessionId,
   normalizeBuiltinSessionId,
-} from "../builtin/context.ts";
+} from "../../deepccc-agent/src/context.ts";
 import { config, CCC_SESSION_PREFIX } from "../config.ts";
 import type {
   CreateSessionResult,

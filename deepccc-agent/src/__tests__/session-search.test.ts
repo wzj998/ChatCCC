@@ -5,7 +5,7 @@ import { gzipSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { searchBuiltinSessions } from "../../deepccc-agent/src/session-search.ts";
+import { searchBuiltinSessions } from "../session-search.js";
 
 interface TestMessage {
   role: "user" | "assistant";

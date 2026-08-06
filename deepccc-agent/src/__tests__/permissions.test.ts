@@ -31,7 +31,7 @@ vi.mock("ai", () => ({
   tool: vi.fn((definition: unknown) => definition),
 }));
 
-vi.mock("../../deepccc-agent/src/raw-stream-log.ts", () => ({
+vi.mock("../raw-stream-log.js", () => ({
   createRawStreamLog: vi.fn().mockResolvedValue(null),
 }));
 
@@ -41,9 +41,9 @@ import {
   isDangerousCommand,
   matchRule,
   reloadAllowRules,
-} from "../../deepccc-agent/src/permissions.ts";
-import { createBuiltinFileTools } from "../../deepccc-agent/src/file-tools.ts";
-import { ChatSession } from "../../deepccc-agent/src/index.ts";
+} from "../permissions.js";
+import { createBuiltinFileTools } from "../file-tools.js";
+import { ChatSession } from "../index.js";
 
 const streamTextMock = aiMocks.streamText;
 const generateTextMock = aiMocks.generateText;
@@ -191,21 +191,5 @@ describe("builtin ChatSession permission integration", () => {
     await expect(
       lastRunCommandExecute()({ command: "rm -rf node_modules" }, { abortSignal: undefined }),
     ).rejects.toThrow(/权限拒绝/);
-  });
-});
-
-describe("ccc-adapter uses bypass mode (aligns with claude/codex)", () => {
-  it("tools created via ccc adapter run high-risk commands without asking", async () => {
-    const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
-    const adapter = createCccAdapter({ apiKey: "sk-test", contextDir: testHome.dir });
-    const { sessionId } = await adapter.createSession(testHome.dir);
-    streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
-
-    for await (const _m of adapter.prompt(sessionId, "hi", testHome.dir)) {
-      // drain
-    }
-
-    const result = (await lastRunCommandExecute()({ command: "node -e \"console.log('bypass')\"" }, { abortSignal: undefined })) as { exitCode: number };
-    expect(result.exitCode).toBe(0);
   });
 });

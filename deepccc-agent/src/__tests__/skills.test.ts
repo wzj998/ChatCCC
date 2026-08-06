@@ -13,7 +13,7 @@ import {
   type SkillDirSpec,
   type SkillSource,
   type SkillScope,
-} from "../../deepccc-agent/src/skills.ts";
+} from "../skills.js";
 
 let tempRoot: string;
 

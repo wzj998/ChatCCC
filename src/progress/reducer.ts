@@ -7,7 +7,7 @@
  * 看到的过程状态（正文累积、工具调用、终态判定）完全一致。
  */
 
-import type { ChatEvent } from "../builtin/index.ts";
+import type { ChatEvent } from "../../deepccc-agent/src/index.ts";
 import {
   withProgressView,
   type ProgressToolCall,

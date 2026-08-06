@@ -1,0 +1,62 @@
+{
+  "name": "deepccc",
+  "version": "0.1.12",
+  "description": "A lightweight DeepSeek-optimized coding agent with OpenAI-compatible model support.",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agent",
+    "deepseek",
+    "coding-agent",
+    "openai-compatible",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wzj998/deepccc-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wzj998/deepccc-agent/issues"
+  },
+  "homepage": "https://github.com/wzj998/deepccc-agent#readme",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "deepccc": "bin/deepccc.mjs"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "docs/",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.build.json",
+    "prepack": "node node_modules/typescript/bin/tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.47",
+    "@vscode/ripgrep": "^1.18.0",
+    "ai": "^6.0.184"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

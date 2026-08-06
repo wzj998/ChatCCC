@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { defaultBuiltinSessionId } from "../../deepccc-agent/src/context.ts";
-import { resolveBuiltinSession } from "../../deepccc-agent/src/session-select.ts";
+import { defaultBuiltinSessionId } from "../context.js";
+import { resolveBuiltinSession } from "../session-select.js";
 
 async function writeSession(
   contextDir: string,

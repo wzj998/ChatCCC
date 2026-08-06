@@ -18,7 +18,7 @@ import {
   readFileForTool,
   runCommandForTool,
   searchCodeForTool,
-} from "../../deepccc-agent/src/file-tools.ts";
+} from "../file-tools.js";
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];

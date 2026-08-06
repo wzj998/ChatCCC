@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ChatSession } from "../../deepccc-agent/src/index.ts";
-import { config } from "../../deepccc-agent/src/config.ts";
+import { ChatSession } from "../index.js";
+import { config } from "../config.js";
 
 const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
 const originalDeepCccApiKey = config.apiKey;
