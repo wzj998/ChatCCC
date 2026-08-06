@@ -1521,6 +1521,7 @@ export async function runAgentSession(
   let streamErrored = false;
   let streamTerminalError: TerminalErrorInfo | undefined;
   let runOutcome: SessionRunOutcome = "error";
+  const responseStallDetectionEnabled = adapter.responseStallDetectionEnabled !== false;
 
   const runningPrompt = activePrompts.get(sessionId);
   if (runningPrompt) {
@@ -1607,13 +1608,15 @@ export async function runAgentSession(
       );
     };
 
-    const responseStallMonitor = setInterval(() => {
-      void checkResponseStall().catch((err) => {
-        console.warn(`[${ts()}] [RESPONSE-STALL] check failed for ${sessionId}: ${(err as Error).message}`);
-      });
-    }, responseStallCheckIntervalMs);
-    responseStallMonitor.unref?.();
-    runningPrompt.responseStallMonitor = responseStallMonitor;
+    if (responseStallDetectionEnabled) {
+      const responseStallMonitor = setInterval(() => {
+        void checkResponseStall().catch((err) => {
+          console.warn(`[${ts()}] [RESPONSE-STALL] check failed for ${sessionId}: ${(err as Error).message}`);
+        });
+      }, responseStallCheckIntervalMs);
+      responseStallMonitor.unref?.();
+      runningPrompt.responseStallMonitor = responseStallMonitor;
+    }
   }
 
   try {

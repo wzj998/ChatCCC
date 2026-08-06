@@ -928,7 +928,7 @@ describe("runAgentSession response stall watchdog", () => {
     if (tempDir) await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("auto-ends every Agent after three minutes of unchanged reply characters, including zero", async () => {
+  it("auto-ends adapters with stall detection after three minutes of unchanged reply characters, including zero", async () => {
     vi.setSystemTime(0);
     _setResponseStallTimeoutForTest(180_000);
     _setResponseStallCheckIntervalForTest(1_000);
@@ -999,6 +999,69 @@ describe("runAgentSession response stall watchdog", () => {
       finalReply: "",
       autoEndedAt: expect.any(Number),
     });
+  });
+
+  it("does not detect response stalls when the adapter disables streamed-output monitoring", async () => {
+    vi.setSystemTime(0);
+    _setResponseStallTimeoutForTest(180_000);
+    _setResponseStallCheckIntervalForTest(1_000);
+    _setProcessAliveForTest(() => true);
+
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    bindChatToSession("sid-non-streaming", "chat-non-streaming");
+    recordLastActiveChat("sid-non-streaming", "chat-non-streaming");
+
+    let finishPrompt: (() => void) | undefined;
+    const closeSession = vi.fn();
+    const adapter: ToolAdapter = {
+      displayName: "Non-streaming DeepCCC",
+      sessionDescPrefix: "CCC Session:",
+      responseStallDetectionEnabled: false,
+      createSession: async () => ({ sessionId: "sid-non-streaming" }),
+      getSessionInfo: async (sid) => ({ sessionId: sid, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* (
+        _sid: string,
+        _text: string,
+        _cwd: string,
+        _signal?: AbortSignal,
+        options?: ToolPromptOptions,
+      ) {
+        options?.onSessionCreated?.(closeSession);
+        options?.onProcessStart?.({ pid: 4545 });
+        yield { type: "assistant", blocks: [{ type: "agent_status", status: "responding" }] };
+        await new Promise<void>((resolve) => {
+          finishPrompt = resolve;
+        });
+      },
+    };
+    _setAdapterForToolForTest("ccc", adapter);
+
+    const runPromise = runAgentSession(
+      "sid-non-streaming",
+      "prompt",
+      platform,
+      "chat-non-streaming",
+      Date.now(),
+      "ccc",
+    );
+
+    await vi.waitFor(() => {
+      expect(activePrompts.get("sid-non-streaming")?.processPid).toBe(4545);
+      expect(finishPrompt).toBeTypeOf("function");
+    });
+    expect(activePrompts.get("sid-non-streaming")?.responseStallMonitor).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(181_001);
+
+    expect(activePrompts.has("sid-non-streaming")).toBe(true);
+    expect(closeSession).not.toHaveBeenCalled();
+    expect(killProcessTreeMock).not.toHaveBeenCalledWith(4545);
+    expect(mockStreamStates.get("sid-non-streaming")?.status).toBe("running");
+
+    finishPrompt?.();
+    await runPromise;
   });
 
   it("does not apply the reply-stall timeout while an Agent is compacting context", async () => {

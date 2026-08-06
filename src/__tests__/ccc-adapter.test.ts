@@ -34,6 +34,21 @@ afterEach(() => {
 });
 
 describe("createCccAdapter", () => {
+  it("disables response-stall detection when DeepCCC streaming is disabled", async () => {
+    const { config: deepCccConfig } = await import("../../deepccc-agent/src/config.ts");
+    const previousStreaming = deepCccConfig.streaming;
+    deepCccConfig.streaming = false;
+
+    try {
+      const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
+      const adapter = createCccAdapter({ apiKey: "sk-test" });
+
+      expect(adapter.responseStallDetectionEnabled).toBe(false);
+    } finally {
+      deepCccConfig.streaming = previousStreaming;
+    }
+  });
+
   it("creates a persisted ccc session and exposes model/cwd metadata", async () => {
     const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-meta-"));

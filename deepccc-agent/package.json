@@ -1,6 +1,6 @@
 {
   "name": "deepccc",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "A lightweight DeepSeek-optimized coding agent with OpenAI-compatible model support.",
   "license": "Apache-2.0",
   "keywords": [

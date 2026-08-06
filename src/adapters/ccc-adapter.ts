@@ -1,4 +1,5 @@
 import { ChatSession, type ChatSessionConfig, type ChatSessionOptions } from "../../deepccc-agent/src/index.ts";
+import { config as deepCccConfig } from "../../deepccc-agent/src/config.ts";
 import {
   getBuiltinContextSession,
   newBuiltinSessionId,
@@ -56,6 +57,9 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
   return {
     displayName: "CCC Agent",
     sessionDescPrefix: CCC_SESSION_PREFIX,
+    // Non-streaming DeepCCC emits its reply only after the provider request finishes,
+    // so unchanged output cannot distinguish a slow request from a stalled response.
+    responseStallDetectionEnabled: deepCccConfig.streaming,
 
     async createSession(cwd: string): Promise<CreateSessionResult> {
       const sessionId = newBuiltinSessionId();
