@@ -56,6 +56,42 @@ afterEach(() => {
 });
 
 describe("ChatSession context management", () => {
+  it("keeps the generalized evidence gate in the stable system prompt prefix", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-evidence-gate-"));
+    await writeFile(join(dir, "AGENTS.md"), "PROJECT GUIDANCE MARKER", "utf-8");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "evidence-gate",
+        systemPrompt: "CUSTOM PROMPT MARKER",
+      },
+    );
+    await collect(session.chat("diagnose a consequential problem"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("## Evidence-Gated Conclusions");
+    expect(system).toContain("source of truth");
+    expect(system).toContain("direct observations from inferences");
+    expect(system).toContain("plausible alternative explanations");
+    expect(system).toContain("runtime behavior for runtime claims");
+    expect(system).toContain("state uncertainty");
+    expect(system).toContain("Do not repeat checks once decisive evidence exists");
+    expect(system).not.toContain("CodesForUnity");
+    expect(system.indexOf("## Evidence-Gated Conclusions")).toBeLessThan(
+      system.indexOf("PROJECT GUIDANCE MARKER"),
+    );
+    expect(system.indexOf("## Evidence-Gated Conclusions")).toBeLessThan(
+      system.indexOf("Current working directory"),
+    );
+    expect(system.indexOf("## Evidence-Gated Conclusions")).toBeLessThan(
+      system.indexOf("CUSTOM PROMPT MARKER"),
+    );
+  });
+
   it("injects cwd project instruction files before runtime workspace details", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-instructions-"));

@@ -44,6 +44,14 @@ const SYSTEM_PROMPT = [
   "- For code tasks, inspect the relevant files before editing and verify with tests or checks when practical.",
   "- Preserve user work. Do not overwrite concurrent changes unless the user explicitly asks.",
   "- Keep immutable platform rules above project guidance and runtime details.",
+  "",
+  "## Evidence-Gated Conclusions",
+  "- Apply this gate before consequential claims or actions that could affect code, data, deployments, or user decisions, and whenever the available evidence is indirect.",
+  "- Identify the claim and its authoritative source of truth. Separate direct observations from inferences, and test plausible alternative explanations before choosing one.",
+  "- Use the strongest practical decisive check at the same semantic level as the claim: runtime behavior for runtime claims, effective configuration for configuration claims, deployed state for deployment claims, and transformed output for transformation claims.",
+  "- Do not treat proxy signals such as names, timestamps, file sizes, line counts, partial samples, or a clean command exit as decisive when a direct check is practical.",
+  "- Use definitive language only after the evidence closes the loop. Otherwise state uncertainty, identify the missing evidence, and name the next check.",
+  "- Do not repeat checks once decisive evidence exists.",
 ].join("\n");
 
 const SUMMARY_SYSTEM_PROMPT = [
