@@ -16,6 +16,7 @@ const rawLogCloseMock = vi.fn();
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
 const originalStreaming = config.streaming;
 const originalProvider = config.provider;
+const originalEffort = config.effort;
 const createOpenAICompatibleMock = vi.fn(() => (modelId: string) => ({ modelId }));
 const createAnthropicMock = vi.fn(() => (modelId: string) => ({ modelId, provider: "anthropic" }));
 
@@ -57,6 +58,7 @@ async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
 beforeEach(() => {
   config.provider = "openai";
   config.streaming = true;
+  config.effort = "";
 });
 
 afterEach(() => {
@@ -68,6 +70,7 @@ afterEach(() => {
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
   config.provider = originalProvider;
   config.streaming = originalStreaming;
+  config.effort = originalEffort;
   createOpenAICompatibleMock.mockClear();
   createAnthropicMock.mockClear();
   vi.useRealTimers();
@@ -103,7 +106,7 @@ describe("ChatSession response transport", () => {
     expect(createOpenAICompatibleMock).not.toHaveBeenCalled();
   });
 
-  it("keeps an existing /v1 suffix for Anthropic and streams without OpenAI-only effort options", async () => {
+  it("keeps an existing /v1 suffix and maps Anthropic effort to output_config.effort", async () => {
     const { ChatSession } = await import("../index.js");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
     const session = new ChatSession({
@@ -121,7 +124,44 @@ describe("ChatSession response transport", () => {
       apiKey: "sk-test",
     });
     expect(streamTextMock).toHaveBeenCalledOnce();
+    expect(streamTextMock.mock.calls[0]?.[0]).toMatchObject({
+      providerOptions: { anthropic: { effort: "high" } },
+    });
+  });
+
+  it("omits providerOptions when effort is empty for the Anthropic protocol", async () => {
+    const { ChatSession } = await import("../index.js");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+    const session = new ChatSession({
+      provider: "anthropic",
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example",
+      model: "model-a",
+    });
+
+    await collect(session.chat("hello"));
+
+    expect(streamTextMock).toHaveBeenCalledOnce();
     expect(streamTextMock.mock.calls[0]?.[0]).not.toHaveProperty("providerOptions");
+  });
+
+  it("maps OpenAI-compatible effort to DeepSeek reasoningEffort", async () => {
+    const { ChatSession } = await import("../index.js");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+    const session = new ChatSession({
+      provider: "openai",
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example",
+      model: "model-a",
+      effort: "max",
+    });
+
+    await collect(session.chat("hello"));
+
+    expect(streamTextMock).toHaveBeenCalledOnce();
+    expect(streamTextMock.mock.calls[0]?.[0]).toMatchObject({
+      providerOptions: { deepseek: { reasoningEffort: "max" } },
+    });
   });
 
   it("asks the provider to include usage in streaming responses", async () => {
@@ -415,7 +455,10 @@ describe("ChatSession context management", () => {
     const events = await collect(restored.chat("new question"));
 
     expect(generateTextMock).toHaveBeenCalledOnce();
-    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({ temperature: 0 }));
+    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
+      temperature: 0,
+      providerOptions: { deepseek: { reasoningEffort: "none" } },
+    }));
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
       messages: expect.arrayContaining([
         expect.objectContaining({ content: expect.stringContaining("old question summarized") }),
@@ -428,6 +471,38 @@ describe("ChatSession context management", () => {
       { type: "status", phase: "generating" },
     ]);
     expect(restored.history.map((m) => m.content).join("\n")).toContain("new answer");
+  });
+
+  it("locks compaction to low effort under the Anthropic protocol", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-compaction-anthropic-effort-"));
+    const base = { apiKey: "sk-test", provider: "anthropic" as const, baseURL: "https://gateway.example", model: "model-a" };
+
+    const seed = new ChatSession(base, {
+      persist: true,
+      contextDir: dir,
+      sessionId: "compaction-anthropic-effort",
+      compactAtTokens: 10_000,
+    });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("old answer") });
+    await collect(seed.chat("old question"));
+
+    generateTextMock.mockResolvedValueOnce({ text: "## Current Task\n- old question summarized" });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("new answer") });
+
+    const restored = new ChatSession(base, {
+      persist: true,
+      contextDir: dir,
+      sessionId: "compaction-anthropic-effort",
+      compactAtTokens: 1,
+      keepRecentMessages: 1,
+    });
+    await collect(restored.chat("new question"));
+
+    expect(generateTextMock).toHaveBeenCalledOnce();
+    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
+      providerOptions: { anthropic: { effort: "low" } },
+    }));
   });
 
   it("times out context compaction independently before reply generation", async () => {
