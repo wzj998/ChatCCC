@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { config } from "../config.js";
 import { estimateBuiltinContextTokens } from "../context.js";
@@ -14,9 +14,11 @@ const createRawStreamLogMock = vi.fn();
 const rawLogWriteLineMock = vi.fn();
 const rawLogCloseMock = vi.fn();
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
+const originalStreaming = config.streaming;
+const createOpenAICompatibleMock = vi.fn(() => (modelId: string) => ({ modelId }));
 
 vi.mock("@ai-sdk/openai-compatible", () => ({
-  createOpenAICompatible: vi.fn(() => (modelId: string) => ({ modelId })),
+  createOpenAICompatible: createOpenAICompatibleMock,
 }));
 
 vi.mock("ai", () => ({
@@ -46,6 +48,10 @@ async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
 }
 
+beforeEach(() => {
+  config.streaming = true;
+});
+
 afterEach(() => {
   streamTextMock.mockReset();
   generateTextMock.mockReset();
@@ -53,7 +59,66 @@ afterEach(() => {
   rawLogWriteLineMock.mockReset();
   rawLogCloseMock.mockReset();
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
+  config.streaming = originalStreaming;
+  createOpenAICompatibleMock.mockClear();
   vi.useRealTimers();
+});
+
+describe("ChatSession response transport", () => {
+  it("asks the provider to include usage in streaming responses", async () => {
+    const { ChatSession } = await import("../index.js");
+
+    new ChatSession({ apiKey: "sk-test" });
+
+    expect(createOpenAICompatibleMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      includeUsage: true,
+    }));
+  });
+
+  it("uses generateText and preserves text/tool events when streaming is disabled", async () => {
+    const { ChatSession } = await import("../index.js");
+    config.streaming = false;
+    generateTextMock.mockResolvedValueOnce({
+      text: "done",
+      steps: [{
+        text: "done",
+        toolCalls: [{
+          type: "tool-call",
+          toolCallId: "call-1",
+          toolName: "read_file",
+          input: { path: "package.json" },
+        }],
+        toolResults: [{
+          type: "tool-result",
+          toolCallId: "call-1",
+          toolName: "read_file",
+          input: { path: "package.json" },
+          output: { content: "{}" },
+        }],
+      }],
+    });
+    const session = new ChatSession({ apiKey: "sk-test" });
+
+    const events = await collect(session.chat("read package"));
+
+    expect(streamTextMock).not.toHaveBeenCalled();
+    expect(generateTextMock).toHaveBeenCalledOnce();
+    expect(events).toContainEqual({
+      type: "tool_use",
+      id: "call-1",
+      name: "read_file",
+      input: { path: "package.json" },
+    });
+    expect(events).toContainEqual({
+      type: "tool_result",
+      tool_use_id: "call-1",
+      name: "read_file",
+      content: { content: "{}" },
+      is_error: false,
+    });
+    expect(events).toContainEqual({ type: "text", text: "done", accumulated: "done" });
+    expect(events).toContainEqual({ type: "done", text: "done" });
+  });
 });
 
 describe("ChatSession context management", () => {

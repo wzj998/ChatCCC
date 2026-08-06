@@ -284,6 +284,7 @@ export class ChatSession {
       name: "deepccc",
       baseURL,
       apiKey,
+      includeUsage: true,
     });
     this.model = provider(modelId);
     this.cwd = options.cwd ?? process.cwd();
@@ -383,7 +384,7 @@ export class ChatSession {
       const skills = await scanSkillsDirs(this.skillDirs);
       const system = this.buildSystemPrompt(skills);
       this.systemPrompt = system;
-      const result = streamText({
+      const generationOptions = {
         model: this.model,
         system,
         messages: this.context.buildModelMessages() as any,
@@ -393,9 +394,16 @@ export class ChatSession {
         // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort
         // 由 @ai-sdk/openai-compatible 自动映射为请求体 reasoning_effort 字段
         ...(this.effort ? { providerOptions: { deepseek: { reasoningEffort: this.effort } } } : {}),
-      });
+      };
+      let stream: AsyncIterable<TextStreamPart<any>>;
+      if (appConfig.streaming) {
+        const result = streamText(generationOptions);
+        stream = result.fullStream ?? textStreamToFullStream(result.textStream);
+      } else {
+        const result = await generateText(generationOptions);
+        stream = generateResultToFullStream(result);
+      }
 
-      const stream = result.fullStream ?? textStreamToFullStream(result.textStream);
       for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
         rawLog?.writeLine(safeRawStreamJson(part));
         if (part.type === "text-delta") {
@@ -557,6 +565,35 @@ export class ChatSession {
 async function* textStreamToFullStream(stream: AsyncIterable<string>): AsyncIterable<{ type: "text-delta"; text: string }> {
   for await (const text of stream) {
     yield { type: "text-delta", text };
+  }
+}
+
+async function* generateResultToFullStream(result: any): AsyncIterable<TextStreamPart<any>> {
+  let emittedText = false;
+  for (const step of result.steps ?? []) {
+    for (const call of step.toolCalls ?? []) {
+      yield {
+        type: "tool-call",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input: call.input,
+      } as TextStreamPart<any>;
+    }
+    for (const toolResult of step.toolResults ?? []) {
+      yield {
+        type: "tool-result",
+        toolCallId: toolResult.toolCallId,
+        toolName: toolResult.toolName,
+        output: toolResult.output,
+      } as TextStreamPart<any>;
+    }
+    if (step.text) {
+      emittedText = true;
+      yield { type: "text-delta", text: step.text } as TextStreamPart<any>;
+    }
+  }
+  if (!emittedText && result.text) {
+    yield { type: "text-delta", text: result.text } as TextStreamPart<any>;
   }
 }
 

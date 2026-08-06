@@ -47,6 +47,7 @@ deepccc 的本地缓存优化实测命中率 **96.7%**，有效降低重复请�
 export DEEPCCC_API_KEY="sk-..."
 export DEEPCCC_BASE_URL="https://api.deepseek.com/v1"
 export DEEPCCC_MODEL="deepseek-v4-pro"
+export DEEPCCC_STREAMING="true"
 ```
 
 Windows PowerShell：
@@ -55,6 +56,7 @@ Windows PowerShell：
 $env:DEEPCCC_API_KEY="sk-..."
 $env:DEEPCCC_BASE_URL="https://api.deepseek.com/v1"
 $env:DEEPCCC_MODEL="deepseek-v4-pro"
+$env:DEEPCCC_STREAMING="true"
 ```
 
 也兼容这些 DeepSeek 别名：
@@ -72,6 +74,7 @@ $env:DEEPCCC_MODEL="deepseek-v4-pro"
   "baseURL": "https://api.deepseek.com/v1",
   "model": "deepseek-v4-pro",
   "effort": "",
+  "streaming": true,
   "rawStreamLogs": {
     "enabled": false,
     "maxBytesPerTurn": 1048576,
@@ -80,6 +83,9 @@ $env:DEEPCCC_MODEL="deepseek-v4-pro"
   }
 }
 ```
+
+`streaming` 控制主对话是否使用流式请求，默认 `true`；也可以通过
+`DEEPCCC_STREAMING=true|false` 覆盖。关闭后，终端会在整条模型响应完成后一次性显示结果。
 
 ## 命令行交互
 

@@ -12,7 +12,7 @@
  */
 
 import * as readline from "node:readline";
-import * as process from "node:process";
+import process from "node:process";
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
@@ -639,7 +639,8 @@ async function main(): Promise<void> {
 
   if (args.streamJson) {
     const code = await runStreamJson(args);
-    process.exit(code);
+    process.exitCode = code;
+    return;
   }
 
   if (args.help) {

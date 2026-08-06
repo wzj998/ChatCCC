@@ -159,6 +159,12 @@ export interface ToolAdapter {
   readonly sessionDescPrefix: string;
 
   /**
+   * Whether ChatCCC may infer a stalled response from unchanged streamed output.
+   * Defaults to true. Adapters that only emit output after a request completes must disable it.
+   */
+  readonly responseStallDetectionEnabled?: boolean;
+
+  /**
    * 创建新会话，返回会话 ID。
    * 适配器内部需处理后台流消费（静默消费 stream 中除 init 外的所有事件）。
    * signal 用于上层在长期收不到 init 事件时终止底层 SDK/CLI。

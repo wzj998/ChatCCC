@@ -8,6 +8,8 @@ export interface DeepCccConfig {
   model: string;
   /** Reasoning effort（none/minimal/low/medium/high/xhigh/max），留空不传 reasoning_effort */
   effort: string;
+  /** 主对话是否使用流式请求；默认开启 */
+  streaming: boolean;
   rawStreamLogs: {
     enabled: boolean;
     maxBytesPerTurn: number;
@@ -25,6 +27,7 @@ const DEFAULT_CONFIG: DeepCccConfig = {
   baseURL: "https://api.deepseek.com/v1",
   model: "deepseek-v4-pro",
   effort: "",
+  streaming: true,
   rawStreamLogs: {
     enabled: false,
     maxBytesPerTurn: 1024 * 1024,
@@ -68,6 +71,7 @@ function loadConfig(): DeepCccConfig {
     baseURL: env("DEEPCCC_BASE_URL") ?? env("DEEPSEEK_BASE_URL") ?? file.baseURL ?? DEFAULT_CONFIG.baseURL,
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
+    streaming: boolEnv("DEEPCCC_STREAMING") ?? file.streaming ?? DEFAULT_CONFIG.streaming,
     rawStreamLogs: {
       enabled: boolEnv("DEEPCCC_RAW_STREAM_LOGS") ?? rawLogs.enabled ?? DEFAULT_CONFIG.rawStreamLogs.enabled,
       maxBytesPerTurn: numberEnv("DEEPCCC_RAW_STREAM_MAX_BYTES") ?? rawLogs.maxBytesPerTurn ?? DEFAULT_CONFIG.rawStreamLogs.maxBytesPerTurn,

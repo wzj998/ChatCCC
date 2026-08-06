@@ -56,6 +56,7 @@ const streamTextMock = aiMocks.streamText;
 const generateTextMock = aiMocks.generateText;
 
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
+const originalStreaming = config.streaming;
 const PRIVACY_FILE = join(privacyState.dir, "privacy.json");
 
 function writePrivacy(content: string): void {
@@ -80,6 +81,7 @@ beforeEach(() => {
   streamTextMock.mockReset();
   generateTextMock.mockReset();
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
+  config.streaming = true;
 });
 
 afterEach(() => {
@@ -87,6 +89,7 @@ afterEach(() => {
     rmSync(PRIVACY_FILE, { force: true });
   } catch {}
   reloadPrivacyRules();
+  config.streaming = originalStreaming;
 });
 
 afterAll(() => {
