@@ -239,10 +239,10 @@ describe("buildSkillsIndexPrompt", () => {
       },
     ]);
 
-    expect(prompt).toContain("## Available Skills");
+    expect(prompt).toContain("## 可用技能");
     expect(prompt).toContain("**feishu-doc**");
     expect(prompt).toContain("[codex:global]");
-    expect(prompt).toContain("## Creating Skills");
+    expect(prompt).toContain("## 创建技能");
     expect(prompt).toContain(".deepccc/skills");
     expect(prompt).toContain("read_file");
   });

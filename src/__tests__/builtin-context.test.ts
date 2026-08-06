@@ -49,7 +49,7 @@ describe("BuiltinContextManager", () => {
     const prompt = buildSummaryPrompt(context.planCompaction()!);
 
     expect(prompt.length).toBeLessThan(90_000);
-    expect(prompt).toContain("truncated for compaction");
+    expect(prompt).toContain("为压缩而截断");
   });
 
   it("persists and restores summary, messages, and total message count", async () => {
@@ -122,7 +122,7 @@ describe("BuiltinContextManager", () => {
     expect(context.buildModelMessages()).toEqual([
       {
         role: "user",
-        content: expect.stringContaining("The following is an earlier conversation summary"),
+        content: expect.stringContaining("以下是更早的对话摘要"),
       },
       { role: "assistant", content: "recent" },
     ]);
@@ -138,7 +138,7 @@ describe("BuiltinContextManager", () => {
     });
     first.appendMessage({
       role: "assistant",
-      content: "回复\n\n[Tool transcript]\ntool_call run_command: {}\ntool_result run_command: {}",
+      content: "回复\n\n[工具记录]\ntool_call run_command: {}\ntool_result run_command: {}",
       toolCalls: [
         { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
         { name: "read_file", input: "{\"path\":\"a.ts\"}", output: "...", is_error: true },
@@ -213,7 +213,7 @@ describe("BuiltinContextManager", () => {
 
     expect(message.role).toBe("assistant");
     expect(message.content).toContain("回复正文");
-    expect(message.content).toContain("[Tool transcript]");
+    expect(message.content).toContain("[工具记录]");
     expect(message.content).toContain("tool_call run_command");
     expect(message.toolCalls).toEqual([
       { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
@@ -227,7 +227,7 @@ describe("BuiltinContextManager", () => {
     });
 
     expect(message.content).toBe("纯文本回复");
-    expect(message.content).not.toContain("[Tool transcript]");
+    expect(message.content).not.toContain("[工具记录]");
     expect(message.toolCalls).toBeUndefined();
   });
 
@@ -240,8 +240,8 @@ describe("BuiltinContextManager", () => {
     });
 
     expect(message.content.length).toBeLessThan(7_000);
-    expect(message.content).toContain("assistant response truncated");
-    expect(message.content).toContain("tool transcript truncated");
+    expect(message.content).toContain("助手回复已在上下文中截断");
+    expect(message.content).toContain("工具记录已截断");
   });
 
   it("reset clears memory and the persisted context file", async () => {

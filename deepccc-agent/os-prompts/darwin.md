@@ -1,8 +1,8 @@
-## macOS Command-Line Notes
+## macOS 命令行提示
 
-You are running on macOS. run_command executes through zsh, a POSIX shell. Quoting follows standard POSIX conventions (the same habits you already know from bash):
+你运行在 macOS 上。run_command 通过 zsh（POSIX shell）执行。引号遵循标准 POSIX 约定（与你在 bash 中已有的习惯相同）：
 
-- Double quotes are stripped and group an argument containing spaces: `echo "hello world"` prints `hello world`.
-- Single quotes are literal quoting characters: `'a b'` is a single argument `a b`.
-- Backticks and `$(...)` perform command substitution; quote them if you need literal text.
-- Paths use `/` separators and `~` expands to the home directory.
+- 双引号会被剥离并用于组合含空格参数：`echo "hello world"` 打印 `hello world`。
+- 单引号是字面量引用字符：`'a b'` 是单个参数 `a b`。
+- 反引号和 `$(...)` 执行命令替换；需要字面文本时请加引号。
+- 路径使用 `/` 分隔符，`~` 展开为主目录。
