@@ -16,7 +16,22 @@ import {
   normalizeOptionalConfigField,
   parseGitTimeoutSeconds,
   readToolCliPath,
+  resolveCccEnabled,
 } from "../config-utils.ts";
+
+describe("resolveCccEnabled", () => {
+  it("never enables CCC Agent without a ChatCCC API key", () => {
+    expect(resolveCccEnabled(true, "")).toBe(false);
+    expect(resolveCccEnabled(true, "   ")).toBe(false);
+    expect(resolveCccEnabled(undefined, undefined)).toBe(false);
+  });
+
+  it("respects the explicit enabled flag when a ChatCCC API key exists", () => {
+    expect(resolveCccEnabled(undefined, "sk-chatccc")).toBe(true);
+    expect(resolveCccEnabled(true, "sk-chatccc")).toBe(true);
+    expect(resolveCccEnabled(false, "sk-chatccc")).toBe(false);
+  });
+});
 
 describe("parseGitTimeoutSeconds", () => {
   it("returns default when raw is undefined", () => {

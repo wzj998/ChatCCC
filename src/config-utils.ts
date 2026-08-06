@@ -36,6 +36,16 @@ export function normalizeOptionalConfigField(
   return value;
 }
 
+/**
+ * CCC Agent requires credentials owned by ChatCCC. An explicit enabled=true
+ * must not make the agent selectable when that credential is absent.
+ */
+export function resolveCccEnabled(rawEnabled: unknown, apiKey: unknown): boolean {
+  const hasApiKey = typeof apiKey === "string" && apiKey.trim().length > 0;
+  if (!hasApiKey) return false;
+  return typeof rawEnabled === "boolean" ? rawEnabled : true;
+}
+
 // ---------------------------------------------------------------------------
 // /git 超时配置相关
 // ---------------------------------------------------------------------------

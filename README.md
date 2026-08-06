@@ -214,6 +214,8 @@ Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
+ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effort 显式传给内置 Agent；这些配置不会回退读取 `~/.deepccc/config.json`，因此用户无需安装或配置独立的 `deepccc` 包。API Key 为空时 CCC Agent 会自动保持禁用。
+
 **API 支持不限于 DeepSeek。** CCC Agent 底层使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点。`ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` 可以指向**任意 OpenAI 兼容服务**，例如：
 
 | 服务 | Base URL 示例 | 说明 |
