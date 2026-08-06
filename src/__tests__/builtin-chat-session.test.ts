@@ -92,6 +92,43 @@ describe("ChatSession context management", () => {
     );
   });
 
+  it("keeps execution discipline sections in the stable system prompt prefix", async () => {
+    const { ChatSession } = await import("../builtin/index.ts");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-discipline-"));
+    await writeFile(join(dir, "AGENTS.md"), "PROJECT GUIDANCE MARKER", "utf-8");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "execution-discipline",
+        systemPrompt: "CUSTOM PROMPT MARKER",
+      },
+    );
+    await collect(session.chat("build a feature"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    // 先盘点再动手：动手前低开销盘点 + 输出含验证策略的计划
+    expect(system).toContain("## Survey Before Acting");
+    expect(system).toContain("map the landscape");
+    expect(system).toContain("how you will verify the result");
+    // 授权自主：用户委托决策后只问真正阻塞项，不抛实现级选择题
+    expect(system).toContain("## Delegated Authority");
+    expect(system).toContain("irreversible actions");
+    expect(system).toContain("Do not bounce implementation-level multiple-choice");
+    // 交付自检：声明做了什么/如何验证/未验证项
+    expect(system).toContain("## Pre-Delivery Self-Check");
+    expect(system).toContain("remains unverified or risky");
+    // 稳定前缀全部位于项目指令与 runtime 上下文之前
+    for (const section of ["## Survey Before Acting", "## Delegated Authority", "## Pre-Delivery Self-Check"]) {
+      expect(system.indexOf(section)).toBeGreaterThan(0);
+      expect(system.indexOf(section)).toBeLessThan(system.indexOf("PROJECT GUIDANCE MARKER"));
+      expect(system.indexOf(section)).toBeLessThan(system.indexOf("Current working directory"));
+      expect(system.indexOf(section)).toBeLessThan(system.indexOf("CUSTOM PROMPT MARKER"));
+    }
+  });
+
   it("injects cwd project instruction files before runtime workspace details", async () => {
     const { ChatSession } = await import("../builtin/index.ts");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-instructions-"));
