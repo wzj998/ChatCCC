@@ -6,6 +6,7 @@
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import type { JSONObject } from "@ai-sdk/provider";
 import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamPart } from "ai";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -407,6 +408,17 @@ export class ChatSession {
       const skills = await scanSkillsDirs(this.skillDirs);
       const system = this.buildSystemPrompt(skills);
       this.systemPrompt = system;
+      // effort 按协议映射：
+      // - OpenAI 兼容：providerOptions.deepseek.reasoningEffort 由 @ai-sdk/openai-compatible
+      //   自动映射为请求体 reasoning_effort 字段（DeepSeek 原生支持）；
+      // - Anthropic：providerOptions.anthropic.effort 由 @ai-sdk/anthropic 组装为请求体
+      //   output_config.effort（官方 Effort API，见 platform.claude.com/docs/en/build-with-claude/effort）
+      let effortProviderOptions: Record<string, JSONObject> | undefined;
+      if (this.effort) {
+        effortProviderOptions = this.provider === "openai"
+          ? { deepseek: { reasoningEffort: this.effort } }
+          : { anthropic: { effort: this.effort } };
+      }
       const generationOptions = {
         model: this.model,
         system,
@@ -414,11 +426,7 @@ export class ChatSession {
         tools: createBuiltinFileTools(this.cwd, { permissionGate: this.permissionGate }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
-        // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort
-        // 由 @ai-sdk/openai-compatible 自动映射为请求体 reasoning_effort 字段
-        ...(this.provider === "openai" && this.effort
-          ? { providerOptions: { deepseek: { reasoningEffort: this.effort } } }
-          : {}),
+        ...(effortProviderOptions ? { providerOptions: effortProviderOptions } : {}),
       };
       let stream: AsyncIterable<TextStreamPart<any>>;
       if (appConfig.streaming) {
@@ -562,6 +570,11 @@ export class ChatSession {
           messages: [{ role: "user", content: buildSummaryPrompt(plan) }],
           abortSignal: compactionSignal,
           temperature: 0,
+          // 压缩是摘要类任务：显式锁低 effort（OpenAI reasoning_effort=none / Anthropic
+          // output_config.effort=low），避免继承主对话的高 effort 拖慢"压缩上下文中"阶段
+          providerOptions: this.provider === "openai"
+            ? { deepseek: { reasoningEffort: "none" } }
+            : { anthropic: { effort: "low" } },
         });
 
         if (!result.text.trim()) {
