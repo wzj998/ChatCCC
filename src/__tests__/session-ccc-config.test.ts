@@ -31,6 +31,27 @@ describe("CCC Agent ChatCCC configuration", () => {
       DEEPSEEK_BASE_URL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
       effort: "high",
+      provider: "",
+    });
+
+    getAdapterForTool("ccc");
+
+    // provider 留空时不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
+    expect(createCccAdapterMock).toHaveBeenCalledWith({
+      apiKey: "chatccc-api-key",
+      baseURL: "https://chatccc.example.com/v1",
+      model: "chatccc-model",
+      effort: "high",
+    });
+  });
+
+  it("forwards ccc.provider override to createCccAdapter", () => {
+    Object.assign(config.ccc, {
+      DEEPSEEK_API_KEY: "chatccc-api-key",
+      DEEPSEEK_BASE_URL: "https://chatccc.example.com/v1",
+      model: "chatccc-model",
+      effort: "",
+      provider: "anthropic",
     });
 
     getAdapterForTool("ccc");
@@ -39,7 +60,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       apiKey: "chatccc-api-key",
       baseURL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
-      effort: "high",
+      provider: "anthropic",
     });
   });
 });

@@ -713,6 +713,8 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       baseURL: config.ccc.DEEPSEEK_BASE_URL,
       model: effectiveModel || undefined,
       effort: effectiveEffort || undefined,
+      // 留空（""）不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
+      ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
     });
   } else {
     adapter = createClaudeAdapter({

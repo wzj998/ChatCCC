@@ -11,10 +11,12 @@ import {
   anthropicConfigDisplay,
   autoDetectCodexPath,
   autoDetectCursorPath,
+  normalizeCccProviderOverride,
   normalizeOptionalConfigField,
   readToolCliPath,
   resolveCccEnabled,
 } from "./config-utils.ts";
+import type { CccProviderOverride } from "./config-utils.ts";
 
 // 重新导出 config-utils 中的纯函数/常量，保持对外 API 不变
 // （历史上这些符号都从 ./config.ts 导入；新代码可直接从 ./config-utils.ts 导入以避免触发本文件的副作用）
@@ -123,6 +125,12 @@ export interface CccConfig {
    * DeepSeek reasoning_effort 请求字段；留空表示不传（服务端默认 medium）。
    */
   effort: string;
+  /**
+   * API 协议 override（选填）：openai（OpenAI 兼容协议）或 anthropic（Anthropic
+   * Messages 协议）。留空（""）表示不 override，跟随 DeepCCC 内核配置
+   * （~/.deepccc/config.json 的 provider 或 DEEPCCC_PROVIDER 环境变量）。
+   */
+  provider: CccProviderOverride;
 }
 
 export interface FeishuConfig {
@@ -470,6 +478,7 @@ function loadConfig(): AppConfig {
       model: DEFAULT_CCC_MODEL,
       alternativeModel: "",
       effort: "",
+      provider: "",
     },
   };
 
@@ -702,6 +711,7 @@ function loadConfig(): AppConfig {
       model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
+      provider: normalizeCccProviderOverride(cccRaw.provider),
     },
   };
 }

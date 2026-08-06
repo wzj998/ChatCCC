@@ -37,6 +37,30 @@ export function normalizeOptionalConfigField(
 }
 
 /**
+ * ccc.provider 的合法取值：空字符串表示不 override（跟随 DeepCCC 内核配置），
+ * 或者显式指定 openai / anthropic 两种协议之一。
+ */
+export type CccProviderOverride = "" | "openai" | "anthropic";
+
+/**
+ * 归一化 `ccc.provider`（ChatCCC 主进程配置对 DeepCCC 内核传输层的 override）：
+ * - 非字符串 / 空串 / 字面量 "default" → `""`（不 override，跟随
+ *   ~/.deepccc/config.json 或 DEEPCCC_PROVIDER，向后兼容旧 config.json）
+ * - `openai` / `anthropic`（大小写不敏感）→ 规范化小写返回
+ * - 其它非法值 → `""` 并打印 warning（避免运行时 normalizeDeepCccProvider 抛错）
+ */
+export function normalizeCccProviderOverride(value: unknown): CccProviderOverride {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "" || trimmed === "default") return "";
+  if (trimmed === "openai" || trimmed === "anthropic") return trimmed;
+  console.warn(
+    `[CONFIG] ccc.provider 的值 "${value}" 非法，已忽略（仅支持 openai / anthropic / 空字符串）。`,
+  );
+  return "";
+}
+
+/**
  * CCC Agent requires credentials owned by ChatCCC. An explicit enabled=true
  * must not make the agent selectable when that credential is absent.
  */

@@ -107,6 +107,7 @@ describe("unflattenConfig", () => {
         CHATCCC_CCC_MODEL: "deepseek-v4-flash",
         CHATCCC_CCC_ALTERNATIVE_MODEL: "deepseek-v4-pro",
         CHATCCC_CCC_EFFORT: "max",
+        CHATCCC_CCC_PROVIDER: "anthropic",
       }),
     ).toEqual({
       ccc: {
@@ -117,6 +118,7 @@ describe("unflattenConfig", () => {
         model: "deepseek-v4-flash",
         alternativeModel: "deepseek-v4-pro",
         effort: "max",
+        provider: "anthropic",
       },
     });
   });
