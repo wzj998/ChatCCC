@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChatSession } from "../index.js";
-import { config } from "../config.js";
+import { config, normalizeDeepCccProvider } from "../config.js";
 
 const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
 const originalDeepCccApiKey = config.apiKey;
@@ -16,6 +16,14 @@ afterEach(() => {
 });
 
 describe("builtin ChatSession config", () => {
+  it("defaults provider selection to openai and accepts anthropic case-insensitively", () => {
+    expect(normalizeDeepCccProvider(undefined)).toBe("openai");
+    expect(normalizeDeepCccProvider("")).toBe("openai");
+    expect(normalizeDeepCccProvider("OPENAI")).toBe("openai");
+    expect(normalizeDeepCccProvider("Anthropic")).toBe("anthropic");
+    expect(() => normalizeDeepCccProvider("antropic")).toThrow(/openai.*anthropic/i);
+  });
+
   it("uses the builtin ~/.deepccc config when no apiKey is passed", () => {
     expect(() => new ChatSession()).not.toThrow();
   });

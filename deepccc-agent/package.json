@@ -1,13 +1,14 @@
 {
   "name": "deepccc",
-  "version": "0.1.15",
-  "description": "A lightweight DeepSeek-optimized coding agent with OpenAI-compatible model support.",
+  "version": "0.1.16",
+  "description": "A lightweight coding agent with OpenAI-compatible and Anthropic Messages API support.",
   "license": "Apache-2.0",
   "keywords": [
     "agent",
     "deepseek",
     "coding-agent",
     "openai-compatible",
+    "anthropic",
     "cli"
   ],
   "repository": {
@@ -47,6 +48,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.105",
     "@ai-sdk/openai-compatible": "^2.0.47",
     "@vscode/ripgrep": "^1.18.0",
     "ai": "^6.0.184"

@@ -5,13 +5,19 @@
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamPart } from "ai";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { config as appConfig, RAW_STREAM_LOGS_DIR } from "./config.js";
+import {
+  config as appConfig,
+  normalizeDeepCccProvider,
+  RAW_STREAM_LOGS_DIR,
+  type DeepCccProvider,
+} from "./config.js";
 import {
   createRawStreamLog,
   type RawStreamLogHandle,
@@ -176,8 +182,15 @@ function normalizeMaxSteps(value: number | undefined): number | undefined {
   return value;
 }
 
+function normalizeAnthropicBaseURL(baseURL: string): string {
+  const normalized = baseURL.trim().replace(/\/+$/, "");
+  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+}
+
 export interface ChatSessionConfig {
-  /** OpenAI-compatible service base URL. Defaults to DEEPCCC_BASE_URL/config. */
+  /** API protocol/provider. Defaults to DEEPCCC_PROVIDER/config, then openai. */
+  provider?: DeepCccProvider;
+  /** Provider service base URL. Defaults to DEEPCCC_BASE_URL/config. */
   baseURL?: string;
   /** API key. Defaults to DEEPCCC_API_KEY/config. */
   apiKey?: string;
@@ -254,6 +267,7 @@ interface ChatMessage {
 
 export class ChatSession {
   private model: any;
+  private provider: DeepCccProvider;
   private cwd: string;
   private context: BuiltinContextManager;
   private compactionTimeoutMs: number;
@@ -278,15 +292,24 @@ export class ChatSession {
 
     const baseURL = overrides.baseURL ?? appConfig.baseURL;
     const modelId = overrides.model ?? appConfig.model;
+    this.provider = normalizeDeepCccProvider(overrides.provider ?? appConfig.provider);
     this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();
 
-    const provider = createOpenAICompatible({
-      name: "deepccc",
-      baseURL,
-      apiKey,
-      includeUsage: true,
-    });
-    this.model = provider(modelId);
+    if (this.provider === "anthropic") {
+      const provider = createAnthropic({
+        baseURL: normalizeAnthropicBaseURL(baseURL),
+        apiKey,
+      });
+      this.model = provider(modelId);
+    } else {
+      const provider = createOpenAICompatible({
+        name: "deepccc",
+        baseURL,
+        apiKey,
+        includeUsage: true,
+      });
+      this.model = provider(modelId);
+    }
     this.cwd = options.cwd ?? process.cwd();
     this.maxSteps = normalizeMaxSteps(options.maxSteps);
     this.compactionTimeoutMs = Math.max(1, options.compactionTimeoutMs ?? DEFAULT_COMPACTION_TIMEOUT_MS);
@@ -393,7 +416,9 @@ export class ChatSession {
         abortSignal: signal,
         // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort
         // 由 @ai-sdk/openai-compatible 自动映射为请求体 reasoning_effort 字段
-        ...(this.effort ? { providerOptions: { deepseek: { reasoningEffort: this.effort } } } : {}),
+        ...(this.provider === "openai" && this.effort
+          ? { providerOptions: { deepseek: { reasoningEffort: this.effort } } }
+          : {}),
       };
       let stream: AsyncIterable<TextStreamPart<any>>;
       if (appConfig.streaming) {

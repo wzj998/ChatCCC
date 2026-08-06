@@ -208,15 +208,15 @@ chatccc
 
 ### 3. AI 工具配置
 
-Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，开箱即用，**模型接入不限于 DeepSeek**——它走 OpenAI 兼容协议，任意兼容端点都可以直接替换（详见下文 CCC Agent）。
+Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，开箱即用，**模型接入不限于 DeepSeek**——它支持 OpenAI-compatible 和 Anthropic Messages 两种协议（详见下文 CCC Agent）。
 
 #### CCC Agent
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
-ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effort 显式传给内置 Agent；这些配置不会回退读取 `~/.deepccc/config.json`，因此用户无需安装或配置独立的 `deepccc` 包。API Key 为空时 CCC Agent 会自动保持禁用。
+ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effort 显式传给内置 Agent；API Key 为空时 CCC Agent 会自动保持禁用。DeepCCC 的传输层选项 `provider`（默认 `openai`）和 `streaming`（默认 `true`）可通过 `~/.deepccc/config.json` 或 `DEEPCCC_PROVIDER` / `DEEPCCC_STREAMING` 配置，无需额外安装独立 CLI。
 
-**API 支持不限于 DeepSeek。** CCC Agent 底层使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点。`ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` 可以指向**任意 OpenAI 兼容服务**，例如：
+**API 支持不限于 DeepSeek。** 默认的 `provider: "openai"` 使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点；设置 `provider: "anthropic"` 后改用 Anthropic Messages 协议（`@ai-sdk/anthropic`）。两种模式都支持流式输出，并复用相同的 API Key、Base URL 和模型配置。
 
 | 服务 | Base URL 示例 | 说明 |
 | --- | --- | --- |

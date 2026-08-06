@@ -54,6 +54,7 @@ Windows PowerShell：
 
 ```powershell
 $env:DEEPCCC_API_KEY="sk-..."
+$env:DEEPCCC_PROVIDER="openai"
 $env:DEEPCCC_BASE_URL="https://api.deepseek.com/v1"
 $env:DEEPCCC_MODEL="deepseek-v4-pro"
 $env:DEEPCCC_STREAMING="true"
@@ -70,6 +71,7 @@ $env:DEEPCCC_STREAMING="true"
 
 ```json
 {
+  "provider": "openai",
   "apiKey": "sk-...",
   "baseURL": "https://api.deepseek.com/v1",
   "model": "deepseek-v4-pro",
@@ -83,6 +85,12 @@ $env:DEEPCCC_STREAMING="true"
   }
 }
 ```
+
+`provider` 可选 `openai` 或 `anthropic`，默认 `openai`，也可以通过
+`DEEPCCC_PROVIDER` 或命令行 `--provider` 覆盖：
+
+- `openai` 使用 OpenAI-compatible Chat Completions 协议，兼容 DeepSeek、OpenAI、LiteLLM、vLLM 等服务。
+- `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` 可以继续填写同一个服务基址；DeepCCC 会为不带 `/v1` 的地址自动补上 `/v1`。`effort` 是 OpenAI/DeepSeek 扩展参数，在 Anthropic 模式下不会发送。
 
 `streaming` 控制主对话是否使用流式请求，默认 `true`；也可以通过
 `DEEPCCC_STREAMING=true|false` 覆盖。关闭后，终端会在整条模型响应完成后一次性显示结果。
@@ -99,6 +107,12 @@ deepccc
 
 ```bash
 deepccc --base-url https://api.openai.com/v1 --api-key "$OPENAI_API_KEY" --model gpt-4.1
+```
+
+使用 Anthropic Messages 协议（同样支持流式输出）：
+
+```bash
+deepccc --provider anthropic --base-url https://api.example.com --api-key "$API_KEY" --model claude-sonnet-4-6
 ```
 
 指定工作目录：

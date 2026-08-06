@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { config } from "../../deepccc-agent/src/config.ts";
 import { estimateBuiltinContextTokens } from "../../deepccc-agent/src/context.ts";
@@ -13,9 +13,14 @@ const createRawStreamLogMock = vi.fn();
 const rawLogWriteLineMock = vi.fn();
 const rawLogCloseMock = vi.fn();
 const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
+const originalProvider = config.provider;
 
 vi.mock("@ai-sdk/openai-compatible", () => ({
   createOpenAICompatible: vi.fn(() => (modelId: string) => ({ modelId })),
+}));
+
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: vi.fn(() => (modelId: string) => ({ modelId })),
 }));
 
 vi.mock("ai", () => ({
@@ -45,6 +50,10 @@ async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
 }
 
+beforeEach(() => {
+  config.provider = "openai";
+});
+
 afterEach(() => {
   streamTextMock.mockReset();
   generateTextMock.mockReset();
@@ -52,6 +61,7 @@ afterEach(() => {
   rawLogWriteLineMock.mockReset();
   rawLogCloseMock.mockReset();
   config.rawStreamLogs = structuredClone(originalRawStreamLogs);
+  config.provider = originalProvider;
   vi.useRealTimers();
 });
 
