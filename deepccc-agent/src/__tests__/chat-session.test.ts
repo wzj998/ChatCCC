@@ -145,6 +145,31 @@ describe("ChatSession response transport", () => {
     expect(streamTextMock.mock.calls[0]?.[0]).not.toHaveProperty("providerOptions");
   });
 
+  it("adds the JSON tool compatibility note to Anthropic user messages", async () => {
+    const { ChatSession } = await import("../index.js");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+    const session = new ChatSession({
+      provider: "anthropic",
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example",
+      model: "model-a",
+    });
+
+    await collect(session.chat("delete the orphan directory"));
+
+    const messages = streamTextMock.mock.calls[0]?.[0].messages as Array<{
+      role: string;
+      content: string;
+    }>;
+    expect(messages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("tool-call arguments use JSON encoding"),
+    });
+    expect(messages.at(-1)?.content).toContain(
+      "final reply does not need to be JSON",
+    );
+  });
+
   it("maps OpenAI-compatible effort to DeepSeek reasoningEffort", async () => {
     const { ChatSession } = await import("../index.js");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
