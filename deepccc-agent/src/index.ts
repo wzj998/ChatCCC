@@ -28,6 +28,7 @@ import {
   buildSummaryPrompt,
   BuiltinContextManager,
   defaultBuiltinSessionId,
+  type BuiltinContextMessage,
 } from "./context.js";
 import { createBuiltinFileTools } from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
@@ -86,6 +87,10 @@ const SUMMARY_SYSTEM_PROMPT = [
 
 export const DEFAULT_COMPACTION_TIMEOUT_MS = 90 * 1000;
 const MAX_COMPACTION_OUTPUT_TOKENS = 16_384;
+const ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE = [
+  "[Protocol compatibility note]",
+  "tool-call arguments use JSON encoding; the final reply does not need to be JSON unless the user requests it.",
+].join("\n");
 
 // ---------------------------------------------------------------------------
 // 类型定义
@@ -128,6 +133,31 @@ function buildRuntimeWorkspacePrompt(cwd: string): string {
     "编辑前先阅读相关文件范围。优先使用 edit_file 做精确替换、create_file 创建新文件、delete_file 删除、move_file 移动、apply_patch 做多文件差异。",
     "文件工具通过 DeepCCC 在本地执行。可行时优先使用带 SHA-256 前置条件的受保护编辑，避免覆盖并发用户修改。",
   ].join("\n");
+}
+
+function addAnthropicToolJsonCompatibilityNote(
+  messages: BuiltinContextMessage[],
+): BuiltinContextMessage[] {
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) return messages;
+
+  // 部分 Anthropic→OpenAI/Ark 转换器会用 response_format=json_object
+  // 实现工具调用，却只在 messages 中校验 JSON 关键词、不读取顶层 system。
+  // 这里仅声明工具参数的编码方式，并明确不要求普通最终回复输出 JSON。
+  return messages.map((message, index) => (
+    index === lastUserIndex
+      ? {
+          ...message,
+          content: `${message.content}\n\n${ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE}`,
+        }
+      : message
+  ));
 }
 
 /**
@@ -409,6 +439,10 @@ export class ChatSession {
       const skills = await scanSkillsDirs(this.skillDirs);
       const system = this.buildSystemPrompt(skills);
       this.systemPrompt = system;
+      const contextMessages = this.context.buildModelMessages();
+      const modelMessages = this.provider === "anthropic"
+        ? addAnthropicToolJsonCompatibilityNote(contextMessages)
+        : contextMessages;
       // effort 按协议映射：
       // - OpenAI 兼容：providerOptions.deepseek.reasoningEffort 由 @ai-sdk/openai-compatible
       //   自动映射为请求体 reasoning_effort 字段（DeepSeek 原生支持）；
@@ -423,7 +457,7 @@ export class ChatSession {
       const generationOptions = {
         model: this.model,
         system,
-        messages: this.context.buildModelMessages() as any,
+        messages: modelMessages as any,
         tools: createBuiltinFileTools(this.cwd, { permissionGate: this.permissionGate }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
