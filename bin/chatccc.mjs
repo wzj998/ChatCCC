@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 // 相对 bin/chatccc.mjs 解析 package.json，包根目录不依赖 cwd，也不会多退一级到 node_modules
 const pkgRoot = dirname(require.resolve("../package.json"));
-const indexTs = join(pkgRoot, "src", "index.ts");
-const tsxCli = require.resolve("tsx/cli");
+const compiledEntry = join(pkgRoot, "dist", "src", "index.js");
+let args;
+if (existsSync(compiledEntry)) {
+  args = [compiledEntry, ...process.argv.slice(2)];
+} else {
+  // Development checkout fallback. Published packages always contain dist/.
+  const indexTs = join(pkgRoot, "src", "index.ts");
+  const tsxCli = require.resolve("tsx/cli");
+  args = [tsxCli, indexTs, ...process.argv.slice(2)];
+}
 
-const result = spawnSync(process.execPath, [tsxCli, indexTs, ...process.argv.slice(2)], {
+const result = spawnSync(process.execPath, args, {
   stdio: "inherit",
   cwd: process.cwd(),
   env: process.env,

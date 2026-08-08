@@ -9,9 +9,8 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 import type {
   ToolAdapter,
@@ -27,7 +26,7 @@ import {
   type CodexSessionMetaStore,
 } from "./codex-session-meta-store.ts";
 import { killProcessTree } from "./proc-tree-kill.ts";
-import { config, RAW_STREAM_LOGS_DIR } from "../config.ts";
+import { config, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   createRawStreamLog,
   type RawStreamLogHandle,
@@ -38,7 +37,6 @@ import { readJsonLinesWithBadJsonIdleWatchdog } from "./jsonl-stream.ts";
 // 特殊注入提示
 // ---------------------------------------------------------------------------
 
-const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CODEX_SPECIFIC_PROMPT_PATH = join(
   PROJECT_ROOT,
   "agent-prompts",

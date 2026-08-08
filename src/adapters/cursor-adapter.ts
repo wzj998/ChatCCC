@@ -7,8 +7,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import type {
   ToolAdapter,
@@ -19,7 +18,7 @@ import type {
   SessionInfo,
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
-import { config, CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS, RAW_STREAM_LOGS_DIR } from "../config.ts";
+import { config, CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultCursorSessionMetaStore,
   type CursorSessionMetaStore,
@@ -35,7 +34,6 @@ import { readJsonLinesWithBadJsonIdleWatchdog } from "./jsonl-stream.ts";
 // 特殊注入提示
 // ---------------------------------------------------------------------------
 
-const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CURSOR_SPECIFIC_PROMPT_PATH = join(
   PROJECT_ROOT,
   "agent-prompts",

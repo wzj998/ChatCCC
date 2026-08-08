@@ -96,6 +96,7 @@ import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
 import { acquireUpdateCommandGuard } from "./update-command-guard.ts";
 import { createInternalRestartEnv } from "./startup-lifecycle.ts";
+import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -800,16 +801,13 @@ function syncUpdateAndRestart(): ChildProcess | undefined {
 export const RESTART_CHILD_READY_MS = 3000;
 
 /**
- * 构建自重启的 spawn 参数：直接使用 node 可执行文件 + 本地 tsx CLI 绝对路径，
- * 不经过 npx/npm。原实现 spawn("npx", ["tsx", "src/index.ts"], { shell: true })
- * 在继承环境 PATH 异常（npm 子进程找不到 node/tsx）时会秒退，且错误被
- * stdio:"ignore" 吞掉，导致 restart 静默失败、服务空窗。
+ * 构建自重启的 spawn 参数：发布包直接运行编译后的 JavaScript；只有尚未
+ * build 的开发工作区才使用本地 tsx CLI。两种情况都不经过 npx/npm。
  */
 export function buildRestartSpawnSpec(
   projectRoot: string = PROJECT_ROOT,
 ): { command: string; args: string[] } {
-  const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  return { command: process.execPath, args: [tsxCli, "src/index.ts"] };
+  return resolveChatCccRuntimeSpawnSpec(projectRoot);
 }
 
 export interface RestartSpawnDeps {
@@ -831,7 +829,7 @@ export interface RestartSpawnDeps {
  *   终端句柄的生命周期不随父进程退出而关闭，因此不存在 EPIPE 风险。
  * - **非终端场景**（守护进程/黑匣子等管道或文件启动）：stderr 重定向到磁盘日志
  *   文件（restart-*.log），子进程继承文件句柄，父进程退出不影响写入。
- *   不能用 pipe 收集：pipe 读端随父进程退出关闭后，子进程（尤其经 tsx 包装）
+ *   不能用 pipe 收集：pipe 读端随父进程退出关闭后，子进程
  *   再写 stderr（如飞书 SDK 内部 console.warn）会 EPIPE → uncaughtException
  *   → 整个服务崩溃。若日志文件打开失败，退回 pipe 收集（旧行为），并记录 trace。
  */

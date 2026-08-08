@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
 import { appendStartupTrace, setupFileLogging } from "./shared.ts";
@@ -37,7 +38,7 @@ export type { ParsedGitTimeout } from "./config-utils.ts";
 // ---------------------------------------------------------------------------
 
 export const __dirname = dirname(fileURLToPath(import.meta.url));
-export const PROJECT_ROOT = join(__dirname, "..");
+export const PROJECT_ROOT = CHATCCC_PACKAGE_ROOT;
 /** 用户持久化数据根目录（不随 npm 升级清空） */
 export const USER_DATA_DIR = join(homedir(), ".chatccc");
 export const PID_FILE = join(USER_DATA_DIR, "state", "runtime.pid");

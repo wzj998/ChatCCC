@@ -10,9 +10,10 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile, writeFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { spawn, execSync } from "node:child_process";
+import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
+import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
 import {
   buildWebUiUrl,
   createInternalRestartEnv,
@@ -26,8 +27,7 @@ import {
   isInstallRunning,
 } from "./claude-sdk-installer.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = join(__dirname, "..");
+const PROJECT_ROOT = CHATCCC_PACKAGE_ROOT;
 const USER_DATA_DIR = join(homedir(), ".chatccc");
 const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
@@ -244,16 +244,14 @@ function getServiceUptime(): number | null {
 import { statSync } from "node:fs";
 
 function spawnService(): { ok: boolean; pid?: number; error?: string } {
-  const indexPath = join(PROJECT_ROOT, "src", "index.ts");
-  if (!existsSync(indexPath)) {
-    return { ok: false, error: `Entry not found: ${indexPath}` };
-  }
+  const spec = resolveChatCccRuntimeSpawnSpec(PROJECT_ROOT);
+  if (!existsSync(spec.args[0])) return { ok: false, error: `Entry not found: ${spec.args[0]}` };
   try {
-    const child = spawn("npx", ["tsx", "src/index.ts"], {
+    const child = spawn(spec.command, spec.args, {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: "ignore",
-      shell: true,
+      shell: false,
       env: createInternalRestartEnv(),
     });
     child.unref();
@@ -268,11 +266,21 @@ function spawnService(): { ok: boolean; pid?: number; error?: string } {
  * 然后退出当前进程。延迟是为了让当前进程完全退出并释放端口。
  */
 function scheduleRestart(): void {
-  const indexPath = join(PROJECT_ROOT, "src", "index.ts");
-  if (!existsSync(indexPath)) return;
+  const spec = resolveChatCccRuntimeSpawnSpec(PROJECT_ROOT);
+  if (!existsSync(spec.args[0])) return;
+  const delayedLauncher = [
+    "const { spawn } = require('node:child_process');",
+    `const command = ${JSON.stringify(spec.command)};`,
+    `const args = ${JSON.stringify(spec.args)};`,
+    `const cwd = ${JSON.stringify(PROJECT_ROOT)};`,
+    "setTimeout(() => {",
+    "  const child = spawn(command, args, { cwd, detached: true, stdio: 'ignore', shell: false, env: process.env });",
+    "  child.unref();",
+    "}, 2000);",
+  ].join("\n");
   if (process.platform === "win32") {
-    // Windows: ping 作为 sleep（ping 自己 3 次 ≈ 2 秒延迟）
-    spawn("cmd.exe", ["/c", "ping -n 3 127.0.0.1 > nul && npx tsx src/index.ts"], {
+    // Windows keeps the helper window hidden; the helper itself provides the delay.
+    spawn(process.execPath, ["-e", delayedLauncher], {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: "ignore",
@@ -280,7 +288,7 @@ function scheduleRestart(): void {
       env: createInternalRestartEnv(),
     }).unref();
   } else {
-    spawn("bash", ["-c", "sleep 2 && npx tsx src/index.ts"], {
+    spawn(process.execPath, ["-e", delayedLauncher], {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: "ignore",

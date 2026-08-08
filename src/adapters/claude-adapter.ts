@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { delimiter, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type {
   CreateSessionResult,
@@ -12,7 +12,7 @@ import type {
   UnifiedStreamMessage,
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
-import { CHATCCC_PORT, config, RAW_STREAM_LOGS_DIR } from "../config.ts";
+import { CHATCCC_PORT, config, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultClaudeSessionMetaStore,
   type ClaudeSessionMetaStore,
@@ -23,7 +23,6 @@ import {
 } from "./raw-stream-log.ts";
 import { getClaudeSdkEntryPath } from "../claude-sdk-installer.ts";
 
-const PROJECT_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CLAUDE_SPECIFIC_PROMPT_PATH = join(
   PROJECT_ROOT,
   "agent-prompts",

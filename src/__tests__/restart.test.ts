@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ import {
 import { INTERNAL_RESTART_ENV_VAR } from "../startup-lifecycle.ts";
 
 describe("buildRestartSpawnSpec", () => {
-  it("spawns node directly with the local tsx CLI (never via npx/npm)", () => {
+  it("uses the local tsx CLI only for an unbuilt development checkout", () => {
     const spec = buildRestartSpawnSpec("F:/proj");
     expect(spec.command).toBe(process.execPath);
     expect(spec.args[0]).toBe(join("F:/proj", "node_modules", "tsx", "dist", "cli.mjs"));
@@ -22,10 +23,25 @@ describe("buildRestartSpawnSpec", () => {
     expect([spec.command, ...spec.args].join(" ")).not.toMatch(/npx|npm/i);
   });
 
+  it("runs the compiled JavaScript entry when dist is available", () => {
+    const root = mkdtempSync(join(tmpdir(), "chatccc-compiled-restart-"));
+    const entry = join(root, "dist", "src", "index.js");
+    mkdirSync(join(root, "dist", "src"), { recursive: true });
+    writeFileSync(entry, "", "utf8");
+    try {
+      expect(buildRestartSpawnSpec(root)).toEqual({
+        command: process.execPath,
+        args: [entry],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("accepts the default project root", () => {
     const spec = buildRestartSpawnSpec();
     expect(spec.command).toBe(process.execPath);
-    expect(spec.args[0]).toContain("tsx");
+    expect([spec.command, ...spec.args].join(" ")).not.toMatch(/npx|npm/i);
   });
 });
 
