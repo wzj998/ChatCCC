@@ -182,8 +182,11 @@ export function loadPlatformCommandPrompt(
 
   // import.meta.url 定位包根：chatccc 源码运行时指向 deepccc-agent/os-prompts/，
   // deepccc dist 运行时指向包根 os-prompts/（dist/index.js 的 ../os-prompts/）。
-  const builtinDir =
-    dirs.builtinDir ?? fileURLToPath(new URL("../os-prompts/", import.meta.url));
+  const adjacentBuiltinDir = fileURLToPath(new URL("../os-prompts/", import.meta.url));
+  const embeddedBuiltinDir = fileURLToPath(new URL("../../../deepccc-agent/os-prompts/", import.meta.url));
+  const builtinDir = dirs.builtinDir ?? (
+    existsSync(adjacentBuiltinDir) ? adjacentBuiltinDir : embeddedBuiltinDir
+  );
   const userDir = dirs.userDir ?? join(homedir(), ".deepccc", "prompts");
 
   // 用户覆盖优先；读取失败时静默回退内置，内置也失败则返回空。

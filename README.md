@@ -414,4 +414,4 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 ## 技术栈
 
-TypeScript / Node.js >= 20 / tsx / AI SDK / Anthropic Claude Agent SDK（按需下载，仅启用 Claude Code 时安装）/ Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
+TypeScript（发布前编译为 JavaScript，tsx 仅用于开发）/ Node.js >= 20 / AI SDK / Anthropic Claude Agent SDK（按需下载，仅启用 Claude Code 时安装）/ Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink

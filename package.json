@@ -1,17 +1,17 @@
 {
   "name": "chatccc",
-  "version": "0.2.252",
+  "version": "0.2.253",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/src/index.js",
   "bin": {
     "chatccc": "bin/chatccc.mjs",
     "cccagent": "bin/cccagent.mjs"
   },
   "files": [
-    "src/",
-    "deepccc-agent/",
+    "dist/",
+    "deepccc-agent/os-prompts/",
     "bin/",
     "scripts/postinstall-sharp-check.mjs",
     "demo/ilink_echo_probe.ts",
@@ -30,6 +30,8 @@
     "config.sample.json"
   ],
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
     "dev": "tsx src/index.ts",
     "chatccc": "tsx src/index.ts",
     "start": "tsx src/index.ts",
@@ -58,13 +60,13 @@
     "nodemailer": "^8.0.7",
     "qrcode-terminal": "^0.12.0",
     "sharp": "^0.34.5",
-    "tsx": "^4.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.18.1",
+    "tsx": "^4.0.0",
     "typescript": "^5.0.0",
     "vitest": "^3.2.4"
   },
