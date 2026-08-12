@@ -159,7 +159,7 @@ export function buildHelpCard(
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
     "发送 **/new ccc** 创建新 CCC Agent 会话",
-    "发送 **/newh** 重置当前会话（沿用当前工作目录，不切换）",
+    "发送 **/forget** 重置当前会话（忘掉上下文，沿用当前工作目录，不切换）",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
     "发送 **/usage** 查看当前 Agent 的用量或余额",
@@ -413,8 +413,8 @@ export function buildSessionsCard(sessions: Array<{
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
       { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
-        ? "当前飞书私聊使用专属会话；默认 Agent 变化后，下一条普通消息会自动创建对应 Agent 的新空会话。发送 **/newh** 可在私聊中原地重置。群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
-        : "在会话群内发送 **/newh** 可重置当前会话（创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
+        ? "当前飞书私聊使用专属会话；默认 Agent 变化后，下一条普通消息会自动创建对应 Agent 的新空会话。发送 **/forget** 可在私聊中原地重置（忘掉当前上下文）。群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
+        : "在会话群内发送 **/forget** 可重置当前会话（忘掉上下文，创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
       { tag: "hr" },
       {
         tag: "action",

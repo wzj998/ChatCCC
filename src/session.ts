@@ -1039,20 +1039,20 @@ export function accumulateBlockContent(
 }
 
 // ---------------------------------------------------------------------------
-// switchChatBinding — /newh、/session N 共用的事务式"切换 chat 绑定"
+// switchChatBinding — /forget、/session N 共用的事务式"切换 chat 绑定"
 // ---------------------------------------------------------------------------
 //
 // 设计契约（解决三类历史 bug）：
 //
 //   1. 私聊不能调 updateChatInfo（飞书 API 在 p2p chatId 上会返回非 0 → throw）。
-//      之前的实现没判断 chatType,私聊 /newh、/session N 走到 updateChatInfo
+//      之前的实现没判断 chatType,私聊 /forget、/session N 走到 updateChatInfo
 //      就直接抛错,留下"内存已切换、registry 没更新"的脏状态。
 //
 //   2. updateChatInfo 群聊也可能因为网络/频控失败。之前的代码顺序是
 //        先 unbind 旧 → bind 新 → 再调 updateChatInfo
 //      API 失败后内存绑定已经切走,但群 description 还是旧 sessionId。
 //      下次用户在群里发消息时,extractSessionInfo 拿到旧 sessionId,而内存绑定
-//      指向新 sessionId,路由完全错乱（参考 /newh 的 corner case 7）。
+//      指向新 sessionId,路由完全错乱（参考 /forget 的 corner case 7）。
 //
 //   3. 改成"先 API 后内存"的顺序后,API 失败就完全不切换内存,下次消息按
 //      旧 description 正常路由到旧 session,新创建的 session 留在 sessions.json
@@ -2091,7 +2091,7 @@ export function startUnifiedDisplayLoop(): void {
           }
 
         // 交叉验证：chat 当前绑定的 session 是否仍是 display 记录的 session。
-        // 若 chat 已被切换到其他 session（如 /newh），旧 display 必须停推。
+        // 若 chat 已被切换到其他 session（如 /forget），旧 display 必须停推。
         const currentSessionForChat = sessionInfoMap.get(chatId)?.sessionId;
         if (currentSessionForChat && currentSessionForChat !== sessionId) {
           if (state.status !== "running") {

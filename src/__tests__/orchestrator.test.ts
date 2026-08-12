@@ -755,7 +755,7 @@ describe("handleCommand WeChat processing ack", () => {
     expect(registry["feishu-group"]?.sessionId).toBe("sid-feishu-group");
   });
 
-  it("resets a Feishu p2p session in place with /newh and forces the OS user directory", async () => {
+  it("resets a Feishu p2p session in place with /forget and forces the OS user directory", async () => {
     const platform = mockPlatform("feishu");
     const createSession = vi.fn(async () => ({ sessionId: "sid-feishu-private-reset" }));
     _setAdapterForToolForTest("claude", {
@@ -775,7 +775,7 @@ describe("handleCommand WeChat processing ack", () => {
       running: false,
     });
 
-    await handleCommand(platform, "/newh", "feishu-p2p", "ou-user", Date.now(), "p2p");
+    await handleCommand(platform, "/forget", "feishu-p2p", "ou-user", Date.now(), "p2p");
 
     expect(createSession).toHaveBeenCalledWith(homedir(), expect.any(AbortSignal));
     expect(platform.createGroup).not.toHaveBeenCalled();
@@ -788,6 +788,33 @@ describe("handleCommand WeChat processing ack", () => {
       expect.stringContaining(`${homedir()}\`（飞书私聊固定使用系统用户目录）`),
       "green",
     );
+  });
+
+  it("treats the removed /newh alias as a plain message and does not reset the session", async () => {
+    const platform = mockPlatform("feishu");
+    const createSession = vi.fn(async () => ({ sessionId: "sid-should-not-exist" }));
+    _setAdapterForToolForTest("claude", {
+      ...mockAdapter("sid-feishu-private"),
+      createSession,
+      getSessionInfo: async (sessionId: string): Promise<SessionInfo> => ({
+        sessionId,
+        cwd: "F:\\some-project",
+      }),
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-p2p",
+      sessionId: "sid-feishu-private",
+      tool: "claude",
+      chatType: "p2p",
+      chatName: "飞书私聊",
+      running: false,
+    });
+
+    await handleCommand(platform, "/newh", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    expect(createSession).not.toHaveBeenCalled();
+    const registry = await loadSessionRegistryForBinding();
+    expect(registry["feishu-p2p"]?.sessionId).toBe("sid-feishu-private");
   });
 
   it("does not allow /session to replace the dedicated Feishu p2p session", async () => {
