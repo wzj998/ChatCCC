@@ -85,7 +85,22 @@ const SUMMARY_SYSTEM_PROMPT = [
   "用中文输出摘要。",
 ].join("\n");
 
-export const DEFAULT_COMPACTION_TIMEOUT_MS = 90 * 1000;
+/**
+ * 压缩后注入的恢复提示（lead-in，对齐业界 Codex 的 post-compaction lead-in 思路）：
+ * 只要会话发生过压缩（存在摘要），就在摘要后告知模型可用 session_search 找回原文。
+ * 这样模型在后续每一轮都知道"较早消息已压缩、原文可检索"，而不是把恢复完全
+ * 外包给模型的自发判断。
+ */
+const COMPACTION_RECOVERY_HINT_ENABLED = [
+  "[系统提示] 本会话较早的消息已压缩为摘要。",
+  "如需找回被压缩消息的精确原文，可调用 session_search 工具检索本会话，并设置 include_raw_logs=true 以扫描本地 gzip 原始流日志。",
+].join("\n");
+
+const COMPACTION_RECOVERY_HINT_DISABLED = [
+  "[系统提示] 本会话较早的消息已压缩为摘要，原始消息未保留（raw stream logs 已关闭）。",
+].join("\n");
+
+export const DEFAULT_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_COMPACTION_OUTPUT_TOKENS = 16_384;
 const ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE = [
   "[Protocol compatibility note]",
@@ -156,6 +171,29 @@ function addAnthropicToolJsonCompatibilityNote(
           ...message,
           content: `${message.content}\n\n${ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE}`,
         }
+      : message
+  ));
+}
+
+/**
+ * 压缩后恢复提示注入：只要会话存在摘要（即发生过压缩），就在摘要消息后追加
+ * 一条提示，告知模型可用 session_search（include_raw_logs=true）找回被压缩的原文。
+ * 提示内容随 raw stream logs 开关动态切换，避免关闭日志时给出误导性承诺。
+ */
+function maybeAppendCompactionRecoveryHint(
+  messages: BuiltinContextMessage[],
+  summary: string,
+  rawLogsEnabled: boolean,
+): BuiltinContextMessage[] {
+  if (!summary.trim()) return messages;
+  const summaryIndex = messages.findIndex(
+    (message) => message.role === "user" && message.content.startsWith("以下是更早的对话摘要"),
+  );
+  if (summaryIndex < 0) return messages;
+  const hint = rawLogsEnabled ? COMPACTION_RECOVERY_HINT_ENABLED : COMPACTION_RECOVERY_HINT_DISABLED;
+  return messages.map((message, index) => (
+    index === summaryIndex
+      ? { ...message, content: `${message.content}\n\n${hint}` }
       : message
   ));
 }
@@ -443,9 +481,14 @@ export class ChatSession {
       const system = this.buildSystemPrompt(skills);
       this.systemPrompt = system;
       const contextMessages = this.context.buildModelMessages();
+      const hintedMessages = maybeAppendCompactionRecoveryHint(
+        contextMessages,
+        this.context.summary,
+        appConfig.rawStreamLogs.enabled,
+      );
       const modelMessages = this.provider === "anthropic"
-        ? addAnthropicToolJsonCompatibilityNote(contextMessages)
-        : contextMessages;
+        ? addAnthropicToolJsonCompatibilityNote(hintedMessages)
+        : hintedMessages;
       // effort 按协议映射：
       // - OpenAI 兼容：providerOptions.deepseek.reasoningEffort 由 @ai-sdk/openai-compatible
       //   自动映射为请求体 reasoning_effort 字段（DeepSeek 原生支持）；

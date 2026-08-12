@@ -1,9 +1,11 @@
 import { existsSync, readFileSync, copyFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+
+import { AGENT_TOOLS, type AgentTool } from "./agent-tool.ts";
 import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
@@ -18,6 +20,8 @@ import {
   resolveCccEnabled,
 } from "./config-utils.ts";
 import type { CccProviderOverride } from "./config-utils.ts";
+
+export { AGENT_TOOLS, type AgentTool } from "./agent-tool.ts";
 
 // 重新导出 config-utils 中的纯函数/常量，保持对外 API 不变
 // （历史上这些符号都从 ./config.ts 导入；新代码可直接从 ./config-utils.ts 导入以避免触发本文件的副作用）
@@ -132,6 +136,11 @@ export interface CccConfig {
    * （~/.deepccc/config.json 的 provider 或 DEEPCCC_PROVIDER 环境变量）。
    */
   provider: CccProviderOverride;
+  /**
+   * 上下文压缩（context compaction）单轮超时（毫秒），默认 300000（5 分钟）。
+   * 压缩在回复生成前同步执行，超时过短会导致整轮对话失败，建议保持默认或调大。
+   */
+  compactionTimeoutMs: number;
 }
 
 export interface FeishuConfig {
@@ -190,8 +199,6 @@ export interface AppConfig {
   ccc: CccConfig;
 }
 
-export type AgentTool = "claude" | "cursor" | "codex" | "ccc";
-export const AGENT_TOOLS: AgentTool[] = ["claude", "cursor", "codex", "ccc"];
 export type CursorAvatarBatteryMode = "apiPercent" | "onDemandUse";
 
 /** 获取指定 agent 配置中所有模型相关的值（最多 100 个，去重） */
@@ -240,6 +247,7 @@ const CONFIG_FILE = join(USER_DATA_DIR, "config.json");
 const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
 export const DEFAULT_CCC_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 export const DEFAULT_CCC_MODEL = "deepseek-v4-pro";
+export const DEFAULT_CCC_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * 将旧位置（PROJECT_ROOT）的持久化数据一次性迁移到 USER_DATA_DIR。
@@ -480,6 +488,7 @@ function loadConfig(): AppConfig {
       alternativeModel: "",
       effort: "",
       provider: "",
+      compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
     },
   };
 
@@ -541,6 +550,8 @@ function loadConfig(): AppConfig {
       model?: unknown;
       alternativeModel?: unknown;
       effort?: unknown;
+      provider?: unknown;
+      compactionTimeoutMs?: unknown;
     };
     webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
@@ -713,6 +724,10 @@ function loadConfig(): AppConfig {
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
       provider: normalizeCccProviderOverride(cccRaw.provider),
+      compactionTimeoutMs: normalizePositiveInteger(
+        cccRaw.compactionTimeoutMs,
+        DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
+      ),
     },
   };
 }

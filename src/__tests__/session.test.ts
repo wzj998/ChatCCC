@@ -2865,6 +2865,27 @@ describe("switchChatBinding", () => {
     expect(getLastActiveChat("new-sid")).toBe("chat-1");
   });
 
+  it("persists a fixed project naming policy across session switches", async () => {
+    const result = await switchChatBinding({
+      chatId: "project-chat",
+      chatType: "group",
+      oldSessionId: null,
+      newSessionId: "project-session",
+      tool: "codex",
+      chatName: "主Agent-ChatCCC",
+      namePolicy: "fixed",
+      newDescription: "Codex Session: project-session",
+      updateChatInfoFn: async () => {},
+    });
+
+    expect(result.ok).toBe(true);
+    const registry = JSON.parse(await readFile(registryFile, "utf8"));
+    expect(registry["project-chat"]).toMatchObject({
+      chatName: "主Agent-ChatCCC",
+      namePolicy: "fixed",
+    });
+  });
+
   it("私聊场景：完全跳过 updateChatInfo,仍完成内存切换", async () => {
     let called = false;
     const updateChatInfoFn = async () => {

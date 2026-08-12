@@ -14,6 +14,9 @@ import { join } from "node:path";
 import { spawn, execSync } from "node:child_process";
 import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
 import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
+import { handleAgentTeamRequest } from "./agent-team/http/board-routes.ts";
+import { AGENT_TEAM_PAGE_HTML } from "./agent-team/web/agent-team-page.ts";
+export { AGENT_TEAM_PAGE_HTML } from "./agent-team/web/agent-team-page.ts";
 import {
   buildWebUiUrl,
   createInternalRestartEnv,
@@ -683,24 +686,6 @@ async function handleClaudeSdkInstall(_req: IncomingMessage, res: ServerResponse
 // ---------------------------------------------------------------------------
 // HTML page (embedded template)
 // ---------------------------------------------------------------------------
-
-/** Agent Team 的首个占位页面：按产品约定只展示标题，不提前放入功能内容。 */
-export const AGENT_TEAM_PAGE_HTML = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Team</title>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:radial-gradient(circle at 50% 20%,#312e81 0,#111827 42%,#020617 100%);color:#fff}
-h1{font-size:clamp(40px,8vw,88px);font-weight:750;letter-spacing:-.04em;text-shadow:0 12px 42px rgba(129,140,248,.45)}
-</style>
-</head>
-<body>
-  <h1>Agent Team</h1>
-</body>
-</html>`;
 
 export const PAGE_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2406,6 +2391,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const pathname = url.split("?", 1)[0];
 
   if (extraApiHandler && await extraApiHandler(req, res)) return;
+  if (await handleAgentTeamRequest(req, res)) return;
 
   // API routes
   if (url === "/api/check" && method === "GET") return handleApiCheck(req, res);

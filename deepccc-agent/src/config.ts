@@ -26,7 +26,10 @@ export const DEEPCCC_HOME = join(homedir(), ".deepccc");
 export const RAW_STREAM_LOGS_DIR = join(DEEPCCC_HOME, "raw-stream-logs");
 const CONFIG_PATH = join(DEEPCCC_HOME, "config.json");
 
-const DEFAULT_CONFIG: DeepCccConfig = {
+/**
+ * 默认配置（不读环境/文件）。导出供测试断言默认值；运行时请用 loadConfig 结果。
+ */
+export const DEFAULT_CONFIG: DeepCccConfig = {
   provider: "openai",
   apiKey: "",
   baseURL: "https://api.deepseek.com/v1",
@@ -34,7 +37,9 @@ const DEFAULT_CONFIG: DeepCccConfig = {
   effort: "",
   streaming: true,
   rawStreamLogs: {
-    enabled: false,
+    // 默认开启：压缩后可通过 session_search（include_raw_logs=true）找回原文。
+    // 如需关闭，在 ~/.deepccc/config.json 中设置 rawStreamLogs.enabled=false。
+    enabled: true,
     maxBytesPerTurn: 1024 * 1024,
     retentionDays: 7,
     keepCompleted: false,

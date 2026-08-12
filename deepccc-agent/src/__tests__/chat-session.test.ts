@@ -499,6 +499,98 @@ describe("ChatSession context management", () => {
     expect(restored.history.map((m) => m.content).join("\n")).toContain("new answer");
   });
 
+  it("injects a session-search recovery hint into model messages after compaction", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-recovery-hint-"));
+
+    const seed = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        persist: true,
+        contextDir: dir,
+        sessionId: "recovery-hint",
+        compactAtTokens: 10_000,
+      },
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("old answer") });
+    await collect(seed.chat("old question"));
+
+    config.rawStreamLogs = {
+      enabled: true,
+      maxBytesPerTurn: 1024 * 1024,
+      retentionDays: 7,
+      keepCompleted: false,
+    };
+    generateTextMock.mockResolvedValueOnce({ text: "## Current Task\n- old question summarized" });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("new answer") });
+
+    const restored = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        persist: true,
+        contextDir: dir,
+        sessionId: "recovery-hint",
+        compactAtTokens: 1,
+        keepRecentMessages: 1,
+      },
+    );
+    await collect(restored.chat("new question"));
+
+    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining("session_search"),
+        }),
+        expect.objectContaining({
+          content: expect.stringContaining("include_raw_logs=true"),
+        }),
+      ]),
+    }));
+  });
+
+  it("omits the recovery hint when raw stream logs are disabled", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-recovery-hint-disabled-"));
+
+    const seed = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        persist: true,
+        contextDir: dir,
+        sessionId: "recovery-hint-disabled",
+        compactAtTokens: 10_000,
+      },
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("old answer") });
+    await collect(seed.chat("old question"));
+
+    config.rawStreamLogs = {
+      enabled: false,
+      maxBytesPerTurn: 1024 * 1024,
+      retentionDays: 7,
+      keepCompleted: false,
+    };
+    generateTextMock.mockResolvedValueOnce({ text: "## Current Task\n- old question summarized" });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("new answer") });
+
+    const restored = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        persist: true,
+        contextDir: dir,
+        sessionId: "recovery-hint-disabled",
+        compactAtTokens: 1,
+        keepRecentMessages: 1,
+      },
+    );
+    await collect(restored.chat("new question"));
+
+    const lastCall = streamTextMock.mock.calls.at(-1)?.[0];
+    const messagesText = JSON.stringify(lastCall?.messages ?? []);
+    expect(messagesText).not.toContain("include_raw_logs=true");
+    expect(messagesText).toContain("原始消息未保留");
+  });
+
   it("locks compaction to low effort under the Anthropic protocol", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-compaction-anthropic-effort-"));
@@ -873,5 +965,14 @@ describe("loadPlatformCommandPrompt", () => {
   it("returns empty string for unknown platforms or missing files", async () => {
     expect(await loadPrompt("freebsd", { builtinDir })).toBe("");
     expect(await loadPrompt("linux", { builtinDir: join(builtinDir, "missing") })).toBe("");
+  });
+});
+
+describe("compaction timeout defaults", () => {
+  it("defaults to 5 minutes so slow summarization does not kill the whole turn", async () => {
+    const mod = (await import("../index.js")) as {
+      DEFAULT_COMPACTION_TIMEOUT_MS: number;
+    };
+    expect(mod.DEFAULT_COMPACTION_TIMEOUT_MS).toBe(5 * 60 * 1000);
   });
 });

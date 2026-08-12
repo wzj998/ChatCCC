@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChatSession } from "../../deepccc-agent/src/index.ts";
-import { config } from "../../deepccc-agent/src/config.ts";
+import { config, DEFAULT_CONFIG } from "../../deepccc-agent/src/config.ts";
 
 const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
 const originalDeepCccApiKey = config.apiKey;
@@ -16,6 +16,10 @@ afterEach(() => {
 });
 
 describe("builtin ChatSession config", () => {
+  it("defaults raw stream logs to enabled so compressed messages stay recoverable", () => {
+    expect(DEFAULT_CONFIG.rawStreamLogs.enabled).toBe(true);
+  });
+
   it("uses the builtin ~/.deepccc config when no apiKey is passed", () => {
     expect(() => new ChatSession()).not.toThrow();
   });

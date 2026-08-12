@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChatSession } from "../index.js";
-import { config, normalizeDeepCccProvider } from "../config.js";
+import { config, DEFAULT_CONFIG, normalizeDeepCccProvider } from "../config.js";
 
 const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
 const originalDeepCccApiKey = config.apiKey;
@@ -16,6 +16,10 @@ afterEach(() => {
 });
 
 describe("builtin ChatSession config", () => {
+  it("defaults raw stream logs to enabled so compressed messages stay recoverable", () => {
+    expect(DEFAULT_CONFIG.rawStreamLogs.enabled).toBe(true);
+  });
+
   it("defaults provider selection to openai and accepts anthropic case-insensitively", () => {
     expect(normalizeDeepCccProvider(undefined)).toBe("openai");
     expect(normalizeDeepCccProvider("")).toBe("openai");

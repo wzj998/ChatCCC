@@ -78,7 +78,7 @@ $env:DEEPCCC_STREAMING="true"
   "effort": "",
   "streaming": true,
   "rawStreamLogs": {
-    "enabled": false,
+    "enabled": true,
     "maxBytesPerTurn": 1048576,
     "retentionDays": 7,
     "keepCompleted": false
@@ -94,6 +94,11 @@ $env:DEEPCCC_STREAMING="true"
 
 `streaming` 控制主对话是否使用流式请求，默认 `true`；也可以通过
 `DEEPCCC_STREAMING=true|false` 覆盖。关闭后，终端会在整条模型响应完成后一次性显示结果。
+
+`rawStreamLogs.enabled` 默认 `true`，通过 `DEEPCCC_RAW_STREAM_LOGS` 环境变量或配置 JSON 关闭。
+开启时，每次对话的原始流按 gzip JSONL 落到 `~/.deepccc/raw-stream-logs/`，供
+`session_search` 工具在会话被压缩后找回被压缩消息的精确原文（检索时设置
+`include_raw_logs=true`）。关闭后，压缩后的旧消息原文将无法找回。
 
 ## 命令行交互
 
