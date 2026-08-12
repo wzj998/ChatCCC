@@ -373,6 +373,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 的 API Key 和服务地址；**不限于 DeepSeek**——可填任意 OpenAI 兼容端点（OpenAI、Kimi、通义、智谱、Ollama 本地等） |
 | `ccc.model` | CCC Agent 默认模型 |
 | `ccc.compactionTimeoutMs` | CCC Agent 上下文压缩单轮超时（毫秒），默认 300000（5 分钟）；压缩超时会让整轮对话失败，建议保持默认或调大 |
+| `ccc.contextWindow` | CCC Agent 模型上下文窗口（token），默认 1048576（1M，DeepSeek V4 Pro/Flash 原生规格）；压缩阈值自动 = 窗口 × 80%；超过模型/服务端实际上限会被 API 拒绝，可在 Web UI 下拉选择或自定义（单位 k） |
 
 > **权限控制**：普通消息以 `bypassPermissions` 模式运行，跳过 Agent 操作确认。使用 `/plan` 或 `/ask` 前缀时，ChatCCC 自动切换为只读模式：Claude SDK 仅放行 Read + stop-stuck-loop 网络请求，Codex 使用 `--sandbox read-only`，Cursor 使用 `--mode plan/ask`。请只在可信环境中使用。
 

@@ -141,6 +141,11 @@ export interface CccConfig {
    * 压缩在回复生成前同步执行，超时过短会导致整轮对话失败，建议保持默认或调大。
    */
   compactionTimeoutMs: number;
+  /**
+   * 模型上下文窗口（token），默认 1048576（1M，DeepSeek V4 Pro/Flash 原生规格）。
+   * 上下文压缩阈值自动 = contextWindow × 0.8；超过模型/服务端实际上限会被 API 拒绝。
+   */
+  contextWindow: number;
 }
 
 export interface FeishuConfig {
@@ -248,6 +253,7 @@ const CONFIG_SAMPLE_FILE = join(PROJECT_ROOT, "config.sample.json");
 export const DEFAULT_CCC_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 export const DEFAULT_CCC_MODEL = "deepseek-v4-pro";
 export const DEFAULT_CCC_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_CCC_CONTEXT_WINDOW_TOKENS = 1_048_576;
 
 /**
  * 将旧位置（PROJECT_ROOT）的持久化数据一次性迁移到 USER_DATA_DIR。
@@ -489,6 +495,7 @@ function loadConfig(): AppConfig {
       effort: "",
       provider: "",
       compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
+      contextWindow: DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
     },
   };
 
@@ -552,6 +559,7 @@ function loadConfig(): AppConfig {
       effort?: unknown;
       provider?: unknown;
       compactionTimeoutMs?: unknown;
+      contextWindow?: unknown;
     };
     webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
@@ -727,6 +735,10 @@ function loadConfig(): AppConfig {
       compactionTimeoutMs: normalizePositiveInteger(
         cccRaw.compactionTimeoutMs,
         DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
+      ),
+      contextWindow: normalizePositiveInteger(
+        cccRaw.contextWindow,
+        DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
       ),
     },
   };

@@ -14,6 +14,11 @@ export interface DeepCccConfig {
   effort: string;
   /** 主对话是否使用流式请求；默认开启 */
   streaming: boolean;
+  /**
+   * 模型上下文窗口（token），默认 1048576（1M，DeepSeek V4 Pro/Flash 原生规格）。
+   * 上下文压缩阈值自动 = contextWindow × 0.8；超过模型/服务端实际上限会被 API 拒绝。
+   */
+  contextWindow: number;
   rawStreamLogs: {
     enabled: boolean;
     maxBytesPerTurn: number;
@@ -36,6 +41,7 @@ export const DEFAULT_CONFIG: DeepCccConfig = {
   model: "deepseek-v4-pro",
   effort: "",
   streaming: true,
+  contextWindow: 1_048_576,
   rawStreamLogs: {
     // 默认开启：压缩后可通过 session_search（include_raw_logs=true）找回原文。
     // 如需关闭，在 ~/.deepccc/config.json 中设置 rawStreamLogs.enabled=false。
@@ -90,6 +96,7 @@ function loadConfig(): DeepCccConfig {
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
     streaming: boolEnv("DEEPCCC_STREAMING") ?? file.streaming ?? DEFAULT_CONFIG.streaming,
+    contextWindow: numberEnv("DEEPCCC_CONTEXT_WINDOW") ?? file.contextWindow ?? DEFAULT_CONFIG.contextWindow,
     rawStreamLogs: {
       enabled: boolEnv("DEEPCCC_RAW_STREAM_LOGS") ?? rawLogs.enabled ?? DEFAULT_CONFIG.rawStreamLogs.enabled,
       maxBytesPerTurn: numberEnv("DEEPCCC_RAW_STREAM_MAX_BYTES") ?? rawLogs.maxBytesPerTurn ?? DEFAULT_CONFIG.rawStreamLogs.maxBytesPerTurn,

@@ -44,6 +44,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       effort: "high",
       compactionTimeoutMs: 12345,
+      contextWindow: config.ccc.contextWindow,
     });
   });
 
@@ -65,6 +66,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       provider: "anthropic",
       compactionTimeoutMs: 12345,
+      contextWindow: config.ccc.contextWindow,
     });
   });
 });

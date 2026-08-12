@@ -16,6 +16,7 @@ import type {
 
 export interface CccAdapterOptions extends ChatSessionConfig {
   contextDir?: string;
+  contextWindow?: number;
   compactAtTokens?: number;
   keepRecentMessages?: number;
   compactionTimeoutMs?: number;
@@ -32,6 +33,7 @@ function toChatSessionOptions(
     persist: true,
     sessionId,
     contextDir: options.contextDir,
+    contextWindow: options.contextWindow,
     compactAtTokens: options.compactAtTokens,
     keepRecentMessages: options.keepRecentMessages,
     compactionTimeoutMs: options.compactionTimeoutMs,

@@ -15,10 +15,19 @@ import {
 } from "../context.js";
 
 describe("BuiltinContextManager", () => {
-  it("defaults the compaction threshold to 128K tokens (one third of the 384K model window)", () => {
+  it("defaults the compaction threshold to 1M x 80% (838,860 tokens) for the default 1M model window", () => {
     const context = new BuiltinContextManager();
 
-    expect(context.compactAtTokens).toBe(128_000);
+    expect(context.compactAtTokens).toBe(838_860);
+  });
+
+  it("derives the compaction threshold from the configured context window at 80%", () => {
+    const context = new BuiltinContextManager({ contextWindow: 100_000 });
+    const explicit = new BuiltinContextManager({ contextWindow: 100_000, compactAtTokens: 42_000 });
+
+    expect(context.compactAtTokens).toBe(80_000);
+    // 显式 compactAtTokens 优先于 contextWindow × 0.8 派生值。
+    expect(explicit.compactAtTokens).toBe(42_000);
   });
 
   it("caps existing summaries at 8K chars when rebuilding the compaction prompt", () => {

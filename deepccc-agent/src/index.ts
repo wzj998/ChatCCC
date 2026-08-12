@@ -262,8 +262,10 @@ function normalizeMaxSteps(value: number | undefined): number | undefined {
 }
 
 function normalizeAnthropicBaseURL(baseURL: string): string {
-  const normalized = baseURL.trim().replace(/\/+$/, "");
-  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+  // 完全按用户填写的地址使用，不自动补 /v1（AI SDK 仅对官方 api.anthropic.com
+  // 特判补一次 /v1，其他地址原样拼接 /messages）。
+  // DeepSeek Anthropic 端点示例：https://api.deepseek.com/anthropic/v1。
+  return baseURL.trim().replace(/\/+$/, "");
 }
 
 export interface ChatSessionConfig {
@@ -295,6 +297,11 @@ export interface ChatSessionOptions {
   sessionId?: string;
   /** Compact older context when the rough token estimate exceeds this value. */
   compactAtTokens?: number;
+  /**
+   * 模型上下文窗口（token），默认 1048576（1M）。压缩阈值自动 = contextWindow × 0.8；
+   * 显式 compactAtTokens 优先于该派生值。
+   */
+  contextWindow?: number;
   /** Number of recent raw messages retained after compaction. */
   keepRecentMessages?: number;
   /** Hard deadline for all context-compaction passes in one turn. */
@@ -403,6 +410,7 @@ export class ChatSession {
       contextDir: options.contextDir,
       sessionId: options.sessionId ?? defaultBuiltinSessionId(this.cwd),
       cwd: this.cwd,
+      contextWindow: options.contextWindow ?? appConfig.contextWindow,
       compactAtTokens: options.compactAtTokens,
       keepRecentMessages: options.keepRecentMessages,
     });

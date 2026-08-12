@@ -89,18 +89,18 @@ describe("ChatSession response transport", () => {
     expect(createAnthropicMock).not.toHaveBeenCalled();
   });
 
-  it("uses Anthropic Messages with the same base URL and appends /v1 when needed", async () => {
+  it("uses the Anthropic base URL exactly as provided (no automatic /v1 append)", async () => {
     const { ChatSession } = await import("../index.js");
 
     new ChatSession({
       provider: "anthropic",
       apiKey: "sk-test",
-      baseURL: "https://gateway.example/",
+      baseURL: "https://api.deepseek.com/anthropic/v1",
       model: "model-a",
     });
 
     expect(createAnthropicMock).toHaveBeenLastCalledWith({
-      baseURL: "https://gateway.example/v1",
+      baseURL: "https://api.deepseek.com/anthropic/v1",
       apiKey: "sk-test",
     });
     expect(createOpenAICompatibleMock).not.toHaveBeenCalled();

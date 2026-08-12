@@ -59,12 +59,20 @@ export interface BuiltinContextOptions {
   contextDir?: string;
   sessionId?: string;
   cwd?: string;
+  /** 模型上下文窗口（token）。缺省时压缩阈值 = contextWindow × 0.8。 */
+  contextWindow?: number;
+  /** 直接指定压缩阈值（token），优先于 contextWindow 的 80% 派生。 */
   compactAtTokens?: number;
   keepRecentMessages?: number;
 }
 
 export const DEFAULT_BUILTIN_CONTEXT_DIR = join(homedir(), ".deepccc", "sessions");
-export const DEFAULT_COMPACT_AT_TOKENS = 128_000;
+/** 默认模型上下文窗口：1M（DeepSeek V4 Pro/Flash 原生规格）。 */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_048_576;
+/** 压缩阈值 = 窗口 × 0.8（业界惯例：在窗口接近上限前主动压缩，留出安全余量）。 */
+export const COMPACTION_THRESHOLD_RATIO = 0.8;
+/** 默认压缩阈值 = 1M × 0.8。 */
+export const DEFAULT_COMPACT_AT_TOKENS = Math.floor(DEFAULT_CONTEXT_WINDOW_TOKENS * COMPACTION_THRESHOLD_RATIO);
 export const DEFAULT_KEEP_RECENT_MESSAGES = 16;
 const RECENT_CONTEXT_BUDGET_RATIO = 0.6;
 const MAX_COMPACTION_SUMMARY_CHARS = 8_000;
@@ -355,7 +363,8 @@ export class BuiltinContextManager {
     this.contextDir = options.contextDir ?? DEFAULT_BUILTIN_CONTEXT_DIR;
     this.sessionId = normalizeBuiltinSessionId(options.sessionId ?? defaultBuiltinSessionId());
     this.cwd = options.cwd;
-    this.compactAtTokens = options.compactAtTokens ?? DEFAULT_COMPACT_AT_TOKENS;
+    this.compactAtTokens = options.compactAtTokens
+      ?? Math.floor((options.contextWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS) * COMPACTION_THRESHOLD_RATIO);
     this.keepRecentMessages = Math.max(1, options.keepRecentMessages ?? DEFAULT_KEEP_RECENT_MESSAGES);
     this.state = this.load();
   }

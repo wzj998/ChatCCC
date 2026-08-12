@@ -53,7 +53,8 @@
     "alternativeModel": "",
     "effort": "",
     "provider": "",
-    "compactionTimeoutMs": 300000
+    "compactionTimeoutMs": 300000,
+    "contextWindow": 1048576
   },
   "claude": {
     "enabled": false,

@@ -141,6 +141,7 @@ describe("unflattenConfig", () => {
         CHATCCC_CCC_ALTERNATIVE_MODEL: "deepseek-v4-pro",
         CHATCCC_CCC_EFFORT: "max",
         CHATCCC_CCC_PROVIDER: "anthropic",
+        CHATCCC_CCC_CONTEXT_WINDOW: "524288",
       }),
     ).toEqual({
       ccc: {
@@ -152,6 +153,7 @@ describe("unflattenConfig", () => {
         alternativeModel: "deepseek-v4-pro",
         effort: "max",
         provider: "anthropic",
+        contextWindow: 524288,
       },
     });
   });
