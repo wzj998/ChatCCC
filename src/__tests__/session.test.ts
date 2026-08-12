@@ -2714,7 +2714,7 @@ describe("pickFinalReply", () => {
 // pickDisplayChat — display loop 选择推送目标 chat 的纯函数
 // 关键不变量：仅当某 chatId 既是 session 的"最后活跃 chat"且仍然绑定到该
 // session 时才返回。否则返回 undefined（loop 当作"无活跃群"，不推送）。
-// 这是为了修复 /newh 后旧 session 仍向已解绑群推卡片的 bug。
+// 这是为了修复 /forget 后旧 session 仍向已解绑群推卡片的 bug。
 // ---------------------------------------------------------------------------
 
 describe("pickDisplayChat", () => {
@@ -2733,10 +2733,10 @@ describe("pickDisplayChat", () => {
     expect(pickDisplayChat("sid-A")).toBeUndefined();
   });
 
-  it("最后活跃 chat 已被解绑（如 /newh 场景）时返回 undefined，避免向已离开本 session 的群推送", () => {
+  it("最后活跃 chat 已被解绑（如 /forget 场景）时返回 undefined，避免向已离开本 session 的群推送", () => {
     bindChatToSession("sid-A", "chat_X");
     recordLastActiveChat("sid-A", "chat_X");
-    // 模拟 /newh：chat_X 被解绑，转给新 session
+    // 模拟 /forget：chat_X 被解绑，转给新 session
     unbindChatFromSession("sid-A", "chat_X");
     expect(pickDisplayChat("sid-A")).toBeUndefined();
   });
@@ -2787,7 +2787,7 @@ describe("unbindChatFromSession 同步清理 lastActiveChatMap", () => {
 });
 
 // ---------------------------------------------------------------------------
-// switchChatBinding — 事务式 chat→session 切换（/newh、/session N 复用）
+// switchChatBinding — 事务式 chat→session 切换（/forget、/session N 复用）
 //
 // 关键不变量：
 //   1. p2p chatType 不调 updateChatInfo（私聊飞书 API 会直接抛错）

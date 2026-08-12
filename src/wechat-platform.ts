@@ -672,7 +672,7 @@ async function handleWechatMessage(
   // 用户回复，重置 claw 连发计数
   consecutiveSendCount.set(chatId, 0);
 
-  // WeChat 中所有会话都视为 p2p，/new 复用 p2p 路径（等同飞书 /newh 效果）
+  // WeChat 中所有会话都视为 p2p，/new 复用 p2p 路径（等同飞书 /forget 效果）
   // 不 await：避免长 prompt 阻塞后续消息处理（如 /cd、/stop 等命令）
   handler(fullText, chatId, chatId, msgTimestamp, "p2p").catch((err) => {
     platformLog(`消息处理失败: ${(err as Error).stack ?? (err as Error).message}`);

@@ -1252,7 +1252,7 @@ export async function handleCommand(
     // /new 始终创建独立群聊。飞书私聊自己的常驻 session 不在这里切换。
     if (chatType === "p2p" && platform.kind === "wechat") {
       // 先解绑旧 session（如果存在），避免旧 session 的 display loop
-      // 继续往同一个 chat 推送内容（/newh 走 switchChatBinding 已有此逻辑，
+      // 继续往同一个 chat 推送内容（/forget 走 switchChatBinding 已有此逻辑，
       // 但 /new p2p 之前遗漏了解绑）。
       const oldRegistry = await loadSessionRegistryForBinding();
       const oldRecord = oldRegistry[chatId];
@@ -1290,7 +1290,7 @@ export async function handleCommand(
           `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
           `发送 **/cd** 切换新建会话的默认目录。\n` +
           `发送 **/model** 查看或切换当前会话的模型。${fastHelpAfterModel(tool)}\n` +
-          `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
+          `发送 **/new** 创建新会话，**/forget** 重置当前会话（沿用工作目录）。\n` +
           `发送 **/sessions** 查看所有会话状态。\n` +
           `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
           usageHelpLine(tool),
@@ -1378,7 +1378,7 @@ export async function handleCommand(
         `直接在这里发消息即可与 ${toolLabel} 对话。\n\n` +
         `发送 **/cd** 切换新建会话的默认目录。\n` +
         `发送 **/model** 查看或切换当前会话的模型。${fastHelpAfterModel(tool)}\n` +
-        `发送 **/new** 创建新会话，**/newh** 重置当前会话（沿用工作目录）。\n` +
+        `发送 **/new** 创建新会话，**/forget** 重置当前会话（沿用工作目录）。\n` +
         `发送 **/sessions** 查看所有会话状态。\n` +
         `发送 \`/git <子命令>\` 在本会话工作目录执行 git，例如 \`/git status\`、\`/git log --oneline -n 5\`。` +
         usageHelpLine(tool),
@@ -1719,12 +1719,12 @@ export async function handleCommand(
       return;
     }
 
-    if (isCommandText && textLower === "/newh") {
-      logTrace(tid, "BRANCH", { cmd: "/newh" });
+    if (isCommandText && textLower === "/forget") {
+      logTrace(tid, "BRANCH", { cmd: "/forget" });
       let cwd: string;
       if (isFeishuP2p(platform, chatType)) {
         // 飞书私聊不支持切换工作目录。即使 /cd 已为后续 /new 群聊
-        // 保存了其他默认目录，/newh 仍必须在运行 ChatCCC 的用户目录重建。
+        // 保存了其他默认目录，/forget 仍必须在运行 ChatCCC 的用户目录重建。
         cwd = homedir();
       } else {
         const adapter = getAdapterForTool(descriptionTool, sessionId);
@@ -1744,7 +1744,7 @@ export async function handleCommand(
         newSessionId = init.sessionId;
       } catch (err) {
         logTrace(tid, "DONE", {
-          outcome: "newh_session_fail",
+          outcome: "forget_session_fail",
           error: (err as Error).message,
         });
         await platform.sendCard(
@@ -1774,7 +1774,7 @@ export async function handleCommand(
       });
       if (!switchResult.ok) {
         logTrace(tid, "DONE", {
-          outcome: "newh_update_chat_fail",
+          outcome: "forget_update_chat_fail",
           error: switchResult.error?.message,
         });
         await platform.sendCard(
@@ -1787,7 +1787,7 @@ export async function handleCommand(
       }
       if (chatType !== "p2p") {
         console.log(
-          `[${ts()}] [NEWH] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`,
+          `[${ts()}] [FORGET] Group updated: name="${newName}" desc="${descPrefix} ${newSessionId}"`,
         );
       }
 
@@ -1806,9 +1806,9 @@ export async function handleCommand(
       );
 
       console.log(
-        `[${ts()}] [NEWH] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`,
+        `[${ts()}] [FORGET] Session ${sessionId} → ${newSessionId} (same cwd=${cwd})`,
       );
-      logTrace(tid, "DONE", { outcome: "newh", newSessionId, cwd });
+      logTrace(tid, "DONE", { outcome: "forget", newSessionId, cwd });
       return;
     }
 
