@@ -713,6 +713,7 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       baseURL: config.ccc.DEEPSEEK_BASE_URL,
       model: effectiveModel || undefined,
       effort: effectiveEffort || undefined,
+      compactionTimeoutMs: config.ccc.compactionTimeoutMs,
       // 留空（""）不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
       ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
     });
@@ -802,6 +803,8 @@ export interface SessionRegistryUpdate {
   /** 会话容器类型；旧 registry 没有该字段，读取时必须兼容。 */
   chatType?: string;
   chatName?: string;
+  /** fixed keeps project-owned group names stable across first prompt and session switches. */
+  namePolicy?: "fixed" | "auto";
   turnCount?: number;
   lastContextTokens?: number;
   startTime?: number;
@@ -815,6 +818,7 @@ interface SessionRegistryRecord {
   tool: string;
   chatType?: string;
   chatName: string;
+  namePolicy?: "fixed" | "auto";
   turnCount: number;
   lastContextTokens: number;
   startTime: number;
@@ -880,6 +884,7 @@ export async function recordSessionRegistry(update: SessionRegistryUpdate): Prom
     tool: update.tool,
     chatType: update.chatType ?? existing?.chatType,
     chatName: update.chatName ?? existing?.chatName ?? "",
+    namePolicy: update.namePolicy ?? existing?.namePolicy,
     turnCount: update.turnCount ?? existing?.turnCount ?? 0,
     lastContextTokens: update.lastContextTokens ?? existing?.lastContextTokens ?? 0,
     startTime: update.startTime ?? existing?.startTime ?? now,
@@ -1070,6 +1075,7 @@ export interface SwitchChatBindingArgs {
   tool: string;
   /** 群名（私聊忽略） */
   chatName: string;
+  namePolicy?: "fixed" | "auto";
   /** 群描述（私聊忽略），通常为 `${sessionPrefixForTool(tool)} ${newSessionId}` */
   newDescription: string;
   /** 切换后 sessionInfoMap 的初始 turnCount/lastContextTokens（如沿用历史） */
@@ -1092,6 +1098,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
     newSessionId,
     tool,
     chatName,
+    namePolicy,
     newDescription,
     initialTurnCount = 0,
     initialContextTokens = 0,
@@ -1136,6 +1143,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
     tool,
     chatType,
     chatName,
+    namePolicy,
     turnCount: initialTurnCount,
     lastContextTokens: initialContextTokens,
     startTime: now,

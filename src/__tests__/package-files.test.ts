@@ -23,6 +23,7 @@ describe("npm package files", () => {
     expect(packageJson.files).toContain("dist/");
     expect(packageJson.dependencies).not.toHaveProperty("tsx");
     expect(packageJson.dependencies).not.toHaveProperty("esbuild");
+    expect(packageJson.dependencies).not.toHaveProperty("electron");
     expect(packageJson.devDependencies).toHaveProperty("tsx");
   });
 

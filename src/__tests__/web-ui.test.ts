@@ -29,11 +29,44 @@ describe("Agent Team page", () => {
     expect(PAGE_HTML).toContain("linear-gradient");
   });
 
-  it("contains only the Agent Team title as page content", () => {
+  it("contains the local five-column task board", () => {
     expect(AGENT_TEAM_PAGE_HTML).toContain("<title>Agent Team</title>");
     expect(AGENT_TEAM_PAGE_HTML).toContain("<h1>Agent Team</h1>");
-    expect(AGENT_TEAM_PAGE_HTML).not.toContain("dashboard-view");
-    expect(AGENT_TEAM_PAGE_HTML).not.toContain("wizard-view");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("color-scheme:light");
+    expect(AGENT_TEAM_PAGE_HTML).toContain('class="sidebar"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('class="nav-item active"');
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("color-scheme:dark");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("头脑风暴");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("Todo");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("Doing");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("Done");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("搁置");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/open");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/lookup");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain('id="open"');
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("系统设置");
+    expect(AGENT_TEAM_PAGE_HTML).toContain('data-feature="工作目录"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('data-feature="同步设置"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="feature-modal"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="create-board-modal"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="directory-modal"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/filesystem/locations");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/filesystem/directories");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/filesystem/validate-directory");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("/api/agent-team/pick-directory");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("功能尚未实现");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("是否为这个路径新建看板");
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="main-agent"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/main-agent");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/feishu-contact");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("请先给飞书机器人私聊发送任意消息");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("draggable");
+  });
+
+  it("keeps the embedded Agent Team script syntactically valid", () => {
+    const script = AGENT_TEAM_PAGE_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script!)).not.toThrow();
   });
 
   it("serves the Agent Team page from its own route", async () => {

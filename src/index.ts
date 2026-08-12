@@ -29,6 +29,7 @@ import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, installEpipeGuard, waitForPortFree } from "./shared.ts";
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
+import { configureAgentTeamMainAgent } from "./agent-team/main-agent-bootstrap.ts";
 import {
   buildWebUiUrl,
   createServiceLifecycleGuard,
@@ -177,6 +178,7 @@ function createFeishuAdapter(): PlatformAdapter {
 const feishuPlatform = createFeishuAdapter();
 const wechatPlatform = createWechatAdapter();
 setSessionPlatform(feishuPlatform);
+configureAgentTeamMainAgent(feishuPlatform);
 
 // 注册队列消费回调：session 生成完成后自动处理缓存消息
 setQueueConsumer((platform, msg) => {

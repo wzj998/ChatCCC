@@ -32,6 +32,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       effort: "high",
       provider: "",
+      compactionTimeoutMs: 12345,
     });
 
     getAdapterForTool("ccc");
@@ -42,6 +43,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       baseURL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
       effort: "high",
+      compactionTimeoutMs: 12345,
     });
   });
 
@@ -52,6 +54,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       effort: "",
       provider: "anthropic",
+      compactionTimeoutMs: 12345,
     });
 
     getAdapterForTool("ccc");
@@ -61,6 +64,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       baseURL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
       provider: "anthropic",
+      compactionTimeoutMs: 12345,
     });
   });
 });

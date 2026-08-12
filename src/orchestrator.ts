@@ -100,6 +100,7 @@ import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
+import { feishuP2pContactStore } from "./agent-team/repositories/feishu-p2p-contact-store.ts";
 
 // ---------------------------------------------------------------------------
 // 辅助函数
@@ -510,6 +511,12 @@ async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "
 
 function isUntitledSessionChatName(name: string): boolean {
   return name === "新会话" || name.startsWith("新会话-");
+}
+
+async function fixedSessionChatName(chatId: string): Promise<string | null> {
+  const registry = await loadSessionRegistryForBinding();
+  const record = registry[chatId];
+  return record?.namePolicy === "fixed" && record.chatName ? record.chatName : null;
 }
 
 function shouldSendWechatProcessingAck(
@@ -948,6 +955,12 @@ export async function handleCommand(
   const textLower = text.toLowerCase();
   const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
   recordChatPlatform(chatId, platform);
+  if (platform.kind === "feishu" && chatType === "p2p" && openId) {
+    const receivedAt = Number.isFinite(msgTimestamp) ? new Date(msgTimestamp).toISOString() : new Date().toISOString();
+    await feishuP2pContactStore.record({ openId, chatId, receivedAt }).catch((err) => {
+      console.error(`[${ts()}] [AGENT-TEAM] Failed to remember Feishu private contact: ${(err as Error).message}`);
+    });
+  }
 
   if (isCommandText && textLower === "/reload") {
     logTrace(tid, "BRANCH", { cmd: "/reload" });
@@ -1531,6 +1544,7 @@ export async function handleCommand(
     if (
       chatType !== "p2p" &&
       isUntitledSessionChatName(chatInfo!.name) &&
+      (await fixedSessionChatName(chatId)) === null &&
       !isCommandText
     ) {
       const MAX_PREFIX = 10;
@@ -1574,6 +1588,7 @@ export async function handleCommand(
         if (
           rec &&
           rec.sessionId === sessionId &&
+          rec.namePolicy !== "fixed" &&
           isUntitledSessionChatName(rec.chatName ?? "")
         ) {
           const MAX_PREFIX = 10;
@@ -1743,7 +1758,8 @@ export async function handleCommand(
 
       // 第二步:事务式切换 chat 绑定
       const descPrefix = sessionPrefixForTool(descriptionTool);
-      const newName = sessionChatName("新会话", cwd);
+      const fixedName = await fixedSessionChatName(chatId);
+      const newName = fixedName ?? sessionChatName("新会话", cwd);
       const switchResult = await switchChatBinding({
         chatId,
         chatType,
@@ -1751,6 +1767,7 @@ export async function handleCommand(
         newSessionId,
         tool: descriptionTool,
         chatName: newName,
+        namePolicy: fixedName ? "fixed" : "auto",
         newDescription: `${descPrefix} ${newSessionId}`,
         updateChatInfoFn: (cid, name, desc) =>
           platform.updateChatInfo(cid, name, desc),
@@ -1911,7 +1928,8 @@ export async function handleCommand(
       }
 
       const descPrefix2 = sessionPrefixForTool(target.tool);
-      const newName2 = target.chatName || sessionChatName("新会话", cwd2);
+      const fixedName2 = await fixedSessionChatName(chatId);
+      const newName2 = fixedName2 ?? (target.chatName || sessionChatName("新会话", cwd2));
       const switchResult = await switchChatBinding({
         chatId,
         chatType,
@@ -1919,6 +1937,7 @@ export async function handleCommand(
         newSessionId: target.sessionId,
         tool: target.tool,
         chatName: newName2,
+        namePolicy: fixedName2 ? "fixed" : "auto",
         newDescription: `${descPrefix2} ${target.sessionId}`,
         initialTurnCount: target.turnCount,
         initialContextTokens: 0,

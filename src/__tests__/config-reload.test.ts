@@ -72,7 +72,7 @@ const baseAppConfig: AppConfig = {
     onDemandMonthlyBudget: 1000,
   },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort", fastMode: false },
-  ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", provider: "" },
+  ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", provider: "", compactionTimeoutMs: 300000 },
 };
 
 // 把 module 状态抢救快照：每个 it 跑前重置回这个状态，避免污染相邻测试。

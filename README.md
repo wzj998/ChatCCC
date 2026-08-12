@@ -153,6 +153,14 @@ chatccc
 
 每次直接运行 `chatccc` 时，无论是否已经完成配置，ChatCCC 默认都会用系统默认浏览器打开本地 Web UI（默认 `http://localhost:18080/`，修改 `config.port` 后跟随实际端口）。可在首次配置向导或管理页的 **Web UI** 设置中关闭；关闭后从下一次直接启动起生效。由 `/restart`、`/update` 或 Web UI 发起的内部重启始终不会重复打开浏览器。Linux 服务器没有 `DISPLAY`/`WAYLAND_DISPLAY` 时会跳过打开，并在终端输出 SSH 隧道访问提示。主页顶部的 **Agent Team** 入口会跳转到独立的 `/agent-team` 页面。
 
+#### 本地任务看板（Agent Team）
+
+Agent Team 提供本地任务看板和项目主 Agent 入口，但暂不根据任务自动分配 Agent。每个规范化后的本机目录对应一个独立项目和看板，固定包含“头脑风暴、Todo、Doing、Done、搁置”五列，支持新增、编辑、拖动排序和删除任务。页面会自动保存，不需要手动提交。当前按路径识别项目，不检查 Git 仓库或 worktree 关系，任意子目录都可以作为独立项目。
+
+打开项目后可以选择 CCC、Claude、Cursor 或 Codex 作为主 Agent。首次设置会创建固定命名为 `主Agent-<目录短名>` 的飞书群和空 Agent Session；后续切换 Agent 或重新关联目录会复用原群，运行中的主 Agent 不允许切换。建群成员取自机器人最近一次收到的飞书私聊；如果尚无私聊记录，网页会提示先给机器人发送任意私聊消息并自动检测。项目群名不会随第一句话或 `/newh` 改变。
+
+看板数据默认保存在 `~/.chatccc/agent-team/`，其中 `workspaces.json` 保存最近工作目录索引，`boards/` 保存按稳定 ID 分隔的看板 JSON，`main-agent-bindings/` 单独保存本机飞书群与 Session 绑定。目录移动或重命名后，可从最近目录列表重新关联。数据访问通过仓储接口隔离，后续接入飞书多维表格时可增加双向同步适配器，无需把本机群聊和 Session 状态混入任务同步模型。选择目录、创建群聊和启动 Agent 等操作都由本机 Node 后端执行；当前实现不依赖 Electron。
+
 #### 从源码运行
 
 ```bash
@@ -364,6 +372,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `cursor.alternativeModel` / `codex.alternativeModel` / `ccc.alternativeModel` | 单个备选模型；加入 `/model` 人工切换列表，不会自动故障转移 |
 | `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 的 API Key 和服务地址；**不限于 DeepSeek**——可填任意 OpenAI 兼容端点（OpenAI、Kimi、通义、智谱、Ollama 本地等） |
 | `ccc.model` | CCC Agent 默认模型 |
+| `ccc.compactionTimeoutMs` | CCC Agent 上下文压缩单轮超时（毫秒），默认 300000（5 分钟）；压缩超时会让整轮对话失败，建议保持默认或调大 |
 
 > **权限控制**：普通消息以 `bypassPermissions` 模式运行，跳过 Agent 操作确认。使用 `/plan` 或 `/ask` 前缀时，ChatCCC 自动切换为只读模式：Claude SDK 仅放行 Read + stop-stuck-loop 网络请求，Codex 使用 `--sandbox read-only`，Cursor 使用 `--mode plan/ask`。请只在可信环境中使用。
 

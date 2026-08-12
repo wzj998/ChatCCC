@@ -52,7 +52,8 @@
     "model": "deepseek-v4-pro",
     "alternativeModel": "",
     "effort": "",
-    "provider": ""
+    "provider": "",
+    "compactionTimeoutMs": 300000
   },
   "claude": {
     "enabled": false,
