@@ -77,6 +77,7 @@ $env:DEEPCCC_STREAMING="true"
   "model": "deepseek-v4-pro",
   "effort": "",
   "streaming": true,
+  "contextWindow": 1048576,
   "rawStreamLogs": {
     "enabled": true,
     "maxBytesPerTurn": 1048576,
@@ -90,10 +91,16 @@ $env:DEEPCCC_STREAMING="true"
 `DEEPCCC_PROVIDER` 或命令行 `--provider` 覆盖：
 
 - `openai` 使用 OpenAI-compatible Chat Completions 协议，兼容 DeepSeek、OpenAI、LiteLLM、vLLM 等服务。
-- `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` 可以继续填写同一个服务基址；DeepCCC 会为不带 `/v1` 的地址自动补上 `/v1`。`effort` 是 OpenAI/DeepSeek 扩展参数，在 Anthropic 模式下不会发送。
+- `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` **完全按填写值使用，不自动补 `/v1`**，请填写到完整版本化地址，例如 DeepSeek 官方 Anthropic 端点为 `https://api.deepseek.com/anthropic/v1`（官方 Anthropic SDK 使用的 `https://api.deepseek.com/anthropic` 基址会拼接为 `.../anthropic/v1/messages`）。`effort` 是 OpenAI/DeepSeek 扩展参数，在 Anthropic 模式下不会发送。
 
 `streaming` 控制主对话是否使用流式请求，默认 `true`；也可以通过
 `DEEPCCC_STREAMING=true|false` 覆盖。关闭后，终端会在整条模型响应完成后一次性显示结果。
+
+`contextWindow` 是模型上下文窗口（token），默认 `1048576`（1M，DeepSeek V4 Pro/Flash
+原生规格）；上下文压缩阈值自动 = `contextWindow × 0.8`（超出即把较早消息压缩为摘要）。
+可通过 `DEEPCCC_CONTEXT_WINDOW` 环境变量覆盖。⚠️ 超过模型/服务端实际上限时请求会被
+API 拒绝（context length exceeded），实际窗口以模型与所用服务端为准（如 litellm 的
+`max_input_tokens`）。
 
 `rawStreamLogs.enabled` 默认 `true`，通过 `DEEPCCC_RAW_STREAM_LOGS` 环境变量或配置 JSON 关闭。
 开启时，每次对话的原始流按 gzip JSONL 落到 `~/.deepccc/raw-stream-logs/`，供

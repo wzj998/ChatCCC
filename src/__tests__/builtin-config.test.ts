@@ -20,6 +20,10 @@ describe("builtin ChatSession config", () => {
     expect(DEFAULT_CONFIG.rawStreamLogs.enabled).toBe(true);
   });
 
+  it("defaults context window to 1M tokens (DeepSeek V4 native spec)", () => {
+    expect(DEFAULT_CONFIG.contextWindow).toBe(1_048_576);
+  });
+
   it("uses the builtin ~/.deepccc config when no apiKey is passed", () => {
     expect(() => new ChatSession()).not.toThrow();
   });

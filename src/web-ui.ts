@@ -547,6 +547,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CCC_PROVIDER") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).provider = val;
+    } else if (key === "CHATCCC_CCC_CONTEXT_WINDOW") {
+      result.ccc = result.ccc || {};
+      (result.ccc as Record<string, unknown>).contextWindow = parseInt(String(val), 10) || 1048576;
     } else if (key === "CHATCCC_CCC_ENABLED") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).enabled = val === true || val === "true";
@@ -942,6 +945,20 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
                 <option value="max">max - 最强推理</option>
               </select>
             </div>
+            <div class="form-group">
+              <label>上下文窗口（模型最大上下文）</label>
+              <select id="field-CHATCCC_CCC_CONTEXT_WINDOW" onchange="onContextWindowPresetChange('field-', this.value)">
+                <option value="1m">1M（1,048,576 tokens，推荐）</option>
+                <option value="512k">512K（524,288 tokens）</option>
+                <option value="256k">256K（262,144 tokens）</option>
+                <option value="128k">128K（131,072 tokens）</option>
+                <option value="custom">自定义（单位 k）</option>
+              </select>
+              <div id="field-CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM_ROW" style="margin-top:6px;display:none">
+                <input type="number" id="field-CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM" min="1" placeholder="例如 768 表示 768K（786,432 tokens）" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">
+              </div>
+              <div class="hint">压缩阈值自动 = 窗口 × 80%（超出即把较早消息压缩为摘要）。⚠️ 超过模型/服务端实际上限时请求会被 API 直接拒绝（context length exceeded）；实际窗口以模型与所用服务端为准（如 litellm 代理的 max_input_tokens）。</div>
+            </div>
           </fieldset>
         </div>
 
@@ -1267,7 +1284,7 @@ const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
-  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER']
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_CONTEXT_WINDOW']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1275,6 +1292,58 @@ const CHROME_DEVTOOLS_FIELDS = ['CHATCCC_CHROME_DEVTOOLS_ENABLED','CHATCCC_CHROM
 
 function cursorBatteryModeLabel(value) {
   return value === 'onDemandUse' ? 'On demand use 金额' : 'API 使用比例';
+}
+
+// 上下文窗口：预设档位 ↔ tokens。下拉值用小写 k / m 标签，自定义输入以 k 为单位。
+function contextWindowPresetFor(tokens) {
+  if (tokens === 1048576) return '1m';
+  if (tokens === 524288) return '512k';
+  if (tokens === 262144) return '256k';
+  if (tokens === 131072) return '128k';
+  return 'custom';
+}
+
+function contextWindowTokensLabel(tokens) {
+  var t = Number(tokens) || 1048576;
+  if (t >= 1048576) return (t / 1048576) + 'M (' + t.toLocaleString('en-US') + ' tokens)';
+  return (t / 1024) + 'K (' + t.toLocaleString('en-US') + ' tokens)';
+}
+
+// 根据 tokens 回填预设下拉 + 自定义输入；prefix 为 'field-'（向导）或 'edit-'（编辑弹窗）。
+function prefillContextWindow(prefix, tokens) {
+  var t = Number(tokens) || 1048576;
+  var selectEl = document.getElementById(prefix + 'CHATCCC_CCC_CONTEXT_WINDOW');
+  if (!selectEl) return;
+  var preset = contextWindowPresetFor(t);
+  selectEl.value = preset;
+  onContextWindowPresetChange(prefix, preset);
+  if (preset === 'custom') {
+    var customEl = document.getElementById(prefix + 'CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM');
+    if (customEl) customEl.value = String(Math.round(t / 1024));
+  }
+}
+
+// 预设切换：custom 时显示自定义输入框（单位 k）。
+function onContextWindowPresetChange(prefix, value) {
+  var rowId = prefix === 'edit-' ? 'edit-CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM_ROW' : 'field-CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM_ROW';
+  var row = document.getElementById(rowId);
+  if (row) row.style.display = (value === 'custom') ? '' : 'none';
+}
+
+// 把预设下拉 + 自定义输入转换为 tokens 数字字符串（用于提交给服务端）。
+function contextWindowToTokensValue(prefix) {
+  var selectEl = document.getElementById(prefix + 'CHATCCC_CCC_CONTEXT_WINDOW');
+  if (!selectEl || !selectEl.value) return null;
+  var v = selectEl.value;
+  if (v === '1m') return String(1048576);
+  if (v === 'custom') {
+    var customEl = document.getElementById(prefix + 'CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM');
+    var k = parseInt((customEl && customEl.value.trim()) || '', 10);
+    if (!Number.isFinite(k) || k <= 0) k = 1024; // 非法输入回退 1M
+    return String(k * 1024);
+  }
+  var presetK = parseInt(v, 10); // '128k' → 128
+  return String((presetK || 1024) * 1024);
 }
 
 function configEffectHint(section) {
@@ -1604,6 +1673,7 @@ function renderStep2() {
     prefillNested('field-CHATCCC_CCC_MODEL', c.ccc.model);
     prefillNested('field-CHATCCC_CCC_ALTERNATIVE_MODEL', c.ccc.alternativeModel);
     prefillNested('field-CHATCCC_CCC_EFFORT', c.ccc.effort);
+    prefillContextWindow('field-', c.ccc.contextWindow);
   }
 
   // 按已有 config 决定每个 Agent 默认是否开启：优先 enabled 字段，缺省时按"任一字段非空"
@@ -1703,6 +1773,11 @@ function collectAllFields() {
   }
   if (state.agentsEnabled.ccc) {
     AGENT_FIELDS.ccc.forEach(function(key){
+      if (key === 'CHATCCC_CCC_CONTEXT_WINDOW') {
+        var cw = contextWindowToTokensValue('field-');
+        if (cw !== null) vars[key] = cw;
+        return;
+      }
       var el = document.getElementById('field-' + key);
       if (el && el.value.trim()) vars[key] = el.value.trim();
     });
@@ -1784,6 +1859,7 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CCC_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CCC_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CCC_EFFORT || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">上下文窗口</span><span class="val">' + contextWindowTokensLabel(vars.CHATCCC_CCC_CONTEXT_WINDOW || 1048576) + '</span></div>');
     }
   });
   document.getElementById('review-content').innerHTML = lines.join('');
@@ -2079,14 +2155,15 @@ function editSection(section) {
     'CHATCCC_CODEX_FAST_MODE': 'Fast 模式',
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
     'CHATCCC_CCC_PROVIDER': 'API 协议（选填）',
-    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort'
+    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
     'CHATCCC_CHROME_DEVTOOLS_ENABLED': '依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。',
     'CHATCCC_CHROME_DEVTOOLS_PORT': '默认 15166，健康检查端点为 http://127.0.0.1:15166/json/version。',
     'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。',
-    'CHATCCC_CCC_PROVIDER': '与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER），改动需重启 ChatCCC 生效。'
+    'CHATCCC_CCC_PROVIDER': '与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER），改动需重启 ChatCCC 生效。',
+    'CHATCCC_CCC_CONTEXT_WINDOW': '压缩阈值自动 = 窗口 × 80%（超出即把较早消息压缩为摘要）。⚠️ 超过模型/服务端实际上限时请求会被 API 直接拒绝（context length exceeded），实际窗口以模型与所用服务端为准（如 litellm 代理的 max_input_tokens）；单位 k = 1024 tokens，1M = 1,048,576 tokens。'
   };
 
   if (section === 'chromeDevtools') {
@@ -2132,6 +2209,7 @@ function editSection(section) {
         else if (key === 'CHATCCC_CCC_MODEL') val = state.config.ccc.model || '';
         else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
         else if (key === 'CHATCCC_CCC_EFFORT') val = state.config.ccc.effort || '';
+        else if (key === 'CHATCCC_CCC_CONTEXT_WINDOW') val = state.config.ccc.contextWindow || '1048576';
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
@@ -2156,6 +2234,22 @@ function editSection(section) {
       html += '<option value="openai"' + (providerVal === 'openai' ? ' selected' : '') + '>openai - OpenAI 兼容协议</option>';
       html += '<option value="anthropic"' + (providerVal === 'anthropic' ? ' selected' : '') + '>anthropic - Anthropic Messages 协议</option>';
       html += '</select>';
+      if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
+      html += '</div>';
+    } else if (key === 'CHATCCC_CCC_CONTEXT_WINDOW') {
+      var cwVal = val || '1048576';
+      var cwPreset = contextWindowPresetFor(cwVal);
+      html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
+      html += '<select id="edit-' + key + '" onchange="onContextWindowPresetChange(\\'edit-\\', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
+      html += '<option value="1m"' + (cwPreset === '1m' ? ' selected' : '') + '>1M（1,048,576 tokens，推荐）</option>';
+      html += '<option value="512k"' + (cwPreset === '512k' ? ' selected' : '') + '>512K（524,288 tokens）</option>';
+      html += '<option value="256k"' + (cwPreset === '256k' ? ' selected' : '') + '>256K（262,144 tokens）</option>';
+      html += '<option value="128k"' + (cwPreset === '128k' ? ' selected' : '') + '>128K（131,072 tokens）</option>';
+      html += '<option value="custom"' + (cwPreset === 'custom' ? ' selected' : '') + '>自定义（单位 k）</option>';
+      html += '</select>';
+      html += '<div id="edit-CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM_ROW" style="margin-top:6px;display:' + (cwPreset === 'custom' ? '' : 'none') + '">';
+      html += '<input type="number" id="edit-CHATCCC_CCC_CONTEXT_WINDOW_CUSTOM" min="1" placeholder="例如 768 表示 768K（786,432 tokens）" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none" value="' + (cwPreset === 'custom' ? Math.round(Number(cwVal) / 1024) : '') + '">';
+      html += '</div>';
       if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
       html += '</div>';
     } else {
@@ -2185,6 +2279,9 @@ function editSection(section) {
     html += '</select></div>';
   }
   document.getElementById('edit-modal-fields').innerHTML = html;
+  if (section === 'ccc') {
+    prefillContextWindow('edit-', (state.config.ccc && state.config.ccc.contextWindow) || 1048576);
+  }
   if (section === 'cursor') {
     var editModeEl = document.getElementById('edit-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
     onCursorBatteryModeChange('edit-', editModeEl ? editModeEl.value : 'apiPercent');
@@ -2214,6 +2311,10 @@ async function saveEdit() {
     var el = document.getElementById('edit-' + key);
     if (!el) return;
     if (key === 'CHATCCC_WEB_UI_OPEN_ON_START' || key === 'CHATCCC_CHROME_DEVTOOLS_ENABLED' || key === 'CHATCCC_CODEX_FAST_MODE') vars[key] = !!el.checked;
+    else if (key === 'CHATCCC_CCC_CONTEXT_WINDOW') {
+      var cw = contextWindowToTokensValue('edit-');
+      if (cw !== null) vars[key] = cw;
+    }
     else vars[key] = el.value.trim();
   });
   if (editSectionType === 'chromeDevtools' && !vars.CHATCCC_CHROME_DEVTOOLS_PORT) {
