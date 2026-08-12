@@ -88,13 +88,16 @@ const SUMMARY_SYSTEM_PROMPT = [
 /**
  * 压缩后注入的恢复提示（lead-in，对齐业界 Codex 的 post-compaction lead-in 思路）：
  * 只要会话发生过压缩（存在摘要），就在摘要后告知模型可用 session_search 找回原文。
- * 这样模型在后续每一轮都知道"较早消息已压缩、原文可检索"，而不是把恢复完全
- * 外包给模型的自发判断。
+ * 提示动态携带当前会话 ID：模型可优先用 session_id 限定只搜当前会话，
+ * 未命中时也可省略 session_id 退化全库检索。这样模型在后续每一轮都知道
+ * "较早消息已压缩、原文可检索"，而不是把恢复完全外包给模型的自发判断。
  */
-const COMPACTION_RECOVERY_HINT_ENABLED = [
-  "[系统提示] 本会话较早的消息已压缩为摘要。",
-  "如需找回被压缩消息的精确原文，可调用 session_search 工具检索本会话，并设置 include_raw_logs=true 以扫描本地 gzip 原始流日志。",
-].join("\n");
+function buildCompactionRecoveryHint(sessionId: string): string {
+  return [
+    "[系统提示] 本会话较早的消息已压缩为摘要。当前会话 ID：" + sessionId + "。",
+    `如需找回被压缩消息的精确原文，优先调用 session_search 工具并设置 session_id="${sessionId}"（仅检索当前会话）；若未命中，可省略 session_id 做全库检索（较慢）。检索时请设置 include_raw_logs=true 以扫描本地 gzip 原始流日志。`,
+  ].join("\n");
+}
 
 const COMPACTION_RECOVERY_HINT_DISABLED = [
   "[系统提示] 本会话较早的消息已压缩为摘要，原始消息未保留（raw stream logs 已关闭）。",
@@ -177,20 +180,23 @@ function addAnthropicToolJsonCompatibilityNote(
 
 /**
  * 压缩后恢复提示注入：只要会话存在摘要（即发生过压缩），就在摘要消息后追加
- * 一条提示，告知模型可用 session_search（include_raw_logs=true）找回被压缩的原文。
- * 提示内容随 raw stream logs 开关动态切换，避免关闭日志时给出误导性承诺。
+ * 一条提示，告知模型可用 session_search 找回被压缩的原文。
+ * - raw stream logs 开启：提示携带当前会话 ID，优先 session_id 限定当前会话，
+ *   未命中时可省略 session_id 做全库检索；
+ * - raw stream logs 关闭：仅告知原文未保留，不给出误导性承诺。
  */
 function maybeAppendCompactionRecoveryHint(
   messages: BuiltinContextMessage[],
   summary: string,
   rawLogsEnabled: boolean,
+  sessionId: string,
 ): BuiltinContextMessage[] {
   if (!summary.trim()) return messages;
   const summaryIndex = messages.findIndex(
     (message) => message.role === "user" && message.content.startsWith("以下是更早的对话摘要"),
   );
   if (summaryIndex < 0) return messages;
-  const hint = rawLogsEnabled ? COMPACTION_RECOVERY_HINT_ENABLED : COMPACTION_RECOVERY_HINT_DISABLED;
+  const hint = rawLogsEnabled ? buildCompactionRecoveryHint(sessionId) : COMPACTION_RECOVERY_HINT_DISABLED;
   return messages.map((message, index) => (
     index === summaryIndex
       ? { ...message, content: `${message.content}\n\n${hint}` }
@@ -485,6 +491,7 @@ export class ChatSession {
         contextMessages,
         this.context.summary,
         appConfig.rawStreamLogs.enabled,
+        this.context.sessionId,
       );
       const modelMessages = this.provider === "anthropic"
         ? addAnthropicToolJsonCompatibilityNote(hintedMessages)
