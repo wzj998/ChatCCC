@@ -98,7 +98,9 @@ $env:DEEPCCC_STREAMING="true"
 `rawStreamLogs.enabled` 默认 `true`，通过 `DEEPCCC_RAW_STREAM_LOGS` 环境变量或配置 JSON 关闭。
 开启时，每次对话的原始流按 gzip JSONL 落到 `~/.deepccc/raw-stream-logs/`，供
 `session_search` 工具在会话被压缩后找回被压缩消息的精确原文（检索时设置
-`include_raw_logs=true`）。关闭后，压缩后的旧消息原文将无法找回。
+`include_raw_logs=true`）。压缩后注入的恢复提示会携带当前会话 ID：优先用
+`session_id` 限定只搜当前会话，未命中时可省略 `session_id` 做全库检索。
+关闭后，压缩后的旧消息原文将无法找回。
 
 ## 命令行交互
 

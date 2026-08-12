@@ -544,6 +544,12 @@ describe("ChatSession context management", () => {
         expect.objectContaining({
           content: expect.stringContaining("include_raw_logs=true"),
         }),
+        expect.objectContaining({
+          content: expect.stringContaining("session_id=\"recovery-hint\""),
+        }),
+        expect.objectContaining({
+          content: expect.stringContaining("省略 session_id 做全库检索"),
+        }),
       ]),
     }));
   });
