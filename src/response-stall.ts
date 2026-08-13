@@ -13,9 +13,10 @@ export function observeResponseProgress(
   isMonitoredPhase: boolean,
   totalChars: number,
   now = Date.now(),
+  heartbeat = false,
 ): ResponseProgressObservation | undefined {
   if (!isMonitoredPhase) return undefined;
-  if (previous?.totalChars === totalChars) return previous;
+  if (!heartbeat && previous?.totalChars === totalChars) return previous;
   return { totalChars, unchangedSince: now };
 }
 

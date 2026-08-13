@@ -97,6 +97,16 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
               status: event.phase === "compacting" ? "compacting" : "responding",
             }],
           };
+        } else if (event.type === "progress") {
+          yield {
+            type: "assistant",
+            blocks: [{ type: "agent_progress", phase: event.phase }],
+          };
+        } else if (event.type === "text_reset") {
+          yield {
+            type: "assistant",
+            blocks: [{ type: "text_reset" }],
+          };
         } else if (event.type === "text") {
           yield {
             type: "assistant",

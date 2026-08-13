@@ -138,6 +138,28 @@ describe("createCccAdapter", () => {
     ]);
   });
 
+  it("maps DeepCCC reasoning heartbeats without exposing reasoning text", async () => {
+    const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
+    const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-reasoning-"));
+    const adapter = createCccAdapter({ apiKey: "sk-test", provider: "openai", contextDir });
+    const { sessionId } = await adapter.createSession("F:\\repo");
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "reasoning-delta", text: "private chain of thought" },
+        { type: "text-delta", text: "answer" },
+      ),
+    });
+
+    const messages = [];
+    for await (const message of adapter.prompt(sessionId, "think", "F:\\repo")) messages.push(message);
+
+    expect(messages).toContainEqual({
+      type: "assistant",
+      blocks: [{ type: "agent_progress", phase: "reasoning" }],
+    });
+    expect(JSON.stringify(messages)).not.toContain("private chain of thought");
+  });
+
   it("maps DeepCCC compaction and generation phases to unified activity blocks", async () => {
     const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-status-"));

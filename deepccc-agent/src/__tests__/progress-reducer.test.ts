@@ -30,6 +30,18 @@ describe("reduceProgress", () => {
     expect(view.showStop).toBe(true);
   });
 
+  it("uses reasoning heartbeats for status only and clears a rejected attempt before retry", () => {
+    const view = feed([
+      { type: "text", text: "bad", accumulated: "bad" },
+      { type: "progress", phase: "reasoning" },
+      { type: "text_reset" },
+    ]);
+
+    expect(view.headerTitle).toBe("思考中...");
+    expect(view.text).toBe("");
+    expect(view.tools).toEqual([]);
+  });
+
   it("appends tool_use as running and resolves status on tool_result", () => {
     const view = feed([
       { type: "tool_use", id: "t1", name: "edit_file", input: { path: "a.ts" } },

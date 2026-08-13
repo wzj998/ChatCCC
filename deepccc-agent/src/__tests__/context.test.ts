@@ -13,8 +13,33 @@ import {
   newBuiltinSessionId,
   serializeMessagesForSummary,
 } from "../context.js";
+import { hasMalformedToolProtocolText } from "../tool-protocol.js";
 
 describe("BuiltinContextManager", () => {
+  it("does not mistake ordinary DSML discussion for a malformed tool call", () => {
+    expect(hasMalformedToolProtocolText("DSML is an internal protocol.")).toBe(false);
+    expect(hasMalformedToolProtocolText("quoted </｜｜DSML｜｜parameter> elsewhere\nmore text")).toBe(false);
+    expect(hasMalformedToolProtocolText("[调用 create_file]\n</｜｜DSML｜｜parameter>")).toBe(true);
+  });
+
+  it("quarantines previously persisted malformed DSML assistant replies from model context", () => {
+    const context = new BuiltinContextManager({ compactAtTokens: 1, keepRecentMessages: 1 });
+    context.appendMessage({ role: "user", content: "创建文件" });
+    context.appendMessage({
+      role: "assistant",
+      content: "[调用 create_file]\n</｜｜DSML｜｜parameter>",
+    });
+    context.appendMessage({ role: "user", content: "继续" });
+
+    expect(context.buildModelMessages()).toEqual([
+      { role: "user", content: "创建文件" },
+      { role: "user", content: "继续" },
+    ]);
+    expect(context.planCompaction()?.oldMessages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: expect.stringContaining("DSML") }),
+    ]));
+  });
+
   it("defaults the compaction threshold to 1M x 80% (838,860 tokens) for the default 1M model window", () => {
     const context = new BuiltinContextManager();
 

@@ -35,6 +35,17 @@ describe("response stall detection", () => {
     expect(hasResponseStalled(changed, 181_000, 180_000)).toBe(false);
   });
 
+  it("restarts the timer for an invisible reasoning heartbeat without changing visible characters", () => {
+    const first = observeResponseProgress(undefined, true, 0, 1_000);
+    const heartbeat = observeResponseProgress(first, true, 0, 150_000, true);
+
+    expect(heartbeat).toEqual({
+      totalChars: 0,
+      unchangedSince: 150_000,
+    });
+    expect(hasResponseStalled(heartbeat, 181_000, 180_000)).toBe(false);
+  });
+
   it("clears tracking outside responding and starts a fresh window after returning", () => {
     const first = observeResponseProgress(undefined, true, 0, 1_000);
     const cleared = observeResponseProgress(first, false, 0, 100_000);

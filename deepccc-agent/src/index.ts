@@ -33,6 +33,10 @@ import {
 import { createBuiltinFileTools, MAX_TASK_OUTPUT_CHARS, type TaskRunnerInput } from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
 import {
+  hasMalformedToolProtocolText,
+  TOOL_PROTOCOL_RECOVERY_PROMPT,
+} from "./tool-protocol.js";
+import {
   buildDefaultSkillDirs,
   buildSkillsIndexPrompt,
   scanSkillsDirs,
@@ -346,10 +350,12 @@ export interface ChatSessionOptions {
  */
 export type ChatEvent =
   | { type: "status"; phase: "compacting" | "generating" }
+  | { type: "progress"; phase: "reasoning" }
   | { type: "compact"; compactedMessages: number }
   | { type: "tool_use"; id?: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; name?: string; content: unknown; is_error?: boolean }
   | { type: "text"; text: string; accumulated: string }
+  | { type: "text_reset" }
   | { type: "done"; text: string }
   | { type: "error"; message: string };
 
@@ -560,7 +566,6 @@ export class ChatSession {
         console.error(`[DeepCCC raw stream log] create failed: ${errorMessage(err)}`);
       }
 
-      const toolContext: string[] = [];
       const maxSteps = this.maxSteps;
       // 每次对话前重新扫描技能索引（并行 + mtime 缓存，开销极小）：
       // 新技能/修改的技能在下一次对话自动生效（热加载）。
@@ -588,10 +593,9 @@ export class ChatSession {
           ? { deepseek: { reasoningEffort: this.effort } }
           : { anthropic: { effort: this.effort } };
       }
-      const generationOptions = {
+      const baseGenerationOptions = {
         model: this.model,
         system,
-        messages: modelMessages as any,
         tools: createBuiltinFileTools(this.cwd, {
           permissionGate: this.permissionGate,
           runTask: this.runTask,
@@ -600,84 +604,130 @@ export class ChatSession {
         abortSignal: signal,
         ...(effortProviderOptions ? { providerOptions: effortProviderOptions } : {}),
       };
-      let stream: AsyncIterable<TextStreamPart<any>>;
-      if (appConfig.streaming) {
-        const result = streamText(generationOptions);
-        stream = result.fullStream ?? textStreamToFullStream(result.textStream);
-      } else {
-        const result = await generateText(generationOptions);
-        stream = generateResultToFullStream(result);
-      }
-
-      for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
-        rawLog?.writeLine(safeRawStreamJson(part));
-        if (part.type === "text-delta") {
-          fullText += part.text;
-          // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
-          // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
-          const safeText = applyPrivacy(part.text);
-          safeAccumulated += safeText;
-          yield { type: "text", text: safeText, accumulated: safeAccumulated };
-        } else if (part.type === "tool-call") {
-          toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
-          toolCallsById.set(part.toolCallId, { name: part.toolName, input: safeJson(part.input) });
-          toolCallOrder.push(part.toolCallId);
-          yield {
-            type: "tool_use",
-            id: part.toolCallId,
-            name: part.toolName,
-            input: applyPrivacyToJson(part.input),
-          };
-        } else if (part.type === "tool-result") {
-          toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
-          const call = toolCallsById.get(part.toolCallId);
-          if (call) {
-            call.output = truncateToolContext(safeJson(part.output));
-          }
-          yield {
-            type: "tool_result",
-            tool_use_id: part.toolCallId,
-            name: part.toolName,
-            content: applyPrivacyToJson(part.output),
-            is_error: false,
-          };
-        } else if (part.type === "tool-error") {
-          const message = errorMessage(part.error);
-          toolContext.push(`tool_error ${part.toolName}: ${message}`);
-          const call = toolCallsById.get(part.toolCallId);
-          if (call) {
-            call.output = message;
-            call.is_error = true;
-          }
-          yield {
-            type: "tool_result",
-            tool_use_id: part.toolCallId,
-            name: part.toolName,
-            content: applyPrivacy(message),
-            is_error: true,
-          };
-        } else if (part.type === "error") {
-          const message = errorMessage(part.error);
-          yield { type: "error", message: applyPrivacy(message) };
-          throw new Error(message);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        fullText = "";
+        safeAccumulated = "";
+        const toolContext: string[] = [];
+        toolCallsById.clear();
+        toolCallOrder.length = 0;
+        let lastReasoningProgressAt: number | undefined;
+        const attemptMessages = attempt === 0
+          ? modelMessages
+          : [...modelMessages, { role: "user" as const, content: TOOL_PROTOCOL_RECOVERY_PROMPT }];
+        const generationOptions = {
+          ...baseGenerationOptions,
+          messages: attemptMessages as any,
+        };
+        let stream: AsyncIterable<TextStreamPart<any>>;
+        if (appConfig.streaming) {
+          const result = streamText(generationOptions);
+          stream = result.fullStream ?? textStreamToFullStream(result.textStream);
+        } else {
+          const result = await generateText(generationOptions);
+          stream = generateResultToFullStream(result);
         }
-      }
-      completed = true;
 
-      const collectedToolCalls = toolCallOrder
-        .map((id) => toolCallsById.get(id))
-        .filter((call): call is { name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
-      this.context.appendMessage(buildPersistedAssistantMessage({
-        fullText,
-        transcriptLines: toolContext,
-        toolCalls: collectedToolCalls,
-      }));
-      yield { type: "done", text: safeAccumulated };
+        for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
+          rawLog?.writeLine(safeRawStreamJson(part));
+          if (part.type === "reasoning-start" || part.type === "reasoning-delta") {
+            // Reasoning content remains private. A throttled heartbeat is enough
+            // for ChatCCC to distinguish active inference from a stalled stream.
+            const now = Date.now();
+            if (lastReasoningProgressAt === undefined || now - lastReasoningProgressAt >= 1_000) {
+              lastReasoningProgressAt = now;
+              yield { type: "progress", phase: "reasoning" };
+            }
+          } else if (part.type === "text-delta") {
+            fullText += part.text;
+            // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
+            // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
+            const safeText = applyPrivacy(part.text);
+            safeAccumulated += safeText;
+            yield { type: "text", text: safeText, accumulated: safeAccumulated };
+          } else if (part.type === "tool-call") {
+            toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
+            toolCallsById.set(part.toolCallId, { name: part.toolName, input: safeJson(part.input) });
+            toolCallOrder.push(part.toolCallId);
+            yield {
+              type: "tool_use",
+              id: part.toolCallId,
+              name: part.toolName,
+              input: applyPrivacyToJson(part.input),
+            };
+          } else if (part.type === "tool-result") {
+            toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
+            const call = toolCallsById.get(part.toolCallId);
+            if (call) call.output = truncateToolContext(safeJson(part.output));
+            yield {
+              type: "tool_result",
+              tool_use_id: part.toolCallId,
+              name: part.toolName,
+              content: applyPrivacyToJson(part.output),
+              is_error: false,
+            };
+          } else if (part.type === "tool-error") {
+            const message = errorMessage(part.error);
+            toolContext.push(`tool_error ${part.toolName}: ${message}`);
+            const call = toolCallsById.get(part.toolCallId);
+            if (call) {
+              call.output = message;
+              call.is_error = true;
+            }
+            yield {
+              type: "tool_result",
+              tool_use_id: part.toolCallId,
+              name: part.toolName,
+              content: applyPrivacy(message),
+              is_error: true,
+            };
+          } else if (part.type === "error") {
+            const message = errorMessage(part.error);
+            yield { type: "error", message: applyPrivacy(message) };
+            throw new Error(message);
+          }
+        }
+
+        if (hasMalformedToolProtocolText(fullText)) {
+          console.warn(
+            `[DeepCCC] malformed DSML tool output detected for ${this.context.sessionId} `
+            + `(attempt ${attempt + 1}/2, structuredToolCalls=${toolCallOrder.length})`,
+          );
+          rawLog?.writeLine(safeRawStreamJson({
+            type: "deepccc_tool_protocol_recovery",
+            attempt: attempt + 1,
+            structuredToolCalls: toolCallOrder.length,
+          }));
+          yield { type: "text_reset" };
+          if (attempt === 0 && toolCallOrder.length === 0) {
+            yield { type: "status", phase: "generating" };
+            continue;
+          }
+          throw new Error(
+            toolCallOrder.length > 0
+              ? "工具调用协议异常：检测到混合的结构化与 DSML 文本调用，为避免重复执行工具，本轮已安全终止"
+              : "工具调用协议异常：模型重试后仍输出了无效的 DSML 工具调用",
+          );
+        }
+
+        completed = true;
+        const collectedToolCalls = toolCallOrder
+          .map((id) => toolCallsById.get(id))
+          .filter((call): call is { name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
+        this.context.appendMessage(buildPersistedAssistantMessage({
+          fullText,
+          transcriptLines: toolContext,
+          toolCalls: collectedToolCalls,
+        }));
+        yield { type: "done", text: safeAccumulated };
+        return;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const malformedProtocolOutput = hasMalformedToolProtocolText(fullText);
+      if (malformedProtocolOutput) yield { type: "text_reset" };
       if ((err as Error).name === "AbortError" || signal?.aborted) {
         // 被中断时，不保存不完整的助手消息
-        if (fullText) {
+        if (fullText && !malformedProtocolOutput) {
           this.context.appendMessage({ role: "assistant", content: `${fullText}\n[interrupted]` });
         }
         yield { type: "done", text: safeAccumulated };

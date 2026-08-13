@@ -359,7 +359,7 @@ function formatAutoEndedReply(finalReply: string): string {
  * 状态或资源保护，不能把它们消耗的时间算入回复停滞窗口。
  */
 function monitorsOutputProgress(kind: AgentActivityKind): boolean {
-  return kind === "responding";
+  return kind === "responding" || kind === "thinking";
 }
 
 function formatTerminalReply(
@@ -712,9 +712,9 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       apiKey: config.ccc.DEEPSEEK_API_KEY,
       baseURL: config.ccc.DEEPSEEK_BASE_URL,
       model: effectiveModel || undefined,
-      effort: effectiveEffort || undefined,
       compactionTimeoutMs: config.ccc.compactionTimeoutMs,
       contextWindow: config.ccc.contextWindow,
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       // 留空（""）不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
       ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
       ...(config.ccc.subModel ? { subModel: config.ccc.subModel } : {}),
@@ -1027,6 +1027,14 @@ export function accumulateBlockContent(
     case "text_final":
       // 覆盖而非追加：适配器已保证这是一段完整最终文本（如 Cursor 流末快照）
       state.finalCompleteText = block.text;
+      break;
+    case "text_reset":
+      state.accumulatedContent = "";
+      state.finalText = "";
+      state.finalCompleteText = "";
+      state.chunkCount = 0;
+      break;
+    case "agent_progress":
       break;
     case "compact_boundary": {
       const triggerLabel = block.trigger === "manual" ? "手动" : "自动"; // 手动 / 自动
@@ -1659,7 +1667,14 @@ export async function runAgentSession(
       }
 
       let activityChanged = false;
+      let progressHeartbeat = false;
+      let outputReset = false;
       for (const block of unifiedMsg.blocks) {
+        if (block.type === "agent_progress") progressHeartbeat = true;
+        if (block.type === "text_reset") {
+          outputReset = true;
+          toolCallMap.clear();
+        }
         if (updateAgentActivity(activityTracker, block)) activityChanged = true;
         accumulateBlockContent(block, state, toolCallMap);
 
@@ -1688,12 +1703,13 @@ export async function runAgentSession(
           monitorsOutputProgress(activityTracker.activity.kind),
           totalChars,
           Date.now(),
+          progressHeartbeat,
         );
       }
 
       // 定时写入文件
       const now2 = Date.now();
-      if (activityChanged || now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
+      if (activityChanged || outputReset || now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
         lastFileWrite = now2;
         await writeStreamState({
           sessionId,
