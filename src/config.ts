@@ -123,6 +123,11 @@ export interface CccConfig {
   DEEPSEEK_BASE_URL: string;
   /** Model used by the ChatCCC self-developed agent. */
   model: string;
+  /**
+   * 子模型（选填）：用于 DeepCCC 内部轻量环节（上下文压缩摘要生成、task 子代理任务）。
+   * 留空（""）时跟随主模型，行为与旧版一致。
+   */
+  subModel: string;
   /** Optional model exposed through /model for manual per-session switching. */
   alternativeModel: string;
   /**
@@ -491,6 +496,7 @@ function loadConfig(): AppConfig {
       DEEPSEEK_API_KEY: "",
       DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL,
       model: DEFAULT_CCC_MODEL,
+      subModel: "",
       alternativeModel: "",
       effort: "",
       provider: "",
@@ -555,6 +561,7 @@ function loadConfig(): AppConfig {
       DEEPSEEK_API_KEY?: unknown;
       DEEPSEEK_BASE_URL?: unknown;
       model?: unknown;
+      subModel?: unknown;
       alternativeModel?: unknown;
       effort?: unknown;
       provider?: unknown;
@@ -729,6 +736,7 @@ function loadConfig(): AppConfig {
         fallback: DEFAULT_CCC_DEEPSEEK_BASE_URL,
       }),
       model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
+      subModel: normalizeOptionalConfigField(cccRaw.subModel, { label: "ccc.subModel" }),
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
       provider: normalizeCccProviderOverride(cccRaw.provider),

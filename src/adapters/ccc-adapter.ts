@@ -54,6 +54,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.subModel !== undefined ? { subModel: options.subModel } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),
   };
 

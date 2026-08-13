@@ -84,6 +84,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--model" && next !== undefined) {
       config.model = next;
       i++;
+    } else if (arg === "--sub-model" && next !== undefined) {
+      config.subModel = next;
+      i++;
     } else if (arg === "--effort" && next !== undefined) {
       config.effort = next;
       i++;
@@ -143,6 +146,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "Options:",
     `  --provider <name>    API protocol: openai or anthropic (current default ${appConfig.provider})`,
     `  --model <name>       Model name (current default ${appConfig.model})`,
+    `  --sub-model <name>   Sub-model for lightweight steps (compaction/task; empty = follow main model)`,
     `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.effort)`,
     `  --base-url <url>     Provider API base URL (current default ${appConfig.baseURL})`,
     "  --api-key <key>      API key",

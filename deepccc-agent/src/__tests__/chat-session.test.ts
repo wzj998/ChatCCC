@@ -106,6 +106,32 @@ describe("ChatSession response transport", () => {
     expect(createOpenAICompatibleMock).not.toHaveBeenCalled();
   });
 
+  it("shares the main model instance when subModel is not configured (zero extra cost)", async () => {
+    const { ChatSession } = await import("../index.js");
+
+    const session = new ChatSession({ apiKey: "sk-test", baseURL: "https://gateway.example", model: "model-a" });
+    const anySession = session as unknown as { model: { modelId: string }; subModel: { modelId: string } };
+
+    expect(anySession.model.modelId).toBe("model-a");
+    expect(anySession.subModel).toBe(anySession.model);
+  });
+
+  it("instantiates a separate subModel when configured (lightweight steps use it)", async () => {
+    const { ChatSession } = await import("../index.js");
+
+    const session = new ChatSession({
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example",
+      model: "model-a",
+      subModel: "model-b",
+    });
+    const anySession = session as unknown as { model: { modelId: string }; subModel: { modelId: string } };
+
+    expect(anySession.model.modelId).toBe("model-a");
+    expect(anySession.subModel.modelId).toBe("model-b");
+    expect(anySession.subModel).not.toBe(anySession.model);
+  });
+
   it("keeps an existing /v1 suffix and maps Anthropic effort to output_config.effort", async () => {
     const { ChatSession } = await import("../index.js");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });

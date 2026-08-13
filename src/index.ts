@@ -203,65 +203,8 @@ function getInnerEvent(data: Evt): InnerEvent {
 }
 
 import { formatMessageContent } from "./format-message.ts";
-import {
-  buildUpdateCommandId,
-  extractFeishuEventId,
-} from "./update-command-guard.ts";
-
-// ---------------------------------------------------------------------------
-// Card action helper: parse button click into text command
-// ---------------------------------------------------------------------------
-
-interface CardActionResult {
-  text: string;
-  chatId: string;
-  openId: string;
-  commandId?: string;
-}
-
-function parseCardAction(data: unknown): CardActionResult | null {
-  const raw = (data as Record<string, unknown>)?.event ?? data;
-  const action = (raw as Record<string, unknown>)?.action as { value?: unknown } | undefined;
-  if (!action?.value) return null;
-
-  let cmd: string | undefined;
-  if (typeof action.value === "object" && action.value !== null) {
-    cmd = (action.value as Record<string, string>).action;
-  } else if (typeof action.value === "string") {
-    try {
-      let v: unknown = JSON.parse(action.value);
-      if (typeof v === "string") v = JSON.parse(v);
-      cmd = (v as { cmd?: string; action?: string }).cmd ?? (v as { action?: string }).action;
-    } catch { return null; }
-  }
-  if (!cmd) return null;
-
-  const CMD_MAP: Record<string, string> = { stop: "/stop", cancel: "/cancel", new: "/new", "new claude": "/new claude", "new cursor": "/new cursor", "new codex": "/new codex", restart: "/restart", update: "/update", state: "/state", cd: "/cd", sessions: "/sessions", forget: "/forget" };
-  let text = CMD_MAP[cmd] ?? "";
-  if (cmd === "cd" && typeof action.value === "object" && action.value !== null) {
-    const path = (action.value as Record<string, string>).path;
-    if (path) text = `/cd ${path}`;
-  }
-  // cmd 本身就是以 / 开头的完整指令时，直接使用（如 /model <name> 动态按钮）
-  if (!text && cmd.startsWith("/")) text = cmd;
-  if (!text) return null;
-
-  const chatId =
-    ((raw as Record<string, unknown>).open_chat_id as string) ??
-    ((raw as Record<string, unknown>).context as Record<string, unknown>)?.open_chat_id as string ??
-    ((raw as Record<string, unknown>).message as Record<string, unknown>)?.chat_id as string ??
-    "";
-  const openId =
-    ((raw as Record<string, unknown>).operator as Record<string, unknown>)?.open_id as string ??
-    "";
-
-  return {
-    text,
-    chatId,
-    openId,
-    commandId: buildUpdateCommandId("card", extractFeishuEventId(data)),
-  };
-}
+import { buildUpdateCommandId } from "./update-command-guard.ts";
+import { parseCardAction } from "./card-action-parser.ts";
 
 // ---------------------------------------------------------------------------
 // WebSocket relay broadcast

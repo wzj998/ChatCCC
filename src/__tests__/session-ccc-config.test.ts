@@ -48,6 +48,30 @@ describe("CCC Agent ChatCCC configuration", () => {
     });
   });
 
+  it("forwards ccc.subModel to createCccAdapter when set (lightweight steps use it)", () => {
+    Object.assign(config.ccc, {
+      DEEPSEEK_API_KEY: "chatccc-api-key",
+      DEEPSEEK_BASE_URL: "https://chatccc.example.com/v1",
+      model: "chatccc-model",
+      subModel: "chatccc-sub-model",
+      effort: "high",
+      provider: "",
+      compactionTimeoutMs: 12345,
+    });
+
+    getAdapterForTool("ccc");
+
+    expect(createCccAdapterMock).toHaveBeenCalledWith({
+      apiKey: "chatccc-api-key",
+      baseURL: "https://chatccc.example.com/v1",
+      model: "chatccc-model",
+      subModel: "chatccc-sub-model",
+      effort: "high",
+      compactionTimeoutMs: 12345,
+      contextWindow: config.ccc.contextWindow,
+    });
+  });
+
   it("forwards ccc.provider override to createCccAdapter", () => {
     Object.assign(config.ccc, {
       DEEPSEEK_API_KEY: "chatccc-api-key",

@@ -36,6 +36,8 @@ const SEARCH_TIMEOUT_MS = 15_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_TIMEOUT_MS = 900_000;
+/** task 子代理工具：子任务结果回传主会话前的最大字符数（防止子代理长输出撑爆主上下文） */
+export const MAX_TASK_OUTPUT_CHARS = 32_000;
 const requireFromHere = createRequire(import.meta.url);
 const FALLBACK_SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 
@@ -1209,13 +1211,33 @@ export interface BuiltinFileToolsOptions {
     contextDir?: string;
     rawLogsDir?: string;
   };
+  /**
+   * task 子代理工具的执行回调：把独立子任务委派给子会话（使用子模型、独立上下文）。
+   * 未提供时 task 工具不可用（抛出明确错误），主会话之外的工具集不会意外开启子代理。
+   */
+  runTask?: TaskRunner;
 }
+
+export interface TaskRunnerInput {
+  /** 子任务描述：包含目标、约束与交付物，子代理将以此作为唯一指令。 */
+  description: string;
+  /** 可选子任务工作目录（相对主会话 cwd 或绝对路径），默认继承主会话工作目录。 */
+  cwd?: string;
+}
+
+export interface TaskRunnerOutput {
+  /** 子代理最终文本回复（已截断到 MAX_TASK_OUTPUT_CHARS，已过隐私替换）。 */
+  result: string;
+}
+
+export type TaskRunner = (input: TaskRunnerInput, signal?: AbortSignal) => Promise<string>;
 
 export function createBuiltinFileTools(
   cwd: string,
   options: BuiltinFileToolsOptions = {},
 ): ToolSet {
   const gate = options.permissionGate;
+  const runTask = options.runTask;
 
   /** 文件路径的候选匹配键：原始路径 + 绝对路径 + 相对 cwd 路径（正/反斜杠双版本，规则可任选其一） */
   const pathKeys = (p: string): string[] => {
@@ -1302,6 +1324,25 @@ export function createBuiltinFileTools(
           detail: `运行命令: ${input.command}`,
         });
         return runCommandForTool(cwd, input, options.abortSignal);
+      },
+    }),
+    task: tool<TaskRunnerInput, TaskRunnerOutput>({
+      description: "把独立子任务委派给子代理执行：子代理使用子模型、拥有独立上下文，不污染主对话上下文。适合边界清晰、可独立交付的调研/代码生成子任务（如扫描整个仓库、阅读长文档、生成独立模块）。子代理不能再次委派任务（禁止嵌套），结果会截断回传。",
+      inputSchema: jsonSchema<TaskRunnerInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          description: { type: "string", description: "子任务描述：目标、约束与交付物。请写清楚子代理需要返回什么。" },
+          cwd: { type: "string", description: "可选子任务工作目录（绝对路径或相对主会话 cwd），默认继承主会话工作目录。" },
+        },
+        required: ["description"],
+      }),
+      execute: async (input, execOptions) => {
+        if (!runTask) {
+          throw new Error("task 工具不可用：当前环境未启用子代理执行器");
+        }
+        const result = await runTask(input, execOptions.abortSignal);
+        return { result };
       },
     }),
     edit_file: tool<EditFileInput, EditFileOutput>({

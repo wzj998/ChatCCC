@@ -10,7 +10,7 @@ import type { JSONObject } from "@ai-sdk/provider";
 import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamPart } from "ai";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -30,7 +30,7 @@ import {
   defaultBuiltinSessionId,
   type BuiltinContextMessage,
 } from "./context.js";
-import { createBuiltinFileTools } from "./file-tools.js";
+import { createBuiltinFileTools, MAX_TASK_OUTPUT_CHARS, type TaskRunnerInput } from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
 import {
   buildDefaultSkillDirs,
@@ -105,6 +105,17 @@ const COMPACTION_RECOVERY_HINT_DISABLED = [
 
 export const DEFAULT_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_COMPACTION_OUTPUT_TOKENS = 16_384;
+/** task 子代理工具：子代理单轮对话的最大工具步数（防失控循环，结果收敛后即结束） */
+const TASK_MAX_STEPS = 20;
+
+/** 子代理最终输出截断：保留前 MAX_TASK_OUTPUT_CHARS 字符，尾部注明截断信息 */
+function truncateTaskOutput(text: string): string {
+  if (text.length <= MAX_TASK_OUTPUT_CHARS) return text;
+  return (
+    text.slice(0, MAX_TASK_OUTPUT_CHARS) +
+    `\n…[子代理输出已截断，共 ${text.length} 字符，仅保留前 ${MAX_TASK_OUTPUT_CHARS} 字符]`
+  );
+}
 const ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE = [
   "[Protocol compatibility note]",
   "tool-call arguments use JSON encoding; the final reply does not need to be JSON unless the user requests it.",
@@ -278,6 +289,10 @@ export interface ChatSessionConfig {
   /** Model id. Defaults to DEEPCCC_MODEL/config. */
   model?: string;
   /**
+   * 子模型 id（可选）：用于压缩摘要生成与 task 子代理任务。留空跟随主模型。
+   */
+  subModel?: string;
+  /**
    * Reasoning effort (none/minimal/low/medium/high/xhigh/max);
    * overrides config.effort; empty omits the reasoning_effort request field.
    */
@@ -353,17 +368,73 @@ interface ChatMessage {
 
 export class ChatSession {
   private model: any;
+  /** 子模型实例；未配置 subModel 时与主模型同一实例 */
+  private subModel: any;
   private provider: DeepCccProvider;
+  private apiKey: string;
+  private baseURL: string;
+  private modelId: string;
+  private subModelId: string;
   private cwd: string;
   private context: BuiltinContextManager;
   private compactionTimeoutMs: number;
   private maxSteps?: number;
   private effort: string;
+  private permissionMode: PermissionMode;
+  private permissionResolver?: PermissionResolver;
   private permissionGate: PermissionGate;
   private skillDirs: SkillDirSpec[];
   private customSystemPrompt: string;
   /** 最近一次 chat() 使用的 system prompt（供 history 等读取） */
   private systemPrompt = "";
+
+  /**
+   * task 子代理工具执行器：用子模型开独立子会话（独立上下文、独立 cwd）执行子任务，
+   * 回传最终文本（截断 + 隐私替换）。单层：子会话的工具集不包含 runTask，天然禁止嵌套。
+   */
+  private runTask = async (input: TaskRunnerInput, signal?: AbortSignal): Promise<string> => {
+    const rawCwd = input.cwd?.trim();
+    const taskCwd = rawCwd ? (isAbsolute(rawCwd) ? rawCwd : resolve(this.cwd, rawCwd)) : this.cwd;
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), this.compactionTimeoutMs);
+    timeout.unref?.();
+    const taskSignal = signal
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal;
+
+    try {
+      const child = new ChatSession(
+        {
+          provider: this.provider,
+          apiKey: this.apiKey,
+          baseURL: this.baseURL,
+          model: this.subModelId || this.modelId,
+          effort: this.effort,
+        },
+        {
+          cwd: taskCwd,
+          persist: false,
+          permissionMode: this.permissionMode,
+          permissionResolver: this.permissionResolver,
+          maxSteps: TASK_MAX_STEPS,
+          compactionTimeoutMs: this.compactionTimeoutMs,
+          skillsDirs: this.skillDirs.map((s) => s.dir),
+        },
+      );
+      let full = "";
+      for await (const event of child.chat(input.description, taskSignal)) {
+        if (event.type === "text") {
+          full += event.text;
+        } else if (event.type === "error") {
+          throw new Error(`task 子代理执行失败: ${event.message}`);
+        }
+      }
+      if (!full.trim()) return "(子代理未返回文本内容)";
+      return applyPrivacy(truncateTaskOutput(full));
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
 
   constructor(
     overrides: ChatSessionConfig = {},
@@ -378,28 +449,33 @@ export class ChatSession {
 
     const baseURL = overrides.baseURL ?? appConfig.baseURL;
     const modelId = overrides.model ?? appConfig.model;
+    this.modelId = modelId;
+    this.subModelId = (overrides.subModel ?? appConfig.subModel ?? "").trim();
     this.provider = normalizeDeepCccProvider(overrides.provider ?? appConfig.provider);
     this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();
+    this.apiKey = apiKey;
+    this.baseURL = baseURL;
 
-    if (this.provider === "anthropic") {
-      const provider = createAnthropic({
-        baseURL: normalizeAnthropicBaseURL(baseURL),
-        apiKey,
-      });
-      this.model = provider(modelId);
-    } else {
-      const provider = createOpenAICompatible({
-        name: "deepccc",
-        baseURL,
-        apiKey,
-        includeUsage: true,
-      });
-      this.model = provider(modelId);
-    }
+    const provider = this.provider === "anthropic"
+      ? createAnthropic({
+          baseURL: normalizeAnthropicBaseURL(baseURL),
+          apiKey,
+        })
+      : createOpenAICompatible({
+          name: "deepccc",
+          baseURL,
+          apiKey,
+          includeUsage: true,
+        });
+    this.model = provider(modelId);
+    // 子模型：留空时与主模型共用同一实例（行为与旧版完全一致，零开销）
+    this.subModel = this.subModelId ? provider(this.subModelId) : this.model;
     this.cwd = options.cwd ?? process.cwd();
     this.maxSteps = normalizeMaxSteps(options.maxSteps);
     this.compactionTimeoutMs = Math.max(1, options.compactionTimeoutMs ?? DEFAULT_COMPACTION_TIMEOUT_MS);
     this.customSystemPrompt = options.systemPrompt ?? "";
+    this.permissionMode = options.permissionMode ?? "ask";
+    this.permissionResolver = options.permissionResolver;
     // 技能目录在构造时确定；技能内容在每次 chat() 前重新扫描（mtime 热加载），
     // 因此创建/修改技能后下一次对话自动生效，无需重启。
     this.skillDirs =
@@ -414,10 +490,7 @@ export class ChatSession {
       compactAtTokens: options.compactAtTokens,
       keepRecentMessages: options.keepRecentMessages,
     });
-    this.permissionGate = new PermissionGate(
-      options.permissionMode ?? "ask",
-      options.permissionResolver,
-    );
+    this.permissionGate = new PermissionGate(this.permissionMode, this.permissionResolver);
   }
 
   /**
@@ -519,7 +592,10 @@ export class ChatSession {
         model: this.model,
         system,
         messages: modelMessages as any,
-        tools: createBuiltinFileTools(this.cwd, { permissionGate: this.permissionGate }),
+        tools: createBuiltinFileTools(this.cwd, {
+          permissionGate: this.permissionGate,
+          runTask: this.runTask,
+        }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
         ...(effortProviderOptions ? { providerOptions: effortProviderOptions } : {}),
@@ -659,7 +735,7 @@ export class ChatSession {
       if (!plan) return 0;
 
       const result = await generateText({
-        model: this.model,
+        model: this.subModel,
         system: SUMMARY_SYSTEM_PROMPT,
         messages: [{ role: "user", content: buildSummaryPrompt(plan) }],
         abortSignal: compactionSignal,
