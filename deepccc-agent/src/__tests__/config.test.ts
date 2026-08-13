@@ -24,6 +24,10 @@ describe("builtin ChatSession config", () => {
     expect(DEFAULT_CONFIG.contextWindow).toBe(1_048_576);
   });
 
+  it("defaults subModel to empty so internal lightweight steps follow the main model", () => {
+    expect(DEFAULT_CONFIG.subModel).toBe("");
+  });
+
   it("defaults provider selection to openai and accepts anthropic case-insensitively", () => {
     expect(normalizeDeepCccProvider(undefined)).toBe("openai");
     expect(normalizeDeepCccProvider("")).toBe("openai");

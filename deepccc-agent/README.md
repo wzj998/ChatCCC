@@ -75,6 +75,7 @@ $env:DEEPCCC_STREAMING="true"
   "apiKey": "sk-...",
   "baseURL": "https://api.deepseek.com/v1",
   "model": "deepseek-v4-pro",
+  "subModel": "",
   "effort": "",
   "streaming": true,
   "contextWindow": 1048576,
@@ -101,6 +102,16 @@ $env:DEEPCCC_STREAMING="true"
 可通过 `DEEPCCC_CONTEXT_WINDOW` 环境变量覆盖。⚠️ 超过模型/服务端实际上限时请求会被
 API 拒绝（context length exceeded），实际窗口以模型与所用服务端为准（如 litellm 的
 `max_input_tokens`）。
+
+`subModel` 是子模型（选填），默认 `""`（留空跟随主模型）。配置后，DeepCCC 内部的轻量
+环节——上下文压缩摘要生成、`task` 子代理任务——使用子模型执行，主对话仍用主模型。
+典型用法：主模型用 pro 承担复杂推理，子模型用 flash 做高频廉价的摘要与子任务。
+可通过 `DEEPCCC_SUB_MODEL` 环境变量或命令行 `--sub-model` 覆盖。
+
+`task` 子代理工具：主模型可把边界清晰的独立子任务（仓库调研、长文档阅读、独立模块生成）
+委派给子代理执行——子代理使用子模型、独立上下文，不污染主对话上下文；结果截断回传。
+子代理**不能再次委派**（禁止嵌套），单轮最多 20 个工具步，超时与主会话压缩超时一致。
+仅在配置了子模型时建议使用（未配置时子代理跟随主模型，节省有限）。
 
 `rawStreamLogs.enabled` 默认 `true`，通过 `DEEPCCC_RAW_STREAM_LOGS` 环境变量或配置 JSON 关闭。
 开启时，每次对话的原始流按 gzip JSONL 落到 `~/.deepccc/raw-stream-logs/`，供

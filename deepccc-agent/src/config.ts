@@ -10,6 +10,11 @@ export interface DeepCccConfig {
   apiKey: string;
   baseURL: string;
   model: string;
+  /**
+   * 子模型（可选）：用于内部轻量环节（上下文压缩摘要生成、task 子代理任务）。
+   * 留空（""）时跟随主模型，行为与旧版完全一致。
+   */
+  subModel: string;
   /** Reasoning effort（none/minimal/low/medium/high/xhigh/max），留空不传 reasoning_effort */
   effort: string;
   /** 主对话是否使用流式请求；默认开启 */
@@ -39,6 +44,7 @@ export const DEFAULT_CONFIG: DeepCccConfig = {
   apiKey: "",
   baseURL: "https://api.deepseek.com/v1",
   model: "deepseek-v4-pro",
+  subModel: "",
   effort: "",
   streaming: true,
   contextWindow: 1_048_576,
@@ -94,6 +100,7 @@ function loadConfig(): DeepCccConfig {
     apiKey: env("DEEPCCC_API_KEY") ?? env("DEEPSEEK_API_KEY") ?? file.apiKey ?? DEFAULT_CONFIG.apiKey,
     baseURL: env("DEEPCCC_BASE_URL") ?? env("DEEPSEEK_BASE_URL") ?? file.baseURL ?? DEFAULT_CONFIG.baseURL,
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,
+    subModel: env("DEEPCCC_SUB_MODEL") ?? file.subModel ?? DEFAULT_CONFIG.subModel,
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
     streaming: boolEnv("DEEPCCC_STREAMING") ?? file.streaming ?? DEFAULT_CONFIG.streaming,
     contextWindow: numberEnv("DEEPCCC_CONTEXT_WINDOW") ?? file.contextWindow ?? DEFAULT_CONFIG.contextWindow,

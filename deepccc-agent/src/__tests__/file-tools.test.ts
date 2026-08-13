@@ -5,10 +5,11 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyPatchForTool,
+  createBuiltinFileTools,
   createFileForTool,
   deleteFileForTool,
   editFileForTool,
@@ -105,6 +106,30 @@ describe("DeepCCC file tools", () => {
         text: "const marker = 1;",
       }),
     ]);
+  });
+
+  it("task tool delegates to the runTask executor with cwd resolution context", async () => {
+    const dir = await makeTempDir();
+    const runTask = vi.fn(async () => "子代理结果");
+    const tools = createBuiltinFileTools(dir, { runTask }) as unknown as Record<
+      string,
+      { execute: (input: unknown, options: unknown) => Promise<unknown> }
+    >;
+
+    const result = await tools.task.execute({ description: "扫描仓库", cwd: "src" }, { abortSignal: undefined });
+
+    expect(runTask).toHaveBeenCalledWith({ description: "扫描仓库", cwd: "src" }, undefined);
+    expect(result).toEqual({ result: "子代理结果" });
+  });
+
+  it("task tool rejects with a clear error when no runTask executor is available", async () => {
+    const dir = await makeTempDir();
+    const tools = createBuiltinFileTools(dir) as unknown as Record<
+      string,
+      { execute: (input: unknown) => Promise<unknown> }
+    >;
+
+    await expect(tools.task.execute({ description: "x" })).rejects.toThrow(/task 工具不可用/);
   });
 
   it("runs non-interactive shell commands in the requested cwd", async () => {

@@ -717,6 +717,7 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       contextWindow: config.ccc.contextWindow,
       // 留空（""）不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
       ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
+      ...(config.ccc.subModel ? { subModel: config.ccc.subModel } : {}),
     });
   } else {
     adapter = createClaudeAdapter({
