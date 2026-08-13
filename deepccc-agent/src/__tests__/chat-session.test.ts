@@ -55,6 +55,13 @@ async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
 }
 
+async function* malformedThenAbort(text: string): AsyncIterable<unknown> {
+  yield { type: "text-delta", text };
+  const error = new Error("aborted");
+  error.name = "AbortError";
+  throw error;
+}
+
 beforeEach(() => {
   config.provider = "openai";
   config.streaming = true;
@@ -77,6 +84,99 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it("emits an invisible progress heartbeat for provider reasoning deltas", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "reasoning-delta", text: "still thinking" },
+        { type: "text-delta", text: "done" },
+        { type: "finish", finishReason: "stop" },
+      ),
+    });
+
+    const events = await collect(session.chat("think carefully"));
+
+    expect(events).toContainEqual({ type: "progress", phase: "reasoning" });
+  });
+
+  it("retries malformed DSML tool markup without persisting the rejected assistant reply", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    const malformed = "[调用 create_file]\n</｜｜DSML｜｜parameter>";
+    streamTextMock
+      .mockReturnValueOnce({
+        fullStream: fullStream(
+          { type: "text-delta", text: malformed },
+          { type: "finish", finishReason: "stop" },
+        ),
+      })
+      .mockReturnValueOnce({
+        fullStream: fullStream(
+          { type: "text-delta", text: "已通过结构化工具调用完成" },
+          { type: "finish", finishReason: "stop" },
+        ),
+      });
+
+    const events = await collect(session.chat("创建文件"));
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual({ type: "text_reset" });
+    expect(events.at(-1)).toEqual({ type: "done", text: "已通过结构化工具调用完成" });
+    expect(session.history.map((message) => message.content).join("\n")).not.toContain("DSML");
+    expect(session.history.map((message) => message.content).join("\n")).toContain("已通过结构化工具调用完成");
+    expect(streamTextMock.mock.calls[1]?.[0].messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("不要把 DSML 或工具参数作为普通文本输出"),
+      }),
+    ]));
+  });
+
+  it("fails closed after a repeated malformed DSML reply and keeps it out of history", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    const malformed = "[调用 create_file]\n</｜｜DSML｜｜parameter>";
+    streamTextMock
+      .mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: malformed }) })
+      .mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: malformed }) });
+
+    await expect(collect(session.chat("创建文件"))).rejects.toThrow("工具调用协议异常");
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2);
+    expect(session.history.map((message) => message.content).join("\n")).not.toContain("DSML");
+  });
+
+  it("does not persist malformed DSML output when its provider stream is interrupted", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    streamTextMock.mockReturnValueOnce({
+      fullStream: malformedThenAbort("[调用 create_file]\n</｜｜DSML｜｜parameter>"),
+    });
+
+    const events = await collect(session.chat("创建文件"));
+
+    expect(events).toContainEqual({ type: "text_reset" });
+    expect(session.history.map((message) => message.content).join("\n")).not.toContain("DSML");
+  });
+
+  it("does not retry after structured tools already ran, preventing duplicate side effects", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "tool-call", toolCallId: "call-1", toolName: "create_file", input: { path: "a.txt" } },
+        { type: "tool-result", toolCallId: "call-1", toolName: "create_file", output: "ok" },
+        { type: "text-delta", text: "[调用 create_file]\n</｜｜DSML｜｜parameter>" },
+      ),
+    });
+
+    await expect(collect(session.chat("创建文件"))).rejects.toThrow("避免重复执行工具");
+
+    expect(streamTextMock).toHaveBeenCalledTimes(1);
+    expect(session.history.map((message) => message.content).join("\n")).not.toContain("DSML");
+  });
+
   it("uses the OpenAI-compatible provider by default", async () => {
     const { ChatSession } = await import("../index.js");
 
@@ -109,7 +209,12 @@ describe("ChatSession response transport", () => {
   it("shares the main model instance when subModel is not configured (zero extra cost)", async () => {
     const { ChatSession } = await import("../index.js");
 
-    const session = new ChatSession({ apiKey: "sk-test", baseURL: "https://gateway.example", model: "model-a" });
+    const session = new ChatSession({
+      apiKey: "sk-test",
+      baseURL: "https://gateway.example",
+      model: "model-a",
+      subModel: "",
+    });
     const anySession = session as unknown as { model: { modelId: string }; subModel: { modelId: string } };
 
     expect(anySession.model.modelId).toBe("model-a");

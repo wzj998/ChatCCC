@@ -63,6 +63,12 @@ export function reduceProgress(prev: ProgressView, event: ChatEvent): ProgressVi
       // accumulated 是全文累积，直接全量替换，天然幂等
       return withProgressView(prev, { text: event.accumulated });
 
+    case "progress":
+      return withProgressView(prev, { headerTitle: "思考中..." });
+
+    case "text_reset":
+      return withProgressView(prev, { text: "", tools: [] });
+
     case "tool_use": {
       const tool: ProgressToolCall = {
         id: event.id ?? `tool-${prev.tools.length + 1}`,

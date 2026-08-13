@@ -78,8 +78,21 @@ export interface UnifiedAgentStatusBlock {
   status: "compacting" | "responding";
 }
 
+/** Invisible liveness signal; never contains private reasoning text. */
+export interface UnifiedAgentProgressBlock {
+  type: "agent_progress";
+  phase: "reasoning";
+}
+
+/** Clears text emitted by a rejected provider attempt before an internal retry. */
+export interface UnifiedTextResetBlock {
+  type: "text_reset";
+}
+
 export type UnifiedBlock =
   | UnifiedAgentStatusBlock
+  | UnifiedAgentProgressBlock
+  | UnifiedTextResetBlock
   | UnifiedThinkingBlock
   | UnifiedTextBlock
   | UnifiedTextFinalBlock

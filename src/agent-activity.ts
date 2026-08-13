@@ -105,6 +105,10 @@ export function updateAgentActivity(
   if (tracker.activeTools.size > 0) return false;
 
   switch (block.type) {
+    case "agent_progress":
+      return setActivity(tracker, { kind: "thinking", startedAt: now });
+    case "text_reset":
+      return setActivity(tracker, { kind: "responding", startedAt: now });
     case "agent_status":
       return setActivity(tracker, {
         kind: block.status === "compacting" ? "compacting" : "responding",

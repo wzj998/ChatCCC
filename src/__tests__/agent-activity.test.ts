@@ -80,6 +80,14 @@ describe("agent activity", () => {
     expect(tracker.activity).toEqual({ kind: "responding", startedAt: 5_000 });
   });
 
+  it("shows invisible DeepCCC reasoning progress as thinking without exposing its content", () => {
+    const tracker = createAgentActivityTracker(1_000);
+
+    expect(updateAgentActivity(tracker, { type: "agent_progress", phase: "reasoning" }, 2_000)).toBe(true);
+    expect(tracker.activity).toEqual({ kind: "thinking", startedAt: 2_000 });
+    expect(updateAgentActivity(tracker, { type: "agent_progress", phase: "reasoning" }, 5_000)).toBe(false);
+  });
+
   it("formats longer elapsed time without decorative animation", () => {
     expect(formatAgentActivityTitle({ kind: "thinking", startedAt: 1_000 }, 74_000)).toBe("思考中 · 1分13秒");
   });

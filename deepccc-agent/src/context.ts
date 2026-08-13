@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { hasMalformedToolProtocolText } from "./tool-protocol.js";
+
 export type BuiltinContextRole = "user" | "assistant";
 
 /**
@@ -408,15 +410,20 @@ export class BuiltinContextManager {
         ].join("\n"),
       });
     }
-    messages.push(...this.state.messages);
+    // Keep malformed provider output on disk for diagnosis, but quarantine it
+    // from future prompts so one protocol failure cannot teach the model to
+    // repeat the same invalid tool syntax on every later turn.
+    messages.push(...this.modelSafeMessages());
     return messages;
   }
 
   planCompaction(): BuiltinCompactionPlan | null {
-    const estimated = estimateBuiltinContextTokens(this.state.summary, this.state.messages);
+    // The compaction model is still a model input: exclude quarantined protocol
+    // leaks here too, otherwise a later summary could reintroduce the bad syntax.
+    const messages = this.modelSafeMessages();
+    const estimated = estimateBuiltinContextTokens(this.state.summary, messages);
     if (estimated <= this.compactAtTokens) return null;
 
-    const messages = this.state.messages;
     if (messages.length <= 1) return null;
 
     const earliestAllowed = Math.max(0, messages.length - this.keepRecentMessages);
@@ -460,6 +467,12 @@ export class BuiltinContextManager {
     const tmp = `${this.contextFilePath}.${process.pid}.tmp`;
     writeFileSync(tmp, content, "utf8");
     renameSync(tmp, this.contextFilePath);
+  }
+
+  private modelSafeMessages(): BuiltinContextMessage[] {
+    return this.state.messages.filter((message) =>
+      message.role !== "assistant" || !hasMalformedToolProtocolText(message.content)
+    );
   }
 
   private load(): BuiltinContextState {

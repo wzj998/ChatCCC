@@ -2520,6 +2520,20 @@ describe("accumulateBlockContent", () => {
     expect(s.accumulatedContent).toBe("");
   });
 
+  it("clears rejected attempt output on text_reset and ignores invisible progress", () => {
+    const s = freshState();
+    s.accumulatedContent = "tool preview";
+    s.finalText = "malformed DSML";
+    s.finalCompleteText = "stale snapshot";
+    s.chunkCount = 3;
+
+    accumulateBlockContent({ type: "agent_progress", phase: "reasoning" }, s);
+    expect(s.finalText).toBe("malformed DSML");
+
+    accumulateBlockContent({ type: "text_reset" }, s);
+    expect(s).toEqual(freshState());
+  });
+
   it("accumulates tool_use block with formatted name and input", () => {
     const s = freshState();
     accumulateBlockContent(
