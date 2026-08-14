@@ -137,4 +137,39 @@ describe("DshAdapter", () => {
     expect(last?.blocks.map((block) => block.type)).toEqual(["text_final"]);
     expect((last?.blocks[0] as { text?: string }).text).toContain("未产生任何回复");
   });
+
+  it("reuses the long-lived runtime across prompts for the same session (no id collision)", async () => {
+    let instances = 0;
+    class CountingHarness {
+      constructor() { instances += 1; }
+      async start(): Promise<void> {}
+      async close(): Promise<void> {}
+      async run(_input: string, options: { sessionId: string }) {
+        return { sessionId: options.sessionId, finalResponse: "ok" };
+      }
+    }
+    __setDshSdkModuleForTest({ DeepSeekHarness: CountingHarness as never });
+    const adapter = createDshAdapter({ model: "deepseek-v4-flash" });
+    const created = await adapter.createSession("C:/workspace");
+    for await (const _message of adapter.prompt(created.sessionId, "one", "C:/workspace")) { /* drain */ }
+    for await (const _message of adapter.prompt(created.sessionId, "two", "C:/workspace")) { /* drain */ }
+    expect(instances).toBe(1);
+  });
+
+  it("closes the long-lived runtime on closeSession", async () => {
+    let closed = 0;
+    class FakeHarness {
+      async start(): Promise<void> {}
+      async close(): Promise<void> { closed += 1; }
+      async run(_input: string, options: { sessionId: string }) {
+        return { sessionId: options.sessionId, finalResponse: "ok" };
+      }
+    }
+    __setDshSdkModuleForTest({ DeepSeekHarness: FakeHarness as never });
+    const adapter = createDshAdapter({ model: "deepseek-v4-flash" });
+    const created = await adapter.createSession("C:/workspace");
+    for await (const _message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) { /* drain */ }
+    await adapter.closeSession(created.sessionId);
+    expect(closed).toBe(1);
+  });
 });
