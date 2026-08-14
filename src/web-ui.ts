@@ -2533,7 +2533,7 @@ function engineRefreshStatus(engineId) {
     renderEngineStatus(engineId, status);
     if (status.running || (status.job && status.job.state === 'running')) scheduleEnginePoll(engineId);
     return status;
-  });
+  }).catch(function(){ scheduleEnginePoll(engineId); });
 }
 
 function installEngine(engineId) {

@@ -52,6 +52,15 @@ describe("EngineManager", () => {
     expect(runs).toBe(2);
   });
 
+  it("reports a background progress failure through flush instead of an unhandled rejection", async () => {
+    const reporter = createCoalescedAsyncTask(async () => {
+      throw new Error("persist failed");
+    });
+
+    reporter.schedule();
+    await expect(reporter.flush()).rejects.toThrow("persist failed");
+  });
+
   it("installs into staging, verifies, and atomically publishes current.json", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "chatccc-engine-manager-"));
     const manager = new EngineManager({
@@ -131,6 +140,27 @@ describe("EngineManager", () => {
     ]);
     release();
     expect((await manager.waitForInstall("test")).state).toBe("succeeded");
+  });
+
+  it("serializes concurrent progress persistence without losing the job file", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "chatccc-engine-concurrent-progress-"));
+    const manager = new EngineManager({
+      rootDir,
+      specs: [testSpec()],
+      installPackages: async (dir, spec, update) => {
+        await Promise.all(Array.from({ length: 40 }, (_, index) =>
+          update(index + 1, `chunk-${index + 1}`),
+        ));
+        await fakeInstall(dir, spec);
+      },
+      verifyRuntime: async () => {},
+    });
+
+    const job = await manager.install("test");
+    expect(job.state).toBe("succeeded");
+    const persisted = JSON.parse(await readFile(join(rootDir, "engine-jobs", "test.json"), "utf8"));
+    expect(persisted.state).toBe("succeeded");
+    expect(persisted.percent).toBe(100);
   });
 
   it("deduplicates concurrent one-click install requests", async () => {
