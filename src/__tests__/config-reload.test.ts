@@ -51,6 +51,7 @@ const baseAppConfig: AppConfig = {
     cursor: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
     codex: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
     ccc: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
+    dsh: { enabled: false, maxBytesPerTurn: 52_428_800, retentionDays: 7, keepCompleted: false },
   },
   claude: {
     enabled: true,
@@ -73,6 +74,7 @@ const baseAppConfig: AppConfig = {
   },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort", fastMode: false },
   ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", subModel: "", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", provider: "", compactionTimeoutMs: 300000, contextWindow: 1048576 },
+  dsh: { enabled: false, defaultAgent: false, apiKey: "", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", provider: "deepseek-official", maxTokens: 49152 },
 };
 
 // 把 module 状态抢救快照：每个 it 跑前重置回这个状态，避免污染相邻测试。

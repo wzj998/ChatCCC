@@ -159,6 +159,7 @@ export function buildHelpCard(
     "发送 **/new cursor** 创建新 Cursor 会话",
     "发送 **/new codex** 创建新 Codex 会话",
     "发送 **/new ccc** 创建新 CCC Agent 会话",
+    "发送 **/new dsh** 创建新 DeepSeek Harness 会话",
     "发送 **/forget** 重置当前会话（忘掉上下文，沿用当前工作目录，不切换）",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
@@ -179,6 +180,7 @@ export function buildHelpCard(
         { text: "新建 Cursor 会话（/new cursor）", value: JSON.stringify({ cmd: "new cursor" }), type: "primary" },
         { text: "新建 Codex 会话（/new codex）", value: JSON.stringify({ cmd: "new codex" }), type: "primary" },
         { text: "新建 CCC Agent 会话（/new ccc）", value: JSON.stringify({ cmd: "new ccc" }), type: "primary" },
+        { text: "新建 DeepSeek Harness 会话（/new dsh）", value: JSON.stringify({ cmd: "new dsh" }), type: "primary" },
         { text: "重启 ChatCCC（/restart）", value: JSON.stringify({ cmd: "restart" }), type: "danger" },
         { text: "更新并重启（/update）", value: JSON.stringify({ cmd: "update" }), type: "danger" },
         { text: "切换工作路径（/cd）", value: JSON.stringify({ cmd: "cd" }), type: "default" },
@@ -304,6 +306,7 @@ function sessionToolLabel(tool: string): string {
   if (tool === "cursor") return "Cursor";
   if (tool === "codex") return "Codex";
   if (tool === "ccc") return "CCC Agent";
+  if (tool === "dsh") return "DeepSeek Harness";
   return "Claude Code";
 }
 
@@ -355,14 +358,16 @@ export function buildSessionsCard(sessions: Array<{
   const defaultToolLabel = opts.defaultToolLabel ?? "Claude Code";
   const fixedPrivateSession = opts.fixedPrivateSession ?? false;
   // 按 tool 分组排序：Claude Code 在前，Cursor 其次，Codex 最后
-  const claudeCodeSessions = sessions.filter(s => s.tool !== "cursor" && s.tool !== "codex" && s.tool !== "ccc");
+  const claudeCodeSessions = sessions.filter(s => s.tool === "claude");
   const cursorSessions = sessions.filter(s => s.tool === "cursor");
   const codexSessions = sessions.filter(s => s.tool === "codex");
   const cccSessions = sessions.filter(s => s.tool === "ccc");
+  const dshSessions = sessions.filter(s => s.tool === "dsh");
   const hasClaudeCode = claudeCodeSessions.length > 0;
   const hasCursor = cursorSessions.length > 0;
   const hasCodex = codexSessions.length > 0;
   const hasCcc = cccSessions.length > 0;
+  const hasDsh = dshSessions.length > 0;
 
   if (sessions.length === 0) {
     return JSON.stringify({
@@ -370,8 +375,8 @@ export function buildSessionsCard(sessions: Array<{
       header: { template: "blue", title: { content: "所有会话", tag: "plain_text" } },
       elements: [
         { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
-          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；默认 Agent 变化后，下一条普通消息会创建对应 Agent 的新空会话。发送 **/new**、**/new claude**、**/new cursor**、**/new codex** 或 **/new ccc** 会另外创建会话群。`
-          : `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor**、**/new codex** 或 **/new ccc** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
+          ? `当前没有会话记录。\n\n直接发送普通消息即可创建飞书私聊专属 ${defaultToolLabel} 会话；默认 Agent 变化后，下一条普通消息会创建对应 Agent 的新空会话。发送 **/new**、**/new claude**、**/new cursor**、**/new codex**、**/new ccc** 或 **/new dsh** 会另外创建会话群。`
+          : `当前没有会话记录。\n\n使用 **/new**（默认 ${defaultToolLabel}）、**/new claude**、**/new cursor**、**/new codex**、**/new ccc** 或 **/new dsh** 创建新会话。\n创建后可在任意会话群内发送 **/sessions** 查看列表，用 **/session 数字** 切换会话。` } },
         { tag: "hr" },
         { tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "收起" }, type: "default", value: { action: "close" } }] },
       ],
@@ -405,6 +410,7 @@ export function buildSessionsCard(sessions: Array<{
   if (hasCursor) pushSessionGroup(lines, "Cursor 会话", cursorSessions, formatSession, idx);
   if (hasCodex) pushSessionGroup(lines, "Codex 会话", codexSessions, formatSession, idx);
   if (hasCcc) pushSessionGroup(lines, "CCC Agent 会话", cccSessions, formatSession, idx);
+  if (hasDsh) pushSessionGroup(lines, "DeepSeek Harness 会话", dshSessions, formatSession, idx);
 
   return JSON.stringify({
     config: { wide_screen_mode: true },

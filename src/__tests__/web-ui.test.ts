@@ -2,14 +2,13 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// 关键：mock installer 模块，避免 /api/claude-sdk/install 触发真实 npm 下载（220MB）
-const installClaudeSdkMock = vi.hoisted(() => vi.fn());
-vi.mock("../claude-sdk-installer.ts", () => ({
-  getClaudeSdkInstalledVersion: () => null,
-  getLastInstallProgress: () => ({ phase: "idle", percent: 0, message: "" }),
-  installClaudeSdk: installClaudeSdkMock,
-  isClaudeSdkInstalled: () => false,
-  isInstallRunning: () => false,
+const engineGetStatusMock = vi.hoisted(() => vi.fn());
+const engineStartInstallMock = vi.hoisted(() => vi.fn());
+vi.mock("../engines/engine-specs.ts", () => ({
+  engineManager: {
+    getStatus: engineGetStatusMock,
+    startInstall: engineStartInstallMock,
+  },
 }));
 
 import {
@@ -376,83 +375,73 @@ describe("chooseStartPath", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Claude Code 引擎（Agent SDK）按需安装路由
-// 护栏：/api/claude-sdk/status 与 /api/claude-sdk/install 必须可路由，且
-//   install 在“正在安装”时返回 alreadyRunning 而不是再起一个任务。
+// 通用引擎按需安装路由（Claude 与 DSH 共用）。
 // ---------------------------------------------------------------------------
 
-describe("Claude SDK install routes", () => {
+describe("generic engine install routes", () => {
   beforeEach(() => {
-    installClaudeSdkMock.mockReset();
-    installClaudeSdkMock.mockResolvedValue(undefined);
+    engineGetStatusMock.mockReset();
+    engineStartInstallMock.mockReset();
+    engineGetStatusMock.mockResolvedValue({ id: "claude", label: "Claude Code", installed: false, version: null, targetVersion: "1.0.0", entryPath: null, running: false, job: null });
+    engineStartInstallMock.mockResolvedValue({ jobId: "job-1", engineId: "claude", state: "running", percent: 0, steps: [] });
   });
 
   afterEach(() => {
-    installClaudeSdkMock.mockReset();
+    engineGetStatusMock.mockReset();
+    engineStartInstallMock.mockReset();
   });
 
-  it("GET /api/claude-sdk/status 返回安装状态与进度", async () => {
+  it("GET /api/engines/:id/status 返回安装状态", async () => {
     const server = createServer(createUiRouter());
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/claude-sdk/status`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/engines/claude/status`);
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(typeof body.installed).toBe("boolean");
-      expect(typeof body.running).toBe("boolean");
-      // 契约护栏：前端轮询读顶层 phase/message（若只嵌套在 progress 里，
-      // 前端 s.phase 恒为 undefined，进度条永不渲染——历史回归点）
-      expect(body.progress).toBeDefined();
-      expect(body.progress.phase).toBeDefined();
-      expect(body.phase).toBeDefined();
-      expect(typeof body.message).toBe("string");
-      expect(typeof body.percent).toBe("number");
+      expect(body.installed).toBe(false);
+      expect(body.running).toBe(false);
+      expect(body.targetVersion).toBe("1.0.0");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     }
   });
 
-  it("POST /api/claude-sdk/install 启动后台安装（不真实下载）", async () => {
+  it("POST /api/engines/:id/install 启动后台安装（不真实下载）", async () => {
     const server = createServer(createUiRouter());
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/claude-sdk/install`, { method: "POST" });
-      expect(response.status).toBe(200);
+      const response = await fetch(`http://127.0.0.1:${port}/api/engines/claude/install`, { method: "POST" });
+      expect(response.status).toBe(202);
       const body = await response.json();
       expect(body.ok).toBe(true);
-      expect(installClaudeSdkMock).toHaveBeenCalledTimes(1);
+      expect(engineStartInstallMock).toHaveBeenCalledWith("claude");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     }
   });
 
-  it("设置页 HTML 包含 Claude 引擎安装 UI（进度条 + 按钮）", () => {
+  it("设置页用一套逐步骤 UI 管理 Claude 与 DSH", () => {
     expect(PAGE_HTML).toContain("claude-engine-install-btn");
-    expect(PAGE_HTML).toContain("claude-engine-progress-bar");
-    expect(PAGE_HTML).toContain("installClaudeEngine()");
-    expect(PAGE_HTML).toContain("claudeEngineRefreshStatus");
-    // 开关接入弹窗确认（SDK 必装才能使用）
-    expect(PAGE_HTML).toContain("onClaudeToggle(this)");
-    // 按钮文案：安装 Claude Code SDK，且不再显示体积提示
-    expect(PAGE_HTML).toContain("安装 Claude Code SDK");
-    expect(PAGE_HTML).not.toContain("约 220MB");
+    expect(PAGE_HTML).toContain("dsh-engine-install-btn");
+    expect(PAGE_HTML).toContain("claude-engine-steps");
+    expect(PAGE_HTML).toContain("dsh-engine-steps");
+    expect(PAGE_HTML).toContain("installEngine('claude')");
+    expect(PAGE_HTML).toContain("installEngine('dsh')");
+    expect(PAGE_HTML).not.toContain("/api/claude-sdk/");
   });
 
-  it("全新用户（四个 Agent 均未启用）时 wizard 只默认勾选 DeepCCC（ccc）", () => {
+  it("全新用户（五个 Agent 均未启用）时 wizard 只默认勾选 DeepCCC（ccc）", () => {
     // 护栏：renderStep2() 必须包含「全未启用 → 只勾 ccc」的逻辑片段
-    expect(PAGE_HTML).toContain("// 全新用户：四个 Agent 均无启用/配置痕迹时，只默认勾选 DeepCCC（ccc），其余不勾");
-    expect(PAGE_HTML).toContain("if (!claudeOn && !cursorOn && !codexOn && !cccOn)");
+    expect(PAGE_HTML).toContain("// 全新用户：五个 Agent 均无启用/配置痕迹时，只默认勾选 DeepCCC（ccc），其余不勾");
+    expect(PAGE_HTML).toContain("if (!claudeOn && !cursorOn && !codexOn && !cccOn && !dshOn)");
     expect(PAGE_HTML).toContain("cccOn = true;");
   });
 
-  it("Claude 开关打开时实时检测 SDK 安装状态（已装不重复安装）", () => {
-    // 护栏：onClaudeToggle() 必须实时查询 /api/claude-sdk/status 而非仅依赖缓存
-    expect(PAGE_HTML).toContain("// 实时查询后端安装状态");
-    expect(PAGE_HTML).toContain("var sdkReady = s.installed === true || s.phase === 'done'");
-    // 已安装/安装中直接打开，不触发 installClaudeEngine()
-    expect(PAGE_HTML).toContain("// 已安装 / 正在安装 / 正在检测：直接打开开关，不再触发安装");
+  it("安装型 Agent 打开时实时检测，缺失时自动安装", () => {
+    expect(PAGE_HTML).toContain("'/api/engines/' + encodeURIComponent(engineId) + '/status'");
+    expect(PAGE_HTML).toContain("if (!status.installed && !status.running) installEngine(engineId)");
   });
 
   it("设置页卡片顺序：CCC 置顶于 Claude 之前", () => {

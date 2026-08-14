@@ -77,5 +77,6 @@ describe("cardActionToCommand", () => {
     expect(cardActionToCommand("new cursor")).toBe("/new cursor");
     expect(cardActionToCommand("new codex")).toBe("/new codex");
     expect(cardActionToCommand("new ccc")).toBe("/new ccc");
+    expect(cardActionToCommand("new dsh")).toBe("/new dsh");
   });
 });

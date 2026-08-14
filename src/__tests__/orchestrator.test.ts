@@ -155,6 +155,11 @@ describe("handleCommand WeChat processing ack", () => {
     config.ccc.DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
     config.ccc.model = "deepseek-v4-pro";
     config.ccc.alternativeModel = "deepseek-v4-flash";
+    config.dsh.enabled = true;
+    config.dsh.defaultAgent = false;
+    config.dsh.apiKey = "sk-test-dsh";
+    config.dsh.baseUrl = "https://api.deepseek.com/v1";
+    config.dsh.model = "deepseek-v4-flash";
     mockStreamStates.clear();
     mockGetCodexUsageSummary.mockReset();
     mockGetCursorUsageSummary.mockReset();
@@ -1234,6 +1239,60 @@ describe("handleCommand WeChat processing ack", () => {
       "ccc-proxy-chat",
       "CCC Usage",
       expect.stringContaining("仅支持官方 DeepSeek API"),
+      "blue",
+    );
+  });
+
+  it("handles /usage as DeepSeek balance in DSH chats", async () => {
+    const platform = mockPlatform("feishu");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      is_available: true,
+      balance_infos: [{ currency: "CNY", total_balance: "8.88", topped_up_balance: "8.88", granted_balance: "0.00" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await recordSessionRegistry({
+      chatId: "dsh-chat",
+      sessionId: "dsh-session-1",
+      tool: "dsh",
+      chatName: "dsh-session",
+      running: false,
+    });
+
+    await handleCommand(platform, "/usage", "dsh-chat", "ou-user", Date.now(), "group");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.deepseek.com/user/balance",
+      expect.objectContaining({ headers: { Authorization: "Bearer sk-test-dsh" } }),
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "dsh-chat",
+      "DeepSeek Harness Usage",
+      expect.stringContaining("8.88"),
+      "blue",
+    );
+    expect(mockGetCodexUsageSummary).not.toHaveBeenCalled();
+  });
+
+  it("does not query balance for a non-official DSH API endpoint", async () => {
+    const platform = mockPlatform("feishu");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    config.dsh.baseUrl = "https://deepseek-proxy.example.com/v1";
+    await recordSessionRegistry({
+      chatId: "dsh-proxy-chat",
+      sessionId: "dsh-session-proxy",
+      tool: "dsh",
+      chatName: "dsh-proxy-session",
+      running: false,
+    });
+
+    await handleCommand(platform, "/usage", "dsh-proxy-chat", "ou-user", Date.now(), "group");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "dsh-proxy-chat",
+      "DeepSeek Harness Usage",
+      expect.stringContaining("api.deepseek.com"),
       "blue",
     );
   });

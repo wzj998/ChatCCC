@@ -25,6 +25,7 @@ export const CARD_ACTION_CMD_MAP: Record<string, string> = {
   "new cursor": "/new cursor",
   "new codex": "/new codex",
   "new ccc": "/new ccc",
+  "new dsh": "/new dsh",
   restart: "/restart",
   update: "/update",
   state: "/state",

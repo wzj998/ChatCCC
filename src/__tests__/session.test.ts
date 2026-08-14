@@ -2269,6 +2269,14 @@ describe("getSessionStatus", () => {
     expect(status!.model).not.toBe(UNKNOWN_MODEL_PLACEHOLDER);
     expect(status!.effort).toBeNull();
   });
+  it("DeepSeek Harness session status uses DSH model and has no effort", async () => {
+    mockSessionInfo("chat-dsh", { sessionId: "dsh-session-1", tool: "dsh" });
+
+    const status = await getSessionStatus("chat-dsh");
+
+    expect(status!.model).toBe(config.dsh.model);
+    expect(status!.effort).toBeNull();
+  });
 });
 
 describe("getAllSessionsStatus", () => {
