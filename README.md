@@ -375,7 +375,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `claude.model` / `claude.subagentModel` / `claude.effort` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.apiKey` / `claude.baseUrl` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.maxTurn` | 选填；Claude 最大对话轮数，默认 0（无限制），可在 Web UI 编辑 |
-| `cursor.alternativeModel` / `codex.alternativeModel` / `ccc.alternativeModel` | 单个备选模型；加入 `/model` 人工切换列表，不会自动故障转移 |
+| `cursor.alternativeModel` / `codex.alternativeModel` / `ccc.alternativeModel` / `dsh.alternativeModel` | 单个备选模型；加入 `/model` 人工切换列表，不会自动故障转移 |
 | `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 的 API Key 和服务地址；**不限于 DeepSeek**——可填任意 OpenAI 兼容端点（OpenAI、Kimi、通义、智谱、Ollama 本地等） |
 | `ccc.model` | CCC Agent 默认模型 |
 | `ccc.subModel` | CCC Agent 子模型（选填）：用于内部轻量环节（压缩摘要生成、task 子代理任务）；留空跟随主模型 |
@@ -383,6 +383,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `ccc.contextWindow` | CCC Agent 模型上下文窗口（token），默认 1048576（1M，DeepSeek V4 Pro/Flash 原生规格）；压缩阈值自动 = 窗口 × 80%；超过模型/服务端实际上限会被 API 拒绝，可在 Web UI 下拉选择或自定义（单位 k） |
 | `dsh.apiKey` / `dsh.baseUrl` | DeepSeek Harness 的 API Key 和官方 DeepSeek 服务地址 |
 | `dsh.model` / `dsh.provider` / `dsh.maxTokens` | DSH 默认模型、Runtime provider 和最大 token 数 |
+| `dsh.subModel` | DSH 子代理模型（选填）：用于 `subagent` 工具派生的子代理；留空跟随主模型（与 `ccc.subModel` 语义一致） |
 
 > **权限控制**：普通消息以 `bypassPermissions` 模式运行，跳过 Agent 操作确认。使用 `/plan` 或 `/ask` 前缀时，ChatCCC 自动切换为只读模式：Claude SDK 仅放行 Read + stop-stuck-loop 网络请求，Codex 使用 `--sandbox read-only`，Cursor 使用 `--mode plan/ask`。请只在可信环境中使用。
 
@@ -426,7 +427,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 `/update` 会在执行 npm 更新前把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新 `/update` 因事件 ID 不同，仍可立即执行。该保护仅作用于 `/update`，普通消息与 `/restart` 的处理不变。
 
-> **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex 和 CCC Agent 使用各自的 `model` / `alternativeModel`。
+> **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex、CCC Agent 和 DSH 使用各自的 `model` / `alternativeModel`。
 
 > **Codex Fast 模式**：Web UI 中的“Fast 模式”设置新 Codex 会话的全局默认值，默认关闭。进入 Codex 会话后，`/fast` 查询当前状态，`/fast on` 和 `/fast off` 只覆盖当前会话并从下一条消息生效。ChatCCC 会显式向 Codex CLI 传入 `service_tier="fast"` 或 `service_tier="default"`，因此关闭时不会继承用户 `config.toml` 中可能开启的 Fast。
 

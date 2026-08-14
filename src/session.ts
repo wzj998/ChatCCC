@@ -726,6 +726,7 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       apiKey: config.dsh.apiKey,
       baseUrl: config.dsh.baseUrl,
       model: effectiveModel || config.dsh.model,
+      ...(config.dsh.subModel ? { subModel: config.dsh.subModel } : {}),
       provider: config.dsh.provider,
       maxTokens: config.dsh.maxTokens,
     });

@@ -159,6 +159,13 @@ export interface DshConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  /**
+   * 子模型（选填）：DSH 子代理（subagent 工具）使用的模型。
+   * 留空（""）时跟随主模型（DSH 引擎默认继承父模型）。
+   */
+  subModel: string;
+  /** Optional model exposed through /model for manual per-session switching. */
+  alternativeModel: string;
   provider: string;
   maxTokens: number;
 }
@@ -244,6 +251,7 @@ export function getAllModelsForTool(tool: string, cfg: AppConfig = config): stri
     collect(cfg.ccc.alternativeModel);
   } else if (tool === "dsh") {
     collect(cfg.dsh.model);
+    collect(cfg.dsh.alternativeModel);
   }
 
   return Array.from(seen).slice(0, 100);
@@ -524,6 +532,8 @@ function loadConfig(): AppConfig {
       apiKey: "",
       baseUrl: DEFAULT_CCC_DEEPSEEK_BASE_URL,
       model: "deepseek-v4-flash",
+      subModel: "",
+      alternativeModel: "",
       provider: "deepseek-official",
       maxTokens: 49152,
     },
@@ -598,6 +608,8 @@ function loadConfig(): AppConfig {
       apiKey?: unknown;
       baseUrl?: unknown;
       model?: unknown;
+      subModel?: unknown;
+      alternativeModel?: unknown;
       provider?: unknown;
       maxTokens?: unknown;
     };
@@ -793,6 +805,8 @@ function loadConfig(): AppConfig {
       apiKey: normalizeOptionalConfigField(dshRaw.apiKey, { label: "dsh.apiKey" }),
       baseUrl: normalizeOptionalConfigField(dshRaw.baseUrl, { label: "dsh.baseUrl", fallback: DEFAULT_CCC_DEEPSEEK_BASE_URL }),
       model: normalizeOptionalConfigField(dshRaw.model, { label: "dsh.model", fallback: "deepseek-v4-flash" }),
+      subModel: normalizeOptionalConfigField(dshRaw.subModel, { label: "dsh.subModel" }),
+      alternativeModel: normalizeOptionalConfigField(dshRaw.alternativeModel, { label: "dsh.alternativeModel" }),
       provider: normalizeOptionalConfigField(dshRaw.provider, { label: "dsh.provider", fallback: "deepseek-official" }),
       maxTokens: normalizePositiveInteger(dshRaw.maxTokens, 49152),
     },
