@@ -375,13 +375,16 @@ async function sendFastModeStatus(
   await platform.sendRawCard(chatId, buildFastModeCard(enabled));
 }
 
-async function resolveUsageTarget(chatId: string): Promise<{ tool: "codex" | "cursor" | "ccc"; sessionId?: string }> {
+type UsageTool = "codex" | "cursor" | "ccc" | "dsh";
+
+async function resolveUsageTarget(chatId: string): Promise<{ tool: UsageTool; sessionId?: string }> {
   try {
     const registry = await loadSessionRegistryForBinding();
     const record = registry[chatId];
     const tool = record?.tool;
     if (tool === "cursor") return { tool: "cursor", sessionId: record?.sessionId };
     if (tool === "ccc") return { tool: "ccc", sessionId: record?.sessionId };
+    if (tool === "dsh") return { tool: "dsh", sessionId: record?.sessionId };
     return { tool: "codex", sessionId: record?.sessionId };
   } catch {
     return { tool: "codex" };
@@ -447,27 +450,30 @@ function refreshUsageAvatar(
 async function sendUsageSummary(
   platform: PlatformAdapter,
   chatId: string,
-  tool: "codex" | "cursor" | "ccc",
+  tool: UsageTool,
   avatarStatus: "busy" | "idle" = "idle",
   sessionId?: string,
 ): Promise<void> {
-  if (tool === "ccc") {
-    const baseURL = config.ccc.DEEPSEEK_BASE_URL;
+  if (tool === "ccc" || tool === "dsh") {
+    const isDsh = tool === "dsh";
+    const baseURL = isDsh ? config.dsh.baseUrl : config.ccc.DEEPSEEK_BASE_URL;
+    const apiKey = isDsh ? config.dsh.apiKey : config.ccc.DEEPSEEK_API_KEY;
+    const toolLabel = isDsh ? "DeepSeek Harness" : "CCC";
     if (!isOfficialDeepSeek(baseURL)) {
-      const msg = "CCC 用量查询仅支持官方 DeepSeek API (api.deepseek.com)，当前使用的非官方接口不支持余额查询。";
+      const msg = `${toolLabel} 用量查询仅支持官方 DeepSeek API (api.deepseek.com)，当前使用的非官方接口不支持余额查询。`;
       if (platform.kind === "wechat") {
         await platform.sendText(chatId, msg).catch(() => {});
       } else {
-        await platform.sendCard(chatId, "CCC Usage", msg, "blue");
+        await platform.sendCard(chatId, `${toolLabel} Usage`, msg, "blue");
       }
       return;
     }
-    const balance = await fetchDeepSeekBalance(config.ccc.DEEPSEEK_API_KEY, baseURL);
+    const balance = await fetchDeepSeekBalance(apiKey, baseURL);
     const content = formatDeepSeekBalance(balance);
     if (platform.kind === "wechat") {
       await platform.sendText(chatId, content).catch(() => {});
     } else {
-      await platform.sendCard(chatId, "CCC Usage", content, "blue");
+      await platform.sendCard(chatId, `${toolLabel} Usage`, content, "blue");
     }
     return;
   }
@@ -499,8 +505,8 @@ async function sendUsageSummary(
   refreshUsageAvatar(platform, chatId, tool, avatarStatus, { codexUsage: usage }, sessionId);
 }
 
-async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: "codex" | "cursor" | "ccc", err: unknown): Promise<void> {
-  const toolLabel = tool === "cursor" ? "Cursor" : tool === "ccc" ? "CCC" : "Codex";
+async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: UsageTool, err: unknown): Promise<void> {
+  const toolLabel = tool === "cursor" ? "Cursor" : tool === "ccc" ? "CCC" : tool === "dsh" ? "DeepSeek Harness" : "Codex";
   const message = `${toolLabel} 用量获取失败：${(err as Error).message}`;
   if (platform.kind === "wechat") {
     await platform.sendText(chatId, message).catch(() => {});
@@ -1196,13 +1202,13 @@ export async function handleCommand(
     const toolArg = text.slice(5).trim().toLowerCase();
     const tool = toolArg || resolveDefaultAgentTool();
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
-    const validTools = ["claude", "cursor", "codex", "ccc"];
-    if (!validTools.includes(tool)) {
+    const validTools: AgentTool[] = ["claude", "cursor", "codex", "ccc", "dsh"];
+    if (!(validTools as readonly string[]).includes(tool)) {
       logTrace(tid, "DONE", { outcome: "new_invalid_tool", tool });
       await platform.sendCard(
         chatId,
         "Error",
-        `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex), ccc (CCC Agent)。`,
+        `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex), ccc (CCC Agent), dsh (DeepSeek Harness)。`,
         "red",
       );
       return;
@@ -1868,15 +1874,17 @@ export async function handleCommand(
       const index = parseInt(sessionMatch[1], 10) - 1;
       logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
       const allSessions = await getAllSessionsStatus();
-      const claudeOrdered = allSessions.filter(
-        (s) => s.tool !== "cursor" && s.tool !== "codex",
-      );
+      const claudeOrdered = allSessions.filter((s) => s.tool === "claude");
       const cursorOrdered = allSessions.filter((s) => s.tool === "cursor");
       const codexOrdered = allSessions.filter((s) => s.tool === "codex");
+      const cccOrdered = allSessions.filter((s) => s.tool === "ccc");
+      const dshOrdered = allSessions.filter((s) => s.tool === "dsh");
       const ordered = [
         ...claudeOrdered,
         ...cursorOrdered,
         ...codexOrdered,
+        ...cccOrdered,
+        ...dshOrdered,
       ];
       if (ordered.length === 0) {
         await platform.sendCard(
@@ -2380,6 +2388,7 @@ export async function handleCommand(
     if (defaultTool === "cursor") currentModel = config.cursor.model;
     else if (defaultTool === "codex") currentModel = config.codex.model;
     else if (defaultTool === "ccc") currentModel = config.ccc.model;
+    else if (defaultTool === "dsh") currentModel = config.dsh.model;
     else currentModel = CLAUDE_MODEL;
 
     if (platform.kind === "wechat") {

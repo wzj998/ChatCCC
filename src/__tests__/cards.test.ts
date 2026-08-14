@@ -182,7 +182,7 @@ describe("buildHelpCard", () => {
     const parsed = JSON.parse(card);
     const action = parsed.elements[2];
     expect(action.tag).toBe("action");
-    expect(action.actions).toHaveLength(8);
+    expect(action.actions).toHaveLength(9);
   });
 
   it("adds ABD prefix help as the final help line", () => {
@@ -449,6 +449,16 @@ describe("buildSessionsCard", () => {
 
     expect(content).toContain("CCC Agent 会话");
     expect(content).toContain("工具: CCC Agent");
+    expect(content).not.toContain("Claude Code 会话");
+  });
+
+  it("labels DeepSeek Harness sessions without grouping them as Claude Code", () => {
+    const card = buildSessionsCard([
+      { sessionId: "dsh-session-1", chatName: "", chatId: "oc_dsh", active: false, turnCount: 1, elapsedSeconds: null, model: "deepseek-v4-flash", tool: "dsh" },
+    ]);
+    const content: string = JSON.parse(card).elements[0].text.content;
+
+    expect(content).toContain("DeepSeek Harness");
     expect(content).not.toContain("Claude Code 会话");
   });
 

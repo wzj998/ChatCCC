@@ -15,6 +15,7 @@ import {
   CURSOR_SESSION_PREFIX,
   CODEX_SESSION_PREFIX,
   CCC_SESSION_PREFIX,
+  DSH_SESSION_PREFIX,
   ts,
   resolveDefaultAgentTool,
   toolDisplayName,
@@ -281,6 +282,7 @@ export function extractSessionInfo(description: string): { sessionId: string; to
     { prefix: CURSOR_SESSION_PREFIX, tool: "cursor" },
     { prefix: CODEX_SESSION_PREFIX, tool: "codex" },
     { prefix: CCC_SESSION_PREFIX, tool: "ccc" },
+    { prefix: DSH_SESSION_PREFIX, tool: "dsh" },
   ];
   for (const { prefix, tool } of PREFIXES) {
     const idx = description.indexOf(prefix);

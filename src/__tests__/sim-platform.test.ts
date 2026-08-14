@@ -72,6 +72,11 @@ describe("SimulatedPlatform", () => {
     expect(result).toEqual({ sessionId: "session-20260702-121530-a1b2c3", tool: "ccc" });
   });
 
+  it("pure extractSessionInfo recognizes DSH session ids", () => {
+    const result = SimulatedPlatform.extractSessionInfo("DSH Session: dsh-session-1");
+    expect(result).toEqual({ sessionId: "dsh-session-1", tool: "dsh" });
+  });
+
   it("纯函数 formatDelayNotice 正常工作", () => {
     const notice = SimulatedPlatform.formatDelayNotice(Date.now() - 20 * 60 * 1000, "测试消息");
     expect(notice).toBeDefined();

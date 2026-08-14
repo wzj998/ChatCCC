@@ -21,7 +21,7 @@ import {
   createRawStreamLog,
   type RawStreamLogHandle,
 } from "./raw-stream-log.ts";
-import { getClaudeSdkEntryPath } from "../claude-sdk-installer.ts";
+import { engineManager } from "../engines/engine-specs.ts";
 
 const CLAUDE_SPECIFIC_PROMPT_PATH = join(
   PROJECT_ROOT,
@@ -344,7 +344,8 @@ let sdkModulePromise: Promise<ClaudeSdkModule> | null = null;
  */
 export function loadClaudeSdkModule(): Promise<ClaudeSdkModule> {
   if (!sdkModulePromise) {
-    sdkModulePromise = import(pathToFileURL(getClaudeSdkEntryPath()).href)
+    sdkModulePromise = engineManager.getEntryPath("claude")
+      .then((entryPath) => import(pathToFileURL(entryPath).href))
       .then((m) => m as unknown as ClaudeSdkModule)
       .catch((err: unknown) => {
         sdkModulePromise = null;

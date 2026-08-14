@@ -22,13 +22,7 @@ import {
   createInternalRestartEnv,
   openWebUiInDefaultBrowser,
 } from "./startup-lifecycle.ts";
-import {
-  getClaudeSdkInstalledVersion,
-  getLastInstallProgress,
-  installClaudeSdk,
-  isClaudeSdkInstalled,
-  isInstallRunning,
-} from "./claude-sdk-installer.ts";
+import { engineManager } from "./engines/engine-specs.ts";
 
 const PROJECT_ROOT = CHATCCC_PACKAGE_ROOT;
 const USER_DATA_DIR = join(homedir(), ".chatccc");
@@ -75,6 +69,7 @@ interface AppConfig {
     /** 留空（""）= 不 override，跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER） */
     provider?: "" | "openai" | "anthropic";
   };
+  dsh?: { enabled?: boolean; defaultAgent?: boolean; apiKey?: string; baseUrl?: string; model?: string; provider?: string; maxTokens?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +554,27 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CCC_DEFAULT_AGENT") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).defaultAgent = val === true || val === "true";
+    } else if (key === "CHATCCC_DSH_API_KEY") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).apiKey = val;
+    } else if (key === "CHATCCC_DSH_BASE_URL") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).baseUrl = val;
+    } else if (key === "CHATCCC_DSH_MODEL") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_DSH_PROVIDER") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).provider = val;
+    } else if (key === "CHATCCC_DSH_MAX_TOKENS") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).maxTokens = parseInt(String(val), 10) || 49152;
+    } else if (key === "CHATCCC_DSH_ENABLED") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).enabled = val === true || val === "true";
+    } else if (key === "CHATCCC_DSH_DEFAULT_AGENT") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).defaultAgent = val === true || val === "true";
     }
   }
   return result;
@@ -659,33 +675,19 @@ async function handleForgetIlink(_req: IncomingMessage, res: ServerResponse): Pr
   }
 }
 
-async function handleClaudeSdkStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const progress = getLastInstallProgress();
-  jsonReply(res, 200, {
-    installed: isClaudeSdkInstalled(),
-    version: getClaudeSdkInstalledVersion(),
-    running: isInstallRunning(),
-    // 展开到顶层：前端轮询 JS 读顶层 phase/message/percent/error（历史契约），
-    // 若只放在 progress 嵌套里，前端 s.phase 恒为 undefined → 进度条永不渲染。
-    ...progress,
-    // 保留嵌套结构，兼容其它调用方。
-    progress,
-  });
+async function handleEngineStatus(engineId: string, res: ServerResponse): Promise<void> {
+  try {
+    jsonReply(res, 200, { ok: true, ...(await engineManager.getStatus(engineId)) });
+  } catch (err) {
+    jsonReply(res, (err as Error).message.startsWith("Unknown engine:") ? 404 : 500, { ok: false, error: (err as Error).message });
+  }
 }
 
-async function handleClaudeSdkInstall(_req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (isInstallRunning()) {
-    jsonReply(res, 200, { ok: true, alreadyRunning: true });
-    return;
-  }
+async function handleEngineInstall(engineId: string, res: ServerResponse): Promise<void> {
   try {
-    // 后台执行，不阻塞响应；前端通过 /api/claude-sdk/status 轮询进度
-    installClaudeSdk().catch((err: unknown) => {
-      console.error(`[WEB-UI] Claude SDK 安装失败: ${(err as Error).message}`);
-    });
-    jsonReply(res, 200, { ok: true });
+    jsonReply(res, 202, { ok: true, job: await engineManager.startInstall(engineId) });
   } catch (err) {
-    jsonReply(res, 500, { ok: false, error: (err as Error).message });
+    jsonReply(res, (err as Error).message.startsWith("Unknown engine:") ? 404 : 500, { ok: false, error: (err as Error).message });
   }
 }
 
@@ -737,6 +739,11 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 .btn-success{background:#16a34a;color:#fff}
 .btn-success:hover{background:#15803d}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+.engine-status{font-size:13px;color:#64748b;margin-bottom:8px}
+.engine-steps{display:grid;gap:5px;margin:8px 0 10px}
+.engine-step{display:grid;grid-template-columns:18px 1fr auto;gap:7px;align-items:center;padding:5px 7px;border-radius:7px;background:#f8fafc;font-size:12px;color:#64748b}
+.engine-step.running{background:#eff6ff;color:#1d4ed8}.engine-step.completed{color:#15803d}.engine-step.failed{background:#fef2f2;color:#dc2626}
+.engine-step-icon{font-weight:700;text-align:center}.engine-step-percent{font-variant-numeric:tabular-nums;color:inherit}
 .btn-group{display:flex;gap:8px;flex-wrap:wrap}
 .agent-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
 .agent-card{min-width:0}
@@ -969,10 +976,39 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
           </fieldset>
         </div>
 
+        <!-- DeepSeek Harness 卡片 -->
+        <div class="agent-card" id="agent-card-dsh">
+          <div class="agent-card-header">
+            <input type="checkbox" class="agent-toggle" id="agent-enable-dsh" onchange="onInstallableAgentToggle('dsh', this)">
+            <div class="meta">
+              <div class="name">DeepSeek Harness</div>
+              <div class="desc">DeepSeek 官方 Agent Harness<br>按需安装，独立于 CCC Agent</div>
+            </div>
+          </div>
+          <label class="agent-default-row">
+            <input type="checkbox" id="agent-default-dsh" onchange="onDefaultAgentToggle('dsh', this.checked)">
+            设为默认 Agent
+          </label>
+          <fieldset class="agent-body" id="agent-body-dsh" disabled>
+            <div class="form-group"><label>API Key</label><input type="password" id="field-CHATCCC_DSH_API_KEY" placeholder="DeepSeek API Key"></div>
+            <div class="form-group"><label>Base URL</label><input type="text" id="field-CHATCCC_DSH_BASE_URL" placeholder="https://api.deepseek.com/v1"></div>
+            <div class="form-group"><label>模型</label><input type="text" id="field-CHATCCC_DSH_MODEL" placeholder="deepseek-v4-flash"></div>
+            <div class="form-group"><label>Provider 路由</label><input type="text" id="field-CHATCCC_DSH_PROVIDER" placeholder="deepseek-official"></div>
+            <div class="form-group"><label>单次最大输出 Tokens</label><input type="number" id="field-CHATCCC_DSH_MAX_TOKENS" min="1" placeholder="49152"></div>
+            <div class="form-group" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-top:4px">
+              <label>DeepSeek Harness 引擎</label>
+              <div id="dsh-engine-status" class="engine-status">检测中...</div>
+              <div id="dsh-engine-steps" class="engine-steps"></div>
+              <button type="button" class="btn btn-outline" id="dsh-engine-install-btn" onclick="installEngine('dsh')">安装并启用</button>
+              <div class="hint" style="margin-top:6px">一次点击自动完成环境检查、下载、校验、Runtime 握手和原子切换；页面刷新后仍可恢复进度。</div>
+            </div>
+          </fieldset>
+        </div>
+
         <!-- Claude 卡片 -->
         <div class="agent-card" id="agent-card-claude">
           <div class="agent-card-header">
-            <input type="checkbox" class="agent-toggle" id="agent-enable-claude" onchange="onClaudeToggle(this)">
+            <input type="checkbox" class="agent-toggle" id="agent-enable-claude" onchange="onInstallableAgentToggle('claude', this)">
             <div class="meta">
               <div class="name">Claude Code</div>
               <div class="desc">Anthropic Claude Code CLI<br>模型、effort 均为选填</div>
@@ -1005,14 +1041,9 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             </div>
             <div class="form-group" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-top:4px">
               <label>Claude Code 引擎（Agent SDK）</label>
-              <div id="claude-engine-status" style="font-size:13px;color:#64748b;margin-bottom:8px">检测中...</div>
-              <div id="claude-engine-progress-wrap" style="display:none;margin-bottom:8px">
-                <div style="background:#e2e8f0;border-radius:6px;height:8px;overflow:hidden">
-                  <div id="claude-engine-progress-bar" style="width:0%;height:100%;background:#3b82f6;transition:width .3s"></div>
-                </div>
-                <div id="claude-engine-progress-text" style="font-size:12px;color:#64748b;margin-top:4px"></div>
-              </div>
-              <button class="btn btn-outline" id="claude-engine-install-btn" onclick="installClaudeEngine()">安装 Claude Code SDK</button>
+              <div id="claude-engine-status" class="engine-status">检测中...</div>
+              <div id="claude-engine-steps" class="engine-steps"></div>
+              <button type="button" class="btn btn-outline" id="claude-engine-install-btn" onclick="installEngine('claude')">安装并启用</button>
               <div class="hint" style="margin-top:6px">ChatCCC 通过 Claude Agent SDK 调用 Claude Code；SDK 引擎按需下载到本机（仅启用 Claude Code 时需要），安装期间请保持网络畅通。</div>
             </div>
           </fieldset>
@@ -1205,6 +1236,23 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
       </div>
     </details>
 
+    <details class="card config-section" id="dash-dsh">
+      <summary>DeepSeek Harness</summary>
+      <div class="section-detail">
+        <div class="config-row"><span class="key">API Key</span><span class="val" id="cfg-DSH_API_KEY">-</span></div>
+        <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-DSH_BASE_URL">-</span></div>
+        <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-DSH_MODEL">-</span></div>
+        <div class="config-row"><span class="key">Provider</span><span class="val" id="cfg-DSH_PROVIDER">-</span></div>
+        <div class="config-row"><span class="key">最大输出 Tokens</span><span class="val" id="cfg-DSH_MAX_TOKENS">-</span></div>
+        <div id="dsh-dashboard-engine-status" class="engine-status">检测中...</div>
+        <div id="dsh-dashboard-engine-steps" class="engine-steps"></div>
+        <button type="button" class="btn btn-outline" id="dsh-dashboard-engine-install-btn" onclick="installEngine('dsh')">安装或升级引擎</button>
+        <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-dsh" onchange="setDashboardDefaultAgent('dsh', this.checked)"> 设为默认 Agent</label>
+        <div class="hint" style="margin-top:6px;line-height:1.6">安装过程不调用付费模型；保存后下一条消息或下个新会话生效。</div>
+        <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('dsh')">编辑</button>
+      </div>
+    </details>
+
     <details class="card config-section" id="dash-cursor">
       <summary>Cursor Agent</summary>
       <div class="section-detail">
@@ -1274,8 +1322,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 <script>
 let state = {
   view: 'loading',
-  // 四个 Agent 各自的启用开关；初始全 false，renderStep2() 会按已存在 config 自动打开
-  agentsEnabled: { claude: false, cursor: false, codex: false, ccc: false },
+  // 五个 Agent 各自的启用开关；初始全 false，renderStep2() 会按已存在 config 自动打开
+  agentsEnabled: { claude: false, cursor: false, codex: false, ccc: false, dsh: false },
   defaultAgent: 'claude',
   wizardStep: 1,
   config: {},
@@ -1292,7 +1340,8 @@ const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
-  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_CONTEXT_WINDOW']
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_CONTEXT_WINDOW'],
+  dsh: ['CHATCCC_DSH_API_KEY','CHATCCC_DSH_BASE_URL','CHATCCC_DSH_MODEL','CHATCCC_DSH_PROVIDER','CHATCCC_DSH_MAX_TOKENS']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1451,23 +1500,26 @@ function firstEnabledAgent() {
   if (state.agentsEnabled.cursor) return 'cursor';
   if (state.agentsEnabled.codex) return 'codex';
   if (state.agentsEnabled.ccc) return 'ccc';
+  if (state.agentsEnabled.dsh) return 'dsh';
   return null;
 }
 
-function resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn) {
+function resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn, dshOn) {
   if (claudeOn && c.claude && c.claude.defaultAgent === true) return 'claude';
   if (cursorOn && c.cursor && c.cursor.defaultAgent === true) return 'cursor';
   if (codexOn && c.codex && c.codex.defaultAgent === true) return 'codex';
   if (cccOn && c.ccc && c.ccc.defaultAgent === true) return 'ccc';
+  if (dshOn && c.dsh && c.dsh.defaultAgent === true) return 'dsh';
   if (claudeOn) return 'claude';
   if (cursorOn) return 'cursor';
   if (codexOn) return 'codex';
   if (cccOn) return 'ccc';
+  if (dshOn) return 'dsh';
   return 'claude';
 }
 
 function updateDefaultAgentToggles() {
-  ['claude','cursor','codex','ccc'].forEach(function(agent){
+  ['claude','cursor','codex','ccc','dsh'].forEach(function(agent){
     var el = document.getElementById('agent-default-' + agent);
     if (el) {
       el.checked = state.defaultAgent === agent;
@@ -1500,6 +1552,7 @@ function updateStep2NextBtn() {
   if (state.agentsEnabled.cursor) validCount++;
   if (state.agentsEnabled.codex) validCount++;
   if (state.agentsEnabled.ccc) validCount++;
+  if (state.agentsEnabled.dsh) validCount++;
   if (validCount > 0 && !state.defaultAgent) {
     state.defaultAgent = firstEnabledAgent();
     updateDefaultAgentToggles();
@@ -1642,6 +1695,7 @@ var CURSOR_FALLBACK_KEYS = ['path','command','model','alternativeModel'];
 var CODEX_FALLBACK_KEYS = ['path','command','model','alternativeModel','effort','fastMode'];
 // 旧版 CCC 配置没有 enabled；只有 API Key 才表示用户实际完成了配置。
 var CCC_FALLBACK_KEYS = ['DEEPSEEK_API_KEY'];
+var DSH_FALLBACK_KEYS = ['apiKey'];
 
 function renderStep2() {
   var c = state.config || {};
@@ -1684,25 +1738,35 @@ function renderStep2() {
     prefillNested('field-CHATCCC_CCC_EFFORT', c.ccc.effort);
     prefillContextWindow('field-', c.ccc.contextWindow);
   }
+  if (c.dsh) {
+    prefillNested('field-CHATCCC_DSH_API_KEY', c.dsh.apiKey);
+    prefillNested('field-CHATCCC_DSH_BASE_URL', c.dsh.baseUrl);
+    prefillNested('field-CHATCCC_DSH_MODEL', c.dsh.model);
+    prefillNested('field-CHATCCC_DSH_PROVIDER', c.dsh.provider);
+    prefillNested('field-CHATCCC_DSH_MAX_TOKENS', c.dsh.maxTokens || 49152);
+  }
 
   // 按已有 config 决定每个 Agent 默认是否开启：优先 enabled 字段，缺省时按"任一字段非空"
   var claudeOn = isAgentEnabled(c.claude, CLAUDE_FALLBACK_KEYS);
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
   var cccOn = isAgentEnabled(c.ccc, CCC_FALLBACK_KEYS);
-  // 全新用户：四个 Agent 均无启用/配置痕迹时，只默认勾选 DeepCCC（ccc），其余不勾
-  if (!claudeOn && !cursorOn && !codexOn && !cccOn) {
+  var dshOn = isAgentEnabled(c.dsh, DSH_FALLBACK_KEYS);
+  // 全新用户：五个 Agent 均无启用/配置痕迹时，只默认勾选 DeepCCC（ccc），其余不勾
+  if (!claudeOn && !cursorOn && !codexOn && !cccOn && !dshOn) {
     cccOn = true;
   }
-  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn);
+  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn, dshOn);
   document.getElementById('agent-enable-claude').checked = claudeOn;
   document.getElementById('agent-enable-cursor').checked = cursorOn;
   document.getElementById('agent-enable-codex').checked = codexOn;
   document.getElementById('agent-enable-ccc').checked = cccOn;
+  document.getElementById('agent-enable-dsh').checked = dshOn;
   onAgentToggle('claude', claudeOn);
   onAgentToggle('cursor', cursorOn);
   onAgentToggle('codex', codexOn);
   onAgentToggle('ccc', cccOn);
+  onAgentToggle('dsh', dshOn);
   updateDefaultAgentToggles();
 
   // Cursor path placeholder/hint：把已探测到的路径显示为占位
@@ -1726,7 +1790,7 @@ function renderStep2() {
  * 收集"待落地到 config.json 的扁平 vars"。
  *
  * - 飞书字段始终收集
-  * - 四个 Agent 的 enabled 状态都显式下发，让 config.json 持久化用户的最新开关偏好
+  * - 五个 Agent 的 enabled 状态都显式下发，让 config.json 持久化用户的最新开关偏好
  * - Agent 字段仅在该 Agent 开关启用时收集；未启用的 Agent 不下发其它字段，
  *   服务端 deepMerge 会保留 config.json 中已有值（避免关闭开关时误清空旧配置）
  */
@@ -1753,6 +1817,7 @@ function collectAllFields() {
   vars.CHATCCC_CURSOR_ENABLED = !!state.agentsEnabled.cursor;
   vars.CHATCCC_CODEX_ENABLED = !!state.agentsEnabled.codex;
   vars.CHATCCC_CCC_ENABLED = !!state.agentsEnabled.ccc;
+  vars.CHATCCC_DSH_ENABLED = !!state.agentsEnabled.dsh;
   if (!state.defaultAgent || !state.agentsEnabled[state.defaultAgent]) {
     state.defaultAgent = firstEnabledAgent();
   }
@@ -1760,6 +1825,7 @@ function collectAllFields() {
   vars.CHATCCC_CURSOR_DEFAULT_AGENT = state.defaultAgent === 'cursor';
   vars.CHATCCC_CODEX_DEFAULT_AGENT = state.defaultAgent === 'codex';
   vars.CHATCCC_CCC_DEFAULT_AGENT = state.defaultAgent === 'ccc';
+  vars.CHATCCC_DSH_DEFAULT_AGENT = state.defaultAgent === 'dsh';
   if (state.agentsEnabled.claude) {
     AGENT_FIELDS.claude.forEach(function(key){
       var el = document.getElementById('field-' + key);
@@ -1787,6 +1853,12 @@ function collectAllFields() {
         if (cw !== null) vars[key] = cw;
         return;
       }
+      var el = document.getElementById('field-' + key);
+      if (el && el.value.trim()) vars[key] = el.value.trim();
+    });
+  }
+  if (state.agentsEnabled.dsh) {
+    AGENT_FIELDS.dsh.forEach(function(key){
       var el = document.getElementById('field-' + key);
       if (el && el.value.trim()) vars[key] = el.value.trim();
     });
@@ -1831,6 +1903,7 @@ function renderStep3() {
   if (state.agentsEnabled.cursor) enabledList.push('cursor');
   if (state.agentsEnabled.codex) enabledList.push('codex');
   if (state.agentsEnabled.ccc) enabledList.push('ccc');
+  if (state.agentsEnabled.dsh) enabledList.push('dsh');
   if (enabledList.length === 0) {
     lines.push('<div style="color:#ef4444">未启用任何 AI Agent</div>');
   } else {
@@ -1870,6 +1943,11 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CCC_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CCC_EFFORT || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">上下文窗口</span><span class="val">' + contextWindowTokensLabel(vars.CHATCCC_CCC_CONTEXT_WINDOW || 1048576) + '</span></div>');
+    } else if (t === 'dsh') {
+      lines.push('<h4 style="margin:10px 0 4px;color:#334155">DeepSeek Harness</h4>');
+      lines.push('<div class="config-row"><span class="key">API Key</span><span class="val">' + (vars.CHATCCC_DSH_API_KEY ? '***已设置***' : '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + (vars.CHATCCC_DSH_BASE_URL || '(默认)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_DSH_MODEL || 'deepseek-v4-flash') + '</span></div>');
     }
   });
   document.getElementById('review-content').innerHTML = lines.join('');
@@ -1897,7 +1975,8 @@ async function setDashboardDefaultAgent(agent, enabled) {
     CHATCCC_CLAUDE_DEFAULT_AGENT: agent === 'claude',
     CHATCCC_CURSOR_DEFAULT_AGENT: agent === 'cursor',
     CHATCCC_CODEX_DEFAULT_AGENT: agent === 'codex',
-    CHATCCC_CCC_DEFAULT_AGENT: agent === 'ccc'
+    CHATCCC_CCC_DEFAULT_AGENT: agent === 'ccc',
+    CHATCCC_DSH_DEFAULT_AGENT: agent === 'dsh'
   };
   var result = await api('/api/config', 'POST', { vars: vars });
   if (result.ok) {
@@ -1905,10 +1984,12 @@ async function setDashboardDefaultAgent(agent, enabled) {
     state.config.cursor = state.config.cursor || {};
     state.config.codex = state.config.codex || {};
     state.config.ccc = state.config.ccc || {};
+    state.config.dsh = state.config.dsh || {};
     state.config.claude.defaultAgent = agent === 'claude';
     state.config.cursor.defaultAgent = agent === 'cursor';
     state.config.codex.defaultAgent = agent === 'codex';
     state.config.ccc.defaultAgent = agent === 'ccc';
+    state.config.dsh.defaultAgent = agent === 'dsh';
     updateDefaultAgentToggles();
     toastConfigApplyResult(result, '默认 Agent 已更新');
   } else {
@@ -2026,8 +2107,9 @@ function updateDashboardUI() {
   var cursorOn = isAgentEnabled(c.cursor, CURSOR_FALLBACK_KEYS);
   var codexOn = isAgentEnabled(c.codex, CODEX_FALLBACK_KEYS);
   var cccOn = isAgentEnabled(c.ccc, CCC_FALLBACK_KEYS);
-  state.agentsEnabled = { claude: claudeOn, cursor: cursorOn, codex: codexOn, ccc: cccOn };
-  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn);
+  var dshOn = isAgentEnabled(c.dsh, DSH_FALLBACK_KEYS);
+  state.agentsEnabled = { claude: claudeOn, cursor: cursorOn, codex: codexOn, ccc: cccOn, dsh: dshOn };
+  state.defaultAgent = resolveDefaultAgentFromConfig(c, claudeOn, cursorOn, codexOn, cccOn, dshOn);
 
   // 微信 iLink 平台开关：同步复选框和标签
   var ilinkEnabled = c.platforms && c.platforms.ilink ? c.platforms.ilink.enabled !== false : true;
@@ -2060,10 +2142,11 @@ function updateDashboardUI() {
   document.getElementById('dash-cursor').style.display = cursorOn ? '' : 'none';
   document.getElementById('dash-codex').style.display = codexOn ? '' : 'none';
   document.getElementById('dash-ccc').style.display = cccOn ? '' : 'none';
+  document.getElementById('dash-dsh').style.display = dshOn ? '' : 'none';
   updateDefaultAgentToggles();
-  // 四个都未启用时给一个空态提示，引导用户去配置向导启用
+  // 五个都未启用时给一个空态提示，引导用户去配置向导启用
   var emptyHint = document.getElementById('dash-no-agent-hint');
-  if (emptyHint) emptyHint.style.display = (!claudeOn && !cursorOn && !codexOn && !cccOn) ? '' : 'none';
+  if (emptyHint) emptyHint.style.display = (!claudeOn && !cursorOn && !codexOn && !cccOn && !dshOn) ? '' : 'none';
 
   document.getElementById('cfg-ANTHROPIC_MODEL').textContent = (c.claude && c.claude.model) || '(留空)';
   document.getElementById('cfg-ANTHROPIC_SUBAGENT_MODEL').textContent = (c.claude && c.claude.subagentModel) || '(留空)';
@@ -2090,6 +2173,12 @@ function updateDashboardUI() {
   document.getElementById('cfg-CCC_MODEL').textContent = (c.ccc && c.ccc.model) || '(留空)';
   document.getElementById('cfg-CCC_SUB_MODEL').textContent = (c.ccc && c.ccc.subModel) || '(留空，跟随主模型)';
   document.getElementById('cfg-CCC_ALTERNATIVE_MODEL').textContent = (c.ccc && c.ccc.alternativeModel) || '(留空)';
+  document.getElementById('cfg-DSH_API_KEY').textContent = (c.dsh && c.dsh.apiKey) ? '***已设置***' : '(留空)';
+  document.getElementById('cfg-DSH_BASE_URL').textContent = (c.dsh && c.dsh.baseUrl) || 'https://api.deepseek.com/v1';
+  document.getElementById('cfg-DSH_MODEL').textContent = (c.dsh && c.dsh.model) || 'deepseek-v4-flash';
+  document.getElementById('cfg-DSH_PROVIDER').textContent = (c.dsh && c.dsh.provider) || 'deepseek-official';
+  document.getElementById('cfg-DSH_MAX_TOKENS').textContent = String((c.dsh && c.dsh.maxTokens) || 49152);
+  engineRefreshStatus('dsh');
 }
 
 function pollStatus() {
@@ -2145,7 +2234,7 @@ function editSection(section) {
   else if (section === 'chromeDevtools') fields = CHROME_DEVTOOLS_FIELDS;
   else fields = AGENT_FIELDS[section] || [];
 
-  var titleMap = { feishu: '飞书', webUi: 'Web UI', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent', ccc: 'CCC Agent' };
+  var titleMap = { feishu: '飞书', webUi: 'Web UI', chromeDevtools: 'Chrome CDP', claude: 'Claude Agent', cursor: 'Cursor Agent', codex: 'Codex Agent', ccc: 'CCC Agent', dsh: 'DeepSeek Harness' };
   document.getElementById('edit-modal-title').textContent = '编辑 ' + (titleMap[section] || section);
 
   document.getElementById('edit-modal-effect').textContent = configEffectHint(section);
@@ -2166,7 +2255,8 @@ function editSection(section) {
     'CHATCCC_CODEX_FAST_MODE': 'Fast 模式',
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
     'CHATCCC_CCC_PROVIDER': 'API 协议（选填）',
-    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口'
+    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口',
+    'CHATCCC_DSH_API_KEY': 'API Key', 'CHATCCC_DSH_BASE_URL': 'Base URL', 'CHATCCC_DSH_MODEL': '模型', 'CHATCCC_DSH_PROVIDER': 'Provider 路由', 'CHATCCC_DSH_MAX_TOKENS': '单次最大输出 Tokens'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
@@ -2223,6 +2313,12 @@ function editSection(section) {
         else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
         else if (key === 'CHATCCC_CCC_EFFORT') val = state.config.ccc.effort || '';
         else if (key === 'CHATCCC_CCC_CONTEXT_WINDOW') val = state.config.ccc.contextWindow || '1048576';
+      } else if (section === 'dsh' && state.config.dsh) {
+        if (key === 'CHATCCC_DSH_API_KEY') val = state.config.dsh.apiKey || '';
+        else if (key === 'CHATCCC_DSH_BASE_URL') val = state.config.dsh.baseUrl || '';
+        else if (key === 'CHATCCC_DSH_MODEL') val = state.config.dsh.model || '';
+        else if (key === 'CHATCCC_DSH_PROVIDER') val = state.config.dsh.provider || '';
+        else if (key === 'CHATCCC_DSH_MAX_TOKENS') val = state.config.dsh.maxTokens || '49152';
       }
     }
     var isSecret = key.includes('SECRET') || key.includes('API_KEY');
@@ -2373,124 +2469,95 @@ function validateCli(tool) {
   });
 }
 
-// ---- Claude Code 引擎（Agent SDK）按需安装 ----
-var claudeEnginePollTimer = null;
-var claudeEngineState = null;
-
-// Claude Code 开关：从关闭 → 打开时弹窗确认（SDK 必装才能使用）。
-// 页面初始化（按已有 config 设置开关）直接调 onAgentToggle，不经由此函数，不会误弹窗。
-function onClaudeToggle(el) {
-  var enabled = el.checked;
-  if (!enabled) {
-    onAgentToggle('claude', false);
-    return;
-  }
-  // 实时查询后端安装状态（不依赖可能过期的 claudeEngineState 缓存），
-  // 已安装/正在安装时直接打开开关，不重复安装。
-  api('/api/claude-sdk/status', 'GET').then(function(s){
-    if (!s || !s.phase) { el.checked = false; return; }
-    claudeEngineState = s;
-    var sdkReady = s.installed === true || s.phase === 'done' ||
-      s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting';
-    if (sdkReady) {
-      // 已安装 / 正在安装 / 正在检测：直接打开开关，不再触发安装
-      onAgentToggle('claude', true);
-      return;
-    }
-    if (!confirm('Claude Code 必须先安装 Claude Code SDK 才能使用（必装）。是否立即安装？')) {
-      el.checked = false; // 用户取消 → 回滚开关为关闭
-      return;
-    }
-    onAgentToggle('claude', true);
-    installClaudeEngine();
-  }).catch(function(){
-    el.checked = false; // 状态查询失败 → 回滚开关，避免误判
+// ---- 通用 Agent 引擎：一次点击，后端自动执行全部原子安装步骤 ----
+var enginePollTimers = {};
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(char){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char];
   });
 }
 
-function claudeEngineEl(id) { return document.getElementById(id); }
-
-function claudeEngineRenderStatus(s) {
-  var el = claudeEngineEl('claude-engine-status');
-  if (!el) return;
-  var phase = s.phase;
-  var text = s.message || '';
-  var color = '#64748b';
-  if (phase === 'done') color = '#16a34a';
-  else if (phase === 'error') color = '#ef4444';
-  else if (phase === 'downloading' || phase === 'installing') color = '#3b82f6';
-  if (!text && phase === 'idle') {
-    // 初始/空闲状态给出明确文案，而不是“未知状态”
-    text = s.installed ? ('已安装 v' + (s.version || '未知版本')) : '未安装'; 
-  }
-  el.innerHTML = '<span style="color:' + color + '">' + (text ? text : '未知状态') + '</span>';
-  if (s.error) el.innerHTML += '<br><span style="color:#ef4444;font-size:12px">' + s.error + '</span>';
-}
-
-function claudeEngineRenderProgress(p) {
-  var wrap = claudeEngineEl('claude-engine-progress-wrap');
-  if (!wrap) return;
-  if (p && (p.phase === 'downloading' || p.phase === 'installing' || p.phase === 'detecting')) {
-    wrap.style.display = 'block';
-    claudeEngineEl('claude-engine-progress-bar').style.width = (p.percent || 0) + '%';
-    claudeEngineEl('claude-engine-progress-text').textContent = p.message || '';
-  } else {
-    wrap.style.display = 'none';
-  }
-}
-
-function claudeEngineRefreshStatus() {
-  api('/api/claude-sdk/status', 'GET').then(function(s){
-    if (!s || !s.phase) return;
-    claudeEngineState = s;
-    claudeEngineRenderStatus(s);
-    claudeEngineRenderProgress(s);
-    var btn = claudeEngineEl('claude-engine-install-btn');
-    if (btn) {
-      if (s.phase === 'done' || s.installed) {
-        btn.textContent = '重新安装 Claude Code SDK';
-        btn.disabled = false;
-      } else if (s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting') {
-        btn.textContent = '安装中…';
-        btn.disabled = true;
-      } else {
-        btn.textContent = '安装 Claude Code SDK';
-        btn.disabled = false;
-      }
-    }
-    if (s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'detecting') {
-      claudeEnginePollTimer = setTimeout(claudeEngineRefreshStatus, 600);
-    } else if (claudeEnginePollTimer) {
-      clearTimeout(claudeEnginePollTimer);
-      claudeEnginePollTimer = null;
-    }
-  }).catch(function(){
-    // 网络/服务异常时停止轮询，避免无限重试
-    if (claudeEnginePollTimer) { clearTimeout(claudeEnginePollTimer); claudeEnginePollTimer = null; }
+function onInstallableAgentToggle(engineId, el) {
+  if (!el.checked) { onAgentToggle(engineId, false); return; }
+  onAgentToggle(engineId, true);
+  api('/api/engines/' + encodeURIComponent(engineId) + '/status', 'GET').then(function(status){
+    renderEngineStatus(engineId, status);
+    if (!status.installed && !status.running) installEngine(engineId);
+    else if (status.running) scheduleEnginePoll(engineId);
+  }).catch(function(error){
+    el.checked = false;
+    onAgentToggle(engineId, false);
+    toast('引擎状态查询失败: ' + String(error), 'error');
   });
 }
 
-function installClaudeEngine() {
-  var btn = claudeEngineEl('claude-engine-install-btn');
-  if (btn) btn.disabled = true;
-  api('/api/claude-sdk/install', 'POST').then(function(r){
-    if (r.ok) {
-      claudeEngineRefreshStatus();
-    } else {
-      claudeEngineRenderStatus({ phase: 'error', message: '启动安装失败', error: r.error || '' });
-      if (btn) btn.disabled = false;
-    }
-  }).catch(function(e){
-    claudeEngineRenderStatus({ phase: 'error', message: '请求失败', error: String(e) });
-    if (btn) btn.disabled = false;
+function renderEngineStatus(engineId, status) {
+  var ids = [engineId + '-engine-status', engineId + '-dashboard-engine-status'];
+  var job = status.job;
+  var state = job && job.state;
+  var text = status.installed ? ('已安装 v' + (status.version || '未知版本')) : '未安装';
+  var color = status.installed ? '#15803d' : '#64748b';
+  if (state === 'running') { text = '安装中 ' + (job.percent || 0) + '%'; color = '#1d4ed8'; }
+  if (state === 'failed') { text = '安装失败'; color = '#dc2626'; }
+  ids.forEach(function(id){
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = '<span style="color:' + color + '">' + text + '</span>' +
+      (job && job.error ? '<br><span style="color:#dc2626;font-size:12px">' + escapeHtml(job.error) + '</span>' : '');
+  });
+  [engineId + '-engine-steps', engineId + '-dashboard-engine-steps'].forEach(function(id){
+    var root = document.getElementById(id);
+    if (!root) return;
+    root.innerHTML = job && job.steps ? job.steps.map(function(step){
+      var icon = step.state === 'completed' ? '✓' : step.state === 'failed' ? '!' : step.state === 'running' ? '●' : '○';
+      return '<div class="engine-step ' + step.state + '"><span class="engine-step-icon">' + icon + '</span><span>' +
+        escapeHtml(step.label + (step.message && step.message !== '等待中' ? ' · ' + step.message : '')) +
+        '</span><span class="engine-step-percent">' + (step.state === 'running' ? step.percent + '%' : '') + '</span></div>';
+    }).join('') : '';
+  });
+  [engineId + '-engine-install-btn', engineId + '-dashboard-engine-install-btn'].forEach(function(id){
+    var button = document.getElementById(id);
+    if (!button) return;
+    button.disabled = state === 'running';
+    button.textContent = state === 'running' ? '自动安装中…' : state === 'failed' ? '重试' : status.installed ? '原子升级/重新安装' : '安装并启用';
+  });
+}
+
+function scheduleEnginePoll(engineId) {
+  if (enginePollTimers[engineId]) clearTimeout(enginePollTimers[engineId]);
+  enginePollTimers[engineId] = setTimeout(function(){ engineRefreshStatus(engineId); }, 800);
+}
+
+function engineRefreshStatus(engineId) {
+  return api('/api/engines/' + encodeURIComponent(engineId) + '/status', 'GET').then(function(status){
+    renderEngineStatus(engineId, status);
+    if (status.running || (status.job && status.job.state === 'running')) scheduleEnginePoll(engineId);
+    return status;
+  });
+}
+
+function installEngine(engineId) {
+  var toggle = document.getElementById('agent-enable-' + engineId);
+  if (toggle && !toggle.checked) {
+    toggle.checked = true;
+    onAgentToggle(engineId, true);
+  }
+  return api('/api/engines/' + encodeURIComponent(engineId) + '/install', 'POST').then(function(result){
+    if (!result.ok) throw new Error(result.error || '启动安装失败');
+    renderEngineStatus(engineId, { installed: false, running: true, job: result.job });
+    scheduleEnginePoll(engineId);
+    return result;
+  }).catch(function(error){
+    renderEngineStatus(engineId, { installed: false, running: false, job: { state: 'failed', error: String(error), steps: [] } });
+    toast('引擎安装失败: ' + String(error), 'error');
   });
 }
 
 // ---- Start ----
 init();
 
-// 进入 dashboard/向导后初始化 Claude 引擎状态（页面元素此时已存在）
-setTimeout(claudeEngineRefreshStatus, 300);
+// 页面刷新后从持久化任务文件恢复每一步的安装进度。
+setTimeout(function(){ engineRefreshStatus('claude'); engineRefreshStatus('dsh'); }, 300);
 </script>
 </body>
 </html>`;
@@ -2517,12 +2584,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/restart" && method === "POST") return handleRestartService(req, res);
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);
   if (url === "/api/ilink/forget" && method === "POST") return handleForgetIlink(req, res);
-  if (url === "/api/claude-sdk/status" && method === "GET") return handleClaudeSdkStatus(req, res);
-  if (url === "/api/claude-sdk/install" && method === "POST") return handleClaudeSdkInstall(req, res);
+  const engineStatusMatch = pathname.match(/^\/api\/engines\/([^/]+)\/status$/);
+  if (engineStatusMatch && method === "GET") return handleEngineStatus(decodeURIComponent(engineStatusMatch[1]), res);
+  const engineInstallMatch = pathname.match(/^\/api\/engines\/([^/]+)\/install$/);
+  if (engineInstallMatch && method === "POST") return handleEngineInstall(decodeURIComponent(engineInstallMatch[1]), res);
 
   if (method === "GET" && (pathname === "/agent-team" || pathname === "/agent-team/")) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(AGENT_TEAM_PAGE_HTML);
+    return;
+  }
+
+  if (pathname.startsWith("/api/")) {
+    jsonReply(res, 404, { error: "Not found" });
     return;
   }
 

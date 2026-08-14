@@ -1,4 +1,4 @@
-export const AGENT_TOOLS = ["claude", "cursor", "codex", "ccc"] as const;
+export const AGENT_TOOLS = ["claude", "cursor", "codex", "ccc", "dsh"] as const;
 
 export type AgentTool = typeof AGENT_TOOLS[number];
 
@@ -12,6 +12,7 @@ export const AGENT_TOOL_OPTIONS: readonly AgentToolOption[] = [
   { id: "claude", label: "Claude" },
   { id: "cursor", label: "Cursor" },
   { id: "codex", label: "Codex" },
+  { id: "dsh", label: "DeepSeek Harness" },
 ];
 
 export function isAgentTool(value: unknown): value is AgentTool {

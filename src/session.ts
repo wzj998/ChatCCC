@@ -38,6 +38,7 @@ import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 import { createCccAdapter } from "./adapters/ccc-adapter.ts";
+import { createDshAdapter } from "./adapters/dsh-adapter.ts";
 import { killProcessTree } from "./adapters/proc-tree-kill.ts";
 import { resourceMonitor, registerProcess, unregisterProcess } from "./adapters/resource-monitor.ts";
 import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
@@ -578,6 +579,7 @@ export function getEffectiveModelForTool(tool: string, sessionId?: string): stri
   if (tool === "cursor") return config.cursor.model;
   if (tool === "codex") return config.codex.model;
   if (tool === "ccc") return config.ccc.model;
+  if (tool === "dsh") return config.dsh.model;
   return CLAUDE_MODEL;
 }
 
@@ -718,6 +720,14 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       // 留空（""）不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
       ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
       ...(config.ccc.subModel ? { subModel: config.ccc.subModel } : {}),
+    });
+  } else if (tool === "dsh") {
+    adapter = createDshAdapter({
+      apiKey: config.dsh.apiKey,
+      baseUrl: config.dsh.baseUrl,
+      model: effectiveModel || config.dsh.model,
+      provider: config.dsh.provider,
+      maxTokens: config.dsh.maxTokens,
     });
   } else {
     adapter = createClaudeAdapter({
@@ -1190,6 +1200,10 @@ function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?:
     const m = getEffectiveModelForTool(tool, sessionId);
     const modelStr = m.trim() !== "" ? m : "(not configured)";
     return `model=${modelStr}, baseURL=${config.ccc.DEEPSEEK_BASE_URL}`;
+  }
+  if (tool === "dsh") {
+    const model = getEffectiveModelForTool(tool, sessionId);
+    return `model=${model || "(not configured)"}, baseURL=${config.dsh.baseUrl}`;
   }
   return `model=${anthropicConfigDisplay(getModelForSession(sessionId))}, subagentModel=${anthropicConfigDisplay(CLAUDE_SUBAGENT_MODEL)}, effort=${anthropicConfigDisplay(getEffectiveEffortForTool(tool, sessionId))}`;
 }
@@ -2554,6 +2568,13 @@ async function resolveModelEffort(
     const m = getEffectiveModelForTool(tool, sessionId);
     return {
       model: m.trim() !== "" ? m : UNKNOWN_MODEL_PLACEHOLDER,
+      effort: null,
+    };
+  }
+  if (tool === "dsh") {
+    const model = getEffectiveModelForTool(tool, sessionId);
+    return {
+      model: model.trim() !== "" ? model : UNKNOWN_MODEL_PLACEHOLDER,
       effort: null,
     };
   }

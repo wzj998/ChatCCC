@@ -153,6 +153,16 @@ export interface CccConfig {
   contextWindow: number;
 }
 
+export interface DshConfig {
+  enabled: boolean;
+  defaultAgent: boolean;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  provider: string;
+  maxTokens: number;
+}
+
 export interface FeishuConfig {
   appId: string;
   appSecret: string;
@@ -191,6 +201,7 @@ export interface RawStreamLogsConfig {
   cursor: RawStreamAgentLogConfig;
   codex: RawStreamAgentLogConfig;
   ccc: RawStreamAgentLogConfig;
+  dsh: RawStreamAgentLogConfig;
 }
 
 export interface AppConfig {
@@ -207,6 +218,7 @@ export interface AppConfig {
   cursor: CursorConfig;
   codex: CodexConfig;
   ccc: CccConfig;
+  dsh: DshConfig;
 }
 
 export type CursorAvatarBatteryMode = "apiPercent" | "onDemandUse";
@@ -230,6 +242,8 @@ export function getAllModelsForTool(tool: string, cfg: AppConfig = config): stri
   } else if (tool === "ccc") {
     collect(cfg.ccc.model);
     collect(cfg.ccc.alternativeModel);
+  } else if (tool === "dsh") {
+    collect(cfg.dsh.model);
   }
 
   return Array.from(seen).slice(0, 100);
@@ -478,6 +492,7 @@ function loadConfig(): AppConfig {
       cursor: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
       codex: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
       ccc: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
+      dsh: { enabled: false, maxBytesPerTurn: 50 * 1024 * 1024, retentionDays: 7, keepCompleted: false },
     },
     claude: { enabled: false, defaultAgent: true, model: "", subagentModel: "", effort: "", apiKey: "", baseUrl: "", maxTurn: 0 },
     cursor: {
@@ -502,6 +517,15 @@ function loadConfig(): AppConfig {
       provider: "",
       compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
       contextWindow: DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
+    },
+    dsh: {
+      enabled: false,
+      defaultAgent: false,
+      apiKey: "",
+      baseUrl: DEFAULT_CCC_DEEPSEEK_BASE_URL,
+      model: "deepseek-v4-flash",
+      provider: "deepseek-official",
+      maxTokens: 49152,
     },
   };
 
@@ -568,6 +592,15 @@ function loadConfig(): AppConfig {
       compactionTimeoutMs?: unknown;
       contextWindow?: unknown;
     };
+    dsh?: {
+      enabled?: unknown;
+      defaultAgent?: unknown;
+      apiKey?: unknown;
+      baseUrl?: unknown;
+      model?: unknown;
+      provider?: unknown;
+      maxTokens?: unknown;
+    };
     webUi?: { openOnStart?: unknown };
     chromeDevtools?: { enabled?: unknown; port?: unknown; chromePath?: unknown };
     rawStreamLogs?: unknown;
@@ -584,6 +617,7 @@ function loadConfig(): AppConfig {
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
   const cccRaw = (parsed.ccc ?? {}) as NonNullable<typeof parsed.ccc>;
+  const dshRaw = (parsed.dsh ?? {}) as NonNullable<typeof parsed.dsh>;
   const webUiRaw = (parsed.webUi ?? {}) as NonNullable<typeof parsed.webUi>;
   const chromeDevtoolsRaw = (parsed.chromeDevtools ?? {}) as NonNullable<typeof parsed.chromeDevtools>;
   const rawStreamLogsRaw = typeof parsed.rawStreamLogs === "object" && parsed.rawStreamLogs !== null
@@ -637,18 +671,21 @@ function loadConfig(): AppConfig {
   const cursorEnabled = resolveEnabled(cursorRaw.enabled, cursorNonEmpty);
   const codexEnabled = resolveEnabled(codexRaw.enabled, codexNonEmpty);
   const cccEnabled = resolveCccEnabled(cccRaw.enabled, cccRaw.DEEPSEEK_API_KEY);
+  const dshEnabled = resolveEnabled(dshRaw.enabled, () => Boolean(typeof dshRaw.apiKey === "string" && dshRaw.apiKey.trim()));
   const chromeDevtoolsPort = Number(chromeDevtoolsRaw.port);
   const explicitDefaultTool: AgentTool | null =
     typeof claude.defaultAgent === "boolean" && claude.defaultAgent && claudeEnabled ? "claude" :
     typeof cursorRaw.defaultAgent === "boolean" && cursorRaw.defaultAgent && cursorEnabled ? "cursor" :
     typeof codexRaw.defaultAgent === "boolean" && codexRaw.defaultAgent && codexEnabled ? "codex" :
     typeof cccRaw.defaultAgent === "boolean" && cccRaw.defaultAgent && cccEnabled ? "ccc" :
+    typeof dshRaw.defaultAgent === "boolean" && dshRaw.defaultAgent && dshEnabled ? "dsh" :
     null;
   const fallbackDefaultTool: AgentTool =
     claudeEnabled ? "claude" :
     cursorEnabled ? "cursor" :
     codexEnabled ? "codex" :
     cccEnabled ? "ccc" :
+    dshEnabled ? "dsh" :
     "claude";
   const defaultTool = explicitDefaultTool ?? fallbackDefaultTool;
 
@@ -696,6 +733,7 @@ function loadConfig(): AppConfig {
       cursor: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.cursor),
       codex: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.codex),
       ccc: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.ccc),
+      dsh: normalizeRawStreamAgentLogConfig(rawStreamLogsRaw.dsh),
     },
     claude: {
       enabled: claudeEnabled,
@@ -748,6 +786,15 @@ function loadConfig(): AppConfig {
         cccRaw.contextWindow,
         DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
       ),
+    },
+    dsh: {
+      enabled: dshEnabled,
+      defaultAgent: defaultTool === "dsh",
+      apiKey: normalizeOptionalConfigField(dshRaw.apiKey, { label: "dsh.apiKey" }),
+      baseUrl: normalizeOptionalConfigField(dshRaw.baseUrl, { label: "dsh.baseUrl", fallback: DEFAULT_CCC_DEEPSEEK_BASE_URL }),
+      model: normalizeOptionalConfigField(dshRaw.model, { label: "dsh.model", fallback: "deepseek-v4-flash" }),
+      provider: normalizeOptionalConfigField(dshRaw.provider, { label: "dsh.provider", fallback: "deepseek-official" }),
+      maxTokens: normalizePositiveInteger(dshRaw.maxTokens, 49152),
     },
   };
 }
@@ -1070,12 +1117,14 @@ export const CURSOR_SESSION_PREFIX = "Cursor Session:";
 export const CODEX_SESSION_PREFIX = "Codex Session:";
 /** 群描述中用于识别 CCC Agent 会话的前缀 */
 export const CCC_SESSION_PREFIX = "CCC Session:";
+export const DSH_SESSION_PREFIX = "DSH Session:";
 
 /** 根据 tool 名称返回对应的群描述前缀 */
 export function sessionPrefixForTool(tool: string): string {
   if (tool === "cursor") return CURSOR_SESSION_PREFIX;
   if (tool === "codex") return CODEX_SESSION_PREFIX;
   if (tool === "ccc") return CCC_SESSION_PREFIX;
+  if (tool === "dsh") return DSH_SESSION_PREFIX;
   return CLAUDE_SESSION_PREFIX;
 }
 
@@ -1084,6 +1133,7 @@ export function toolDisplayName(tool: string): string {
   if (tool === "cursor") return "Cursor";
   if (tool === "codex") return "Codex";
   if (tool === "ccc") return "CCC Agent";
+  if (tool === "dsh") return "DeepSeek Harness";
   return "Claude Code";
 }
 

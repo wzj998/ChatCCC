@@ -1,8 +1,8 @@
 # ChatCCC
 
-**用飞书或微信聊天控制 Claude Code / Cursor / Codex / CCC Agent。**
+**用飞书或微信聊天控制 Claude Code / Cursor / Codex / CCC Agent / DeepSeek Harness。**
 
-ChatCCC 把本地 AI 编程工具接入即时通讯软件。你可以在手机上发消息，让 Claude Code、Cursor Agent、Codex 或内置 CCC Agent 继续写代码、查问题、跑命令；不用一直守在电脑前。
+ChatCCC 把本地 AI 编程工具接入即时通讯软件。你可以在手机上发消息，让 Claude Code、Cursor Agent、Codex、内置 CCC Agent 或 DeepSeek Harness 继续写代码、查问题、跑命令；不用一直守在电脑前。
 
 飞书是推荐入口：直接私聊机器人即可持续使用同一个专属会话，需要并行任务时再用 `/new` 创建独立会话群；卡片能流式更新，体验完整。微信 iLink 更适合快速试用或临时使用：扫码即可接入，但只能走私聊文本模式。
 
@@ -21,7 +21,7 @@ ChatCCC 把本地 AI 编程工具接入即时通讯软件。你可以在手机�
 - **手机上也能用 AI 编程工具**：在飞书或微信发消息，就像在终端给 Agent 下指令。
 - **飞书体验更完整**：私聊可持续对话，`/new` 创建的一群一会话支持多任务并行，CardKit 卡片可流式更新。
 - **微信接入更轻**：不用创建飞书应用，启动后扫码即可在微信私聊里使用。
-- **多 Agent 切换**：`/new` 使用默认 Agent，也可以用 `/new claude`、`/new cursor`、`/new codex`、`/new ccc` 指定工具。
+- **多 Agent 切换**：`/new` 使用默认 Agent，也可以用 `/new claude`、`/new cursor`、`/new codex`、`/new ccc`、`/new dsh` 指定工具。
 - **群里能跑 git**：`/git status`、`/git pull`、`/git log` 会在当前会话工作目录执行，并把输出发回聊天窗口。
 
 ## 飞书和微信的差异
@@ -216,7 +216,7 @@ chatccc
 
 ### 3. AI 工具配置
 
-Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，开箱即用，**模型接入不限于 DeepSeek**——它支持 OpenAI-compatible 和 Anthropic Messages 两种协议（详见下文 CCC Agent）。
+Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于 ChatCCC，开箱即用，**模型接入不限于 DeepSeek**——它支持 OpenAI-compatible 和 Anthropic Messages 两种协议（详见下文 CCC Agent）。DeepSeek Harness（DSH）采用按需安装，不计入 ChatCCC 主包生产依赖。
 
 #### CCC Agent
 
@@ -242,9 +242,15 @@ ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effo
 
 #### Claude Code
 
-ChatCCC 通过 Anthropic Claude Agent SDK 调用 Claude Code 能力。SDK 引擎（含 Claude Code CLI 原生二进制，约 220MB）**按需下载**：在首次配置向导或 Web 管理页的「Claude Code」卡片点「安装 Claude Code SDK」（开关从关闭切到打开时也会弹出安装确认），页面会显示下载进度条，完成后即可使用。**只有启用 Claude Code 的用户才需要下载**，不使用 Claude Code 的安装不包含该引擎，chatccc 主包体积保持精简。
+ChatCCC 通过 Anthropic Claude Agent SDK 调用 Claude Code 能力。SDK 引擎（含 Claude Code CLI 原生二进制，约 220MB）**按需下载**：在首次配置向导或 Web 管理页打开 Claude Code 开关，或点击一次安装按钮，页面会连续显示环境检查、下载、校验、Runtime 验证、原子切换和清理进度，不需要逐步确认。**只有启用 Claude Code 的用户才需要下载**，不使用 Claude Code 的安装不包含该引擎，chatccc 主包体积保持精简。
 
 SDK 始终使用其内置的 Claude Code CLI（档位 b），不依赖用户自行安装的 `claude` 命令。本机完成 Claude Code 登录后即可使用（SDK 复用 `~/.claude` 登录态）；同时支持官方和第三方 Anthropic 兼容 API：使用官方服务无需额外配置，使用第三方 API 则填写 `claude.apiKey` 和 `claude.baseUrl`。`claude.model`、`claude.subagentModel`、`claude.effort`、`claude.apiKey`、`claude.baseUrl` 均为选填；`claude.maxTurn` 控制每次对话的最大轮数（默认 0，即无限制）。填写后会把对应配置传给 Claude Agent SDK；留空则以 `~/.claude/settings.json` 为准。
+
+#### DeepSeek Harness
+
+DeepSeek Harness 是可选 Agent。在首次配置向导或 Web 管理页打开 DSH 开关，ChatCCC 会一次点击完成环境检查、临时目录准备、精确版本下载、包校验、Runtime 握手、原子切换和旧版本清理，并在页面逐步显示进度。安装失败时不会替换当前可用版本；刷新页面后仍可恢复安装进度。当前固定安装 `0.1.0-rc.6`，要求 Node.js >= 22.19.0。
+
+DSH 引擎安装在 `~/.chatccc/engines/dsh/`，不加入 ChatCCC 的 `dependencies`。配置 `dsh.apiKey`、`dsh.baseUrl`、`dsh.model`、`dsh.provider` 和 `dsh.maxTokens` 后，可设为默认 Agent 或使用 `/new dsh` 新建会话。安装验证只做本地 JSON-RPC Runtime 握手，不会调用付费模型。
 
 #### Cursor Agent CLI
 
@@ -375,12 +381,14 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `ccc.subModel` | CCC Agent 子模型（选填）：用于内部轻量环节（压缩摘要生成、task 子代理任务）；留空跟随主模型 |
 | `ccc.compactionTimeoutMs` | CCC Agent 上下文压缩单轮超时（毫秒），默认 300000（5 分钟）；压缩超时会让整轮对话失败，建议保持默认或调大 |
 | `ccc.contextWindow` | CCC Agent 模型上下文窗口（token），默认 1048576（1M，DeepSeek V4 Pro/Flash 原生规格）；压缩阈值自动 = 窗口 × 80%；超过模型/服务端实际上限会被 API 拒绝，可在 Web UI 下拉选择或自定义（单位 k） |
+| `dsh.apiKey` / `dsh.baseUrl` | DeepSeek Harness 的 API Key 和官方 DeepSeek 服务地址 |
+| `dsh.model` / `dsh.provider` / `dsh.maxTokens` | DSH 默认模型、Runtime provider 和最大 token 数 |
 
 > **权限控制**：普通消息以 `bypassPermissions` 模式运行，跳过 Agent 操作确认。使用 `/plan` 或 `/ask` 前缀时，ChatCCC 自动切换为只读模式：Claude SDK 仅放行 Read + stop-stuck-loop 网络请求，Codex 使用 `--sandbox read-only`，Cursor 使用 `--mode plan/ask`。请只在可信环境中使用。
 
 ### 5. 开始使用
 
-**飞书：** 找到机器人后直接发送普通消息，即可在当前私聊中创建并持续使用专属 AI 会话；私聊工作目录固定为运行 ChatCCC 的系统账号用户目录。默认 Agent 发生变化后，下一条私聊普通消息会触发切换并创建新的空会话；若旧 Agent 正在生成，该消息会先排队，待当前回复完成后再切换。命令不会触发自动切换。需要独立任务时，发送 `/new`、`/new claude`、`/new cursor`、`/new codex` 或 `/new ccc`，机器人会另外创建会话群。
+**飞书：** 找到机器人后直接发送普通消息，即可在当前私聊中创建并持续使用专属 AI 会话；私聊工作目录固定为运行 ChatCCC 的系统账号用户目录。默认 Agent 发生变化后，下一条私聊普通消息会触发切换并创建新的空会话；若旧 Agent 正在生成，该消息会先排队，待当前回复完成后再切换。命令不会触发自动切换。需要独立任务时，发送 `/new`、`/new claude`、`/new cursor`、`/new codex`、`/new ccc` 或 `/new dsh`，机器人会另外创建会话群。
 
 **微信：** 扫码登录后，在机器人私聊里发送 `/new` 或指定 Agent 的 `/new ...` 命令即可开始。功能与飞书基本一致，但展示为纯文本。
 
@@ -397,6 +405,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/new cursor` | 创建 Cursor 会话；飞书中会创建新群 |
 | `/new codex` | 创建 Codex 会话；飞书中会创建新群 |
 | `/new ccc` | 创建内置 CCC Agent 会话；飞书中会创建新群 |
+| `/new dsh` | 创建 DeepSeek Harness 会话；飞书中会创建新群 |
 | `/forget` | 在当前聊天原地重置会话（忘掉上下文）；群聊保留工作目录，飞书私聊固定使用系统用户目录 |
 | `/model` | 查看或切换当前会话的模型 |
 | `/fast` | 查看当前 Codex 会话的 Fast 模式；使用 `/fast on` 或 `/fast off` 切换 |
@@ -406,7 +415,7 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/cd` | 查看或设置后续新建会话的默认工作目录，不改变当前会话；飞书私聊自身始终使用系统用户目录 |
 | `/sessions` | 查看所有会话状态 |
 | `/session <数字>` | 将当前群聊切换到 `/sessions` 列表中的指定会话；飞书私聊不支持切换 |
-| `/usage` | 查看当前会话对应 Agent 的用量；Codex 显示 5h/7天窗口，Cursor 显示当前周期用量，CCC Agent 仅在官方 DeepSeek 端点时显示账户余额（其他兼容端点自动跳过） |
+| `/usage` | 查看当前会话对应 Agent 的用量；Codex 显示 5h/7天窗口，Cursor 显示当前周期用量，CCC Agent 和 DSH 仅在官方 DeepSeek 端点时显示账户余额（其他兼容端点自动跳过） |
 | `/git <子命令>` | 在当前会话工作目录执行 `git ...` 并回传输出 |
 | `/abd<内容>` | 去掉 `/abd` 前缀后把内容发给 Agent，并在消息末尾追加第一性原理需求澄清提示 |
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
@@ -425,4 +434,4 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 ## 技术栈
 
-TypeScript（发布前编译为 JavaScript，tsx 仅用于开发）/ Node.js >= 20 / AI SDK / Anthropic Claude Agent SDK（按需下载，仅启用 Claude Code 时安装）/ Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
+TypeScript（发布前编译为 JavaScript，tsx 仅用于开发）/ Node.js >= 20 / AI SDK / Anthropic Claude Agent SDK（按需下载）/ DeepSeek Harness SDK + JSON-RPC Runtime（按需下载，要求 Node.js >= 22.19.0）/ Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
