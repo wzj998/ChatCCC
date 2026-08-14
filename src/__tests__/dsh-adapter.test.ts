@@ -91,4 +91,50 @@ describe("DshAdapter", () => {
 
     expect(capturedEnv?.DSH_SUBAGENT_MODEL).toBe("dsh-main");
   });
+
+  it("rethrows a turn/end error instead of silently ending with empty output", async () => {
+    class FakeHarness {
+      async start(): Promise<void> {}
+      async close(): Promise<void> {}
+      async run(_input: string, options: { sessionId: string; onNotification: (value: unknown) => void }) {
+        options.onNotification({ method: "session.event", params: { event: {
+          type: "turn/end",
+          data: { turn: 1, reason: { kind: "error", error: { message: "unauthorized", code: "AUTH", status: 401 } } },
+        } } });
+        return { sessionId: options.sessionId, finalResponse: "" };
+      }
+    }
+    __setDshSdkModuleForTest({ DeepSeekHarness: FakeHarness as never });
+    const adapter = createDshAdapter({ model: "deepseek-v4-flash" });
+    const created = await adapter.createSession("C:/workspace");
+
+    let thrown: unknown;
+    try {
+      for await (const _message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) { /* drain */ }
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/HTTP 401/);
+    expect((thrown as Error).message).toContain("AUTH");
+  });
+
+  it("emits an explicit notice when the engine returns no output and no error", async () => {
+    class FakeHarness {
+      async start(): Promise<void> {}
+      async close(): Promise<void> {}
+      async run(_input: string, options: { sessionId: string }) {
+        return { sessionId: options.sessionId, finalResponse: "" };
+      }
+    }
+    __setDshSdkModuleForTest({ DeepSeekHarness: FakeHarness as never });
+    const adapter = createDshAdapter({ model: "deepseek-v4-flash" });
+    const created = await adapter.createSession("C:/workspace");
+    const messages = [];
+    for await (const message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) messages.push(message);
+
+    const last = messages.at(-1);
+    expect(last?.blocks.map((block) => block.type)).toEqual(["text_final"]);
+    expect((last?.blocks[0] as { text?: string }).text).toContain("未产生任何回复");
+  });
 });
