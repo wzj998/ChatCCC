@@ -74,7 +74,7 @@ const baseAppConfig: AppConfig = {
   },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort", fastMode: false },
   ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", subModel: "", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", provider: "", compactionTimeoutMs: 300000, contextWindow: 1048576 },
-  dsh: { enabled: false, defaultAgent: false, apiKey: "", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", provider: "deepseek-official", maxTokens: 49152 },
+  dsh: { enabled: false, defaultAgent: false, apiKey: "", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", subModel: "", alternativeModel: "", provider: "deepseek-official", maxTokens: 49152 },
 };
 
 // 把 module 状态抢救快照：每个 it 跑前重置回这个状态，避免污染相邻测试。
@@ -179,7 +179,7 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
     expect(CURSOR_AGENT_COMMAND).toBe("C:/custom/cursor.exe");
   });
 
-  it("/model 候选列表包含 Cursor/Codex/CCC 的单个备选模型并保持主模型优先", () => {
+  it("/model 候选列表包含 Cursor/Codex/CCC/DSH 的单个备选模型并保持主模型优先", () => {
     const cfg = structuredClone(baseAppConfig);
     cfg.cursor.model = "cursor-main";
     cfg.cursor.alternativeModel = "cursor-alt";
@@ -187,10 +187,13 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
     cfg.codex.alternativeModel = "codex-main";
     cfg.ccc.model = "ccc-main";
     cfg.ccc.alternativeModel = "ccc-alt";
+    cfg.dsh.model = "dsh-main";
+    cfg.dsh.alternativeModel = "dsh-alt";
 
     expect(getAllModelsForTool("cursor", cfg)).toEqual(["cursor-main", "cursor-alt"]);
     expect(getAllModelsForTool("codex", cfg)).toEqual(["codex-main"]);
     expect(getAllModelsForTool("ccc", cfg)).toEqual(["ccc-main", "ccc-alt"]);
+    expect(getAllModelsForTool("dsh", cfg)).toEqual(["dsh-main", "dsh-alt"]);
   });
 
   it("不修改 CHATCCC_PORT（端口在 setup 切换时必须保持不变）", () => {

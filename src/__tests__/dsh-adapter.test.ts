@@ -47,4 +47,48 @@ describe("DshAdapter", () => {
     });
     expect((await adapter.getSessionInfo(created.sessionId))?.cwd).toBe("C:/workspace");
   });
+
+  it("passes subModel to the child agent via DSH_SUBAGENT_* env", async () => {
+    let capturedEnv: Record<string, unknown> | undefined;
+    class CapturingHarness {
+      constructor(options: { launch?: { env?: Record<string, unknown> } }) {
+        capturedEnv = options.launch?.env;
+      }
+      async start(): Promise<void> {}
+      async close(): Promise<void> {}
+      async run(_input: string, _options: unknown) {
+        return { sessionId: "dsh-s", finalResponse: "ok" };
+      }
+    }
+    __setDshSdkModuleForTest({ DeepSeekHarness: CapturingHarness as never });
+
+    const adapter = createDshAdapter({ model: "dsh-main", subModel: "dsh-sub", provider: "custom-provider", maxTokens: 1234 });
+    const created = await adapter.createSession("C:/workspace");
+    for await (const _message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) { /* drain */ }
+
+    expect(capturedEnv?.DSH_SUBAGENT_MODEL).toBe("dsh-sub");
+    expect(capturedEnv?.DSH_SUBAGENT_PROVIDER).toBe("custom-provider");
+    expect(capturedEnv?.DSH_SUBAGENT_MAX_TOKENS).toBe("1234");
+  });
+
+  it("falls back to the main model for the subagent when subModel is empty", async () => {
+    let capturedEnv: Record<string, unknown> | undefined;
+    class CapturingHarness {
+      constructor(options: { launch?: { env?: Record<string, unknown> } }) {
+        capturedEnv = options.launch?.env;
+      }
+      async start(): Promise<void> {}
+      async close(): Promise<void> {}
+      async run(_input: string, _options: unknown) {
+        return { sessionId: "dsh-s", finalResponse: "ok" };
+      }
+    }
+    __setDshSdkModuleForTest({ DeepSeekHarness: CapturingHarness as never });
+
+    const adapter = createDshAdapter({ model: "dsh-main" });
+    const created = await adapter.createSession("C:/workspace");
+    for await (const _message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) { /* drain */ }
+
+    expect(capturedEnv?.DSH_SUBAGENT_MODEL).toBe("dsh-main");
+  });
 });

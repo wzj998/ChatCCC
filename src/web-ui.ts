@@ -563,6 +563,12 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_DSH_MODEL") {
       result.dsh = result.dsh || {};
       (result.dsh as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_DSH_SUB_MODEL") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).subModel = val;
+    } else if (key === "CHATCCC_DSH_ALTERNATIVE_MODEL") {
+      result.dsh = result.dsh || {};
+      (result.dsh as Record<string, unknown>).alternativeModel = val;
     } else if (key === "CHATCCC_DSH_PROVIDER") {
       result.dsh = result.dsh || {};
       (result.dsh as Record<string, unknown>).provider = val;
@@ -993,6 +999,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <div class="form-group"><label>API Key</label><input type="password" id="field-CHATCCC_DSH_API_KEY" placeholder="DeepSeek API Key"></div>
             <div class="form-group"><label>Base URL</label><input type="text" id="field-CHATCCC_DSH_BASE_URL" placeholder="https://api.deepseek.com/v1"></div>
             <div class="form-group"><label>模型</label><input type="text" id="field-CHATCCC_DSH_MODEL" placeholder="deepseek-v4-flash"></div>
+            <div class="form-group"><label>子模型（选填）</label><input type="text" id="field-CHATCCC_DSH_SUB_MODEL" placeholder="留空跟随主模型；用于 subagent 子代理任务"></div>
+            <div class="form-group"><label>备选模型（选填）</label><input type="text" id="field-CHATCCC_DSH_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换"></div>
             <div class="form-group"><label>Provider 路由</label><input type="text" id="field-CHATCCC_DSH_PROVIDER" placeholder="deepseek-official"></div>
             <div class="form-group"><label>单次最大输出 Tokens</label><input type="number" id="field-CHATCCC_DSH_MAX_TOKENS" min="1" placeholder="49152"></div>
             <div class="form-group" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-top:4px">
@@ -1242,6 +1250,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">API Key</span><span class="val" id="cfg-DSH_API_KEY">-</span></div>
         <div class="config-row"><span class="key">Base URL</span><span class="val" id="cfg-DSH_BASE_URL">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-DSH_MODEL">-</span></div>
+        <div class="config-row"><span class="key">子模型</span><span class="val" id="cfg-DSH_SUB_MODEL">-</span></div>
+        <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-DSH_ALTERNATIVE_MODEL">-</span></div>
         <div class="config-row"><span class="key">Provider</span><span class="val" id="cfg-DSH_PROVIDER">-</span></div>
         <div class="config-row"><span class="key">最大输出 Tokens</span><span class="val" id="cfg-DSH_MAX_TOKENS">-</span></div>
         <div id="dsh-dashboard-engine-status" class="engine-status">检测中...</div>
@@ -1341,7 +1351,7 @@ const AGENT_FIELDS = {
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
   ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_CONTEXT_WINDOW'],
-  dsh: ['CHATCCC_DSH_API_KEY','CHATCCC_DSH_BASE_URL','CHATCCC_DSH_MODEL','CHATCCC_DSH_PROVIDER','CHATCCC_DSH_MAX_TOKENS']
+  dsh: ['CHATCCC_DSH_API_KEY','CHATCCC_DSH_BASE_URL','CHATCCC_DSH_MODEL','CHATCCC_DSH_SUB_MODEL','CHATCCC_DSH_ALTERNATIVE_MODEL','CHATCCC_DSH_PROVIDER','CHATCCC_DSH_MAX_TOKENS']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
 const WEB_UI_FIELDS = ['CHATCCC_WEB_UI_OPEN_ON_START'];
@@ -1742,6 +1752,8 @@ function renderStep2() {
     prefillNested('field-CHATCCC_DSH_API_KEY', c.dsh.apiKey);
     prefillNested('field-CHATCCC_DSH_BASE_URL', c.dsh.baseUrl);
     prefillNested('field-CHATCCC_DSH_MODEL', c.dsh.model);
+    prefillNested('field-CHATCCC_DSH_SUB_MODEL', c.dsh.subModel);
+    prefillNested('field-CHATCCC_DSH_ALTERNATIVE_MODEL', c.dsh.alternativeModel);
     prefillNested('field-CHATCCC_DSH_PROVIDER', c.dsh.provider);
     prefillNested('field-CHATCCC_DSH_MAX_TOKENS', c.dsh.maxTokens || 49152);
   }
@@ -2176,6 +2188,8 @@ function updateDashboardUI() {
   document.getElementById('cfg-DSH_API_KEY').textContent = (c.dsh && c.dsh.apiKey) ? '***已设置***' : '(留空)';
   document.getElementById('cfg-DSH_BASE_URL').textContent = (c.dsh && c.dsh.baseUrl) || 'https://api.deepseek.com/v1';
   document.getElementById('cfg-DSH_MODEL').textContent = (c.dsh && c.dsh.model) || 'deepseek-v4-flash';
+  document.getElementById('cfg-DSH_SUB_MODEL').textContent = (c.dsh && c.dsh.subModel) || '(留空，跟随主模型)';
+  document.getElementById('cfg-DSH_ALTERNATIVE_MODEL').textContent = (c.dsh && c.dsh.alternativeModel) || '(留空)';
   document.getElementById('cfg-DSH_PROVIDER').textContent = (c.dsh && c.dsh.provider) || 'deepseek-official';
   document.getElementById('cfg-DSH_MAX_TOKENS').textContent = String((c.dsh && c.dsh.maxTokens) || 49152);
   engineRefreshStatus('dsh');
@@ -2256,7 +2270,7 @@ function editSection(section) {
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
     'CHATCCC_CCC_PROVIDER': 'API 协议（选填）',
     'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口',
-    'CHATCCC_DSH_API_KEY': 'API Key', 'CHATCCC_DSH_BASE_URL': 'Base URL', 'CHATCCC_DSH_MODEL': '模型', 'CHATCCC_DSH_PROVIDER': 'Provider 路由', 'CHATCCC_DSH_MAX_TOKENS': '单次最大输出 Tokens'
+    'CHATCCC_DSH_API_KEY': 'API Key', 'CHATCCC_DSH_BASE_URL': 'Base URL', 'CHATCCC_DSH_MODEL': '模型', 'CHATCCC_DSH_SUB_MODEL': '子模型', 'CHATCCC_DSH_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_DSH_PROVIDER': 'Provider 路由', 'CHATCCC_DSH_MAX_TOKENS': '单次最大输出 Tokens'
   };
   var hintMap = {
     'CHATCCC_WEB_UI_OPEN_ON_START': '关闭后可继续手动访问 http://localhost:<端口>/；/restart、/update 和 Web UI 重启无论此项为何值都不会自动打开。',
@@ -2317,6 +2331,8 @@ function editSection(section) {
         if (key === 'CHATCCC_DSH_API_KEY') val = state.config.dsh.apiKey || '';
         else if (key === 'CHATCCC_DSH_BASE_URL') val = state.config.dsh.baseUrl || '';
         else if (key === 'CHATCCC_DSH_MODEL') val = state.config.dsh.model || '';
+        else if (key === 'CHATCCC_DSH_SUB_MODEL') val = state.config.dsh.subModel || '';
+        else if (key === 'CHATCCC_DSH_ALTERNATIVE_MODEL') val = state.config.dsh.alternativeModel || '';
         else if (key === 'CHATCCC_DSH_PROVIDER') val = state.config.dsh.provider || '';
         else if (key === 'CHATCCC_DSH_MAX_TOKENS') val = state.config.dsh.maxTokens || '49152';
       }

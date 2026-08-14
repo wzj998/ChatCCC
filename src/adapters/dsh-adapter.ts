@@ -40,6 +40,7 @@ export interface DshAdapterOptions {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  subModel?: string;
   provider?: string;
   maxTokens?: number;
 }
@@ -90,6 +91,10 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
             DSH_SESSION_ROOT: sessionRoot,
             ...(options.apiKey ? { DEEPSEEK_API_KEY: options.apiKey } : {}),
             ...(options.baseUrl ? { DEEPSEEK_BASE_URL: options.baseUrl } : {}),
+            // 子代理模型：subModel 留空时跟随主模型（与 CCC 的 ccc.subModel 语义一致）
+            DSH_SUBAGENT_PROVIDER: options.provider ?? "deepseek-official",
+            DSH_SUBAGENT_MODEL: options.subModel || options.model || "deepseek-v4-flash",
+            DSH_SUBAGENT_MAX_TOKENS: String(options.maxTokens ?? 49152),
           },
         },
         cwd,

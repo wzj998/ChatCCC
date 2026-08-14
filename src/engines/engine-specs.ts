@@ -79,6 +79,10 @@ export const DSH_RUNTIME_CONFIG = `# Generated and owned by ChatCCC. Secrets are
     provider: spawn
     toolName: subagent
     enableRunInBackground: false
+    agentOptions:
+      provider: !!js process.env.DSH_SUBAGENT_PROVIDER ?? 'deepseek-official'
+      model: !!js process.env.DSH_SUBAGENT_MODEL ?? 'deepseek-v4-flash'
+      maxTokens: !!js Number(process.env.DSH_SUBAGENT_MAX_TOKENS ?? '49152')
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'
   config:

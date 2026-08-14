@@ -34,12 +34,15 @@ describe("config.sample.json", () => {
       cursor?: { alternativeModel?: unknown };
       codex?: { alternativeModel?: unknown; fastMode?: unknown };
       ccc?: { alternativeModel?: unknown };
+      dsh?: { subModel?: unknown; alternativeModel?: unknown };
     };
 
     expect(sample.cursor?.alternativeModel).toBe("");
     expect(sample.codex?.alternativeModel).toBe("");
     expect(sample.ccc?.alternativeModel).toBe("");
     expect(sample.codex?.fastMode).toBe(false);
+    expect(sample.dsh?.subModel).toBe("");
+    expect(sample.dsh?.alternativeModel).toBe("");
   });
 
   it("sets ccc agent DeepSeek defaults in the sample config", () => {
