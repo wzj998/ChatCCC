@@ -444,6 +444,10 @@ describe("generic engine install routes", () => {
     expect(PAGE_HTML).toContain("if (!status.installed && !status.running) installEngine(engineId)");
   });
 
+  it("引擎轮询在服务短暂断开后会自动恢复", () => {
+    expect(PAGE_HTML).toContain("catch(function(){ scheduleEnginePoll(engineId); })");
+  });
+
   it("设置页卡片顺序：CCC 置顶于 Claude 之前", () => {
     const cccIdx = PAGE_HTML.indexOf('id="agent-card-ccc"');
     const claudeIdx = PAGE_HTML.indexOf('id="agent-card-claude"');

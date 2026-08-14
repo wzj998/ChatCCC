@@ -85,15 +85,21 @@ export function createCoalescedAsyncTask(task: () => Promise<void>): {
 } {
   let requested = false;
   let active: Promise<void> | null = null;
+  let failed = false;
+  let failure: unknown;
 
   const start = (): void => {
-    if (active) return;
+    if (active || failed) return;
     active = (async () => {
       while (requested) {
         requested = false;
         await task();
       }
-    })().finally(() => {
+    })().catch((error) => {
+      failed = true;
+      failure = error;
+      requested = false;
+    }).finally(() => {
       active = null;
       if (requested) start();
     });
@@ -105,11 +111,28 @@ export function createCoalescedAsyncTask(task: () => Promise<void>): {
       start();
     },
     async flush(): Promise<void> {
-      requested = true;
-      start();
+      if (!failed) {
+        requested = true;
+        start();
+      }
       while (active) await active;
+      if (failed) throw failure;
     },
   };
+}
+
+async function renameWithTransientRetry(source: string, destination: string): Promise<void> {
+  const retriable = new Set(["EPERM", "EBUSY", "EACCES"]);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (!retriable.has(code) || attempt >= 5) throw error;
+      await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 20 * (2 ** attempt)));
+    }
+  }
 }
 
 export function resolveNpmInvocation(): { command: string; argsPrefix: string[] } {
@@ -133,6 +156,7 @@ export class EngineManager {
   private readonly verifyRuntime?: EngineManagerOptions["verifyRuntime"];
   private readonly nodeVersion: string;
   private readonly activeInstalls = new Map<string, Promise<EngineInstallJob>>();
+  private readonly persistTails = new Map<string, Promise<void>>();
 
   constructor(options: EngineManagerOptions) {
     this.rootDir = options.rootDir ?? DEFAULT_ENGINE_ROOT;
@@ -286,7 +310,7 @@ export class EngineManager {
         const pointerPath = join(this.engineDir(spec), "current.json");
         const temporaryPointer = `${pointerPath}.${job.jobId}.tmp`;
         await writeFile(temporaryPointer, JSON.stringify(pointer, null, 2) + "\n", "utf8");
-        await rename(temporaryPointer, pointerPath);
+        await renameWithTransientRetry(temporaryPointer, pointerPath);
         await update(100, `已切换到 v${spec.version}`);
       });
 
@@ -363,10 +387,24 @@ export class EngineManager {
 
   private async persistJob(spec: EngineSpec, job: EngineInstallJob): Promise<void> {
     const path = this.jobPath(spec);
-    await mkdir(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, JSON.stringify(job, null, 2) + "\n", "utf8");
-    await rename(temporary, path);
+    const contents = JSON.stringify(job, null, 2) + "\n";
+    const previous = this.persistTails.get(spec.id) ?? Promise.resolve();
+    const operation = previous.catch(() => {}).then(async () => {
+      await mkdir(dirname(path), { recursive: true });
+      const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, contents, "utf8");
+        await renameWithTransientRetry(temporary, path);
+      } finally {
+        await rm(temporary, { force: true }).catch(() => {});
+      }
+    });
+    this.persistTails.set(spec.id, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.persistTails.get(spec.id) === operation) this.persistTails.delete(spec.id);
+    }
   }
 
   private async readJob(spec: EngineSpec): Promise<EngineInstallJob | null> {
@@ -452,10 +490,10 @@ async function defaultInstallPackages(
     });
     child.once("close", (code) => {
       clearInterval(timer);
-      void progressReporter.flush().catch(() => {}).finally(() => {
+      void progressReporter.flush().then(() => {
         if (code === 0) resolvePromise();
         else reject(new Error(`npm install 失败（退出码 ${String(code)}）：${stderr.trim().split(/\r?\n/).slice(-6).join(" | ").slice(0, 1000)}`));
-      });
+      }).catch(reject);
     });
   });
 }
