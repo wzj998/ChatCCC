@@ -1,5 +1,5 @@
 // Generate 128x128 agent badge PNGs from official app/brand source images.
-// Usage: npx tsx scripts/generate-agent-badges.ts
+// Usage: npx tsx scripts/generate-agent-badges.ts [badge...]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -30,11 +30,22 @@ const BADGES: BadgeDef[] = [
     name: "codex",
     source: "codex_app_icon.png",
   },
+  {
+    name: "dsh",
+    // Official deepseek-ai GitHub organization avatar.
+    source: "deepseek_official.png",
+    rounded: true,
+  },
 ];
 
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true });
-  for (const def of BADGES) {
+  const requestedBadges = new Set(process.argv.slice(2));
+  const badges = requestedBadges.size > 0
+    ? BADGES.filter((badge) => requestedBadges.has(badge.name))
+    : BADGES;
+
+  for (const def of badges) {
     let iconPipeline = sharp(resolve(SOURCE_DIR, def.source))
       .ensureAlpha()
       .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 5 })

@@ -1,5 +1,5 @@
 // Generate 3x3 status x agent avatar combinations.
-// Usage: npx tsx scripts/generate-avatar-combinations.ts
+// Usage: npx tsx scripts/generate-avatar-combinations.ts [agent...]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -13,7 +13,7 @@ const BADGE_SIZE = 92;
 const BADGE_MARGIN = 10;
 const CANVAS_SIZE = 256;
 
-const ALL_AGENTS = ["claude", "cursor", "codex"] as const;
+const ALL_AGENTS = ["claude", "cursor", "codex", "dsh"] as const;
 const STATUSES = ["new", "busy", "idle"] as const;
 
 async function main(): Promise<void> {
