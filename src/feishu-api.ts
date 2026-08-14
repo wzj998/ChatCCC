@@ -320,6 +320,7 @@ const AVATAR_BADGES: Record<string, string> = {
   claude: resolvePath(AVATAR_BADGE_DIR, "badge_claude.png"),
   cursor: resolvePath(AVATAR_BADGE_DIR, "badge_cursor.png"),
   codex: resolvePath(AVATAR_BADGE_DIR, "badge_codex.png"),
+  dsh: resolvePath(AVATAR_BADGE_DIR, "badge_dsh.png"),
 };
 const AVATAR_SIZE = 256;
 const AVATAR_BADGE_SIZE = 92;

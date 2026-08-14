@@ -123,6 +123,27 @@ describe("Plain avatar fallback", () => {
       await rm(userDataDir, { recursive: true, force: true });
     }
   });
+
+  it("uses the DeepSeek badge for DeepSeek Harness sessions", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    mockAvatarUploadOnlyFetch(uploadedNames);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "dsh", "new");
+
+      expect(uploadedNames).toEqual(["avatar_dsh_new.jpg"]);
+      const cacheRaw = await readFile(join(userDataDir, "state", "avatar-image-keys.json"), "utf-8");
+      const cache = JSON.parse(cacheRaw) as Record<string, string>;
+      expect(cache["dsh:new"]).toBe("img_test");
+      expect(cache["plain:new"]).toBeUndefined();
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Codex avatar usage battery", () => {
