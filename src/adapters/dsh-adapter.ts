@@ -53,6 +53,19 @@ export function __setDshSdkModuleForTest(module: DshSdkModule | null): void {
 }
 
 export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
+  // DSH 引擎的 JSON-RPC `session/prompt` 只支持 create、不支持 resume：已持久化的
+  // session 必须在同一个 runtime 进程内复用，否则第二次 prompt 会因 "id collision"
+  // 失败（新 runtime 内存里没有该 session，走 create 路径与磁盘 log 冲突）。
+  // 因此这里按 sessionId 缓存长驻 runtime，正常完成不关闭，close/abort/崩溃时关闭。
+  const runtimes = new Map<string, { harness: DshHarness; cwd: string }>();
+
+  const disposeRuntime = (sessionId: string): void => {
+    const entry = runtimes.get(sessionId);
+    if (!entry) return;
+    runtimes.delete(sessionId);
+    void entry.harness.close().catch(() => {});
+  };
+
   return {
     displayName: "DeepSeek Harness",
     sessionDescPrefix: "DSH Session:",
@@ -77,31 +90,42 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
       const sdk = injectedSdk ?? await import(pathToFileURL(entryPath).href) as unknown as DshSdkModule;
       const sessionRoot = join(homedir(), ".chatccc", "dsh-sessions");
       await mkdir(sessionRoot, { recursive: true });
-      const runtime = new sdk.DeepSeekHarness({
-        launch: {
-          command: process.execPath,
-          args: [
-            join(installationDir, "node_modules", "@deepseek-ai", "dsh-sdk-jsonrpc-demo", "lib", "bin.js"),
-            join(installationDir, "dsh-runtime.cordis.yml"),
-          ],
-          cwd,
-          env: {
-            ...process.env,
-            DSH_CWD: cwd,
-            DSH_SESSION_ROOT: sessionRoot,
-            ...(options.apiKey ? { DEEPSEEK_API_KEY: options.apiKey } : {}),
-            ...(options.baseUrl ? { DEEPSEEK_BASE_URL: options.baseUrl } : {}),
-            // 子代理模型：subModel 留空时跟随主模型（与 CCC 的 ccc.subModel 语义一致）
-            DSH_SUBAGENT_PROVIDER: options.provider ?? "deepseek-official",
-            DSH_SUBAGENT_MODEL: options.subModel || options.model || "deepseek-v4-flash",
-            DSH_SUBAGENT_MAX_TOKENS: String(options.maxTokens ?? 49152),
+
+      // 复用长驻 runtime：同一 session 的多次 prompt 必须在同一 runtime 进程内完成
+      // （DSH 的 session/prompt 无 resume 能力，见上方 runtimes 注释）。cwd 变化时
+      // 重建（旧 runtime 已绑定旧 cwd，无法切换工作目录）。
+      let entry = runtimes.get(sessionId);
+      if (!entry || entry.cwd !== cwd) {
+        if (entry) disposeRuntime(sessionId);
+        const runtime = new sdk.DeepSeekHarness({
+          launch: {
+            command: process.execPath,
+            args: [
+              join(installationDir, "node_modules", "@deepseek-ai", "dsh-sdk-jsonrpc-demo", "lib", "bin.js"),
+              join(installationDir, "dsh-runtime.cordis.yml"),
+            ],
+            cwd,
+            env: {
+              ...process.env,
+              DSH_CWD: cwd,
+              DSH_SESSION_ROOT: sessionRoot,
+              ...(options.apiKey ? { DEEPSEEK_API_KEY: options.apiKey } : {}),
+              ...(options.baseUrl ? { DEEPSEEK_BASE_URL: options.baseUrl } : {}),
+              // 子代理模型：subModel 留空时跟随主模型（与 CCC 的 ccc.subModel 语义一致）
+              DSH_SUBAGENT_PROVIDER: options.provider ?? "deepseek-official",
+              DSH_SUBAGENT_MODEL: options.subModel || options.model || "deepseek-v4-flash",
+              DSH_SUBAGENT_MAX_TOKENS: String(options.maxTokens ?? 49152),
+            },
           },
-        },
-        cwd,
-        provider: options.provider ?? "deepseek-official",
-        model: options.model ?? "deepseek-v4-flash",
-        ...(options.maxTokens ? { maxTokens: options.maxTokens } : {}),
-      });
+          cwd,
+          provider: options.provider ?? "deepseek-official",
+          model: options.model ?? "deepseek-v4-flash",
+          ...(options.maxTokens ? { maxTokens: options.maxTokens } : {}),
+        });
+        entry = { harness: runtime, cwd };
+        runtimes.set(sessionId, entry);
+      }
+      const runtime = entry.harness;
 
       const queue = new AsyncMessageQueue();
       const rawLogConfig = config.rawStreamLogs.dsh;
@@ -119,15 +143,11 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
       } catch (error) {
         console.error(`[DSH raw stream log] create failed: ${(error as Error).message}`);
       }
-      let closed = false;
       let completed = false;
-      const closeRuntime = (): void => {
-        if (closed) return;
-        closed = true;
-        void runtime.close();
-      };
-      promptOptions?.onSessionCreated?.(closeRuntime);
-      const onAbort = (): void => closeRuntime();
+      // abort / stop-stuck 时关闭该 session 的 runtime 以中止进行中的请求；
+      // 正常完成不关闭，保留 runtime 供同一 session 的后续 prompt 复用。
+      promptOptions?.onSessionCreated?.(() => disposeRuntime(sessionId));
+      const onAbort = (): void => disposeRuntime(sessionId);
       signal?.addEventListener("abort", onAbort, { once: true });
 
       const task = (async () => {
@@ -167,12 +187,21 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
             queue.end();
           }
         } catch (error) {
-          queue.fail(error instanceof Error ? error : new Error(String(error)));
+          // runtime 崩溃 / 传输关闭 / id collision 等：关闭并移除，下次 prompt 重建。
+          // 注意：DSH 无 resume 能力，重启 ChatCCC 后磁盘残留同 id log 会再次 id collision；
+          // 这里附加清晰的用户提示，引导 /forget 清空会话而非静默失败。
+          disposeRuntime(sessionId);
+          const failure = error instanceof Error ? error : new Error(String(error));
+          if (/id collision/i.test(failure.message)) {
+            queue.fail(new Error(
+              `${failure.message}。该 DeepSeek Harness 会话的历史无法跨进程恢复（引擎的 JSON-RPC 仅支持 create 不支持 resume），请使用 /forget 清空本会话或新建会话后重试。`,
+            ));
+          } else {
+            queue.fail(failure);
+          }
         } finally {
           signal?.removeEventListener("abort", onAbort);
-          await runtime.close().catch(() => {});
           await rawLog?.close({ keep: rawLogConfig.keepCompleted || signal?.aborted === true || !completed });
-          closed = true;
         }
       })();
 
@@ -180,7 +209,7 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
         for await (const message of queue) yield message;
         await task;
       } finally {
-        closeRuntime();
+        // 正常完成保留 runtime 供复用；abort 已在 onAbort 中 dispose。
       }
     },
 
@@ -188,8 +217,8 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
       return knownSessions.get(sessionId) ?? { sessionId };
     },
 
-    async closeSession(): Promise<void> {
-      // Each prompt owns and closes its runtime. Durable state lives under ~/.chatccc/dsh-sessions.
+    async closeSession(sessionId: string): Promise<void> {
+      disposeRuntime(sessionId);
     },
   };
 }
