@@ -24,6 +24,13 @@ export interface DeepCccConfig {
    * 上下文压缩阈值自动 = contextWindow × 0.8；超过模型/服务端实际上限会被 API 拒绝。
    */
   contextWindow: number;
+  git: {
+    coAuthor: {
+      enabled: boolean;
+      name: string;
+      email: string;
+    };
+  };
   rawStreamLogs: {
     enabled: boolean;
     maxBytesPerTurn: number;
@@ -48,6 +55,13 @@ export const DEFAULT_CONFIG: DeepCccConfig = {
   effort: "",
   streaming: true,
   contextWindow: 1_048_576,
+  git: {
+    coAuthor: {
+      enabled: true,
+      name: "DeepCCC",
+      email: "20184052+wzj998@users.noreply.github.com",
+    },
+  },
   rawStreamLogs: {
     // 默认开启：压缩后可通过 session_search（include_raw_logs=true）找回原文。
     // 如需关闭，在 ~/.deepccc/config.json 中设置 rawStreamLogs.enabled=false。
@@ -94,6 +108,8 @@ function loadConfig(): DeepCccConfig {
   const rawLogs: Partial<DeepCccConfig["rawStreamLogs"]> = file.rawStreamLogs && typeof file.rawStreamLogs === "object"
     ? file.rawStreamLogs
     : {};
+  const git: Partial<DeepCccConfig["git"]> = file.git && typeof file.git === "object" ? file.git : {};
+  const coAuthor: Partial<DeepCccConfig["git"]["coAuthor"]> = git.coAuthor && typeof git.coAuthor === "object" ? git.coAuthor : {};
 
   return {
     provider: normalizeDeepCccProvider(env("DEEPCCC_PROVIDER") ?? file.provider ?? DEFAULT_CONFIG.provider),
@@ -104,6 +120,13 @@ function loadConfig(): DeepCccConfig {
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
     streaming: boolEnv("DEEPCCC_STREAMING") ?? file.streaming ?? DEFAULT_CONFIG.streaming,
     contextWindow: numberEnv("DEEPCCC_CONTEXT_WINDOW") ?? file.contextWindow ?? DEFAULT_CONFIG.contextWindow,
+    git: {
+      coAuthor: {
+        enabled: boolEnv("DEEPCCC_GIT_COAUTHOR") ?? coAuthor.enabled ?? DEFAULT_CONFIG.git.coAuthor.enabled,
+        name: coAuthor.name?.trim() || DEFAULT_CONFIG.git.coAuthor.name,
+        email: coAuthor.email?.trim() || DEFAULT_CONFIG.git.coAuthor.email,
+      },
+    },
     rawStreamLogs: {
       enabled: boolEnv("DEEPCCC_RAW_STREAM_LOGS") ?? rawLogs.enabled ?? DEFAULT_CONFIG.rawStreamLogs.enabled,
       maxBytesPerTurn: numberEnv("DEEPCCC_RAW_STREAM_MAX_BYTES") ?? rawLogs.maxBytesPerTurn ?? DEFAULT_CONFIG.rawStreamLogs.maxBytesPerTurn,

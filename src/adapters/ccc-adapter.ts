@@ -21,6 +21,7 @@ export interface CccAdapterOptions extends ChatSessionConfig {
   keepRecentMessages?: number;
   compactionTimeoutMs?: number;
   maxSteps?: number;
+  gitCoAuthor?: boolean;
 }
 
 function toChatSessionOptions(
@@ -41,6 +42,7 @@ function toChatSessionOptions(
     // chatccc 无终端可交互，且对齐 claude/codex 适配器的 bypass 模式：
     // 高危命令不询问，全部放行（与独立 deepccc CLI 的 ask 模式不同）
     permissionMode: "bypass",
+    ...(options.gitCoAuthor !== undefined ? { gitCoAuthor: options.gitCoAuthor } : {}),
   };
 }
 

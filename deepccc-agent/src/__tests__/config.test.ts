@@ -28,6 +28,14 @@ describe("builtin ChatSession config", () => {
     expect(DEFAULT_CONFIG.subModel).toBe("");
   });
 
+  it("defaults Git co-author attribution to the linked DeepCCC identity", () => {
+    expect(DEFAULT_CONFIG.git.coAuthor).toEqual({
+      enabled: true,
+      name: "DeepCCC",
+      email: "20184052+wzj998@users.noreply.github.com",
+    });
+  });
+
   it("defaults provider selection to openai and accepts anthropic case-insensitively", () => {
     expect(normalizeDeepCccProvider(undefined)).toBe("openai");
     expect(normalizeDeepCccProvider("")).toBe("openai");

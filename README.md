@@ -226,6 +226,8 @@ ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effo
 
 **协议 override：** 也可以在 ChatCCC 的配置（`config.json` 的 `ccc.provider`，或 Web 管理页的「CCC Agent → API 协议」）显式指定 `openai` / `anthropic` 覆盖内核配置；留空（默认）时跟随 `~/.deepccc/config.json` / `DEEPCCC_PROVIDER`。`streaming` 不做 override，始终由 DeepCCC 内核配置控制。
 
+**Git 共同作者：** DeepCCC 默认给它创建的提交追加 `Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>`，保留用户为主 Author。全局开关是 `~/.deepccc/config.json` 的 `git.coAuthor.enabled`（缺省 `true`）；ChatCCC 的 `ccc.gitCoAuthor` 为三态 override：`null`/缺失跟随全局，`true` 强制开启，`false` 强制关闭。Web 管理页的「CCC Agent → Git 提交共同作者」可设置同样的三种状态。
+
 **API 支持不限于 DeepSeek。** 默认的 `provider: "openai"` 使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点；设置 `provider: "anthropic"` 后改用 Anthropic Messages 协议（`@ai-sdk/anthropic`）。两种模式都支持流式输出，并复用相同的 API Key、Base URL 和模型配置。
 
 | 服务 | Base URL 示例 | 说明 |
@@ -347,7 +349,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
     "DEEPSEEK_API_KEY": "",
     "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
     "model": "deepseek-v4-pro",
-    "alternativeModel": ""
+    "alternativeModel": "",
+    "gitCoAuthor": null
   }
 }
 ```

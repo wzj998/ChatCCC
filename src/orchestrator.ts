@@ -10,6 +10,8 @@ import { readdir, stat } from "node:fs/promises";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+import { config as deepCccConfig } from "../deepccc-agent/src/config.ts";
+import { withGitCoAuthor } from "../deepccc-agent/src/file-tools.ts";
 
 import { makeTraceId, logTrace } from "./trace.ts";
 import { appendStartupTrace } from "./shared.ts";
@@ -2244,7 +2246,13 @@ export async function handleCommand(
       console.log(
         `[${ts()}] [GIT] chat=${chatId} cwd=${cwd} cmd="git ${args}" timeoutMs=${GIT_TIMEOUT_MS}`,
       );
-      const result = await runGitCommand(args, cwd, {
+      const effectiveGitArgs = descriptionTool === "ccc"
+        ? withGitCoAuthor(`git ${args}`, {
+            ...deepCccConfig.git.coAuthor,
+            enabled: config.ccc.gitCoAuthor ?? deepCccConfig.git.coAuthor.enabled,
+          }).slice(4)
+        : args;
+      const result = await runGitCommand(effectiveGitArgs, cwd, {
         timeoutMs: GIT_TIMEOUT_MS,
       });
       console.log(

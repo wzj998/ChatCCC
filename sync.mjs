@@ -6,11 +6,10 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)));
-const DST = join(homedir(), "ChatCCC");
+const DST = join(dirname(SRC), "ChatCCC");
 
 if (!existsSync(join(DST, ".git"))) {
   console.error(`[ERROR] ${DST} not found or not a git repo`);

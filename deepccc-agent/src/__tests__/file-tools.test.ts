@@ -19,6 +19,7 @@ import {
   readFileForTool,
   runCommandForTool,
   searchCodeForTool,
+  withGitCoAuthor,
 } from "../file-tools.js";
 
 const execFileAsync = promisify(execFile);
@@ -63,6 +64,22 @@ afterEach(async () => {
 });
 
 describe("DeepCCC file tools", () => {
+  it("adds the DeepCCC trailer to git commits and chained git commits", () => {
+    const identity = { enabled: true, name: "DeepCCC", email: "20184052+wzj998@users.noreply.github.com" };
+    expect(withGitCoAuthor('git commit -m "feat: x"', identity)).toContain(
+      'git commit --trailer "Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>"',
+    );
+    expect(withGitCoAuthor('git add -A && git commit -m "feat: x"', identity)).toContain(
+      '&& git commit --trailer "Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>"',
+    );
+  });
+
+  it("does not add a disabled or duplicate DeepCCC trailer", () => {
+    const enabled = { enabled: true, name: "DeepCCC", email: "20184052+wzj998@users.noreply.github.com" };
+    expect(withGitCoAuthor("git commit -m x", { ...enabled, enabled: false })).toBe("git commit -m x");
+    const existing = 'git commit -m "x\\n\\nCo-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>"';
+    expect(withGitCoAuthor(existing, enabled)).toBe(existing);
+  });
   it("reads a text file with line ranges", async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, ".secret.txt"), "one\ntwo\nthree\n", "utf8");
