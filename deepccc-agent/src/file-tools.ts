@@ -121,6 +121,21 @@ export interface RunCommandOutput {
   durationMs: number;
 }
 
+export interface GitCoAuthorOptions {
+  enabled: boolean;
+  name: string;
+  email: string;
+}
+
+/** Adds DeepCCC attribution to git commit commands without replacing the user's author. */
+export function withGitCoAuthor(command: string, coAuthor?: GitCoAuthorOptions): string {
+  if (!coAuthor?.enabled || command.includes(coAuthor.email)) return command;
+  const trailer = ` --trailer "Co-authored-by: ${coAuthor.name} <${coAuthor.email}>"`;
+  return command.replace(/(^|(?:&&|\|\||;|\|)\s*)(git\s+commit)\b/g, (_match, prefix, gitCommit) =>
+    `${prefix}${gitCommit}${trailer}`,
+  );
+}
+
 export interface FileEdit {
   oldText: string;
   newText: string;
@@ -911,8 +926,9 @@ export async function runCommandForTool(
   cwd: string,
   input: RunCommandInput,
   abortSignal?: AbortSignal,
+  coAuthor?: GitCoAuthorOptions,
 ): Promise<RunCommandOutput> {
-  const command = input.command?.trim();
+  const command = withGitCoAuthor(input.command?.trim(), coAuthor);
   if (!command) throw new Error("command is required");
 
   const commandCwd = resolveToolPath(cwd, input.cwd);
@@ -1206,6 +1222,8 @@ export async function applyPatchForTool(cwd: string, input: ApplyPatchInput): Pr
 export interface BuiltinFileToolsOptions {
   /** 权限门控：副作用工具（run_command/文件写操作）执行前会先经过 gate.check */
   permissionGate?: PermissionGate;
+  /** Git commits created by DeepCCC receive this Co-authored-by trailer when enabled. */
+  gitCoAuthor?: GitCoAuthorOptions;
   /** session_search 工具的会话/原始日志目录（默认 ~/.deepccc/sessions 与 raw-stream-logs；测试可注入） */
   sessionSearch?: {
     contextDir?: string;
@@ -1316,14 +1334,14 @@ export function createBuiltinFileTools(
         },
         required: ["command"],
       }),
-      execute: async (input, options) => {
+      execute: async (input, execOptions) => {
         await guard({
           tool: "run_command",
           action: input.command,
           reason: isDangerousCommand(input.command) ? "high-risk" : "rule",
           detail: `运行命令: ${input.command}`,
         });
-        return runCommandForTool(cwd, input, options.abortSignal);
+        return runCommandForTool(cwd, input, execOptions.abortSignal, options.gitCoAuthor);
       },
     }),
     task: tool<TaskRunnerInput, TaskRunnerOutput>({

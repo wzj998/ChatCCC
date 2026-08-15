@@ -60,6 +60,7 @@
     "alternativeModel": "",
     "effort": "",
     "provider": "",
+    "gitCoAuthor": null,
     "compactionTimeoutMs": 300000,
     "contextWindow": 1048576
   },

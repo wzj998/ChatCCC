@@ -79,6 +79,13 @@ $env:DEEPCCC_STREAMING="true"
   "effort": "",
   "streaming": true,
   "contextWindow": 1048576,
+  "git": {
+    "coAuthor": {
+      "enabled": true,
+      "name": "DeepCCC",
+      "email": "20184052+wzj998@users.noreply.github.com"
+    }
+  },
   "rawStreamLogs": {
     "enabled": true,
     "maxBytesPerTurn": 1048576,
@@ -87,6 +94,11 @@ $env:DEEPCCC_STREAMING="true"
   }
 }
 ```
+
+`git.coAuthor.enabled` 默认开启。DeepCCC 通过 `run_command` 创建 Git 提交时会保留用户为
+主 Author，并追加 `Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>`。
+可设为 `false` 或用 `DEEPCCC_GIT_COAUTHOR=false` 全局关闭。ChatCCC 的
+`ccc.gitCoAuthor` 是三态 override：`null`/缺失跟随这里，`true` 强制开启，`false` 强制关闭。
 
 `provider` 可选 `openai` 或 `anthropic`，默认 `openai`，也可以通过
 `DEEPCCC_PROVIDER` 或命令行 `--provider` 覆盖：

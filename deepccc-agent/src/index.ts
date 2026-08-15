@@ -343,6 +343,8 @@ export interface ChatSessionOptions {
    * 调用）自动拒绝高危命令，常规文件操作与低危命令不受影响。
    */
   permissionResolver?: PermissionResolver;
+  /** Overrides ~/.deepccc/config.json git.coAuthor.enabled for this integration. */
+  gitCoAuthor?: boolean;
 }
 
 /**
@@ -389,6 +391,7 @@ export class ChatSession {
   private permissionMode: PermissionMode;
   private permissionResolver?: PermissionResolver;
   private permissionGate: PermissionGate;
+  private gitCoAuthorEnabled: boolean;
   private skillDirs: SkillDirSpec[];
   private customSystemPrompt: string;
   /** 最近一次 chat() 使用的 system prompt（供 history 等读取） */
@@ -482,6 +485,7 @@ export class ChatSession {
     this.customSystemPrompt = options.systemPrompt ?? "";
     this.permissionMode = options.permissionMode ?? "ask";
     this.permissionResolver = options.permissionResolver;
+    this.gitCoAuthorEnabled = options.gitCoAuthor ?? appConfig.git.coAuthor.enabled;
     // 技能目录在构造时确定；技能内容在每次 chat() 前重新扫描（mtime 热加载），
     // 因此创建/修改技能后下一次对话自动生效，无需重启。
     this.skillDirs =
@@ -599,6 +603,10 @@ export class ChatSession {
         tools: createBuiltinFileTools(this.cwd, {
           permissionGate: this.permissionGate,
           runTask: this.runTask,
+          gitCoAuthor: {
+            ...appConfig.git.coAuthor,
+            enabled: this.gitCoAuthorEnabled,
+          },
         }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,

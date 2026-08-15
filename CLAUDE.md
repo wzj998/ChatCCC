@@ -9,6 +9,7 @@
 - **`cmp` / `cmp all` 约定**：`cmp` → 执行 `cmt` 后 `git push`。`cmp all` → 执行 `cmt all` 后 `git push`
 - **避免 `undefined` 被当成 `false` 使用**：当函数成功时返回 `undefined`（如 `.catch(() => {})` 没有返回值、void 函数等），直接用 `if (result)` 会把成功当成失败。必须用显式比较，例如 `result !== false` 而非 `!result`
 - **公有仓库 PR 规则**：ChatCCC 仓库 dev → main 的 PR 必须使用 **merge commit**（Create a merge commit），**禁止 squash**。PR 合并通过 `gh pr merge` 时指定 `--merge`
+- **六步 PR/发布法**：1) `FeishuClauderPrivate/dev` 开发、测试、提交并推送；2) 私有仓 `dev → main` 创建并合并 PR；3) 用 `sync.mjs` 同步到公开 `ChatCCC/dev`；4) 公开仓 `dev → main` 创建 PR 并以 merge commit 合并；5) 用 `sync-deepccc.mjs` 将公开 ChatCCC 的 `deepccc-agent/` 同步到独立 `deepccc-agent/main`；6) 在独立仓测试、提交、推送并按需发布 npm。DeepCCC co-author 的全局配置归独立/内嵌内核，ChatCCC 只持有三态 override，私有仓负责两者的源开发与同步。
 - **`package.json` 编码红线**：文件开头**禁止 BOM**（部分工具如 tsx 的 `readPackageJson` 会解析失败导致闪退）。编辑后必须用 `node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"` 验证无 BOM 且 JSON 合法。写入时用 `utf8` 编码（不含 BOM），`engines.node` 直接用 `">=20"` 不要用 `>` 转义
 
 ## 日志位置

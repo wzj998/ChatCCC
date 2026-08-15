@@ -141,6 +141,8 @@ export interface CccConfig {
    * （~/.deepccc/config.json 的 provider 或 DEEPCCC_PROVIDER 环境变量）。
    */
   provider: CccProviderOverride;
+  /** null follows ~/.deepccc/config.json; boolean explicitly overrides it for ChatCCC. */
+  gitCoAuthor: boolean | null;
   /**
    * 上下文压缩（context compaction）单轮超时（毫秒），默认 300000（5 分钟）。
    * 压缩在回复生成前同步执行，超时过短会导致整轮对话失败，建议保持默认或调大。
@@ -523,6 +525,7 @@ function loadConfig(): AppConfig {
       alternativeModel: "",
       effort: "",
       provider: "",
+      gitCoAuthor: null,
       compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
       contextWindow: DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
     },
@@ -599,6 +602,7 @@ function loadConfig(): AppConfig {
       alternativeModel?: unknown;
       effort?: unknown;
       provider?: unknown;
+      gitCoAuthor?: unknown;
       compactionTimeoutMs?: unknown;
       contextWindow?: unknown;
     };
@@ -790,6 +794,7 @@ function loadConfig(): AppConfig {
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
       provider: normalizeCccProviderOverride(cccRaw.provider),
+      gitCoAuthor: typeof cccRaw.gitCoAuthor === "boolean" ? cccRaw.gitCoAuthor : null,
       compactionTimeoutMs: normalizePositiveInteger(
         cccRaw.compactionTimeoutMs,
         DEFAULT_CCC_COMPACTION_TIMEOUT_MS,

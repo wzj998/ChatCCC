@@ -1,6 +1,6 @@
 /**
  * 目录级确定性同步：chatccc 仓库内 deepccc-agent/ 子目录（唯一内核主战场）
- *   → F:\Users\weizhangjian\deepccc-agent（发布镜像仓库，保留 .git/remote）
+ *   → ~/deepccc-agent（发布镜像仓库，保留 .git/remote）
  *
  * 背景：deepccc-agent 是独立 npm 包（wzj998/deepccc-agent），内核代码以 chatccc
  * 仓库的 deepccc-agent/ 子目录为主战场（chatccc 运行时直接 import 子目录源码）。
@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)));
-const DST = "F:\\Users\\weizhangjian\\deepccc-agent";
+const DST = join(dirname(SRC), "deepccc-agent");
 const SUBDIR = "deepccc-agent";
 
 const CHECK_ONLY = process.argv.includes("--check");
@@ -61,7 +61,7 @@ if (ahead !== "0") {
 const behind = runGit(["rev-list", "--count", "main..origin/main"], DST)[0];
 if (behind !== "0") {
   console.log(`[WARN] deepccc-agent 本地 main 落后 origin/main ${behind} 个提交`);
-  console.log("       建议先: git -C F:/Users/weizhangjian/deepccc-agent merge --ff-only origin/main");
+  console.log(`       建议先: git -C ${DST} merge --ff-only origin/main`);
   console.log("");
 }
 
