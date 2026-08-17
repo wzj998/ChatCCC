@@ -28,7 +28,8 @@ export class BoardStoreError extends Error {
       | "main_agent_running"
       | "main_agent_unavailable"
       | "task_run_busy"
-      | "task_run_not_found",
+      | "task_run_not_found"
+      | "safe_maintenance_draining",
     message: string,
     public readonly status: number,
   ) {

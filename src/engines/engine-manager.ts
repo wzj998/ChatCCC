@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { isSafeMaintenanceAdmissionClosed } from "../safe-maintenance.ts";
 
 export type EngineId = string;
 export type EngineStepState = "pending" | "running" | "completed" | "failed";
@@ -170,6 +171,10 @@ export class EngineManager {
     return [...this.specs.values()];
   }
 
+  getActiveInstallIds(): string[] {
+    return [...this.activeInstalls.keys()].sort();
+  }
+
   getSpec(engineId: string): EngineSpec {
     const spec = this.specs.get(engineId);
     if (!spec) throw new Error(`Unknown engine: ${engineId}`);
@@ -204,6 +209,9 @@ export class EngineManager {
   async startInstall(engineId: string): Promise<EngineInstallJob> {
     const running = this.activeInstalls.get(engineId);
     if (running) return this.readJob(this.getSpec(engineId)).then((job) => job ?? this.newJob(this.getSpec(engineId)));
+    if (isSafeMaintenanceAdmissionClosed()) {
+      throw new Error("ChatCCC 正在等待安全维护，暂不接受新的依赖安装任务。");
+    }
 
     const spec = this.getSpec(engineId);
     const job = this.newJob(spec);

@@ -1,4 +1,5 @@
 import { isAgentTool, type AgentTool } from "../../agent-tool.ts";
+import { isExecutionTranscriptEntry, type ExecutionTranscriptEntry } from "../../execution-transcript.ts";
 
 export const TASK_RUN_SCHEMA_VERSION = 1 as const;
 
@@ -27,6 +28,8 @@ export interface TaskRun {
   startedAt?: string;
   stopRequestedAt?: string;
   finishedAt?: string;
+  /** Ordered prompt, reasoning, tool, and response events for this specific attempt. */
+  transcript?: ExecutionTranscriptEntry[];
   result?: string;
   error?: string;
 }
@@ -58,6 +61,9 @@ export function parseTaskRun(value: unknown): TaskRun {
   if (!isAgentTool(run.agentId)) throw new Error("Invalid task run Agent");
   for (const field of ["startedAt", "stopRequestedAt", "finishedAt", "result", "error"] as const) {
     if (run[field] !== undefined && typeof run[field] !== "string") throw new Error(`Invalid task run ${field}`);
+  }
+  if (run.transcript !== undefined && (!Array.isArray(run.transcript) || !run.transcript.every(isExecutionTranscriptEntry))) {
+    throw new Error("Invalid task run transcript");
   }
   return run as TaskRun;
 }

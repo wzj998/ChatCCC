@@ -165,7 +165,10 @@ export function buildHelpCard(
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
     "发送 **/usage** 查看当前 Agent 的用量或余额",
     "发送 **/restart** 重启 ChatCCC 进程",
+    "发送 **/restart safe** 等待现有任务完成后安全重启",
     "发送 **/update** 更新并重启（仅 npm 全局安装可用）",
+    "发送 **/update safe** 等待现有任务完成后安全更新",
+    "发送 **/safestatus** 查看安全维护状态，**/cancelsf** 取消等待中的预约",
     ABD_HELP_LINE,
   ].join("\n");
   return JSON.stringify({

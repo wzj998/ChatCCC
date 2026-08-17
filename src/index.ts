@@ -111,7 +111,12 @@ import {
   setQueueConsumer,
 } from "./session-chat-binding.ts";
 import { fixStaleStreamStates } from "./stream-state.ts";
-import { handleCommand, type PlatformAdapter } from "./orchestrator.ts";
+import {
+  configureSafeMaintenanceRuntime,
+  handleCommand,
+  recoverSafeMaintenanceAfterStartup,
+  type PlatformAdapter,
+} from "./orchestrator.ts";
 import { createWechatAdapter, startWechatPlatform } from "./wechat-platform.ts";
 import { handleCodexResetCardAction } from "./codex-reset-actions.ts";
 import { resolveFeishuCardActionChatType } from "./card-action-routing.ts";
@@ -177,12 +182,13 @@ function createFeishuAdapter(): PlatformAdapter {
 
 const feishuPlatform = createFeishuAdapter();
 const wechatPlatform = createWechatAdapter();
+configureSafeMaintenanceRuntime([feishuPlatform, wechatPlatform]);
 setSessionPlatform(feishuPlatform);
 configureAgentTeamMainAgent(feishuPlatform);
 
 // 注册队列消费回调：session 生成完成后自动处理缓存消息
 setQueueConsumer((platform, msg) => {
-  handleCommand(platform, msg.text, msg.chatId, msg.openId, msg.msgTimestamp, msg.chatType, msg.traceId).catch(err =>
+  handleCommand(platform, msg.text, msg.chatId, msg.openId, msg.msgTimestamp, msg.chatType, msg.traceId, undefined, true).catch(err =>
     console.error(`[${ts()}] Queue consume failed: ${(err as Error).message}`)
   );
 });
@@ -818,6 +824,7 @@ async function main(): Promise<void> {
     }
 
     installShutdownHandlers(simServer, serviceLifecycle);
+    await recoverSafeMaintenanceAfterStartup();
     return;
   }
 
@@ -874,6 +881,7 @@ async function main(): Promise<void> {
           });
           try {
             await startConfiguredPlatforms(httpServer, { failOnFeishuError: true });
+            await recoverSafeMaintenanceAfterStartup();
             return { ok: true };
           } catch (err) {
             appendStartupTrace("setup-activate: startConfiguredPlatforms failed", {
@@ -949,6 +957,7 @@ async function main(): Promise<void> {
   }
 
   await startConfiguredPlatforms(httpServer, { failOnFeishuError: false });
+  await recoverSafeMaintenanceAfterStartup();
 }
 
 /**

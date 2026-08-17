@@ -5,6 +5,7 @@ import { USER_DATA_DIR, ts } from "./config.ts";
 import { createAgentActivityTracker } from "./agent-activity.ts";
 import type { AgentActivity } from "./agent-activity.ts";
 import type { TerminalErrorInfo } from "./terminal-error.ts";
+import type { ExecutionTranscriptEntry } from "./execution-transcript.ts";
 
 // ---------------------------------------------------------------------------
 // stream-state.json — 每个 session 的流式输出持久化文件
@@ -20,6 +21,8 @@ export interface StreamState {
    *  命名含 "final" 但实为"全部累积文本"，并非仅"最终一段回复"。
    *  参见 session.ts 的 AccumulatorState 注释。 */
   finalReply: string;
+  /** Ordered, provider-neutral events for the current turn. */
+  transcript?: ExecutionTranscriptEntry[];
   /** Current user-visible work phase for running progress cards. */
   activity?: AgentActivity;
   /** The turn whose terminal text reply has already been delivered to IM. */
@@ -138,6 +141,7 @@ export function createEmptyStreamState(sessionId: string, cwd: string, tool: str
     status: "running",
     accumulatedContent: "",
     finalReply: "",
+    transcript: [],
     activity: createAgentActivityTracker(now).activity,
     chunkCount: 0,
     turnCount,

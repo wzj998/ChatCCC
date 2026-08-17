@@ -427,10 +427,16 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
 | `/ask <内容>` | 只读问答模式：与 /plan 相同，仅允许读文件和 stop-stuck-loop 请求 |
 | `/restart` | 重启机器人进程 |
+| `/restart safe` | 停止接受新任务，等待现有会话、缓存消息和依赖安装完成后重启 |
 | `/update` | 更新 npm 全局包并重启（仅限 `npm install -g chatccc` 安装的全局进程；同一飞书事件跨重启去重） |
+| `/update safe` | 停止接受新任务，排空现有工作后更新并重启 |
+| `/safestatus` | 查看安全重启/更新的等待状态 |
+| `/cancelsf` | 取消尚未开始执行的安全重启/更新预约 |
 | `/deleteg` | 解散当前飞书会话群；Agent 会话记录保留 |
 
-`/update` 会在执行 npm 更新前把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新 `/update` 因事件 ID 不同，仍可立即执行。该保护仅作用于 `/update`，普通消息与 `/restart` 的处理不变。
+`/update` 与 `/update safe` 会把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新更新指令因事件 ID 不同，仍可执行。该保护不改变普通消息与重启指令的处理方式。
+
+`/restart safe` 与 `/update safe` 会先建立全局准入门禁：指令到达前已经运行或进入单会话缓存队列的工作会继续完成，之后到达的新普通任务会被提示在维护完成后重发。维护任务持久化到 `~/.chatccc/state/safe-maintenance.json`，进程意外退出后可继续排空；依赖安装、会话收尾、自动恢复和 Agent Teams 执行也计入等待条件。内存缓存随重启自然重建，磁盘会话、看板、图片等持久数据不会被清理。
 
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex、CCC Agent 和 DSH 使用各自的 `model` / `alternativeModel`。
 

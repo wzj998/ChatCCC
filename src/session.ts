@@ -34,6 +34,10 @@ import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
 import type { ToolProcessInfo } from "./adapters/adapter-interface.ts";
+import {
+  appendExecutionTranscriptBlock,
+  type ExecutionTranscriptEntry,
+} from "./execution-transcript.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
@@ -933,6 +937,8 @@ export function _resetSessionRegistryFileForTest(): void {
 // accumulatedContent + finalReply 拼接后才是完整流式输出的全部内容。
 export interface AccumulatorState {
   accumulatedContent: string;
+  /** Full ordered events used by Agent Team task details. */
+  transcript?: ExecutionTranscriptEntry[];
   /** 本轮所有 text block 的累加（流式文本 delta），包括工具调用前后的全部文本 */
   finalText: string;
   /**
@@ -964,6 +970,11 @@ export function accumulateBlockContent(
   state: AccumulatorState,
   toolCallMap?: Map<string, { name: string; input: unknown }>,
 ): void {
+  if (state.transcript !== undefined || (block.type !== "agent_progress" && block.type !== "text_reset")) {
+    const transcriptState = { transcript: state.transcript ?? [] };
+    appendExecutionTranscriptBlock(block, transcriptState);
+    state.transcript = transcriptState.transcript;
+  }
   switch (block.type) {
     case "thinking":
       state.chunkCount++;
@@ -1546,6 +1557,7 @@ export async function runAgentSession(
 
   const state: AccumulatorState = {
     accumulatedContent: "",
+    transcript: [],
     finalText: "",
     finalCompleteText: "",
     chunkCount: 0,
@@ -1610,6 +1622,7 @@ export async function runAgentSession(
         status: "auto_ended",
         accumulatedContent: state.accumulatedContent,
         finalReply: pickFinalReply(state).trim(),
+        transcript: state.transcript,
         activity: activityTracker.activity,
         chunkCount: state.chunkCount,
         turnCount: nextTurnCount,
@@ -1732,6 +1745,7 @@ export async function runAgentSession(
           status: "running",
           accumulatedContent: state.accumulatedContent,
           finalReply: pickFinalReply(state),
+          transcript: state.transcript,
           activity: activityTracker.activity,
           chunkCount: state.chunkCount,
           turnCount: nextTurnCount,
@@ -1833,6 +1847,7 @@ export async function runAgentSession(
       status: finalStatus,
       accumulatedContent: state.accumulatedContent,
       finalReply: finalReplyToWrite,
+      transcript: state.transcript,
       activity: activityTracker.activity,
       chunkCount: state.chunkCount,
       turnCount: nextTurnCount,

@@ -9,6 +9,7 @@ import {
   type TaskExecutionRuntime,
 } from "../agent-team/application/task-execution-service.ts";
 import type { TaskRun, TaskRunRepository } from "../agent-team/domain/task-run.ts";
+import type { ExecutionTranscriptEntry } from "../execution-transcript.ts";
 import { JsonBoardRepository } from "../agent-team/repositories/json-board-repository.ts";
 import type { MainAgentBinding } from "../agent-team/repositories/main-agent-binding-repository.ts";
 import { JsonTaskRunRepository } from "../agent-team/repositories/json-task-run-repository.ts";
@@ -63,12 +64,16 @@ describe("Agent Team task execution", () => {
     });
 
     const repository = new MemoryTaskRunRepository();
-    let finish!: (value: { outcome: "done" | "stopped" | "error"; result?: string; error?: string }) => void;
-    let execution = new Promise<{ outcome: "done" | "stopped" | "error"; result?: string; error?: string }>((resolve) => {
+    type RuntimeResult = { outcome: "done" | "stopped" | "error"; result?: string; error?: string; transcript?: ExecutionTranscriptEntry[] };
+    let finish!: (value: RuntimeResult) => void;
+    let execution = new Promise<RuntimeResult>((resolve) => {
       finish = resolve;
     });
     const runtime: TaskExecutionRuntime = {
       run: vi.fn(() => execution),
+      getTranscript: vi.fn(async (): Promise<ExecutionTranscriptEntry[]> => [
+        { type: "tool_use", at: "2026-08-17T00:00:03.000Z", name: "read_file", toolUseId: "live-1", input: "README.md" },
+      ]),
       stop: vi.fn(() => true),
       isSessionRunning: vi.fn(() => false),
     };
@@ -106,7 +111,7 @@ describe("Agent Team task execution", () => {
       finish,
       resetExecution() {
         execution = new Promise((resolve) => { finish = resolve; });
-        return (value: { outcome: "done" | "stopped" | "error"; result?: string; error?: string }) => finish(value);
+        return (value: RuntimeResult) => finish(value);
       },
     };
   }
@@ -132,9 +137,19 @@ describe("Agent Team task execution", () => {
       prompt: expect.stringContaining("Implement task execution"),
     }));
 
-    finish({ outcome: "done", result: "Implemented and verified." });
+    finish({
+      outcome: "done",
+      result: "Implemented and verified.",
+      transcript: [
+        { type: "tool_use", at: "2026-08-17T00:00:03.000Z", name: "run_command", toolUseId: "tool-1", input: "npm test" },
+        { type: "tool_result", at: "2026-08-17T00:00:04.000Z", name: "run_command", toolUseId: "tool-1", output: "all passed" },
+        { type: "text", at: "2026-08-17T00:00:05.000Z", text: "Implemented and verified." },
+      ],
+    });
     const completed = await service.waitForRun("run-1");
     expect(completed).toMatchObject({ state: "succeeded", result: "Implemented and verified." });
+    expect(completed.transcript?.map((entry) => entry.type)).toEqual(["prompt", "tool_use", "tool_result", "text"]);
+    expect((await repository.get("run-1"))?.transcript).toEqual(completed.transcript);
     expect((await boardService.getBoard(board.boardId)).tasks.find((task) => task.id === "task-1")?.columnId).toBe("done");
     expect((await repository.get("run-1"))?.state).toBe("succeeded");
   });
@@ -149,6 +164,17 @@ describe("Agent Team task execution", () => {
 
     await expect(service.startTask(board.boardId, "task-2", first.board.revision))
       .rejects.toMatchObject({ code: "task_run_busy", status: 409 });
+  });
+
+  it("keeps run lists lightweight and returns the live transcript from the detail read", async () => {
+    const { board, repository, service } = await fixture();
+    const started = await service.startTask(board.boardId, "task-1", board.revision);
+
+    const listed = await service.listRuns(board.boardId);
+    expect(listed[0]?.transcript).toBeUndefined();
+    const detailed = await service.getRun(board.boardId, started.run.runId);
+    expect(detailed.transcript?.map((entry) => entry.type)).toEqual(["prompt", "tool_use"]);
+    expect((await repository.get(started.run.runId))?.transcript?.map((entry) => entry.type)).toEqual(["prompt"]);
   });
 
   it("stops a running task and leaves it On hold", async () => {
@@ -225,6 +251,10 @@ describe("Agent Team task execution", () => {
       sessionId: "session-main",
       createdAt: "2026-08-17T00:00:00.000Z",
       updatedAt: "2026-08-17T00:00:00.000Z",
+      transcript: [
+        { type: "prompt", at: "2026-08-17T00:00:00.000Z", text: "Run the task" },
+        { type: "tool_result", at: "2026-08-17T00:00:01.000Z", toolUseId: "tool-json", output: "complete output" },
+      ],
     };
 
     await repository.save(run);

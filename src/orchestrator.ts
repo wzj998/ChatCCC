@@ -89,6 +89,7 @@ import {
   recordLastActiveChat,
   enqueueMessage,
   cancelQueuedMessage,
+  getSessionDrainSnapshot,
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
@@ -97,8 +98,15 @@ import { applySharedPrefix } from "./shared-prefix.ts";
 import { cwdDisplayName, sessionChatName } from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
 import { acquireUpdateCommandGuard } from "./update-command-guard.ts";
-import { createInternalRestartEnv } from "./startup-lifecycle.ts";
+import { createInternalRestartEnv, INTERNAL_RESTART_ENV_VAR } from "./startup-lifecycle.ts";
 import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
+import { engineManager } from "./engines/engine-specs.ts";
+import {
+  beginSafeMaintenanceTrackedWork,
+  isSafeMaintenanceAdmissionClosed,
+  safeMaintenanceCoordinator,
+  type SafeMaintenanceRequester,
+} from "./safe-maintenance.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
@@ -727,11 +735,12 @@ function updLog(msg: string): void {
 }
 
 /** 同步更新 npm 全局包并 spawn 新进程重启。不依赖 systemd 或任何服务管理器。 */
-function syncUpdateAndRestart(): ChildProcess | undefined {
+function syncUpdateAndRestart(options: { spawnOnUpdateFailure?: boolean } = {}): ChildProcess | undefined {
   updLog(`sync update start, pid=${process.pid}`);
   appendStartupTrace("update: sync update start", { pid: process.pid });
 
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  let updateSucceeded = false;
 
   // 1. npm update
   updLog(`running: ${npmCmd} update -g chatccc`);
@@ -742,6 +751,7 @@ function syncUpdateAndRestart(): ChildProcess | undefined {
     const elapsed = Date.now() - t0;
     updLog(`npm update OK (${elapsed}ms): ${out.slice(0, 500)}`);
     appendStartupTrace("update: npm update OK", { elapsedMs: elapsed, outputLen: out.length });
+    updateSucceeded = true;
   } catch (e) {
     const elapsed = Date.now() - t0;
     const err = e as Error & { stderr?: string; stdout?: string; status?: number };
@@ -757,12 +767,19 @@ function syncUpdateAndRestart(): ChildProcess | undefined {
       const elapsed2 = Date.now() - t1;
       updLog(`npm install fallback OK (${elapsed2}ms): ${out2.slice(0, 500)}`);
       appendStartupTrace("update: npm install fallback OK", { elapsedMs: elapsed2, outputLen: out2.length });
+      updateSucceeded = true;
     } catch (e2) {
       const elapsed2 = Date.now() - t1;
       const err2 = e2 as Error & { stderr?: string; stdout?: string };
       updLog(`npm install fallback also failed (${elapsed2}ms): message=${err2.message}, stderr=${(err2.stderr || "").slice(0, 500)}`);
       appendStartupTrace("update: npm install fallback failed", { elapsedMs: elapsed2, message: err2.message });
     }
+  }
+
+  if (!updateSucceeded && options.spawnOnUpdateFailure === false) {
+    updLog("safe update aborted: both npm update and fallback install failed");
+    appendStartupTrace("update: safe update aborted before restart", {});
+    return undefined;
   }
 
   // 2. resolve bin path
@@ -945,6 +962,91 @@ export async function decideRestartParentExit(
   return true;
 }
 
+const safeMaintenancePlatforms = new Map<string, PlatformAdapter>();
+
+export function configureSafeMaintenanceRuntime(platforms: PlatformAdapter[]): void {
+  safeMaintenancePlatforms.clear();
+  for (const platform of platforms) {
+    if (platform.kind) safeMaintenancePlatforms.set(platform.kind, platform);
+  }
+  safeMaintenanceCoordinator.configure({
+    getSnapshot() {
+      const sessions = getSessionDrainSnapshot();
+      return {
+        ...sessions,
+        activeEngineIds: engineManager.getActiveInstallIds(),
+        activeWorkLabels: [],
+      };
+    },
+    execute(kind) {
+      return kind === "update" ? executeSafeUpdate() : executeSafeRestart();
+    },
+    async notify(requester, message) {
+      const platform = safeMaintenancePlatforms.get(requester.platform);
+      if (!platform) throw new Error(`Unavailable platform: ${requester.platform}`);
+      await platform.sendText(requester.chatId, message);
+    },
+  });
+}
+
+export function recoverSafeMaintenanceAfterStartup(): Promise<void> {
+  return safeMaintenanceCoordinator.recoverAfterStartup(
+    process.env[INTERNAL_RESTART_ENV_VAR] === "1",
+  );
+}
+
+async function executeSafeRestart(): Promise<boolean> {
+  fileLog.flush();
+  appendStartupTrace("safe-maintenance: restart spawn begin", { fromPid: process.pid });
+  const child = spawnRestartChild();
+  child.unref();
+  const shouldExit = await decideRestartParentExit(child, RESTART_CHILD_READY_MS);
+  if (!shouldExit) return false;
+  appendStartupTrace("safe-maintenance: restart parent exit", { childPid: child.pid });
+  process.exit(0);
+}
+
+async function executeSafeUpdate(): Promise<boolean> {
+  fileLog.flush();
+  appendStartupTrace("safe-maintenance: update begin", { fromPid: process.pid });
+  const child = syncUpdateAndRestart({ spawnOnUpdateFailure: false });
+  if (!child) return false;
+  child.unref();
+  const shouldExit = await decideRestartParentExit(child, RESTART_CHILD_READY_MS);
+  if (!shouldExit) return false;
+  appendStartupTrace("safe-maintenance: update parent exit", { childPid: child.pid });
+  process.exit(0);
+}
+
+function safeMaintenanceRequester(platform: PlatformAdapter, chatId: string, openId: string): SafeMaintenanceRequester {
+  return { platform: platform.kind ?? "feishu", chatId, openId };
+}
+
+function safeMaintenancePhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    draining: "等待现有任务结束",
+    executing: "正在执行维护",
+    completed: "已完成",
+    failed: "执行失败",
+  };
+  return labels[phase] ?? phase;
+}
+
+async function safeMaintenanceStatusText(): Promise<string> {
+  const status = await safeMaintenanceCoordinator.status();
+  if (!status.job) return "当前没有安全维护预约。";
+  const snapshot = status.snapshot;
+  return [
+    `安全维护：${status.job.kind === "update" ? "更新并重启" : "重启"}`,
+    `状态：${safeMaintenancePhaseLabel(status.job.phase)}`,
+    `执行中/收尾会话：${snapshot.activeSessionIds.length}`,
+    `已接受的缓存消息：${snapshot.queuedSessionIds.length}`,
+    `依赖安装任务：${snapshot.activeEngineIds.length}`,
+    `其他处理中入口：${Math.max(0, snapshot.activeWorkLabels.length - 1)}`,
+    ...(status.job.lastError ? [`错误：${status.job.lastError}`] : []),
+  ].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // handleCommand — 平台无关的命令分发
 // ---------------------------------------------------------------------------
@@ -958,12 +1060,45 @@ export async function handleCommand(
   chatType = "group",
   traceId?: string,
   commandId?: string,
+  acceptedBeforeSafeMaintenance = false,
+): Promise<void> {
+  const release = beginSafeMaintenanceTrackedWork(
+    acceptedBeforeSafeMaintenance ? "accepted-queued-message" : "chat-command",
+  );
+  try {
+    await handleCommandInternal(
+      platform,
+      text,
+      chatId,
+      openId,
+      msgTimestamp,
+      chatType,
+      traceId,
+      commandId,
+      acceptedBeforeSafeMaintenance,
+    );
+  } finally {
+    release();
+  }
+}
+
+async function handleCommandInternal(
+  platform: PlatformAdapter,
+  text: string,
+  chatId: string,
+  openId: string,
+  msgTimestamp: number,
+  chatType = "group",
+  traceId?: string,
+  commandId?: string,
+  acceptedBeforeSafeMaintenance = false,
 ): Promise<void> {
   const tid = traceId ?? makeTraceId();
   const sharedPrefix = applySharedPrefix(text);
   const promptText = sharedPrefix.text;
   text = sharedPrefix.body;
   const textLower = text.toLowerCase();
+  const normalizedCommandText = textLower.trim().replace(/\s+/g, " ");
   const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
   recordChatPlatform(chatId, platform);
   if (platform.kind === "feishu" && chatType === "p2p" && isValidFeishuOpenId(openId)) {
@@ -971,6 +1106,97 @@ export async function handleCommand(
     await feishuP2pContactStore.record({ openId, chatId, receivedAt }).catch((err) => {
       console.error(`[${ts()}] [AGENT-TEAM] Failed to remember Feishu private contact: ${(err as Error).message}`);
     });
+  }
+
+  if (isCommandText && normalizedCommandText === "/safestatus") {
+    logTrace(tid, "BRANCH", { cmd: "/safestatus" });
+    await platform.sendText(chatId, await safeMaintenanceStatusText()).catch(() => {});
+    logTrace(tid, "DONE", { outcome: "safe_maintenance_status" });
+    return;
+  }
+
+  if (isCommandText && normalizedCommandText === "/cancelsf") {
+    logTrace(tid, "BRANCH", { cmd: "/cancelsf" });
+    const canceled = await safeMaintenanceCoordinator.cancel();
+    if (!canceled) {
+      await platform.sendText(chatId, "当前没有可取消的安全维护预约；已经开始执行的维护也不能取消。").catch(() => {});
+    }
+    logTrace(tid, "DONE", { outcome: canceled ? "safe_maintenance_canceled" : "safe_maintenance_cancel_unavailable" });
+    return;
+  }
+
+  if (isCommandText && normalizedCommandText === "/restart safe") {
+    logTrace(tid, "BRANCH", { cmd: "/restart safe" });
+    try {
+      const job = await safeMaintenanceCoordinator.schedule(
+        "restart",
+        safeMaintenanceRequester(platform, chatId, openId),
+      );
+      await platform.sendText(
+        chatId,
+        job.phase === "executing"
+          ? "安全维护已经开始执行，无法重复预约。"
+          : job.kind === "update"
+            ? "已经存在优先级更高的安全更新预约，将继续等待现有任务完成。发送 /safestatus 查看状态，/cancelsf 取消预约。"
+            : "已预约安全重启。现有会话、缓存消息和依赖安装会先自然完成；现在起不再接受新的普通任务。发送 /safestatus 查看状态，/cancelsf 取消预约。",
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "safe_restart_scheduled", jobId: job.jobId });
+    } catch (error) {
+      await platform.sendText(chatId, `安全重启预约失败：${(error as Error).message}`).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "safe_restart_schedule_failed", error: (error as Error).message });
+    }
+    return;
+  }
+
+  if (isCommandText && normalizedCommandText === "/update safe") {
+    logTrace(tid, "BRANCH", { cmd: "/update safe" });
+    const isGlobal = isRunningFromGlobalNpm();
+    if (!isGlobal) {
+      await platform.sendText(chatId, "当前进程非 npm 全局安装，无法使用 /update safe。请通过 npm install -g chatccc 安装后使用。").catch(() => {});
+      logTrace(tid, "DONE", { outcome: "safe_update_not_global" });
+      return;
+    }
+    const updateGuard = acquireUpdateCommandGuard({ commandId });
+    if (!updateGuard.allowed) {
+      if (updateGuard.reason !== "duplicate_id") {
+        await platform.sendText(chatId, "无法写入更新保护状态。为避免连续更新和重启，本次 /update safe 未预约。").catch(() => {});
+      }
+      logTrace(tid, "DONE", { outcome: updateGuard.reason === "duplicate_id" ? "safe_update_duplicate_id" : "safe_update_guard_failed" });
+      return;
+    }
+    try {
+      const job = await safeMaintenanceCoordinator.schedule(
+        "update",
+        safeMaintenanceRequester(platform, chatId, openId),
+      );
+      await platform.sendText(
+        chatId,
+        job.phase === "executing"
+          ? "安全维护已经开始执行，无法重复预约。"
+          : "已预约安全更新。现有会话、缓存消息和依赖安装会先自然完成；现在起不再接受新的普通任务。发送 /safestatus 查看状态，/cancelsf 取消预约。",
+      ).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "safe_update_scheduled", jobId: job.jobId });
+    } catch (error) {
+      await platform.sendText(chatId, `安全更新预约失败：${(error as Error).message}`).catch(() => {});
+      logTrace(tid, "DONE", { outcome: "safe_update_schedule_failed", error: (error as Error).message });
+    }
+    return;
+  }
+
+  const maintenanceAllowedCommands = new Set([
+    "/stop", "/cancel", "/state", "/sessions", "/usage", "/safestatus", "/cancelsf", "/restart", "/update", "/reload", "/help",
+  ]);
+  if (
+    isSafeMaintenanceAdmissionClosed()
+    && !acceptedBeforeSafeMaintenance
+    && (!isCommandText || !maintenanceAllowedCommands.has(normalizedCommandText))
+  ) {
+    await platform.sendText(
+      chatId,
+      "ChatCCC 正在等待安全重启或更新，当前不接受新的任务。请在维护完成后重新发送；可用 /safestatus 查看状态。",
+    ).catch(() => {});
+    logTrace(tid, "DONE", { outcome: "safe_maintenance_admission_closed" });
+    return;
   }
 
   if (isCommandText && textLower === "/reload") {
@@ -996,6 +1222,13 @@ export async function handleCommand(
 
   if (isCommandText && textLower === "/restart") {
     logTrace(tid, "BRANCH", { cmd: "/restart" });
+    const safeStatus = await safeMaintenanceCoordinator.status();
+    if (safeStatus.job?.phase === "executing") {
+      await platform.sendText(chatId, "安全维护已经开始执行，请勿重复重启。").catch(() => {});
+      logTrace(tid, "DONE", { outcome: "restart_blocked_by_executing_safe_maintenance" });
+      return;
+    }
+    if (safeStatus.job?.phase === "draining") await safeMaintenanceCoordinator.cancel(false);
     await platform.sendText(chatId, "重启中...请几秒后发消息唤醒我").catch(() => {});
     logTrace(tid, "DONE", { outcome: "restart" });
 
@@ -1015,6 +1248,12 @@ export async function handleCommand(
 
   if (isCommandText && textLower === "/update") {
     logTrace(tid, "BRANCH", { cmd: "/update" });
+    const safeStatus = await safeMaintenanceCoordinator.status();
+    if (safeStatus.job?.phase === "executing") {
+      await platform.sendText(chatId, "安全维护已经开始执行，请勿重复更新。").catch(() => {});
+      logTrace(tid, "DONE", { outcome: "update_blocked_by_executing_safe_maintenance" });
+      return;
+    }
     const isGlobal = isRunningFromGlobalNpm();
     appendStartupTrace("update: command received", { isGlobal, chatId });
     if (!isGlobal) {
@@ -1045,6 +1284,8 @@ export async function handleCommand(
       logTrace(tid, "DONE", { outcome: "update_guard_write_failed" });
       return;
     }
+
+    if (safeStatus.job?.phase === "draining") await safeMaintenanceCoordinator.cancel(false);
 
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
     logTrace(tid, "DONE", { outcome: "update" });

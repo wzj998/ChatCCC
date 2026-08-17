@@ -238,6 +238,24 @@ export interface QueuedMessage {
 
 export const queuedMessages = new Map<string, QueuedMessage>();
 
+export interface SessionDrainSnapshot {
+  activeSessionIds: string[];
+  queuedSessionIds: string[];
+}
+
+/** Includes prompt execution, finalization, auto-recovery reservations, and accepted queues. */
+export function getSessionDrainSnapshot(): SessionDrainSnapshot {
+  const active = new Set<string>([
+    ...activePrompts.keys(),
+    ...finalizingSessions,
+    ...autoRecoveryReservations,
+  ]);
+  return {
+    activeSessionIds: [...active].sort(),
+    queuedSessionIds: [...queuedMessages.keys()].sort(),
+  };
+}
+
 export function enqueueMessage(sessionId: string, msg: QueuedMessage): boolean {
   if (queuedMessages.has(sessionId)) return false;
   queuedMessages.set(sessionId, msg);
