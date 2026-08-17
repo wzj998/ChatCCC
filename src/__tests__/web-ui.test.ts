@@ -60,6 +60,10 @@ describe("Agent Team page", () => {
     expect(AGENT_TEAM_PAGE_HTML).toContain("功能尚未实现");
     expect(AGENT_TEAM_PAGE_HTML).toContain("是否为这个路径新建看板");
     expect(AGENT_TEAM_PAGE_HTML).toContain('id="main-agent"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="save-main-agent" class="primary" disabled>设置为主 Agent</button>');
+    expect(AGENT_TEAM_PAGE_HTML).toContain("mainAgentButton.textContent='设置为主 Agent'");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("mainAgentButton.textContent='保存'");
+    expect(AGENT_TEAM_PAGE_HTML).toContain(".main-agent-controls button{min-width:120px;white-space:nowrap}");
     expect(AGENT_TEAM_PAGE_HTML).toContain("/main-agent");
     expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/feishu-contact");
     expect(AGENT_TEAM_PAGE_HTML).toContain("请先给飞书机器人私聊发送任意消息");
