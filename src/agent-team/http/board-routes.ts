@@ -4,6 +4,7 @@ import { AGENT_TOOL_OPTIONS, isAgentTool } from "../../agent-tool.ts";
 import { readUtf8JsonBody } from "../../agent-rpc-body.ts";
 import { BoardService } from "../application/board-service.ts";
 import type { MainAgentService } from "../application/main-agent-service.ts";
+import type { TaskExecutionService } from "../application/task-execution-service.ts";
 import { NodeFilesystemBrowser, type FilesystemBrowser } from "../infrastructure/filesystem-browser.ts";
 import { JsonBoardRepository } from "../repositories/json-board-repository.ts";
 import { BoardStoreError } from "../repositories/board-repository.ts";
@@ -14,6 +15,7 @@ const MAX_REQUEST_BYTES = 256 * 1024;
 export interface AgentTeamRequestHandlerOptions {
   service: BoardService;
   mainAgentService?: MainAgentRequestService | (() => MainAgentRequestService | null);
+  taskExecutionService?: TaskExecutionRequestService | (() => TaskExecutionRequestService | null);
   defaultWorkspace?: string;
   filesystemBrowser?: FilesystemBrowser;
 }
@@ -23,12 +25,21 @@ export type MainAgentRequestService = Pick<
   "getContact" | "getBinding" | "setPrimaryAgent" | "relinkWorkspace"
 >;
 
+export type TaskExecutionRequestService = Pick<
+  TaskExecutionService,
+  "listRuns" | "startTask" | "stopRun"
+>;
+
 export function createAgentTeamRequestHandler(options: AgentTeamRequestHandlerOptions) {
   const defaultWorkspace = options.defaultWorkspace ?? process.cwd();
   const filesystemBrowser = options.filesystemBrowser ?? new NodeFilesystemBrowser({ defaultDirectory: defaultWorkspace });
   const mainAgentService = (): MainAgentRequestService | null => {
     if (typeof options.mainAgentService === "function") return options.mainAgentService();
     return options.mainAgentService ?? null;
+  };
+  const taskExecutionService = (): TaskExecutionRequestService | null => {
+    if (typeof options.taskExecutionService === "function") return options.taskExecutionService();
+    return options.taskExecutionService ?? null;
   };
 
   return async function handleAgentTeamRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
@@ -131,6 +142,36 @@ export function createAgentTeamRequestHandler(options: AgentTeamRequestHandlerOp
         return true;
       }
 
+      const runsMatch = pathname.match(/^\/api\/agent-team\/boards\/([^/]+)\/runs$/);
+      if (runsMatch && method === "GET") {
+        const runs = await requireTaskExecutionService(taskExecutionService())
+          .listRuns(decodeURIComponent(runsMatch[1]));
+        jsonReply(res, 200, { ok: true, runs });
+        return true;
+      }
+
+      const runTaskMatch = pathname.match(/^\/api\/agent-team\/boards\/([^/]+)\/tasks\/([^/]+)\/run$/);
+      if (runTaskMatch && method === "POST") {
+        const body = await bodyJson<Record<string, unknown>>(req);
+        const result = await requireTaskExecutionService(taskExecutionService()).startTask(
+          decodeURIComponent(runTaskMatch[1]),
+          decodeURIComponent(runTaskMatch[2]),
+          revisionField(body.expectedRevision),
+        );
+        jsonReply(res, 202, { ok: true, ...result });
+        return true;
+      }
+
+      const stopRunMatch = pathname.match(/^\/api\/agent-team\/boards\/([^/]+)\/runs\/([^/]+)\/stop$/);
+      if (stopRunMatch && method === "POST") {
+        const run = await requireTaskExecutionService(taskExecutionService()).stopRun(
+          decodeURIComponent(stopRunMatch[1]),
+          decodeURIComponent(stopRunMatch[2]),
+        );
+        jsonReply(res, 200, { ok: true, run });
+        return true;
+      }
+
       const tasksMatch = pathname.match(/^\/api\/agent-team\/boards\/([^/]+)\/tasks$/);
       if (tasksMatch && method === "POST") {
         const body = await bodyJson<Record<string, unknown>>(req);
@@ -188,18 +229,31 @@ export function createAgentTeamRequestHandler(options: AgentTeamRequestHandlerOp
 
 export const defaultAgentTeamBoardService = new BoardService(new JsonBoardRepository());
 let defaultMainAgentService: MainAgentRequestService | null = null;
+let defaultTaskExecutionService: TaskExecutionRequestService | null = null;
 export const handleAgentTeamRequest = createAgentTeamRequestHandler({
   service: defaultAgentTeamBoardService,
   mainAgentService: () => defaultMainAgentService,
+  taskExecutionService: () => defaultTaskExecutionService,
 });
 
 export function setDefaultAgentTeamMainAgentService(service: MainAgentRequestService | null): void {
   defaultMainAgentService = service;
 }
 
+export function setDefaultAgentTeamTaskExecutionService(service: TaskExecutionRequestService | null): void {
+  defaultTaskExecutionService = service;
+}
+
 function requireMainAgentService(service: MainAgentRequestService | null): MainAgentRequestService {
   if (!service) {
     throw new BoardStoreError("main_agent_unavailable", "飞书主 Agent 服务尚未启动", 503);
+  }
+  return service;
+}
+
+function requireTaskExecutionService(service: TaskExecutionRequestService | null): TaskExecutionRequestService {
+  if (!service) {
+    throw new BoardStoreError("main_agent_unavailable", "主 Agent 任务执行服务尚未启动", 503);
   }
   return service;
 }

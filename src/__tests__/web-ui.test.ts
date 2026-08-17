@@ -40,6 +40,10 @@ describe("Agent Team page", () => {
     expect(AGENT_TEAM_PAGE_HTML).toContain("Doing");
     expect(AGENT_TEAM_PAGE_HTML).toContain("Done");
     expect(AGENT_TEAM_PAGE_HTML).toContain("搁置");
+    const columnAddButtons = AGENT_TEAM_PAGE_HTML.match(/class="column-add" data-add="[^"]+"[^>]*>＋<\/button>/g) ?? [];
+    expect(columnAddButtons).toHaveLength(5);
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("＋ 添加任务");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain('class="add" data-add=');
     expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/open");
     expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/lookup");
     expect(AGENT_TEAM_PAGE_HTML).not.toContain('id="open"');
@@ -59,13 +63,29 @@ describe("Agent Team page", () => {
     expect(AGENT_TEAM_PAGE_HTML).toContain("/main-agent");
     expect(AGENT_TEAM_PAGE_HTML).toContain("/api/agent-team/feishu-contact");
     expect(AGENT_TEAM_PAGE_HTML).toContain("请先给飞书机器人私聊发送任意消息");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("交给主 Agent");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/runs");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/run'");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("/stop'");
     expect(AGENT_TEAM_PAGE_HTML).toContain("draggable");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("del.textContent='删除'");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("card.addEventListener('click'");
+    expect(AGENT_TEAM_PAGE_HTML).not.toContain("card.addEventListener('dblclick'");
   });
 
   it("keeps the embedded Agent Team script syntactically valid", () => {
     const script = AGENT_TEAM_PAGE_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
+  });
+
+  it("derives the project short name from Windows and POSIX paths", () => {
+    const helperSource = AGENT_TEAM_PAGE_HTML.match(/function workspaceShortName\([^\n]+/)?.[0];
+    expect(helperSource).toBeTruthy();
+    const workspaceShortName = new Function(`${helperSource}; return workspaceShortName;`)() as (path: string) => string;
+
+    expect(workspaceShortName("C:\\work\\chatccc")).toBe("chatccc");
+    expect(workspaceShortName("/work/chatccc")).toBe("chatccc");
   });
 
   it("serves the Agent Team page from its own route", async () => {

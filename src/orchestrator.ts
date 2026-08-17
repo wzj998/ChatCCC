@@ -102,7 +102,10 @@ import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
 export { type PlatformAdapter } from "./platform-adapter.ts";
 import type { ChatAvatarUsageHints, PlatformAdapter } from "./platform-adapter.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
-import { feishuP2pContactStore } from "./agent-team/repositories/feishu-p2p-contact-store.ts";
+import {
+  feishuP2pContactStore,
+  isValidFeishuOpenId,
+} from "./agent-team/repositories/feishu-p2p-contact-store.ts";
 
 // ---------------------------------------------------------------------------
 // 辅助函数
@@ -963,7 +966,7 @@ export async function handleCommand(
   const textLower = text.toLowerCase();
   const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
   recordChatPlatform(chatId, platform);
-  if (platform.kind === "feishu" && chatType === "p2p" && openId) {
+  if (platform.kind === "feishu" && chatType === "p2p" && isValidFeishuOpenId(openId)) {
     const receivedAt = Number.isFinite(msgTimestamp) ? new Date(msgTimestamp).toISOString() : new Date().toISOString();
     await feishuP2pContactStore.record({ openId, chatId, receivedAt }).catch((err) => {
       console.error(`[${ts()}] [AGENT-TEAM] Failed to remember Feishu private contact: ${(err as Error).message}`);

@@ -26,7 +26,9 @@ export class BoardStoreError extends Error {
       | "storage_error"
       | "feishu_dm_required"
       | "main_agent_running"
-      | "main_agent_unavailable",
+      | "main_agent_unavailable"
+      | "task_run_busy"
+      | "task_run_not_found",
     message: string,
     public readonly status: number,
   ) {

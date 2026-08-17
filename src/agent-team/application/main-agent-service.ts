@@ -3,7 +3,10 @@ import { isAgentTool } from "../../agent-tool.ts";
 import type { PlatformAdapter } from "../../platform-adapter.ts";
 import { sessionChatName } from "../../session-name.ts";
 import type { Board } from "../domain/board.ts";
-import type { FeishuP2pContactStore } from "../repositories/feishu-p2p-contact-store.ts";
+import {
+  isValidFeishuOpenId,
+  type FeishuP2pContactStore,
+} from "../repositories/feishu-p2p-contact-store.ts";
 import type {
   JsonMainAgentBindingRepository,
   MainAgentBinding,
@@ -107,9 +110,15 @@ export class MainAgentService {
       return { board: savedBoard, binding: existing };
     }
 
-    const contact = existing?.ownerOpenId
+    const latestContact = await this.options.contactStore.get();
+    const existingOwner = isValidFeishuOpenId(existing?.ownerOpenId)
       ? { openId: existing.ownerOpenId }
-      : await this.options.contactStore.get();
+      : null;
+    // A failed/provisioning binding may contain a stale simulator identity. On retry,
+    // prefer the most recent real private-message sender; ready bindings keep ownership stable.
+    const contact = existing?.status === "ready"
+      ? existingOwner ?? latestContact
+      : latestContact ?? existingOwner;
     if (!contact) {
       throw new BoardStoreError(
         "feishu_dm_required",
