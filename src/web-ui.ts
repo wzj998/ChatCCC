@@ -23,6 +23,7 @@ import {
   openWebUiInDefaultBrowser,
 } from "./startup-lifecycle.ts";
 import { engineManager } from "./engines/engine-specs.ts";
+import { isSafeMaintenanceAdmissionClosed } from "./safe-maintenance.ts";
 
 const PROJECT_ROOT = CHATCCC_PACKAGE_ROOT;
 const USER_DATA_DIR = join(homedir(), ".chatccc");
@@ -694,6 +695,10 @@ async function handleEngineStatus(engineId: string, res: ServerResponse): Promis
 }
 
 async function handleEngineInstall(engineId: string, res: ServerResponse): Promise<void> {
+  if (isSafeMaintenanceAdmissionClosed()) {
+    jsonReply(res, 409, { ok: false, error: "ChatCCC 正在等待安全维护，暂不接受新的依赖安装任务。" });
+    return;
+  }
   try {
     jsonReply(res, 202, { ok: true, job: await engineManager.startInstall(engineId) });
   } catch (err) {

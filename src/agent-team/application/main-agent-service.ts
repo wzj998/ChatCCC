@@ -13,6 +13,10 @@ import type {
 } from "../repositories/main-agent-binding-repository.ts";
 import { BoardStoreError } from "../repositories/board-repository.ts";
 import type { BoardService } from "./board-service.ts";
+import {
+  beginSafeMaintenanceTrackedWork,
+  isSafeMaintenanceAdmissionClosed,
+} from "../../safe-maintenance.ts";
 
 export interface MainAgentBindSessionInput {
   chatId: string;
@@ -61,9 +65,13 @@ export class MainAgentService {
   }
 
   setPrimaryAgent(projectId: string, agentId: AgentTool, expectedRevision: number): Promise<MainAgentProjectResult> {
+    if (isSafeMaintenanceAdmissionClosed()) {
+      throw new BoardStoreError("safe_maintenance_draining", "ChatCCC 正在等待安全维护，暂不接受新的主 Agent 设置。", 409);
+    }
     if (!isAgentTool(agentId)) {
       throw new BoardStoreError("invalid_request", `Unsupported primary Agent: ${String(agentId)}`, 400);
     }
+    const release = beginSafeMaintenanceTrackedWork("agent-team-main-agent");
     return this.exclusive(projectId, async () => {
       const board = await this.options.boardService.getBoard(projectId);
       if (board.revision !== expectedRevision) {
@@ -74,10 +82,14 @@ export class MainAgentService {
         );
       }
       return this.provision(board, agentId, false);
-    });
+    }).finally(release);
   }
 
   relinkWorkspace(projectId: string, workspacePath: string, expectedRevision: number): Promise<MainAgentProjectResult | { board: Board; binding: null }> {
+    if (isSafeMaintenanceAdmissionClosed()) {
+      throw new BoardStoreError("safe_maintenance_draining", "ChatCCC 正在等待安全维护，暂不接受目录重新关联。", 409);
+    }
+    const release = beginSafeMaintenanceTrackedWork("agent-team-relink");
     return this.exclusive(projectId, async () => {
       const existing = await this.options.bindingRepository.get(projectId);
       const currentSessionId = existing ? (await this.resolveCurrentSession(existing)).sessionId : null;
@@ -87,7 +99,7 @@ export class MainAgentService {
       const board = await this.options.boardService.relinkWorkspace(projectId, workspacePath, expectedRevision);
       if (!existing || !board.primaryAgentId) return { board, binding: null };
       return this.provision(board, board.primaryAgentId, true);
-    });
+    }).finally(release);
   }
 
   private async provision(board: Board, agentId: AgentTool, forceNewSession: boolean): Promise<MainAgentProjectResult> {

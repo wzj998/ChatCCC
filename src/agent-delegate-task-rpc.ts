@@ -6,6 +6,10 @@ import { readUtf8JsonBody } from "./agent-rpc-body.ts";
 import { delegateAgentTask } from "./agent-delegate-task.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
+import {
+  beginSafeMaintenanceTrackedWork,
+  isSafeMaintenanceAdmissionClosed,
+} from "./safe-maintenance.ts";
 
 export const AGENT_DELEGATE_TASK_PATH = "/api/agent/delegate-task";
 
@@ -108,6 +112,12 @@ export async function handleAgentDelegateTaskRequest(
   }
 
   try {
+    if (isSafeMaintenanceAdmissionClosed()) {
+      jsonReply(res, 409, { ok: false, error: "ChatCCC 正在等待安全维护，暂不接受新的委派任务。" });
+      return true;
+    }
+    const release = beginSafeMaintenanceTrackedWork("agent-delegate-task");
+    try {
     const result = await delegateAgentTask({
       platform,
       tool,
@@ -123,6 +133,9 @@ export async function handleAgentDelegateTaskRequest(
       tool: result.tool,
       cwd: result.cwd,
     });
+    } finally {
+      release();
+    }
   } catch (err) {
     jsonReply(res, 500, { ok: false, error: (err as Error).message });
   }

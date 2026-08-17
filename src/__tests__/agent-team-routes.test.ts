@@ -189,6 +189,10 @@ describe("Agent Team board HTTP API", () => {
     let currentBoard: Awaited<ReturnType<BoardService["openWorkspace"]>> | null = null;
     const taskService: TaskExecutionRequestService = {
       listRuns: async () => [run],
+      getRun: async () => ({
+        ...run,
+        transcript: [{ type: "text", at: "2026-08-17T00:00:01.000Z", text: "live output" }],
+      }),
       startTask: async (_projectId, _taskId, _expectedRevision) => {
         calls.push("start");
         return { board: currentBoard!, run };
@@ -211,6 +215,9 @@ describe("Agent Team board HTTP API", () => {
 
     const listed = await fetch(`${base}/api/agent-team/boards/${currentBoard.boardId}/runs`).then((response) => response.json());
     expect(listed.runs).toHaveLength(1);
+
+    const detailed = await fetch(`${base}/api/agent-team/boards/${currentBoard.boardId}/runs/run-1`).then((response) => response.json());
+    expect(detailed.run.transcript[0].text).toBe("live output");
 
     const stop = await fetch(`${base}/api/agent-team/boards/${currentBoard.boardId}/runs/run-1/stop`, {
       method: "POST",

@@ -75,6 +75,12 @@ describe("Agent Team page", () => {
     expect(AGENT_TEAM_PAGE_HTML).toContain("del.textContent='删除'");
     expect(AGENT_TEAM_PAGE_HTML).toContain("card.addEventListener('click'");
     expect(AGENT_TEAM_PAGE_HTML).not.toContain("card.addEventListener('dblclick'");
+    expect(AGENT_TEAM_PAGE_HTML).toContain('class="modal task-detail-modal"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('class="task-detail-scroll"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="task-execution-details"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain("function renderTaskExecution(task,run)");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("run.transcript");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("if(!dragged)showEdit(task)");
   });
 
   it("keeps the embedded Agent Team script syntactically valid", () => {

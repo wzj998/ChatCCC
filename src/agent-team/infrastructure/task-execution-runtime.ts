@@ -22,9 +22,13 @@ export function createTaskExecutionRuntime(platform: PlatformAdapter): TaskExecu
       }
       return {
         outcome,
+        ...(stream?.transcript?.length ? { transcript: stream.transcript } : {}),
         ...(stream?.finalReply ? { result: stream.finalReply } : {}),
         ...(stream?.terminalError?.message ? { error: stream.terminalError.message } : {}),
       };
+    },
+    async getTranscript(sessionId) {
+      return (await readStreamState(sessionId))?.transcript ?? [];
     },
     stop: stopSession,
     isSessionRunning,

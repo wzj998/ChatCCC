@@ -1,16 +1,22 @@
 import { randomUUID } from "node:crypto";
 
 import type { AgentTool } from "../../agent-tool.ts";
+import type { ExecutionTranscriptEntry } from "../../execution-transcript.ts";
 import type { Board, BoardTask } from "../domain/board.ts";
 import { isActiveTaskRun, type TaskRun, type TaskRunRepository } from "../domain/task-run.ts";
 import type { MainAgentBinding } from "../repositories/main-agent-binding-repository.ts";
 import { BoardStoreError } from "../repositories/board-repository.ts";
 import type { BoardService } from "./board-service.ts";
+import {
+  beginSafeMaintenanceTrackedWork,
+  isSafeMaintenanceAdmissionClosed,
+} from "../../safe-maintenance.ts";
 
 export interface TaskExecutionResult {
   outcome: "done" | "stopped" | "error" | "auto_ended";
   result?: string;
   error?: string;
+  transcript?: ExecutionTranscriptEntry[];
 }
 
 export interface TaskExecutionRuntime {
@@ -21,6 +27,7 @@ export interface TaskExecutionRuntime {
     prompt: string;
     traceId: string;
   }): Promise<TaskExecutionResult>;
+  getTranscript?(sessionId: string): Promise<ExecutionTranscriptEntry[]>;
   stop(sessionId: string): boolean;
   isSessionRunning(sessionId: string): boolean;
 }
@@ -50,11 +57,26 @@ export class TaskExecutionService {
     this.idFactory = options.idFactory ?? randomUUID;
   }
 
-  listRuns(projectId: string): Promise<TaskRun[]> {
-    return this.options.repository.listByProject(projectId);
+  async listRuns(projectId: string): Promise<TaskRun[]> {
+    const runs = await this.options.repository.listByProject(projectId);
+    return runs.map(withoutTranscript);
+  }
+
+  async getRun(projectId: string, runId: string): Promise<TaskRun> {
+    const run = await this.options.repository.get(runId);
+    if (!run || run.projectId !== projectId) {
+      throw new BoardStoreError("task_run_not_found", "找不到这次任务执行记录", 404);
+    }
+    if (!isActiveTaskRun(run) || !this.options.runtime.getTranscript) return run;
+    const live = await this.options.runtime.getTranscript(run.sessionId).catch(() => []);
+    return live.length ? { ...run, transcript: mergeTranscript(run.transcript, live) } : run;
   }
 
   async startTask(projectId: string, taskId: string, expectedRevision: number): Promise<StartTaskResult> {
+    if (isSafeMaintenanceAdmissionClosed()) {
+      throw new BoardStoreError("safe_maintenance_draining", "ChatCCC 正在等待安全维护，暂不接受新的 Agent Team 任务。", 409);
+    }
+    const release = beginSafeMaintenanceTrackedWork("agent-team-task-start");
     return this.exclusive(projectId, async () => {
       let board = await this.options.boardService.getBoard(projectId);
       const active = (await this.options.repository.listByProject(projectId)).find(isActiveTaskRun);
@@ -97,6 +119,10 @@ export class TaskExecutionService {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
+      run = {
+        ...run,
+        transcript: [{ type: "prompt", at: timestamp, text: taskPrompt(run) }],
+      };
       await this.options.repository.save(run);
 
       try {
@@ -124,7 +150,7 @@ export class TaskExecutionService {
         console.error(`[Agent Team] Task run ${run.runId} failed to persist its terminal state: ${(err as Error).message}`);
       });
       return { board, run };
-    });
+    }).finally(release);
   }
 
   async stopRun(projectId: string, runId: string): Promise<TaskRun> {
@@ -169,14 +195,15 @@ export class TaskExecutionService {
         prompt: taskPrompt(run),
       });
       if (result.outcome === "done") {
-        return this.finishRun(run, "succeeded", { result: result.result, moveTask: true });
+        return this.finishRun(run, "succeeded", { result: result.result, transcript: result.transcript, moveTask: true });
       }
       if (result.outcome === "stopped") {
-        return this.finishRun(run, "canceled", { error: result.error, moveTask: true });
+        return this.finishRun(run, "canceled", { error: result.error, transcript: result.transcript, moveTask: true });
       }
       return this.finishRun(run, "failed", {
         error: result.error || (result.outcome === "auto_ended" ? "Agent response timed out" : "Agent execution failed"),
         result: result.result,
+        transcript: result.transcript,
         moveTask: true,
       });
     } catch (err) {
@@ -187,7 +214,7 @@ export class TaskExecutionService {
   private async finishRun(
     run: TaskRun,
     state: Extract<TaskRun["state"], "succeeded" | "failed" | "canceled" | "interrupted">,
-    details: { result?: string; error?: string; moveTask?: boolean } = {},
+    details: { result?: string; error?: string; transcript?: ExecutionTranscriptEntry[]; moveTask?: boolean } = {},
   ): Promise<TaskRun> {
     const now = this.now().toISOString();
     const latest = await this.options.repository.get(run.runId) ?? run;
@@ -197,6 +224,7 @@ export class TaskExecutionService {
       state,
       updatedAt: now,
       finishedAt: now,
+      ...(details.transcript?.length ? { transcript: mergeTranscript(latest.transcript, details.transcript) } : {}),
       ...(details.result ? { result: details.result } : {}),
       ...(details.error ? { error: details.error } : {}),
     };
@@ -239,6 +267,18 @@ export class TaskExecutionService {
       if (this.projectOperations.get(projectId) === current) this.projectOperations.delete(projectId);
     }
   }
+}
+
+function mergeTranscript(
+  existing: ExecutionTranscriptEntry[] | undefined,
+  appended: ExecutionTranscriptEntry[],
+): ExecutionTranscriptEntry[] {
+  return [...(existing ?? []), ...appended];
+}
+
+function withoutTranscript(run: TaskRun): TaskRun {
+  const { transcript: _transcript, ...summary } = run;
+  return summary;
 }
 
 function taskPrompt(run: Pick<TaskRun, "taskId" | "taskTitle" | "taskDescription">): string {

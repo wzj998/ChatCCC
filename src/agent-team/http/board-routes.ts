@@ -27,7 +27,7 @@ export type MainAgentRequestService = Pick<
 
 export type TaskExecutionRequestService = Pick<
   TaskExecutionService,
-  "listRuns" | "startTask" | "stopRun"
+  "listRuns" | "getRun" | "startTask" | "stopRun"
 >;
 
 export function createAgentTeamRequestHandler(options: AgentTeamRequestHandlerOptions) {
@@ -147,6 +147,16 @@ export function createAgentTeamRequestHandler(options: AgentTeamRequestHandlerOp
         const runs = await requireTaskExecutionService(taskExecutionService())
           .listRuns(decodeURIComponent(runsMatch[1]));
         jsonReply(res, 200, { ok: true, runs });
+        return true;
+      }
+
+      const runDetailMatch = pathname.match(/^\/api\/agent-team\/boards\/([^/]+)\/runs\/([^/]+)$/);
+      if (runDetailMatch && method === "GET") {
+        const run = await requireTaskExecutionService(taskExecutionService()).getRun(
+          decodeURIComponent(runDetailMatch[1]),
+          decodeURIComponent(runDetailMatch[2]),
+        );
+        jsonReply(res, 200, { ok: true, run });
         return true;
       }
 
