@@ -2580,6 +2580,7 @@ async function handleCommandInternal(
         msgTimestamp,
         descriptionTool,
         tid,
+        openId,
       );
       if (resumeOutcome === "error") {
         logTrace(tid, "DONE", { outcome: "resume_error", sessionId });
@@ -2783,6 +2784,7 @@ async function handleCommandInternal(
         msgTimestamp,
         tool,
         tid,
+        openId,
       );
       logTrace(tid, "DONE", {
         outcome: "auto_new_feishu_p2p_prompt_done",

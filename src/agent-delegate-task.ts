@@ -34,9 +34,10 @@ export interface DelegateAgentTaskResult {
 export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<DelegateAgentTaskResult> {
   const cwd = resolve(input.cwd);
   const toolLabel = toolDisplayName(input.tool);
+  const hasPrompt = input.promptText.trim().length > 0;
   const init = await initClaudeSession(input.tool, cwd);
   const sessionId = init.sessionId;
-  const chatNamePrefix = input.chatNamePrefix?.trim() || input.promptText.slice(0, 10) || "新会话";
+  const chatNamePrefix = input.chatNamePrefix?.trim() || (hasPrompt ? input.promptText.slice(0, 10) : "新会话");
   const chatName = sessionChatName(chatNamePrefix, cwd);
 
   let chatId: string;
@@ -67,7 +68,9 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
     `已创建 **${toolLabel}** 会话群。\n\n` +
       `**Session ID:** ${sessionId}\n` +
       `**工作目录:** \`${cwd}\`\n\n` +
-      `下面会自动把任务作为第一句话发送给 ${toolLabel}。`,
+      (hasPrompt
+        ? `下面会自动把任务作为第一句话发送给 ${toolLabel}。`
+        : `直接在这里发消息即可与 ${toolLabel} 对话。`),
     "green",
   ).catch(() => {});
   const fastMode = getEffectiveFastModeForTool(input.tool, sessionId);
@@ -76,15 +79,18 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
     : input.platform.setChatAvatar(chatId, input.tool, "new");
   avatarUpdate.catch(() => {});
 
-  await resumeAndPrompt(
-    sessionId,
-    input.promptText,
-    input.platform,
-    chatId,
-    input.msgTimestamp ?? Date.now(),
-    input.tool,
-    input.traceId,
-  );
+  if (hasPrompt) {
+    await resumeAndPrompt(
+      sessionId,
+      input.promptText,
+      input.platform,
+      chatId,
+      input.msgTimestamp ?? Date.now(),
+      input.tool,
+      input.traceId,
+      input.openIds?.[0],
+    );
+  }
 
   console.log(`[${ts()}] [AGENT-DELEGATE-TASK] created ${toolLabel} session=${sessionId} chat=${chatId} cwd=${cwd}`);
   return { chatId, sessionId, tool: input.tool, cwd };

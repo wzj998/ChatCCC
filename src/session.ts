@@ -1272,8 +1272,11 @@ export async function resumeAndPrompt(
   msgTimestamp: number,
   tool: string,
   traceId?: string,
+  initiatorOpenId?: string,
 ): Promise<SessionRunOutcome> {
-  return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId);
+  return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId, {
+    initiatorOpenId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,6 +1289,9 @@ interface RunAgentSessionOptions {
    * 停滞，不再递归创建第三轮，避免服务异常期间无限消耗 token。
    */
   autoRecovery?: boolean;
+  /** 触发本轮的用户 open_id（飞书发送者）。用于注入 IM skill 变量，供 Agent 发起
+   * "新建会话"时只拉发起者本人。Agent Team 内部任务没有 open_id，可为空。 */
+  initiatorOpenId?: string;
 }
 
 export type SessionRunOutcome = "busy" | "done" | "stopped" | "error" | "auto_ended";
@@ -1383,8 +1389,10 @@ export async function runAgentSession(
     const skillVariables = {
       cwd,
       session_id: sessionId,
+      open_id: options.initiatorOpenId,
       im_skills_cache_dir: imSkillsCacheDir,
       delegate_task_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/delegate-task`,
+      set_cwd_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/set-cwd`,
       send_image_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-image`,
       send_file_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/send-file`,
       send_image_script: join(feishuSkillDir, "send-image.mjs"),
