@@ -9,6 +9,7 @@ import { BoardService } from "../agent-team/application/board-service.ts";
 import {
   createAgentTeamRequestHandler,
   type MainAgentRequestService,
+  type TaskExecutionRequestService,
 } from "../agent-team/http/board-routes.ts";
 import { JsonBoardRepository } from "../agent-team/repositories/json-board-repository.ts";
 
@@ -21,7 +22,10 @@ describe("Agent Team board HTTP API", () => {
     await Promise.all(tempRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  async function fixture(mainAgentFactory?: (service: BoardService) => MainAgentRequestService) {
+  async function fixture(
+    mainAgentFactory?: (service: BoardService) => MainAgentRequestService,
+    taskExecutionService?: TaskExecutionRequestService,
+  ) {
     const root = await mkdtemp(join(tmpdir(), "chatccc-agent-team-api-"));
     tempRoots.push(root);
     const workspace = join(root, "workspace");
@@ -30,6 +34,7 @@ describe("Agent Team board HTTP API", () => {
     const handler = createAgentTeamRequestHandler({
       service,
       mainAgentService: mainAgentFactory?.(service),
+      taskExecutionService,
       defaultWorkspace: workspace,
     });
     const server = createServer((req, res) => {
@@ -162,5 +167,58 @@ describe("Agent Team board HTTP API", () => {
     const result = await response.json();
     expect(result.board.primaryAgentId).toBe("codex");
     expect(result.binding).toMatchObject({ chatId: "oc_main", status: "ready" });
+  });
+
+  it("starts, lists, and stops task runs through the execution endpoints", async () => {
+    const calls: string[] = [];
+    const run = {
+      schemaVersion: 1 as const,
+      runId: "run-1",
+      projectId: "project-1",
+      taskId: "task-1",
+      taskTitle: "Task",
+      taskDescription: "",
+      attempt: 1,
+      state: "running" as const,
+      agentId: "codex" as const,
+      chatId: "oc_main",
+      sessionId: "session-main",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      updatedAt: "2026-08-17T00:00:00.000Z",
+    };
+    let currentBoard: Awaited<ReturnType<BoardService["openWorkspace"]>> | null = null;
+    const taskService: TaskExecutionRequestService = {
+      listRuns: async () => [run],
+      startTask: async (_projectId, _taskId, _expectedRevision) => {
+        calls.push("start");
+        return { board: currentBoard!, run };
+      },
+      stopRun: async () => {
+        calls.push("stop");
+        return { ...run, stopRequestedAt: "2026-08-17T00:00:01.000Z" };
+      },
+    };
+    const { base, workspace, service } = await fixture(undefined, taskService);
+    currentBoard = await service.openWorkspace(workspace);
+
+    const start = await fetch(`${base}/api/agent-team/boards/${currentBoard.boardId}/tasks/task-1/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ expectedRevision: currentBoard.revision }),
+    });
+    expect(start.status).toBe(202);
+    expect((await start.json()).run.runId).toBe("run-1");
+
+    const listed = await fetch(`${base}/api/agent-team/boards/${currentBoard.boardId}/runs`).then((response) => response.json());
+    expect(listed.runs).toHaveLength(1);
+
+    const stop = await fetch(`${base}/api/agent-team/boards/${currentBoard.boardId}/runs/run-1/stop`, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: "{}",
+    });
+    expect(stop.status).toBe(200);
+    expect((await stop.json()).run.stopRequestedAt).toBeTruthy();
+    expect(calls).toEqual(["start", "stop"]);
   });
 });

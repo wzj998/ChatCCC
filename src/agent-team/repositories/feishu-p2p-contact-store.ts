@@ -26,6 +26,7 @@ export class FeishuP2pContactStore {
       return parseContact(JSON.parse(await readFile(this.filePath, "utf8")));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if (err instanceof InvalidFeishuOpenIdError) return null;
       throw err;
     }
   }
@@ -53,10 +54,21 @@ export class FeishuP2pContactStore {
 function parseContact(value: unknown): FeishuP2pContact {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Feishu P2P contact");
   const contact = value as Partial<FeishuP2pContact>;
-  if (typeof contact.openId !== "string" || !contact.openId) throw new Error("Feishu P2P contact is missing openId");
+  if (!isValidFeishuOpenId(contact.openId)) throw new InvalidFeishuOpenIdError(String(contact.openId));
   if (typeof contact.chatId !== "string" || !contact.chatId) throw new Error("Feishu P2P contact is missing chatId");
   if (typeof contact.receivedAt !== "string" || !contact.receivedAt) throw new Error("Feishu P2P contact is missing receivedAt");
   return { openId: contact.openId, chatId: contact.chatId, receivedAt: contact.receivedAt };
+}
+
+export function isValidFeishuOpenId(value: unknown): value is string {
+  return typeof value === "string" && /^ou_[A-Za-z0-9]+$/.test(value);
+}
+
+class InvalidFeishuOpenIdError extends Error {
+  constructor(value: string) {
+    super(`Invalid Feishu openId: ${value}`);
+    this.name = "InvalidFeishuOpenIdError";
+  }
 }
 
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {

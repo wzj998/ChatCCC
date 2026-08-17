@@ -116,6 +116,32 @@ describe("Agent Team main Agent", () => {
     expect(bindSession).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the latest private-message contact when retrying a failed binding", async () => {
+    const { workspace, boardService, bindingRepository, contactStore, service, createGroup } = await fixture();
+    const board = await boardService.openWorkspace(workspace);
+    await bindingRepository.save({
+      schemaVersion: 1,
+      projectId: board.boardId,
+      platform: "feishu",
+      agentId: "codex",
+      namingPolicy: "project-fixed",
+      status: "error",
+      ownerOpenId: "ou-user",
+      lastError: "Invalid open_id",
+      updatedAt: "2026-08-17T08:54:10.000Z",
+    });
+    await contactStore.record({
+      openId: "ou_newowner123",
+      chatId: "oc_newprivate",
+      receivedAt: "2026-08-17T09:00:57.731Z",
+    });
+
+    const result = await service.setPrimaryAgent(board.boardId, "codex", board.revision);
+
+    expect(createGroup).toHaveBeenCalledWith("主Agent-workspace-a", ["ou_newowner123"]);
+    expect(result.binding).toMatchObject({ status: "ready", ownerOpenId: "ou_newowner123" });
+  });
+
   it("reuses the group when switching Agent and rejects switching while the old session runs", async () => {
     const { workspace, boardService, contactStore, service, createGroup, bindSession, setRunningSession } = await fixture();
     let board = await boardService.openWorkspace(workspace);

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,5 +26,24 @@ describe("Feishu P2P contact store", () => {
       chatId: "oc_latest",
       receivedAt: "2026-08-09T10:01:00.000Z",
     });
+  });
+
+  it("ignores legacy simulator contacts that are not valid Feishu open_ids", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatccc-p2p-contact-invalid-"));
+    tempRoots.push(root);
+    const filePath = join(root, "contact.json");
+    await writeFile(filePath, JSON.stringify({
+      openId: "ou-user",
+      chatId: "feishu-p2p-sim",
+      receivedAt: "2026-08-17T08:45:11.501Z",
+    }), "utf8");
+
+    const store = new FeishuP2pContactStore({ filePath });
+    await expect(store.get()).resolves.toBeNull();
+    await expect(store.record({
+      openId: "ou-user",
+      chatId: "feishu-p2p-sim",
+      receivedAt: "2026-08-17T08:45:11.501Z",
+    })).rejects.toThrow("Invalid Feishu openId");
   });
 });
