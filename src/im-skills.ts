@@ -80,8 +80,8 @@ function promptCacheKey(input: BuildImSkillsPromptInput): string {
   const names = input.enabledSkillNames
     ? [...input.enabledSkillNames].sort().join(",")
     : "*";
-  const { session_id, cwd } = input.variables;
-  return `${input.skillsDir ?? DEFAULT_IM_SKILLS_DIR}|${names}|${session_id}|${cwd}`;
+  const { session_id, cwd, open_id } = input.variables;
+  return `${input.skillsDir ?? DEFAULT_IM_SKILLS_DIR}|${names}|${session_id}|${cwd}|${open_id}`;
 }
 
 /** 带会话级缓存的 buildImSkillsPrompt。同 session + 同 cwd 时直接返回缓存的渲染结果。 */

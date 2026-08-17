@@ -91,6 +91,7 @@ import { handleAgentFileRequest } from "./agent-file-rpc.ts";
 import { handleAgentDelegateTaskRequest } from "./agent-delegate-task-rpc.ts";
 import { handleAgentStopStuckRequest } from "./agent-stop-stuck.ts";
 import { handleAgentReloadConfigRequest } from "./agent-reload-config-rpc.ts";
+import { handleAgentSetCwdRequest } from "./agent-set-cwd-rpc.ts";
 import { handleChatGptSubscriptionRequest } from "./chatgpt-subscription-rpc.ts";
 import { applyPrivacy } from "./privacy.ts";
 import {
@@ -778,6 +779,7 @@ async function main(): Promise<void> {
       const injected = await handleSimInjectMessage(req, res);
       if (injected) return true;
       return (await handleAgentReloadConfigRequest(req, res))
+        || (await handleAgentSetCwdRequest(req, res))
         || (await handleAgentImageRequest(req, res))
         || (await handleAgentFileRequest(req, res))
         || (await handleAgentDelegateTaskRequest(req, res, feishuPlatform))
@@ -852,6 +854,7 @@ async function main(): Promise<void> {
   });
   setExtraApiHandler(async (req, res) => {
     return (await handleAgentReloadConfigRequest(req, res))
+      || (await handleAgentSetCwdRequest(req, res))
       || (await handleAgentImageRequest(req, res))
       || (await handleAgentFileRequest(req, res))
       || (await handleAgentDelegateTaskRequest(req, res, feishuPlatform))

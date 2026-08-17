@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { homedir } from "node:os";
 
 import { resolveDefaultAgentTool } from "./config.ts";
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
@@ -14,7 +15,7 @@ import {
 export const AGENT_DELEGATE_TASK_PATH = "/api/agent/delegate-task";
 
 const MAX_REQUEST_BYTES = 128 * 1024;
-const VALID_TOOLS = new Set(["claude", "cursor", "codex"]);
+const VALID_TOOLS = new Set(["claude", "cursor", "codex", "ccc", "dsh"]);
 
 interface AgentDelegateTaskPayload {
   tool?: unknown;
@@ -61,7 +62,7 @@ function validateTool(rawTool: unknown): string {
 
 function validateCwd(rawCwd: unknown): string {
   const cwd = stringValue(rawCwd);
-  if (!cwd) throw new Error("cwd must be a non-empty string");
+  if (!cwd) return homedir();
   return resolve(cwd);
 }
 
@@ -100,7 +101,6 @@ export async function handleAgentDelegateTaskRequest(
     tool = validateTool(payload.tool);
     cwd = validateCwd(payload.cwd);
     const rawPrompt = promptFromPayload(payload);
-    if (!rawPrompt) throw new Error("prompt must be a non-empty string");
     const sharedPrefix = applySharedPrefix(rawPrompt);
     promptText = sharedPrefix.text;
     promptNamePrefix = sharedPrefix.body || rawPrompt;
@@ -142,25 +142,27 @@ export async function handleAgentDelegateTaskRequest(
   return true;
 }
 
-export function buildAgentDelegateTaskCapabilityPrompt(input: { url: string; cwd?: string }): string {
+export function buildAgentDelegateTaskCapabilityPrompt(input: { url: string; cwd?: string; openId?: string }): string {
   const lines = [
-    "[ChatCCC local capability: delegate task]",
-    "You can create a separate Feishu ChatCCC agent session and assign its first task by calling this local endpoint.",
+    "[ChatCCC local capability: new session]",
+    "You can create a separate Feishu ChatCCC agent session (a new group) and optionally assign its first task by calling this local endpoint.",
     "",
     `POST ${input.url}`,
     "Content-Type: application/json; charset=utf-8",
     "",
-    'Body: {"tool":"codex|claude|cursor","cwd":"absolute working directory","open_id":"Feishu open_id to invite","prompt":"first task text"}',
+    'Body: {"tool":"claude|cursor|codex|ccc|dsh","cwd":"absolute working directory","open_id":"initiator open_id","prompt":"optional first task"}',
     "",
     "Rules:",
-    "- Use this only when the user asks you to start a separate delegated conversation/session.",
-    "- Pass cwd explicitly as an absolute local path.",
-    "- Pass tool explicitly when the user specified a target agent.",
-    "- Use open_id for one user or open_ids/openIds for multiple users.",
+    "- Use this when the user asks to start a new conversation/session, optionally in a specific directory.",
+    "- Pass open_id exactly as provided to you; the new group will only include that requester.",
+    "- Pass cwd as an absolute local path. When the user does not name a directory, use your current working directory.",
+    "- tool is optional; omit it to use the default agent, or pass one of claude/cursor/codex/ccc/dsh when the user names a tool.",
+    "- prompt is optional; omit it to just create the session without sending a first task.",
     "- The prompt is sent through the normal ChatCCC prompt path, so project prompt injection and IM skills still apply.",
     "- Request body must be UTF-8 encoded JSON bytes. Do not call Feishu Open Platform directly.",
-    "[/ChatCCC local capability: delegate task]",
+    "[/ChatCCC local capability: new session]",
   ];
   if (input.cwd) lines.splice(2, 0, `Current working directory: ${input.cwd}`);
+  if (input.openId) lines.splice(2, 0, `Initiator open_id: ${input.openId}`);
   return lines.join("\n");
 }

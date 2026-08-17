@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { homedir } from "node:os";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import type { PlatformAdapter } from "../platform-adapter.ts";
@@ -150,16 +151,69 @@ describe("agent delegate task RPC", () => {
     expect(mockDelegateAgentTask).not.toHaveBeenCalled();
   });
 
+  it("creates a bare session when prompt is omitted", async () => {
+    const req = request({
+      tool: "codex",
+      cwd: "F:\\repo",
+      open_id: "ou-user",
+    });
+    const res = response();
+
+    await handleAgentDelegateTaskRequest(req as never, res as never, platform());
+
+    expect(res.statusCode).toBe(200);
+    expect(mockDelegateAgentTask).toHaveBeenCalledWith(expect.objectContaining({
+      promptText: "",
+      openIds: ["ou-user"],
+      chatNamePrefix: "",
+    }));
+  });
+
+  it("defaults cwd to the home directory when omitted", async () => {
+    const req = request({
+      tool: "codex",
+      open_id: "ou-user",
+      prompt: "task",
+    });
+    const res = response();
+
+    await handleAgentDelegateTaskRequest(req as never, res as never, platform());
+
+    expect(res.statusCode).toBe(200);
+    expect(mockDelegateAgentTask).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: homedir(),
+    }));
+  });
+
+  it("accepts ccc and dsh tools", async () => {
+    for (const tool of ["ccc", "dsh"]) {
+      const req = request({
+        tool,
+        cwd: "F:\\repo",
+        open_id: "ou-user",
+        prompt: "task",
+      });
+      const res = response();
+
+      await handleAgentDelegateTaskRequest(req as never, res as never, platform());
+
+      expect(res.statusCode).toBe(200);
+      expect(mockDelegateAgentTask).toHaveBeenCalledWith(expect.objectContaining({ tool }));
+    }
+  });
+
   it("builds prompt instructions for the delegate endpoint", () => {
     const prompt = buildAgentDelegateTaskCapabilityPrompt({
       url: `http://127.0.0.1:18080${AGENT_DELEGATE_TASK_PATH}`,
       cwd: "F:/repo",
+      openId: "ou-user",
     });
 
     expect(prompt).toContain("POST http://127.0.0.1:18080/api/agent/delegate-task");
-    expect(prompt).toContain('"tool":"codex|claude|cursor"');
+    expect(prompt).toContain('"tool":"claude|cursor|codex|ccc|dsh"');
     expect(prompt).toContain('"cwd":"absolute working directory"');
     expect(prompt).toContain("project prompt injection and IM skills still apply");
     expect(prompt).toContain("Current working directory: F:/repo");
+    expect(prompt).toContain("Initiator open_id: ou-user");
   });
 });
