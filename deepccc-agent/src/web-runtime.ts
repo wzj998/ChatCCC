@@ -1,7 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import {
+  AttachmentStore,
+  buildAttachmentPrompt,
+  detectImageMime,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_ATTACHMENT_BYTES,
+  type AttachmentMeta,
+  type SaveAttachmentInput,
+} from "./attachments.js";
 import { ChatSession, type ChatEvent, type ChatSessionConfig } from "./index.js";
-import { readBuiltinContextState } from "./context.js";
+import { DEFAULT_BUILTIN_CONTEXT_DIR, normalizeBuiltinSessionId, readBuiltinContextState } from "./context.js";
 import type { PermissionAnswer, PermissionRequest, PermissionResolver } from "./permissions.js";
 import {
   WebSessionStore,
@@ -47,6 +58,7 @@ export interface WebSessionAgent {
 
 export interface DeepCccWebRuntimeOptions {
   store?: WebSessionStore;
+  attachmentStore?: AttachmentStore;
   loadConfig: () => WebRuntimeConfig;
   sessionFactory?: (input: WebSessionFactoryInput) => WebSessionAgent;
   approvalTimeoutMs?: number;
@@ -69,6 +81,7 @@ interface ApprovalWaiter {
 
 export class DeepCccWebRuntime {
   readonly store: WebSessionStore;
+  readonly attachmentStore: AttachmentStore;
   private readonly loadConfig: () => WebRuntimeConfig;
   private readonly sessionFactory: (input: WebSessionFactoryInput) => WebSessionAgent;
   private readonly approvalTimeoutMs: number;
@@ -86,6 +99,11 @@ export class DeepCccWebRuntime {
 
   constructor(options: DeepCccWebRuntimeOptions) {
     this.store = options.store ?? new WebSessionStore();
+    this.attachmentStore = options.attachmentStore ?? new AttachmentStore(
+      resolve(this.store.rootDir) === resolve(DEFAULT_BUILTIN_CONTEXT_DIR)
+        ? {}
+        : { rootDir: join(this.store.rootDir, ".attachments") },
+    );
     this.loadConfig = options.loadConfig;
     this.approvalTimeoutMs = options.approvalTimeoutMs ?? 5 * 60_000;
     this.now = options.now ?? (() => new Date());
@@ -166,6 +184,7 @@ export class DeepCccWebRuntime {
       this.agents.delete(sessionId);
       const deleted = await this.store.delete(sessionId);
       if (deleted) {
+        await this.attachmentStore.deleteSession(sessionId);
         this.emit(sessionId, "session_deleted", { sessionId });
         this.events.delete(sessionId);
       }
@@ -175,9 +194,13 @@ export class DeepCccWebRuntime {
     }
   }
 
-  async sendMessage(sessionId: string, text: string): Promise<{ runId: string }> {
-    const prompt = text.trim();
-    if (!prompt) throw new Error("Message must not be empty");
+  async sendMessage(sessionId: string, text: string, attachmentIds: string[] = []): Promise<{ runId: string }> {
+    const displayPrompt = text.trim();
+    const uniqueAttachmentIds = [...new Set(attachmentIds)];
+    if (uniqueAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+      throw new Error(`A message can include at most ${MAX_ATTACHMENTS_PER_MESSAGE} images`);
+    }
+    if (!displayPrompt && !uniqueAttachmentIds.length) throw new Error("Message must not be empty");
     const controller = new AbortController();
     if (this.activeRuns.has(sessionId) || this.startingRuns.has(sessionId) || this.sessionMutations.has(sessionId)) {
       throw new Error("This session is already running");
@@ -185,13 +208,21 @@ export class DeepCccWebRuntime {
     this.startingRuns.set(sessionId, controller);
     try {
       let meta = await this.requireSession(sessionId);
+      const attachments: AttachmentMeta[] = [];
+      for (const attachmentId of uniqueAttachmentIds) {
+        const attachment = await this.attachmentStore.get(sessionId, attachmentId);
+        if (!attachment) throw new Error(`Image attachment not found: ${attachmentId}`);
+        attachments.push(attachment);
+      }
+      const prompt = buildAttachmentPrompt(displayPrompt, attachments);
       if (meta.title === "新会话" || meta.title === "New session" || meta.title === meta.cwd.split(/[\\/]/).at(-1)) {
-        meta = await this.store.update(sessionId, { title: prompt.replace(/\s+/g, " ").slice(0, 42) });
+        const title = displayPrompt || attachments.map((attachment) => attachment.originalName).join(", ") || "图片任务";
+        meta = await this.store.update(sessionId, { title: title.replace(/\s+/g, " ").slice(0, 42) });
       }
       if (controller.signal.aborted) throw new DOMException("The session start was stopped", "AbortError");
       const runId = `run-${this.idFactory()}`;
       this.events.set(sessionId, []);
-      this.emit(sessionId, "user", { text: prompt });
+      this.emit(sessionId, "user", { text: displayPrompt || "请分析这些图片。", attachments });
       const promise = Promise.resolve()
         .then(() => this.run(meta, prompt, runId, controller.signal))
         .finally(() => {
@@ -219,6 +250,40 @@ export class DeepCccWebRuntime {
     await Promise.all(pending.map(([approvalId, waiter]) =>
       this.finishApproval(approvalId, waiter, "deny", { stopped: true }).catch(() => {})));
     return true;
+  }
+
+  async addAttachment(sessionId: string, input: SaveAttachmentInput): Promise<AttachmentMeta> {
+    await this.requireSession(sessionId);
+    return this.attachmentStore.save(sessionId, input);
+  }
+
+  async readAttachment(sessionId: string, attachmentId: string) {
+    await this.requireSession(sessionId);
+    return this.attachmentStore.read(sessionId, attachmentId);
+  }
+
+  async deleteAttachment(sessionId: string, attachmentId: string): Promise<boolean> {
+    await this.requireSession(sessionId);
+    return this.attachmentStore.delete(sessionId, attachmentId);
+  }
+
+  async readArtifact(sessionId: string, value: string) {
+    const meta = await this.requireSession(sessionId);
+    const path = await realpath(resolve(value)).catch(() => null);
+    if (!path) return null;
+    const workspaceRoot = await realpath(meta.cwd).catch(() => resolve(meta.cwd));
+    const attachmentDir = join(this.attachmentStore.rootDir, normalizeBuiltinSessionId(sessionId));
+    const attachmentRoot = await realpath(attachmentDir).catch(() => resolve(attachmentDir));
+    if (!isPathInside(workspaceRoot, path) && !isPathInside(attachmentRoot, path)) {
+      throw new Error("Artifact path is outside the session workspace and attachment directory");
+    }
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) return null;
+    if (info.size > MAX_ATTACHMENT_BYTES) throw new Error("Artifact image exceeds the 20 MB limit");
+    const bytes = await readFile(path);
+    const mimeType = detectImageMime(bytes);
+    if (!mimeType) throw new Error("Artifact is not a supported PNG, JPEG, or WebP image");
+    return { path, mimeType, size: bytes.length, bytes };
   }
 
   async waitForIdle(sessionId: string): Promise<void> {
@@ -340,4 +405,9 @@ export class DeepCccWebRuntime {
     if (!meta) throw new Error(`DeepCCC web session not found: ${sessionId}`);
     return meta;
   }
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }

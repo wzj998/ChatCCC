@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatEvent } from "../index.ts";
+import { parseAttachmentPrompt } from "../attachments.js";
 import { BuiltinContextManager } from "../context.js";
 import { DeepCccWebRuntime } from "../web-runtime.js";
 import { WebSessionStore } from "../web-session-store.js";
@@ -295,5 +296,78 @@ describe("DeepCCC web sessions", () => {
       answer: "deny",
       status: "resolved",
     }));
+  });
+
+  it("passes Web images to the Agent as local attachment paths and cleans them with the session", async () => {
+    const store = await storeFixture();
+    let receivedPrompt = "";
+    const runtime = new DeepCccWebRuntime({
+      store,
+      loadConfig: () => ({
+        provider: "openai",
+        apiKey: "test-key",
+        baseURL: "https://example.test/v1",
+        model: "default-model",
+        subModel: "",
+        effort: "",
+        maxOutputTokens: undefined,
+        contextWindow: 1_000_000,
+        streaming: true,
+      }),
+      sessionFactory: () => ({
+        async *chat(input): AsyncGenerator<ChatEvent> {
+          receivedPrompt = input;
+          yield { type: "done", text: "ok" };
+        },
+      }),
+    });
+    const session = await runtime.createSession({ cwd: process.cwd() });
+    const attachment = await runtime.addAttachment(session.sessionId, {
+      originalName: "screen.png",
+      bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]),
+    });
+
+    await runtime.sendMessage(session.sessionId, "", [attachment.attachmentId]);
+    await runtime.waitForIdle(session.sessionId);
+
+    const parsed = parseAttachmentPrompt(receivedPrompt);
+    expect(parsed.text).toBe("请分析这些图片。");
+    expect(parsed.attachments).toEqual([attachment]);
+    expect(receivedPrompt).toContain("不要假设模型原生支持图片");
+
+    await runtime.deleteSession(session.sessionId);
+    expect(await runtime.attachmentStore.get(session.sessionId, attachment.attachmentId)).toBeNull();
+  });
+
+  it("only serves presented artifacts from the session workspace or attachment directory", async () => {
+    const store = await storeFixture();
+    const workspace = await mkdtemp(join(tmpdir(), "deepccc-artifact-workspace-"));
+    const outside = await mkdtemp(join(tmpdir(), "deepccc-artifact-outside-"));
+    roots.push(workspace, outside);
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+    const insidePath = join(workspace, "inside.png");
+    const outsidePath = join(outside, "outside.png");
+    await Promise.all([writeFile(insidePath, png), writeFile(outsidePath, png)]);
+    const runtime = new DeepCccWebRuntime({
+      store,
+      loadConfig: () => ({
+        provider: "openai",
+        apiKey: "test-key",
+        baseURL: "https://example.test/v1",
+        model: "default-model",
+        subModel: "",
+        effort: "",
+        maxOutputTokens: undefined,
+        contextWindow: 1_000_000,
+        streaming: true,
+      }),
+    });
+    const session = await runtime.createSession({ cwd: workspace });
+
+    await expect(runtime.readArtifact(session.sessionId, insidePath)).resolves.toMatchObject({
+      path: insidePath,
+      mimeType: "image/png",
+    });
+    await expect(runtime.readArtifact(session.sessionId, outsidePath)).rejects.toThrow(/outside/);
   });
 });

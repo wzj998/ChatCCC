@@ -26,6 +26,7 @@ import { reduceProgress } from "./progress/reducer.js";
 import { TerminalProgressRenderer } from "./progress/terminal-renderer.js";
 import { progressView, type ProgressView } from "./progress/view.js";
 import { defaultLogDir, setupFileLogging } from "./file-log.js";
+import { AttachmentStore, buildAttachmentPrompt, type AttachmentMeta } from "./attachments.js";
 import type { ChatEvent, ChatSessionConfig, ChatSessionOptions } from "./index.js";
 import type { PermissionRequest, PermissionResolver } from "./permissions.js";
 
@@ -37,6 +38,7 @@ interface ParsedArgs {
   help: boolean;
   streamJson: boolean;
   prompt: string | null;
+  images: string[];
   /** 强制纯文本流式输出（不用过程区块渲染器），渲染异常时的兜底通道 */
   plain: boolean;
 }
@@ -74,6 +76,7 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
   let streamJson = false;
   let prompt: string | null = null;
   let plain = false;
+  const images: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -119,6 +122,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--prompt" && next !== undefined) {
       prompt = next;
       i++;
+    } else if (arg === "--image" && next !== undefined) {
+      images.push(next);
+      i++;
     } else if (arg === "--plain") {
       plain = true;
     } else if (arg === "--dangerously-bypass-permissions") {
@@ -129,7 +135,7 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     }
   }
 
-  return { config, options, listSessions, resume, help, streamJson, prompt, plain };
+  return { config, options, listSessions, resume, help, streamJson, prompt, images, plain };
 }
 
 async function loadRuntime(): Promise<RuntimeDeps> {
@@ -160,6 +166,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --list-sessions      List saved sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
+    "  --image <path>      Attach a PNG/JPEG/WebP file (repeatable; copied to the session attachment store)",
     "  --plain              Force plain streaming output (no progress block renderer)",
     "  --dangerously-bypass-permissions  Skip all permission prompts (aligns with chatccc's bypass mode)",
     "  --help, -h           Show help",
@@ -295,8 +302,8 @@ async function runStreamJson(args: ParsedArgs): Promise<number> {
   }
 
   const prompt = args.prompt ?? (!process.stdin.isTTY ? await readPromptFromStdin() : "");
-  if (!prompt.trim()) {
-    writeJsonLine({ type: "error", message: "--stream-json requires --prompt <text> or stdin input" });
+  if (!prompt.trim() && !args.images.length) {
+    writeJsonLine({ type: "error", message: "--stream-json requires --prompt <text>, stdin input, or --image <path>" });
     return 1;
   }
 
@@ -330,16 +337,30 @@ async function runStreamJson(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
+  let attachments: AttachmentMeta[];
+  try {
+    attachments = await importCliAttachments(resolvedSession.sessionId, args.images);
+  } catch (err) {
+    writeJsonLine({ type: "error", message: (err as Error).message });
+    return 1;
+  }
+  const promptWithAttachments = buildAttachmentPrompt(prompt, attachments);
+
   writeJsonLine({
     type: "start",
     session_id: resolvedSession.sessionId,
     mode: resolvedSession.mode,
     cwd,
     model: args.config.model ?? runtime.appConfig.model,
+    attachments: attachments.map((attachment) => ({
+      attachment_id: attachment.attachmentId,
+      name: attachment.originalName,
+      path: attachment.absolutePath,
+    })),
   });
 
   try {
-    for await (const event of session.chat(prompt)) {
+    for await (const event of session.chat(promptWithAttachments)) {
       streamJsonEvent(event);
     }
     return 0;
@@ -451,6 +472,17 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
+  let pendingAttachments: AttachmentMeta[];
+  try {
+    pendingAttachments = await importCliAttachments(resolvedSession.sessionId, args.images);
+  } catch (err) {
+    console.error(`${C.yellow}${(err as Error).message}${C.reset}`);
+    process.exit(1);
+  }
+  if (pendingAttachments.length) {
+    console.log(`${C.dim}Attachments queued: ${pendingAttachments.map((attachment) => attachment.originalName).join(", ")}${C.reset}`);
+  }
+
   let currentAbort: AbortController | null = null;
   const ctrlCState = createCtrlCState();
 
@@ -459,7 +491,7 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   rl.on("line", async (line: string) => {
     ctrlCState.reset();
     const input = line.trim();
-    if (!input) {
+    if (!input && !pendingAttachments.length) {
       rl.prompt();
       return;
     }
@@ -510,8 +542,10 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     let rendererEnded = false;
 
     try {
+      const chatInput = buildAttachmentPrompt(input, pendingAttachments);
+      pendingAttachments = [];
       let lastAccumulated = "";
-      for await (const event of session.chat(input, signal)) {
+      for await (const event of session.chat(chatInput, signal)) {
         if (renderer && view) {
           view = reduceProgress(view, event);
           if (event.type === "text" || event.type === "compact" || event.type === "status") {
@@ -594,6 +628,13 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     process.stdout.write("\n");
     process.exit(0);
   });
+}
+
+async function importCliAttachments(sessionId: string, paths: string[]): Promise<AttachmentMeta[]> {
+  const store = new AttachmentStore();
+  const attachments: AttachmentMeta[] = [];
+  for (const path of paths) attachments.push(await store.importFile(sessionId, path));
+  return attachments;
 }
 
 /**

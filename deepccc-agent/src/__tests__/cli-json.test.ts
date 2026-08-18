@@ -27,6 +27,7 @@ describe("deepccc cli --stream-json", () => {
       windowsHide: true,
     });
     expect(help.stdout).toContain("--max-output-tokens <n>");
+    expect(help.stdout).toContain("--image <path>");
 
     await expect(execFileAsync(process.execPath, [
       cliBin!,
@@ -38,6 +39,32 @@ describe("deepccc cli --stream-json", () => {
       timeout: 10_000,
       windowsHide: true,
     })).rejects.toMatchObject({ code: 1 });
+  });
+
+  it("reports an invalid --image path as a JSONL error before contacting the Provider", async () => {
+    let caught: unknown;
+    try {
+      await execFileAsync(process.execPath, [
+        cliBin!,
+        "--stream-json",
+        "--prompt",
+        "inspect it",
+        "--image",
+        "missing-image.png",
+      ], {
+        cwd: dirname(cliBin!),
+        timeout: 10_000,
+        windowsHide: true,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toMatchObject({ code: 1 });
+    const lines = ((caught as { stdout?: string }).stdout ?? "").trim().split(/\r?\n/).filter(Boolean);
+    expect(JSON.parse(lines.at(-1)!)).toEqual(expect.objectContaining({
+      type: "error",
+      message: expect.stringMatching(/missing-image\.png/),
+    }));
   });
 
   it("writes only JSON lines to stdout when startup fails", async () => {

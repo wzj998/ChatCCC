@@ -42,10 +42,11 @@ npm run dev
 内部域名和绝对路径替换为公开示例，任务内容、模型配置、Agent 回复和审批流程均来自
 实际运行结果。
 
-多会话可以并行处理不同任务，每个会话分别选择 model 和 effort，并实时保留 Agent
-回复与工具过程：
+多会话可以并行处理不同任务，每个会话分别选择 model、subModel 和 effort。下图来自
+真实提问“DeepCCC 这个项目妙在哪”，同时展示了图片附件输入与 Agent `present_file`
+图片回传：
 
-![DeepCCC Web UI 多会话与真实 Agent 回复](docs/deepccc-web-ui.png)
+![DeepCCC Web UI 图片附件与真实 Agent 回复](docs/deepccc-web-ui.png)
 
 命中需要确认的命令时，审批卡会直接出现在当前会话时间线中，不打断到弹窗：
 
@@ -59,6 +60,7 @@ npm run dev
 
 - Web-first：多会话、持久化历史、实时流式过程、停止和恢复
 - 会话配置：每个会话独立选择 model、subModel 和 effort
+- 图片附件：Web 支持选择、粘贴和拖拽 PNG/JPEG/WebP；Agent 可用 `present_file` 回传图片
 - 本地工具：代码搜索、文件读写、补丁、命令执行、Git、网页搜索和抓取
 - 权限审批：危险命令在会话时间线中暂停，支持拒绝、允许一次、会话允许和永久允许
 - 上下文管理：自动压缩、原始流日志和跨会话历史检索
@@ -153,6 +155,8 @@ deepccc
 
 Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以同时运行，即使它们指向同一个工作目录。每个会话可独立选择 model、subModel 和 effort，并持续复用 CLI 已保存的历史。注意：当前版本不自动创建 Git worktree；同目录的多个运行中 Agent 直接修改同一组文件，页面会提示覆盖与冲突风险。
 
+图片始终按本地附件处理，不转换为 Provider 原生多模态消息。Web 支持文件选择、剪贴板粘贴和拖拽，每条消息最多 10 张 PNG/JPEG/WebP、单张最大 20 MB；附件复制到 `~/.deepccc/attachments/<session-id>/`，Agent 收到本地绝对路径后使用可用工具自行处理。Agent 可调用 `present_file` 把当前工作目录或会话附件目录中的图片直接展示在会话中；删除会话时对应附件一并清理。
+
 API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic Messages。完整 API Key 只保存在本机 `~/.deepccc/config.json`，浏览器读取设置时仅返回掩码。危险命令会在会话中暂停并请求“拒绝、允许一次、本会话允许、永久允许”，浏览器断开或审批超时默认拒绝。
 
 `git.coAuthor.enabled` 默认开启。DeepCCC 通过 `run_command` 创建 Git 提交时会保留用户为
@@ -221,6 +225,12 @@ deepccc-cli --provider anthropic --base-url https://api.example.com --api-key "$
 
 ```bash
 deepccc-cli --cwd /path/to/project
+```
+
+附加一张或多张本地图片（可重复传入 `--image`，仍采用本地附件路径，不发送原生多模态内容）：
+
+```bash
+deepccc-cli --image ./error.png --image ./expected.webp
 ```
 
 恢复当前工作目录最近一次会话：

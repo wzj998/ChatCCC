@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import {
   DEEPCCC_HOME,
   loadConfig,
@@ -40,7 +41,8 @@ export interface PublicDeepCccConfig {
 export interface DeepCccWebRequestHandlerOptions {
   runtime: Pick<DeepCccWebRuntime,
     "listSessions" | "createSession" | "getSession" | "updateSession" | "deleteSession" |
-    "sendMessage" | "stopSession" | "resolveApproval" | "subscribe" | "subscribeAll"
+    "sendMessage" | "stopSession" | "resolveApproval" | "subscribe" | "subscribeAll" |
+    "addAttachment" | "readAttachment" | "deleteAttachment" | "readArtifact"
   >;
   getPublicConfig: () => PublicDeepCccConfig;
   saveConfig: (patch: DeepCccConfigPatch) => Promise<PublicDeepCccConfig> | PublicDeepCccConfig;
@@ -157,6 +159,34 @@ export function createDeepCccWebRequestHandler(options: DeepCccWebRequestHandler
         const session = await options.runtime.createSession({ ...body, cwd });
         return jsonReply(res, 201, { ok: true, session });
       }
+      const attachmentMatch = path.match(/^\/api\/sessions\/([^/]+)\/attachments(?:\/([^/]+))?$/);
+      if (attachmentMatch) {
+        const sessionId = decodeURIComponent(attachmentMatch[1]);
+        const attachmentId = attachmentMatch[2] ? decodeURIComponent(attachmentMatch[2]) : "";
+        if (method === "POST" && !attachmentId) {
+          const originalName = url.searchParams.get("name")?.trim() || "image";
+          const bytes = await readBinary(req, MAX_ATTACHMENT_BYTES);
+          const attachment = await options.runtime.addAttachment(sessionId, { originalName, bytes });
+          return jsonReply(res, 201, { ok: true, attachment });
+        }
+        if (method === "GET" && attachmentId) {
+          const stored = await options.runtime.readAttachment(sessionId, attachmentId);
+          if (!stored) return jsonReply(res, 404, { ok: false, error: "Image attachment not found" });
+          return binaryReply(res, 200, stored.bytes, stored.attachment.mimeType, stored.attachment.originalName);
+        }
+        if (method === "DELETE" && attachmentId) {
+          const deleted = await options.runtime.deleteAttachment(sessionId, attachmentId);
+          return jsonReply(res, deleted ? 200 : 404, { ok: deleted });
+        }
+      }
+      const artifactMatch = path.match(/^\/api\/sessions\/([^/]+)\/artifact$/);
+      if (artifactMatch && method === "GET") {
+        const artifactPath = url.searchParams.get("path") ?? "";
+        if (!artifactPath) throw new WebHttpError(400, "Artifact path is required");
+        const artifact = await options.runtime.readArtifact(decodeURIComponent(artifactMatch[1]), artifactPath);
+        if (!artifact) return jsonReply(res, 404, { ok: false, error: "Artifact image not found" });
+        return binaryReply(res, 200, artifact.bytes, artifact.mimeType, artifact.path.split(/[\\/]/).at(-1) ?? "image");
+      }
       const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)$/);
       if (sessionMatch && method === "GET") {
         return jsonReply(res, 200, { ok: true, session: await options.runtime.getSession(decodeURIComponent(sessionMatch[1])) });
@@ -177,8 +207,11 @@ export function createDeepCccWebRequestHandler(options: DeepCccWebRequestHandler
       }
       const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
       if (messagesMatch && method === "POST") {
-        const body = await readJson<{ text?: string }>(req);
-        const result = await options.runtime.sendMessage(decodeURIComponent(messagesMatch[1]), body.text ?? "");
+        const body = await readJson<{ text?: string; attachmentIds?: unknown }>(req);
+        const attachmentIds = Array.isArray(body.attachmentIds)
+          ? body.attachmentIds.filter((value): value is string => typeof value === "string")
+          : [];
+        const result = await options.runtime.sendMessage(decodeURIComponent(messagesMatch[1]), body.text ?? "", attachmentIds);
         return jsonReply(res, 202, { ok: true, ...result });
       }
       const stopMatch = path.match(/^\/api\/sessions\/([^/]+)\/stop$/);
@@ -365,6 +398,19 @@ async function readJson<T>(req: IncomingMessage): Promise<T> {
   }
 }
 
+async function readBinary(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > maxBytes) throw new WebHttpError(413, "Image attachment exceeds the 20 MB limit");
+    chunks.push(buffer);
+  }
+  if (!chunks.length) throw new WebHttpError(400, "Image attachment must not be empty");
+  return Buffer.concat(chunks);
+}
+
 async function assertDirectory(path: string): Promise<void> {
   try {
     if (!(await stat(path)).isDirectory()) throw new Error("not a directory");
@@ -386,6 +432,23 @@ function jsonReply(res: ServerResponse, status: number, value: unknown): void {
 
 function textReply(res: ServerResponse, status: number, value: string, contentType: string): void {
   res.writeHead(status, { "content-type": contentType, "cache-control": "no-store" });
+  res.end(value);
+}
+
+function binaryReply(
+  res: ServerResponse,
+  status: number,
+  value: Uint8Array,
+  contentType: string,
+  fileName: string,
+): void {
+  res.writeHead(status, {
+    "content-type": contentType,
+    "content-length": String(value.byteLength),
+    "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
   res.end(value);
 }
 

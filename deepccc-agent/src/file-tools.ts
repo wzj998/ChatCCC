@@ -10,6 +10,7 @@ import { createInterface } from "node:readline";
 import { jsonSchema, tool, type ToolSet } from "ai";
 
 import { isDangerousCommand, type PermissionGate, type PermissionRequest } from "./permissions.js";
+import { detectImageMime, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { killProcessTree } from "./proc-tree-kill.js";
 import {
   searchBuiltinSessions,
@@ -211,6 +212,19 @@ export interface ApplyPatchOutput {
   changedFiles: ApplyPatchFileChange[];
 }
 
+export interface PresentFileInput {
+  path: string;
+  caption?: string;
+}
+
+export interface PresentFileOutput {
+  path: string;
+  name: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  size: number;
+  caption?: string;
+}
+
 /**
  * 把 `~` / `~/x`（含反斜杠 `~\\x`）展开为用户主目录绝对路径。
  * `~user/x` 形式不展开（Node 无内置支持），保持原样交给后续解析。
@@ -250,6 +264,23 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function presentFileForTool(cwd: string, input: PresentFileInput): Promise<PresentFileOutput> {
+  const path = resolveToolPath(cwd, input.path);
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile()) throw new Error(`Image file not found: ${input.path}`);
+  if (info.size > MAX_ATTACHMENT_BYTES) throw new Error(`Image file exceeds the 20 MB limit: ${input.path}`);
+  const mimeType = detectImageMime(await readFile(path));
+  if (!mimeType) throw new Error(`present_file only supports PNG, JPEG, or WebP images: ${input.path}`);
+  const caption = input.caption?.trim();
+  return {
+    path,
+    name: basename(path),
+    mimeType,
+    size: info.size,
+    ...(caption ? { caption: caption.slice(0, 500) } : {}),
+  };
 }
 
 function sha256(buffer: Buffer | string): string {
@@ -1321,6 +1352,19 @@ export function createBuiltinFileTools(
         required: ["query"],
       }),
       execute: (input, options) => searchCodeForTool(cwd, input, options.abortSignal),
+    }),
+    present_file: tool<PresentFileInput, PresentFileOutput>({
+      description: "把本地 PNG、JPEG 或 WebP 图片作为会话图片展示给用户。仅在图片文件已经生成并需要交付时调用。",
+      inputSchema: jsonSchema<PresentFileInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          path: { type: "string", description: "图片绝对路径或相对于会话工作目录的路径。" },
+          caption: { type: "string", description: "可选的图片说明。" },
+        },
+        required: ["path"],
+      }),
+      execute: (input) => presentFileForTool(cwd, input),
     }),
     run_command: tool<RunCommandInput, RunCommandOutput>({
       description: "在本地工作区运行非交互式 shell 命令。用于测试、git 和包脚本。返回 stdout/stderr 和 exitCode；非零退出码不是工具错误。",

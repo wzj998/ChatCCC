@@ -21,6 +21,24 @@ describe("DeepCCC web HTTP API", () => {
       sendMessage: async () => ({ runId: "run-1" }),
       stopSession: async () => true,
       resolveApproval: async () => true,
+      addAttachment: async (_sessionId: string, input: { originalName: string; bytes: Buffer }) => ({
+        attachmentId: "image-1",
+        originalName: input.originalName,
+        mimeType: "image/png",
+        size: input.bytes.length,
+        absolutePath: "C:\\attachments\\image-1.png",
+      }),
+      readAttachment: async () => ({
+        attachment: { attachmentId: "image-1", originalName: "screen.png", mimeType: "image/png", size: 12 },
+        bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]),
+      }),
+      deleteAttachment: async () => true,
+      readArtifact: async () => ({
+        path: "C:\\repo\\result.png",
+        mimeType: "image/png",
+        size: 12,
+        bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]),
+      }),
       subscribe: () => () => {},
       subscribeAll: () => () => {},
     };
@@ -67,6 +85,10 @@ describe("DeepCCC web HTTP API", () => {
     expect(html).toContain("promptDrafts");
     expect(html).toContain("function cwdKey");
     expect(html).toContain("function clearSelection");
+    expect(html).toContain('id="attachment-input"');
+    expect(html).toContain("handleAttachmentFiles");
+    expect(html).toContain("present_file");
+    expect(html).toContain("withoutToolTranscript");
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
@@ -114,5 +136,26 @@ describe("DeepCCC web HTTP API", () => {
       body: JSON.stringify({ model: "model-b", effort: "xhigh" }),
     }).then((response) => response.json());
     expect(saved.config).toMatchObject({ model: "model-b", effort: "xhigh" });
+  });
+
+  it("uploads, reads, and deletes a session image attachment", async () => {
+    const base = await fixture();
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+    const uploaded = await fetch(`${base}/api/sessions/web-1/attachments?name=screen.png`, {
+      method: "POST",
+      headers: { "content-type": "image/png" },
+      body: png,
+    }).then((response) => response.json());
+    expect(uploaded.attachment).toMatchObject({ attachmentId: "image-1", mimeType: "image/png" });
+
+    const image = await fetch(`${base}/api/sessions/web-1/attachments/image-1`);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await image.arrayBuffer())).toEqual(png);
+
+    const deleted = await fetch(`${base}/api/sessions/web-1/attachments/image-1`, { method: "DELETE" });
+    expect(deleted.status).toBe(200);
+
+    const artifact = await fetch(`${base}/api/sessions/web-1/artifact?path=${encodeURIComponent("C:\\repo\\result.png")}`);
+    expect(artifact.headers.get("content-type")).toBe("image/png");
   });
 });
