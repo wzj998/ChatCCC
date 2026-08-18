@@ -1,35 +1,50 @@
-# deepccc
+# DeepCCC
 
-`deepccc` 是一个轻量级本地编程 Agent，针对 DeepSeek 使用体验做了优化，同时支持其他 OpenAI-compatible 模型接口。
+DeepCCC 是一个本地优先的开源 Coding Agent，同时提供浏览器多会话界面、终端 CLI 和适合自动化集成的 JSONL 流。它针对 DeepSeek 做了缓存和上下文优化，也支持任意 OpenAI-compatible 服务以及 Anthropic Messages 协议。
 
-它提供本地 Web UI、交互式命令行、JSONL 流式输出、本地文件工具、命令执行、项目提示词自动注入和持久化上下文。
+- 项目主页：https://github.com/wzj998/deepccc-agent
+- npm 包：https://www.npmjs.com/package/deepccc
+- 运行要求：Node.js >= 20，以及一个兼容模型服务的 API Key
 
-## 当前状态
+## 安装与快速开始
 
-代码已经开源在 GitHub：
-
-https://github.com/wzj998/deepccc-agent
-
-npm 包名规划为 `deepccc`。如果 npm 包已经发布，可以直接全局安装：
+全局安装：
 
 ```bash
 npm install -g deepccc
 ```
 
-如果还没有发布，可以从源码运行：
+配置 `~/.deepccc/config.json` 或 `DEEPCCC_*` 环境变量后，运行：
+
+```bash
+deepccc
+```
+
+浏览器会自动打开 `http://127.0.0.1:28080/`。终端模式使用：
+
+```bash
+deepccc-cli
+```
+
+从源码运行：
 
 ```bash
 git clone https://github.com/wzj998/deepccc-agent.git
 cd deepccc-agent
 npm install
 npm run build
-node bin/deepccc-cli.mjs --help
+npm run dev
 ```
 
-运行要求：
+## 核心能力
 
-- Node.js >= 20
-- DeepSeek 或其他 OpenAI-compatible 模型服务的 API Key
+- Web-first：多会话、持久化历史、实时流式过程、停止和恢复
+- 会话配置：每个会话独立选择 model、subModel 和 effort
+- 本地工具：代码搜索、文件读写、补丁、命令执行、Git、网页搜索和抓取
+- 权限审批：危险命令在会话时间线中暂停，支持拒绝、允许一次、会话允许和永久允许
+- 上下文管理：自动压缩、原始流日志和跨会话历史检索
+- 项目约定：自动加载 AGENTS.md、CLAUDE.md、系统提示和目录式 Skills
+- 自动化：`deepccc-cli --stream-json` 提供稳定 JSONL 事件接口
 
 ## 缓存命中率
 
@@ -119,7 +134,7 @@ deepccc
 
 Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以同时运行，即使它们指向同一个工作目录。每个会话可独立选择 model、subModel 和 effort，并持续复用 CLI 已保存的历史。注意：当前版本不自动创建 Git worktree；同目录的多个运行中 Agent 直接修改同一组文件，页面会提示覆盖与冲突风险。
 
-API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic Messages。完整 API Key 只保存在本机 `~/.deepccc/config.json`，浏览器读取设置时仅返回掩码。高风险命令会在网页中暂停并请求“拒绝、允许一次、本会话允许、永久允许”，浏览器断开或审批超时默认拒绝。
+API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic Messages。完整 API Key 只保存在本机 `~/.deepccc/config.json`，浏览器读取设置时仅返回掩码。危险命令会在会话中暂停并请求“拒绝、允许一次、本会话允许、永久允许”，浏览器断开或审批超时默认拒绝。
 
 `git.coAuthor.enabled` 默认开启。DeepCCC 通过 `run_command` 创建 Git 提交时会保留用户为
 主 Author，并追加 `Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>`。

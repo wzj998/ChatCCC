@@ -21,5 +21,6 @@ describe("DeepCCC Web-first entrypoints", () => {
     const pkg = JSON.parse(readFileSync(existsSync(nested) ? nested : join(process.cwd(), "package.json"), "utf8"));
     expect(pkg.bin).toMatchObject({ deepccc: "bin/deepccc.mjs", "deepccc-cli": "bin/deepccc-cli.mjs" });
     expect(pkg.scripts).toMatchObject({ dev: "tsx src/web-entry.ts", "dev:cli": "tsx src/cli.ts" });
+    expect(pkg.files).toContain("README.md");
   });
 });

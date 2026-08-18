@@ -79,7 +79,9 @@ import {
   loadSessionRegistryForBinding,
   removeSessionRegistryRecord,
   saveSessionTool,
+  saveSessionPresentation,
   recordChatPlatform,
+  type SessionsListEntry,
 } from "./session.ts";
 import {
   bindChatToSession,
@@ -95,7 +97,12 @@ import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./f
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
 import { getChatGptSubscriptionStatus, type ChatGptSubscriptionResult } from "./chatgpt-subscription.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
-import { cwdDisplayName, sessionChatName } from "./session-name.ts";
+import {
+  cwdDisplayName,
+  normalizeSessionDisplayTitle,
+  sessionChatName,
+  sessionDisplayTitleFromPrompt,
+} from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
 import { acquireUpdateCommandGuard } from "./update-command-guard.ts";
 import { createInternalRestartEnv, INTERNAL_RESTART_ENV_VAR } from "./startup-lifecycle.ts";
@@ -530,6 +537,21 @@ async function sendUsageError(platform: PlatformAdapter, chatId: string, tool: U
 
 function isUntitledSessionChatName(name: string): boolean {
   return name === "新会话" || name.startsWith("新会话-");
+}
+
+const sessionListViews = new Map<string, string[]>();
+
+function orderSessionsForCard(sessions: SessionsListEntry[]): SessionsListEntry[] {
+  const tools = ["claude", "cursor", "codex", "ccc", "dsh"];
+  return tools.flatMap((tool) => sessions.filter((session) => session.tool === tool));
+}
+
+function parseSessionsCommand(text: string): { query?: string; includeArchived?: boolean; archivedOnly?: boolean } {
+  const raw = text.trim().slice("/sessions".length).trim();
+  if (!raw) return {};
+  if (raw === "--archived") return { includeArchived: true, archivedOnly: true };
+  if (raw.startsWith("--all")) return { includeArchived: true, query: raw.slice("--all".length).trim() || undefined };
+  return { query: raw };
 }
 
 async function fixedSessionChatName(chatId: string): Promise<string | null> {
@@ -1185,11 +1207,14 @@ async function handleCommandInternal(
 
   const maintenanceAllowedCommands = new Set([
     "/stop", "/cancel", "/state", "/sessions", "/usage", "/safestatus", "/cancelsf", "/restart", "/update", "/reload", "/help",
+    "/pin", "/unpin", "/archive", "/unarchive",
   ]);
+  const maintenancePresentationCommand = normalizedCommandText.startsWith("/rename ")
+    || normalizedCommandText.startsWith("/sessions ");
   if (
     isSafeMaintenanceAdmissionClosed()
     && !acceptedBeforeSafeMaintenance
-    && (!isCommandText || !maintenanceAllowedCommands.has(normalizedCommandText))
+    && (!isCommandText || (!maintenanceAllowedCommands.has(normalizedCommandText) && !maintenancePresentationCommand))
   ) {
     await platform.sendText(
       chatId,
@@ -1872,6 +1897,27 @@ async function handleCommandInternal(
       }
     }
 
+    // Display titles are independent from chatName. Preserve the existing IM
+    // group-name behavior while giving session lists a durable user-facing title.
+    if (!isCommandText) {
+      try {
+        const registry = await loadSessionRegistryForBinding();
+        const current = registry[chatId];
+        if (current && !current.displayTitle && current.namePolicy !== "fixed") {
+          const displayTitle = sessionDisplayTitleFromPrompt(text);
+          await recordSessionRegistry({
+            chatId,
+            sessionId,
+            tool: descriptionTool,
+            displayTitle,
+          });
+          await saveSessionPresentation(sessionId, { displayTitle });
+        }
+      } catch (err) {
+        console.error(`[${ts()}] [SESSION-TITLE] auto title failed: ${(err as Error).message}`);
+      }
+    }
+
     if (isCommandText && textLower === "/stop") {
       logTrace(tid, "BRANCH", { cmd: "/stop" });
       if (stopSession(sessionId)) {
@@ -1942,13 +1988,56 @@ async function handleCommandInternal(
       return;
     }
 
-    if (isCommandText && textLower === "/sessions") {
-      logTrace(tid, "BRANCH", { cmd: "/sessions" });
-      const allSessions = await getAllSessionsStatus();
+    const renameMatch = isCommandText ? text.trim().match(/^\/rename(?:\s+(.+))?$/i) : null;
+    if (renameMatch) {
+      logTrace(tid, "BRANCH", { cmd: "/rename" });
+      if (!renameMatch[1]) {
+        const registry = await loadSessionRegistryForBinding();
+        const currentTitle = registry[chatId]?.displayTitle || registry[chatId]?.chatName || "（未命名）";
+        await platform.sendText(chatId, `当前会话标题：${currentTitle}\n用法：/rename 新名称`).catch(() => {});
+        return;
+      }
+      try {
+        const displayTitle = normalizeSessionDisplayTitle(renameMatch[1]);
+        await recordSessionRegistry({ chatId, sessionId, tool: descriptionTool, displayTitle });
+        await saveSessionPresentation(sessionId, { displayTitle });
+        await platform.sendText(chatId, `会话标题已更新为：${displayTitle}\n群名保持不变。`).catch(() => {});
+        logTrace(tid, "DONE", { outcome: "rename_session", displayTitle });
+      } catch (err) {
+        await platform.sendText(chatId, `会话重命名失败：${(err as Error).message}`).catch(() => {});
+      }
+      return;
+    }
+
+    if (isCommandText && ["/pin", "/unpin", "/archive", "/unarchive"].includes(textLower)) {
+      const registry = await loadSessionRegistryForBinding();
+      const current = registry[chatId];
+      const pinned = textLower === "/pin" ? true : textLower === "/unpin" ? false : current?.pinned;
+      const archivedAt = textLower === "/archive" ? Date.now() : textLower === "/unarchive" ? null : current?.archivedAt;
+      await recordSessionRegistry({ chatId, sessionId, tool: descriptionTool, pinned, archivedAt });
+      await saveSessionPresentation(sessionId, { pinned, archivedAt });
+      const message = textLower === "/pin" ? "会话已置顶。"
+        : textLower === "/unpin" ? "会话已取消置顶。"
+          : textLower === "/archive" ? "会话已归档；可用 /sessions --archived 查看。"
+            : "会话已取消归档。";
+      await platform.sendText(chatId, message).catch(() => {});
+      logTrace(tid, "DONE", { outcome: textLower.slice(1) });
+      return;
+    }
+
+    if (isCommandText && (textLower === "/sessions" || textLower.startsWith("/sessions "))) {
+      const listOptions = parseSessionsCommand(text);
+      logTrace(tid, "BRANCH", { cmd: "/sessions", ...listOptions });
+      const allSessions = await getAllSessionsStatus(listOptions);
+      const orderedSessions = orderSessionsForCard(allSessions);
+      sessionListViews.set(chatId, orderedSessions.map((session) => session.sessionId));
       const now = Date.now();
-      const cardData = allSessions.map((s) => ({
+      const cardData = orderedSessions.map((s) => ({
         sessionId: s.sessionId,
         chatName: s.chatName,
+        displayTitle: s.displayTitle,
+        pinned: s.pinned,
+        archivedAt: s.archivedAt,
         chatId: s.chatId,
         chatType: s.chatType,
         active: s.active,
@@ -2119,19 +2208,12 @@ async function handleCommandInternal(
 
       const index = parseInt(sessionMatch[1], 10) - 1;
       logTrace(tid, "BRANCH", { cmd: "/session", index: index + 1 });
-      const allSessions = await getAllSessionsStatus();
-      const claudeOrdered = allSessions.filter((s) => s.tool === "claude");
-      const cursorOrdered = allSessions.filter((s) => s.tool === "cursor");
-      const codexOrdered = allSessions.filter((s) => s.tool === "codex");
-      const cccOrdered = allSessions.filter((s) => s.tool === "ccc");
-      const dshOrdered = allSessions.filter((s) => s.tool === "dsh");
-      const ordered = [
-        ...claudeOrdered,
-        ...cursorOrdered,
-        ...codexOrdered,
-        ...cccOrdered,
-        ...dshOrdered,
-      ];
+      const viewIds = sessionListViews.get(chatId);
+      const allSessions = await getAllSessionsStatus({ includeArchived: true, limit: 100 });
+      const byId = new Map(allSessions.map((session) => [session.sessionId, session]));
+      const ordered = viewIds !== undefined
+        ? viewIds.map((sessionId) => byId.get(sessionId)).filter((session): session is SessionsListEntry => !!session)
+        : orderSessionsForCard(allSessions.filter((session) => !session.archivedAt).slice(0, 20));
       if (ordered.length === 0) {
         await platform.sendCard(
           chatId,
@@ -2192,6 +2274,9 @@ async function handleCommandInternal(
         tool: target.tool,
         chatName: newName2,
         namePolicy: fixedName2 ? "fixed" : "auto",
+        displayTitle: target.displayTitle,
+        pinned: target.pinned,
+        archivedAt: target.archivedAt ?? null,
         newDescription: `${descPrefix2} ${target.sessionId}`,
         initialTurnCount: target.turnCount,
         initialContextTokens: 0,
@@ -2718,13 +2803,25 @@ async function handleCommandInternal(
     return;
   }
 
-  if (isCommandText && textLower === "/sessions") {
-    logTrace(tid, "BRANCH", { cmd: "/sessions", scope: "global" });
-    const allSessions = await getAllSessionsStatus();
+  if (isCommandText && (/^\/rename(?:\s|$)/.test(textLower) || ["/pin", "/unpin", "/archive", "/unarchive"].includes(textLower))) {
+    await platform.sendText(chatId, "当前没有绑定会话。请进入具体会话后再修改标题、置顶或归档状态。").catch(() => {});
+    logTrace(tid, "DONE", { outcome: "session_presentation_no_session" });
+    return;
+  }
+
+  if (isCommandText && (textLower === "/sessions" || textLower.startsWith("/sessions "))) {
+    const listOptions = parseSessionsCommand(text);
+    logTrace(tid, "BRANCH", { cmd: "/sessions", scope: "global", ...listOptions });
+    const allSessions = await getAllSessionsStatus(listOptions);
+    const orderedSessions = orderSessionsForCard(allSessions);
+    sessionListViews.set(chatId, orderedSessions.map((session) => session.sessionId));
     const now = Date.now();
-    const cardData = allSessions.map((s) => ({
+    const cardData = orderedSessions.map((s) => ({
       sessionId: s.sessionId,
       chatName: s.chatName,
+      displayTitle: s.displayTitle,
+      pinned: s.pinned,
+      archivedAt: s.archivedAt,
       chatId: s.chatId,
       chatType: s.chatType,
       active: s.active,

@@ -2489,6 +2489,40 @@ describe("getAllSessionsStatus", () => {
     expect(cursor.effort).toBeNull();
     expect(cursor.model).toBe("Composer 2 Fast");
   });
+
+  it("persists display titles independently from chatName and supports pin, archive, and search", async () => {
+    await recordSessionRegistry({
+      chatId: "chat-a",
+      sessionId: "sa",
+      tool: "claude",
+      chatName: "unchanged-group-name",
+      displayTitle: "Release checklist",
+      pinned: true,
+      updatedAt: 100,
+    });
+    await recordSessionRegistry({
+      chatId: "chat-b",
+      sessionId: "sb",
+      tool: "claude",
+      chatName: "another-group",
+      displayTitle: "Archived migration",
+      archivedAt: 200,
+      updatedAt: 200,
+    });
+
+    expect(await getAllSessionsStatus({ query: "release" })).toEqual([
+      expect.objectContaining({
+        sessionId: "sa",
+        chatName: "unchanged-group-name",
+        displayTitle: "Release checklist",
+        pinned: true,
+      }),
+    ]);
+    expect(await getAllSessionsStatus()).toHaveLength(1);
+    expect(await getAllSessionsStatus({ archivedOnly: true })).toEqual([
+      expect.objectContaining({ sessionId: "sb", displayTitle: "Archived migration", archivedAt: 200 }),
+    ]);
+  });
 });
 
 describe("processedMessages dedup", () => {

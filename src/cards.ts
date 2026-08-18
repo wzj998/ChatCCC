@@ -161,6 +161,8 @@ export function buildHelpCard(
     "发送 **/new ccc** 创建新 CCC Agent 会话",
     "发送 **/new dsh** 创建新 DeepSeek Harness 会话",
     "发送 **/forget** 重置当前会话（忘掉上下文，沿用当前工作目录，不切换）",
+    "发送 **/rename 名称** 修改会话展示标题（不会修改群名）",
+    "发送 **/sessions 关键词** 搜索会话，**/pin** 置顶，**/archive** 归档",
     "发送 **/plan** 以规划模式提问（只读，不执行写操作）",
     "发送 **/ask** 以问答模式提问（只读，不执行写操作）",
     "发送 **/usage** 查看当前 Agent 的用量或余额",
@@ -347,6 +349,9 @@ function pushSessionGroup(
 export function buildSessionsCard(sessions: Array<{
   sessionId: string;
   chatName: string;
+  displayTitle?: string;
+  pinned?: boolean;
+  archivedAt?: number;
   chatId: string;
   chatType?: string;
   active: boolean;
@@ -393,7 +398,8 @@ export function buildSessionsCard(sessions: Array<{
       extra = ` | 本轮: ${mins}分${secs}秒`;
     }
     const toolLabel = sessionToolLabel(s.tool);
-    const namePart = s.chatName ? `**${s.chatName}** ` : "";
+    const title = s.displayTitle || s.chatName;
+    const namePart = title ? `${s.pinned ? "📌 " : ""}**${title}** ` : "";
     const chatTag = !s.chatId
       ? " (chat id缺失)"
       : s.chatType === "p2p"
@@ -401,7 +407,7 @@ export function buildSessionsCard(sessions: Array<{
         : s.chatType === "group" || (s.chatType == null && s.chatId.startsWith("oc_"))
           ? " (群聊)"
           : "";
-    return `**${i + 1}.** ${namePart}${chatTag} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
+    return `**${i + 1}.** ${namePart}${chatTag}${s.archivedAt ? " (已归档)" : ""} \`${shortId}\` ${status} | 工具: ${toolLabel} | 轮数: ${s.turnCount} | ${s.model}${extra}`;
   };
 
   const lines: string[] = [`共 **${sessions.length}** 个会话:`, ""];
@@ -419,8 +425,8 @@ export function buildSessionsCard(sessions: Array<{
       { tag: "div", text: { tag: "lark_md", content: lines.join("\n") } },
       { tag: "hr" },
       { tag: "div", text: { tag: "lark_md", content: fixedPrivateSession
-        ? "当前飞书私聊使用专属会话；默认 Agent 变化后，下一条普通消息会自动创建对应 Agent 的新空会话。发送 **/forget** 可在私聊中原地重置（忘掉当前上下文）。群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
-        : "在会话群内发送 **/forget** 可重置当前会话（忘掉上下文，创建新 Session，保留工作目录和群聊）。\n发送 **/session 数字**（如 `/session 1`）可将当前群聊切换到列表中对应编号的会话。" } },
+        ? "当前飞书私聊使用专属会话；默认 Agent 变化后，下一条普通消息会自动创建对应 Agent 的新空会话。发送 **/rename 名称** 修改展示标题，**/pin** 置顶，**/archive** 归档，**/sessions 关键词** 搜索。发送 **/forget** 可在私聊中原地重置；群聊会话请回到对应群聊继续，私聊不支持 **/session** 切换。"
+        : "发送 **/rename 名称** 修改展示标题，**/pin** 置顶，**/archive** 归档，**/sessions 关键词** 搜索，**/sessions --archived** 查看归档。\n发送 **/session 数字** 可切换到最近一次列表中对应编号的会话；**/forget** 会保留群聊和工作目录并创建新 Session。" } },
       { tag: "hr" },
       {
         tag: "action",

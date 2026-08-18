@@ -778,6 +778,9 @@ interface SessionToolRecord {
   tool: string;
   createdAt: number;
   chatName?: string;
+  displayTitle?: string;
+  pinned?: boolean;
+  archivedAt?: number;
 }
 
 let sessionToolsFile = SESSIONS_FILE;
@@ -809,6 +812,25 @@ export async function saveSessionTool(sessionId: string, tool: string, chatName?
     tool,
     createdAt: existing?.createdAt ?? Date.now(),
     ...(mergedChatName ? { chatName: mergedChatName } : {}),
+    ...(existing?.displayTitle ? { displayTitle: existing.displayTitle } : {}),
+    ...(existing?.pinned ? { pinned: true } : {}),
+    ...(existing?.archivedAt ? { archivedAt: existing.archivedAt } : {}),
+  };
+  await saveSessionTools(data);
+}
+
+export async function saveSessionPresentation(
+  sessionId: string,
+  patch: { displayTitle?: string; pinned?: boolean; archivedAt?: number | null },
+): Promise<void> {
+  const data = await loadSessionTools();
+  const existing = data[sessionId];
+  if (!existing) return;
+  data[sessionId] = {
+    ...existing,
+    ...(patch.displayTitle !== undefined ? { displayTitle: patch.displayTitle } : {}),
+    ...(patch.pinned !== undefined ? { pinned: patch.pinned } : {}),
+    ...(patch.archivedAt === null ? { archivedAt: undefined } : patch.archivedAt !== undefined ? { archivedAt: patch.archivedAt } : {}),
   };
   await saveSessionTools(data);
 }
@@ -841,6 +863,10 @@ export interface SessionRegistryUpdate {
   /** 会话容器类型；旧 registry 没有该字段，读取时必须兼容。 */
   chatType?: string;
   chatName?: string;
+  /** User-facing title independent from the IM chat/group name. */
+  displayTitle?: string;
+  pinned?: boolean;
+  archivedAt?: number | null;
   /** fixed keeps project-owned group names stable across first prompt and session switches. */
   namePolicy?: "fixed" | "auto";
   turnCount?: number;
@@ -856,6 +882,9 @@ interface SessionRegistryRecord {
   tool: string;
   chatType?: string;
   chatName: string;
+  displayTitle?: string;
+  pinned?: boolean;
+  archivedAt?: number;
   namePolicy?: "fixed" | "auto";
   turnCount: number;
   lastContextTokens: number;
@@ -922,6 +951,9 @@ export async function recordSessionRegistry(update: SessionRegistryUpdate): Prom
     tool: update.tool,
     chatType: update.chatType ?? existing?.chatType,
     chatName: update.chatName ?? existing?.chatName ?? "",
+    displayTitle: update.displayTitle ?? existing?.displayTitle,
+    pinned: update.pinned ?? existing?.pinned,
+    archivedAt: update.archivedAt === null ? undefined : update.archivedAt ?? existing?.archivedAt,
     namePolicy: update.namePolicy ?? existing?.namePolicy,
     turnCount: update.turnCount ?? existing?.turnCount ?? 0,
     lastContextTokens: update.lastContextTokens ?? existing?.lastContextTokens ?? 0,
@@ -1129,6 +1161,9 @@ export interface SwitchChatBindingArgs {
   /** 群名（私聊忽略） */
   chatName: string;
   namePolicy?: "fixed" | "auto";
+  displayTitle?: string;
+  pinned?: boolean;
+  archivedAt?: number | null;
   /** 群描述（私聊忽略），通常为 `${sessionPrefixForTool(tool)} ${newSessionId}` */
   newDescription: string;
   /** 切换后 sessionInfoMap 的初始 turnCount/lastContextTokens（如沿用历史） */
@@ -1152,6 +1187,9 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
     tool,
     chatName,
     namePolicy,
+    displayTitle,
+    pinned,
+    archivedAt,
     newDescription,
     initialTurnCount = 0,
     initialContextTokens = 0,
@@ -1197,6 +1235,9 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
     chatType,
     chatName,
     namePolicy,
+    displayTitle,
+    pinned,
+    archivedAt,
     turnCount: initialTurnCount,
     lastContextTokens: initialContextTokens,
     startTime: now,
@@ -2665,6 +2706,9 @@ export interface SessionsListEntry {
   chatType?: string;
   sessionId: string;
   chatName: string;
+  displayTitle: string;
+  pinned: boolean;
+  archivedAt?: number;
   active: boolean;
   turnCount: number;
   startTime: number;
@@ -2674,7 +2718,14 @@ export interface SessionsListEntry {
   tool: string;
 }
 
-export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
+export interface SessionsListOptions {
+  query?: string;
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+  limit?: number;
+}
+
+export async function getAllSessionsStatus(options: SessionsListOptions = {}): Promise<SessionsListEntry[]> {
   const registry = await loadSessionRegistry();
   const registryEntries = Object.values(registry)
     .filter((record) => record.chatId && record.sessionId && record.tool)
@@ -2692,6 +2743,9 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
         sessionId,
         tool: record.tool,
         chatName: record.chatName ?? "",
+        displayTitle: record.displayTitle ?? "",
+        pinned: record.pinned ?? false,
+        archivedAt: record.archivedAt,
         turnCount: 0,
         lastContextTokens: 0,
         startTime: active?.startTime ?? createdAt,
@@ -2700,9 +2754,13 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
         sortTime: active?.startTime ?? createdAt,
       };
     });
+  const query = options.query?.trim().toLowerCase() ?? "";
   const entries = [...registryEntries, ...orphanEntries]
-    .sort((a, b) => b.sortTime - a.sortTime)
-    .slice(0, 20);
+    .filter((entry) => options.archivedOnly ? !!entry.archivedAt : options.includeArchived ? true : !entry.archivedAt)
+    .filter((entry) => !query || [entry.displayTitle, entry.chatName, entry.sessionId, entry.tool]
+      .some((value) => String(value ?? "").toLowerCase().includes(query)))
+    .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.sortTime - a.sortTime)
+    .slice(0, options.limit ?? 20);
   // 并行解析每个 session 的 model/effort（cursor 涉及异步 store IO）
   return Promise.all(
     entries.map(async (info) => {
@@ -2712,6 +2770,9 @@ export async function getAllSessionsStatus(): Promise<SessionsListEntry[]> {
         chatType: info.chatType,
         sessionId: info.sessionId,
         chatName: info.chatName || "",
+        displayTitle: info.displayTitle || "",
+        pinned: info.pinned ?? false,
+        ...(info.archivedAt ? { archivedAt: info.archivedAt } : {}),
         active: !!activePrompts.get(info.sessionId) &&
           !activePrompts.get(info.sessionId)?.stopped &&
           !activePrompts.get(info.sessionId)?.abnormalExit,
