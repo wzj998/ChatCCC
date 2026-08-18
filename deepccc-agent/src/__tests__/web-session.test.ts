@@ -146,6 +146,10 @@ describe("DeepCCC web sessions", () => {
     expect(permissionResolver).toBeTypeOf("function");
     await runtime.resolveApproval(approval.approvalId, "allow-session");
     await runtime.waitForIdle(session.sessionId);
-    expect((await runtime.getSession(session.sessionId)).status).toBe("idle");
+    const completed = await runtime.getSession(session.sessionId);
+    expect(completed.status).toBe("idle");
+    expect(completed.approvals).toEqual([
+      expect.objectContaining({ approvalId: approval.approvalId, answer: "allow-session", status: "resolved" }),
+    ]);
   });
 });

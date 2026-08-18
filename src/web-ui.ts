@@ -2674,8 +2674,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/stop" && method === "POST") return handleStopService(req, res);
   if (url === "/api/restart" && method === "POST") return handleRestartService(req, res);
   if (url === "/api/deepccc-web/start" && method === "POST") {
-    const { startDeepCccWebServer } = await import("../deepccc-agent/src/web-server.ts");
-    const handle = await startDeepCccWebServer({ openBrowser: false, defaultCwd: process.cwd() });
+    const { launchDeepCccWebProcess } = await import("../deepccc-agent/src/web-server.ts");
+    const handle = await launchDeepCccWebProcess({ reuseExisting: true, openBrowser: false, defaultCwd: process.cwd() });
     return jsonReply(res, 200, { ok: true, url: handle.url, port: handle.port, reused: handle.reused });
   }
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);

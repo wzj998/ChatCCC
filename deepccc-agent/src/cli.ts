@@ -2,10 +2,9 @@
  * DeepCCC terminal REPL and JSONL streaming entrypoint — 同步自 ChatCCC
  *
  * Usage:
- *   node bin/deepccc.mjs
- *   node bin/deepccc.mjs --model deepseek-v4-pro
- *   node bin/deepccc.mjs --stream-json --prompt "hello"
- *   node bin/deepccc.mjs web
+ *   node bin/deepccc-cli.mjs
+ *   node bin/deepccc-cli.mjs --model deepseek-v4-pro
+ *   node bin/deepccc-cli.mjs --stream-json --prompt "hello"
  *
  * 交互模式（TTY）下，单轮回复渲染为固定"过程区块"：状态行 + 折叠工具行 +
  * 原地更新正文，不再滚屏刷 JSON；完成/停止/异常后定型留在屏幕上。
@@ -145,7 +144,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
   console.log([
     "DeepCCC terminal agent",
     "",
-    "Usage: deepccc [options]",
+    "Usage: deepccc-cli [options]",
     "",
     "Options:",
     `  --provider <name>    API protocol: openai or anthropic (current default ${appConfig.provider})`,
@@ -162,7 +161,6 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
     "  --plain              Force plain streaming output (no progress block renderer)",
-    "  web                   Start the local Web UI (default http://127.0.0.1:28080)",
     "  --dangerously-bypass-permissions  Skip all permission prompts (aligns with chatccc's bypass mode)",
     "  --help, -h           Show help",
     "",
@@ -599,7 +597,7 @@ async function runRepl(args: ParsedArgs): Promise<void> {
 }
 
 /**
- * skill create 子命令：deepccc skill create <name> [--scope global|project] [--description "..."]
+ * skill create 子命令：deepccc-cli skill create <name> [--scope global|project] [--description "..."]
  * 默认创建为全局技能（~/.deepccc/skills/<name>/SKILL.md，Codex 结构）；
  * --scope project 创建为项目技能（<cwd>/.deepccc/skills/<name>/SKILL.md）。
  * 新技能在下一次对话自动生效（技能索引每次 chat() 前重扫）。
@@ -609,7 +607,7 @@ function runSkillCreate(argv: string[]): void {
   const name = positional[0];
   if (!name) {
     console.error(
-      "usage: deepccc skill create <name> [--scope global|project] [--description \"...\"]",
+      "usage: deepccc-cli skill create <name> [--scope global|project] [--description \"...\"]",
     );
     process.exit(1);
   }
@@ -649,23 +647,7 @@ function runSkillCreate(argv: string[]): void {
 }
 
 async function main(): Promise<void> {
-  if (process.argv[2] === "web") {
-    const webArgs = process.argv.slice(3);
-    const portIndex = webArgs.indexOf("--port");
-    const port = portIndex >= 0 && webArgs[portIndex + 1] ? Number(webArgs[portIndex + 1]) : undefined;
-    if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65_535)) {
-      throw new Error("--port must be an integer between 1 and 65535");
-    }
-    const { startDeepCccWebServer } = await import("./web-server.js");
-    const handle = await startDeepCccWebServer({
-      ...(port ? { port } : {}),
-      ...(webArgs.includes("--no-open") ? { openBrowser: false } : {}),
-    });
-    console.log(`DeepCCC Web UI: ${handle.url}${handle.reused ? " (reused existing server)" : ""}`);
-    return;
-  }
-
-  // skill create 子命令：deepccc skill create <name> [--scope global|project] [--description "..."]
+  // skill create 子命令：deepccc-cli skill create <name> [--scope global|project] [--description "..."]
   // 默认创建在全局 ~/.deepccc/skills（Codex 目录结构），--scope project 创建到 <cwd>/.deepccc/skills。
   if (process.argv[2] === "skill" && process.argv[3] === "create") {
     runSkillCreate(process.argv.slice(4));

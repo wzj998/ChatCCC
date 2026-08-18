@@ -23,7 +23,7 @@ git clone https://github.com/wzj998/deepccc-agent.git
 cd deepccc-agent
 npm install
 npm run build
-node bin/deepccc.mjs --help
+node bin/deepccc-cli.mjs --help
 ```
 
 运行要求：
@@ -109,11 +109,13 @@ $env:DEEPCCC_STREAMING="true"
 全局安装后可以直接启动本地网页版：
 
 ```bash
-deepccc web
+deepccc
 ```
 
 默认只监听 `http://127.0.0.1:28080/`，不会暴露到局域网。可在
-`~/.deepccc/config.json` 的 `web.port` 修改端口，`web.openOnStart` 控制启动时是否自动打开浏览器；也可以临时使用 `deepccc web --port 28081 --no-open`。
+`~/.deepccc/config.json` 的 `web.port` 修改端口，`web.openOnStart` 控制启动时是否自动打开浏览器；也可以临时使用 `deepccc --port 28081 --no-open`。默认启动会安全替换经过实例身份验证的旧 DeepCCC Web；传入 `--reuse-existing` 时复用已有实例。`deepccc web` 保留为兼容别名。
+
+从源码开发时，`npm run dev` 启动 Web Server 并打开页面（不启用 watch）；`npm run dev:cli` 启动终端模式。
 
 Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以同时运行，即使它们指向同一个工作目录。每个会话可独立选择 model、subModel 和 effort，并持续复用 CLI 已保存的历史。注意：当前版本不自动创建 Git worktree；同目录的多个运行中 Agent 直接修改同一组文件，页面会提示覆盖与冲突风险。
 
@@ -166,45 +168,45 @@ API 拒绝（context length exceeded），实际窗口以模型与所用服务�
 在当前目录启动一个交互式 Agent：
 
 ```bash
-deepccc
+deepccc-cli
 ```
 
 指定其他模型或 OpenAI-compatible 接口：
 
 ```bash
-deepccc --base-url https://api.openai.com/v1 --api-key "$OPENAI_API_KEY" --model gpt-4.1
+deepccc-cli --base-url https://api.openai.com/v1 --api-key "$OPENAI_API_KEY" --model gpt-4.1
 ```
 
 使用 Anthropic Messages 协议（同样支持流式输出）：
 
 ```bash
-deepccc --provider anthropic --base-url https://api.example.com --api-key "$API_KEY" --model claude-sonnet-4-6
+deepccc-cli --provider anthropic --base-url https://api.example.com --api-key "$API_KEY" --model claude-sonnet-4-6
 ```
 
 指定工作目录：
 
 ```bash
-deepccc --cwd /path/to/project
+deepccc-cli --cwd /path/to/project
 ```
 
 恢复当前工作目录最近一次会话：
 
 ```bash
-deepccc --resume
+deepccc-cli --resume
 ```
 
 设置工具调用步数上限：
 
 ```bash
-deepccc --max-steps 20
+deepccc-cli --max-steps 20
 ```
 
-默认情况下，`deepccc` 不设置固定步数上限，会让模型自然完成工具循环。
+默认情况下，`deepccc-cli` 不设置固定步数上限，会让模型自然完成工具循环。
 
 设置推理强度（reasoning effort）：
 
 ```bash
-deepccc --effort high
+deepccc-cli --effort high
 ```
 
 可选值：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（留空则不传 `reasoning_effort` 请求字段）。
@@ -212,7 +214,7 @@ deepccc --effort high
 限制主对话最大输出 token：
 
 ```bash
-deepccc --max-output-tokens 8192
+deepccc-cli --max-output-tokens 8192
 ```
 
 不设置时使用 Provider 默认值。
@@ -267,7 +269,7 @@ deepccc --max-output-tokens 8192
 `--stream-json` 或程序化调用（无终端可交互）时，高危命令**安全默认拒绝**。需要全自动场景可显式传入：
 
 ```bash
-deepccc --dangerously-bypass-permissions
+deepccc-cli --dangerously-bypass-permissions
 ```
 
 该参数与 `ChatSession` 的 `permissionMode: "bypass"` 等价，也是 chatccc 集成 deepccc 时使用的模式（对齐 chatccc 调用 Claude Code / Codex 的 bypass 方式）。
@@ -281,7 +283,7 @@ deepccc --dangerously-bypass-permissions
 如果终端渲染出现异常，可以强制回退为纯文本流式输出：
 
 ```bash
-deepccc --plain
+deepccc-cli --plain
 ```
 
 ## JSONL 流式输出
@@ -289,13 +291,13 @@ deepccc --plain
 JSONL 模式适合脚本、服务端集成或其他上层系统调用：
 
 ```bash
-deepccc --stream-json --prompt "检查这个仓库并总结测试命令"
+deepccc-cli --stream-json --prompt "检查这个仓库并总结测试命令"
 ```
 
 也可以从 stdin 传入提示词：
 
 ```bash
-echo "运行测试并解释失败原因" | deepccc --stream-json
+echo "运行测试并解释失败原因" | deepccc-cli --stream-json
 ```
 
 输出是逐行 JSON：

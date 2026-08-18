@@ -18,6 +18,19 @@ export interface WebSessionMeta {
   effort: string;
   createdAt: string;
   updatedAt: string;
+  approvals: WebApprovalRecord[];
+}
+
+export interface WebApprovalRecord {
+  approvalId: string;
+  tool: string;
+  action: string;
+  reason: string;
+  detail: string;
+  createdAt: string;
+  status: "pending" | "resolved";
+  answer?: "allow" | "allow-session" | "allow-always" | "deny";
+  resolvedAt?: string;
 }
 
 export interface CreateWebSessionInput {
@@ -66,6 +79,7 @@ export class WebSessionStore {
       effort: input.effort?.trim() ?? "",
       createdAt: timestamp,
       updatedAt: timestamp,
+      approvals: [],
     };
     await this.save(meta);
     return meta;
@@ -90,6 +104,7 @@ export class WebSessionStore {
           effort: "",
           createdAt: new Date(context.createdAt).toISOString(),
           updatedAt: new Date(context.updatedAt).toISOString(),
+          approvals: [],
         };
       }
       return null;
@@ -131,6 +146,27 @@ export class WebSessionStore {
     return true;
   }
 
+  async addApproval(sessionId: string, approval: WebApprovalRecord): Promise<void> {
+    const meta = await this.require(sessionId);
+    await this.save({ ...meta, approvals: [...meta.approvals, approval].slice(-200), updatedAt: this.now().toISOString() });
+  }
+
+  async resolveApproval(
+    sessionId: string,
+    approvalId: string,
+    answer: NonNullable<WebApprovalRecord["answer"]>,
+  ): Promise<void> {
+    const meta = await this.require(sessionId);
+    const resolvedAt = this.now().toISOString();
+    await this.save({
+      ...meta,
+      updatedAt: resolvedAt,
+      approvals: meta.approvals.map((approval) => approval.approvalId === approvalId
+        ? { ...approval, status: "resolved", answer, resolvedAt }
+        : approval),
+    });
+  }
+
   private async require(sessionId: string): Promise<WebSessionMeta> {
     const meta = await this.get(sessionId);
     if (!meta) throw new Error(`DeepCCC web session not found: ${sessionId}`);
@@ -167,5 +203,20 @@ function parseMeta(value: unknown): WebSessionMeta {
   for (const field of ["sessionId", "title", "cwd", "model", "subModel", "effort", "createdAt", "updatedAt"] as const) {
     if (typeof meta[field] !== "string") throw new Error(`Invalid web session ${field}`);
   }
-  return meta as WebSessionMeta;
+  const approvals = Array.isArray(meta.approvals)
+    ? meta.approvals.filter(isApprovalRecord)
+    : [];
+  return { ...meta, approvals } as WebSessionMeta;
+}
+
+function isApprovalRecord(value: unknown): value is WebApprovalRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const approval = value as Partial<WebApprovalRecord>;
+  return typeof approval.approvalId === "string"
+    && typeof approval.tool === "string"
+    && typeof approval.action === "string"
+    && typeof approval.reason === "string"
+    && typeof approval.detail === "string"
+    && typeof approval.createdAt === "string"
+    && (approval.status === "pending" || approval.status === "resolved");
 }
