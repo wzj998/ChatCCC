@@ -36,6 +36,25 @@ npm run build
 npm run dev
 ```
 
+## Web UI 预览
+
+以下画面来自 DeepCCC 对本项目真实开发需求的 Agent 调用。截图仅将用户名、组织名、
+内部域名和绝对路径替换为公开示例，任务内容、模型配置、Agent 回复和审批流程均来自
+实际运行结果。
+
+多会话可以并行处理不同任务，每个会话分别选择 model 和 effort，并实时保留 Agent
+回复与工具过程：
+
+![DeepCCC Web UI 多会话与真实 Agent 回复](docs/deepccc-web-ui.png)
+
+命中需要确认的命令时，审批卡会直接出现在当前会话时间线中，不打断到弹窗：
+
+![DeepCCC 会话内操作审批](docs/deepccc-inline-approval.png)
+
+单一 API 配置作为新会话默认值，模型与 effort 仍可在每个会话中单独覆盖：
+
+![DeepCCC API 与 Web 设置](docs/deepccc-api-settings.png)
+
 ## 核心能力
 
 - Web-first：多会话、持久化历史、实时流式过程、停止和恢复
