@@ -23,8 +23,9 @@ export interface WebRuntimeConfig extends ChatSessionConfig {
 
 export interface WebRuntimeEvent {
   eventId: number;
+  sessionId: string;
   at: string;
-  type: "user" | "agent" | "run_started" | "run_finished" | "approval" | "approval_resolved" | "session_updated";
+  type: "user" | "agent" | "run_started" | "run_finished" | "approval" | "approval_resolved" | "session_updated" | "session_deleted";
   data: unknown;
 }
 
@@ -63,6 +64,7 @@ interface ApprovalWaiter {
   approval: PendingWebApproval;
   resolve: (answer: PermissionAnswer) => void;
   timeout: ReturnType<typeof setTimeout>;
+  ready: Promise<void>;
 }
 
 export class DeepCccWebRuntime {
@@ -74,8 +76,11 @@ export class DeepCccWebRuntime {
   private readonly idFactory: () => string;
   private readonly agents = new Map<string, WebSessionAgent>();
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly startingRuns = new Map<string, AbortController>();
+  private readonly sessionMutations = new Set<string>();
   private readonly events = new Map<string, WebRuntimeEvent[]>();
   private readonly listeners = new Map<string, Set<(event: WebRuntimeEvent) => void>>();
+  private readonly globalListeners = new Set<(event: WebRuntimeEvent) => void>();
   private readonly approvals = new Map<string, ApprovalWaiter>();
   private nextEventId = 1;
 
@@ -138,44 +143,81 @@ export class DeepCccWebRuntime {
   }
 
   async updateSession(sessionId: string, patch: UpdateWebSessionInput): Promise<WebSessionMeta> {
-    if (this.activeRuns.has(sessionId)) throw new Error("Cannot change session settings while the Agent is running");
-    const updated = await this.store.update(sessionId, patch);
-    this.agents.delete(sessionId);
-    this.emit(sessionId, "session_updated", updated);
-    return updated;
+    if (this.activeRuns.has(sessionId) || this.startingRuns.has(sessionId) || this.sessionMutations.has(sessionId)) {
+      throw new Error("Cannot change session settings while another session operation is running");
+    }
+    this.sessionMutations.add(sessionId);
+    try {
+      const updated = await this.store.update(sessionId, patch);
+      this.agents.delete(sessionId);
+      this.emit(sessionId, "session_updated", updated);
+      return updated;
+    } finally {
+      this.sessionMutations.delete(sessionId);
+    }
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    if (this.activeRuns.has(sessionId)) throw new Error("Stop the running session before deleting it");
-    this.agents.delete(sessionId);
-    this.events.delete(sessionId);
-    return this.store.delete(sessionId);
+    if (this.activeRuns.has(sessionId) || this.startingRuns.has(sessionId) || this.sessionMutations.has(sessionId)) {
+      throw new Error("Stop the running session before deleting it");
+    }
+    this.sessionMutations.add(sessionId);
+    try {
+      this.agents.delete(sessionId);
+      const deleted = await this.store.delete(sessionId);
+      if (deleted) {
+        this.emit(sessionId, "session_deleted", { sessionId });
+        this.events.delete(sessionId);
+      }
+      return deleted;
+    } finally {
+      this.sessionMutations.delete(sessionId);
+    }
   }
 
   async sendMessage(sessionId: string, text: string): Promise<{ runId: string }> {
     const prompt = text.trim();
     if (!prompt) throw new Error("Message must not be empty");
-    if (this.activeRuns.has(sessionId)) throw new Error("This session is already running");
-    let meta = await this.requireSession(sessionId);
-    if (meta.title === "新会话" || meta.title === "New session" || meta.title === meta.cwd.split(/[\\/]/).at(-1)) {
-      meta = await this.store.update(sessionId, { title: prompt.replace(/\s+/g, " ").slice(0, 42) });
-    }
-    const runId = `run-${this.idFactory()}`;
     const controller = new AbortController();
-    this.events.set(sessionId, []);
-    this.emit(sessionId, "user", { text: prompt });
-    this.emit(sessionId, "run_started", { runId });
-    const promise = this.run(meta, prompt, runId, controller.signal)
-      .finally(() => this.activeRuns.delete(sessionId));
-    this.activeRuns.set(sessionId, { runId, controller, promise });
-    void promise.catch(() => {});
-    return { runId };
+    if (this.activeRuns.has(sessionId) || this.startingRuns.has(sessionId) || this.sessionMutations.has(sessionId)) {
+      throw new Error("This session is already running");
+    }
+    this.startingRuns.set(sessionId, controller);
+    try {
+      let meta = await this.requireSession(sessionId);
+      if (meta.title === "新会话" || meta.title === "New session" || meta.title === meta.cwd.split(/[\\/]/).at(-1)) {
+        meta = await this.store.update(sessionId, { title: prompt.replace(/\s+/g, " ").slice(0, 42) });
+      }
+      if (controller.signal.aborted) throw new DOMException("The session start was stopped", "AbortError");
+      const runId = `run-${this.idFactory()}`;
+      this.events.set(sessionId, []);
+      this.emit(sessionId, "user", { text: prompt });
+      const promise = Promise.resolve()
+        .then(() => this.run(meta, prompt, runId, controller.signal))
+        .finally(() => {
+          this.activeRuns.delete(sessionId);
+          this.emit(sessionId, "session_updated", { sessionId, status: "idle" });
+        });
+      this.activeRuns.set(sessionId, { runId, controller, promise });
+      this.emit(sessionId, "run_started", { runId });
+      void promise.catch(() => {});
+      return { runId };
+    } finally {
+      this.startingRuns.delete(sessionId);
+    }
   }
 
   async stopSession(sessionId: string): Promise<boolean> {
     const active = this.activeRuns.get(sessionId);
-    if (!active) return false;
+    const starting = this.startingRuns.get(sessionId);
+    if (!active && !starting) return false;
+    starting?.abort();
+    if (!active) return true;
     active.controller.abort();
+    const pending = [...this.approvals.entries()]
+      .filter(([, waiter]) => waiter.approval.sessionId === sessionId);
+    await Promise.all(pending.map(([approvalId, waiter]) =>
+      this.finishApproval(approvalId, waiter, "deny", { stopped: true }).catch(() => {})));
     return true;
   }
 
@@ -186,11 +228,7 @@ export class DeepCccWebRuntime {
   async resolveApproval(approvalId: string, answer: PermissionAnswer): Promise<boolean> {
     const waiter = this.approvals.get(approvalId);
     if (!waiter) return false;
-    clearTimeout(waiter.timeout);
-    this.approvals.delete(approvalId);
-    await this.store.resolveApproval(waiter.approval.sessionId, approvalId, answer);
-    waiter.resolve(answer);
-    this.emit(waiter.approval.sessionId, "approval_resolved", { approvalId, answer });
+    await this.finishApproval(approvalId, waiter, answer);
     return true;
   }
 
@@ -202,6 +240,11 @@ export class DeepCccWebRuntime {
       set.delete(listener);
       if (!set.size) this.listeners.delete(sessionId);
     };
+  }
+
+  subscribeAll(listener: (event: WebRuntimeEvent) => void): () => void {
+    this.globalListeners.add(listener);
+    return () => this.globalListeners.delete(listener);
   }
 
   private async run(meta: WebSessionMeta, prompt: string, runId: string, signal: AbortSignal): Promise<void> {
@@ -235,21 +278,22 @@ export class DeepCccWebRuntime {
       createdAt: this.now().toISOString(),
     };
     return new Promise<PermissionAnswer>((resolve) => {
-      const timeout = setTimeout(() => {
-        this.approvals.delete(approvalId);
-        void this.store.resolveApproval(sessionId, approvalId, "deny").finally(() => {
-          resolve("deny");
-          this.emit(sessionId, "approval_resolved", { approvalId, answer: "deny", timedOut: true });
-        });
-      }, this.approvalTimeoutMs);
-      timeout.unref?.();
-      void this.store.addApproval(sessionId, {
+      const ready = this.store.addApproval(sessionId, {
         ...approval,
         status: "pending",
-      }).then(() => {
-        this.approvals.set(approvalId, { approval, resolve, timeout });
+      });
+      let waiter: ApprovalWaiter;
+      const timeout = setTimeout(() => {
+        void this.finishApproval(approvalId, waiter, "deny", { timedOut: true }).catch(() => {});
+      }, this.approvalTimeoutMs);
+      timeout.unref?.();
+      waiter = { approval, resolve, timeout, ready };
+      this.approvals.set(approvalId, waiter);
+      void ready.then(() => {
+        if (this.approvals.get(approvalId) !== waiter) return;
         this.emit(sessionId, "approval", approval);
       }).catch(() => {
+        if (this.approvals.get(approvalId) !== waiter) return;
         clearTimeout(timeout);
         this.approvals.delete(approvalId);
         resolve("deny");
@@ -257,11 +301,38 @@ export class DeepCccWebRuntime {
     });
   }
 
+  private async finishApproval(
+    approvalId: string,
+    waiter: ApprovalWaiter,
+    answer: PermissionAnswer,
+    extra: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (this.approvals.get(approvalId) !== waiter) return;
+    clearTimeout(waiter.timeout);
+    this.approvals.delete(approvalId);
+    try {
+      await waiter.ready;
+      await this.store.resolveApproval(waiter.approval.sessionId, approvalId, answer);
+    } finally {
+      waiter.resolve(answer);
+      this.emit(waiter.approval.sessionId, "approval_resolved", { approvalId, answer, ...extra });
+    }
+  }
+
   private emit(sessionId: string, type: WebRuntimeEvent["type"], data: unknown): void {
-    const event: WebRuntimeEvent = { eventId: this.nextEventId++, at: this.now().toISOString(), type, data };
+    const event: WebRuntimeEvent = { eventId: this.nextEventId++, sessionId, at: this.now().toISOString(), type, data };
     const events = [...(this.events.get(sessionId) ?? []), event].slice(-500);
     this.events.set(sessionId, events);
-    for (const listener of this.listeners.get(sessionId) ?? []) listener(event);
+    this.notifyListeners(this.listeners.get(sessionId) ?? [], event);
+    if (["run_started", "run_finished", "session_updated", "session_deleted"].includes(type)) {
+      this.notifyListeners(this.globalListeners, event);
+    }
+  }
+
+  private notifyListeners(listeners: Iterable<(event: WebRuntimeEvent) => void>, event: WebRuntimeEvent): void {
+    for (const listener of listeners) {
+      try { listener(event); } catch { /* a disconnected SSE client must not affect the Agent run */ }
+    }
   }
 
   private async requireSession(sessionId: string): Promise<WebSessionMeta> {

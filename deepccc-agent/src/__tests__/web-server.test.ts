@@ -22,6 +22,7 @@ describe("DeepCCC web HTTP API", () => {
       stopSession: async () => true,
       resolveApproval: async () => true,
       subscribe: () => () => {},
+      subscribeAll: () => () => {},
     };
     let config = {
       provider: "openai" as const,
@@ -58,6 +59,14 @@ describe("DeepCCC web HTTP API", () => {
     expect(html).toContain("⚠ 操作审批");
     expect(html).not.toContain("高风险操作审批");
     expect(html).toContain("color-scheme:light");
+    expect(html).toContain('id="session-sub-model"');
+    expect(html).toContain('id="new-sub-model"');
+    expect(html).toContain("new EventSource('/api/events')");
+    expect(html).toContain("detailRequestToken");
+    expect(html).toContain("configDrafts");
+    expect(html).toContain("promptDrafts");
+    expect(html).toContain("function cwdKey");
+    expect(html).toContain("function clearSelection");
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
@@ -80,6 +89,14 @@ describe("DeepCCC web HTTP API", () => {
     const accepted = await fetch(`${base}/api/shutdown`, { method: "POST", headers: { "x-deepccc-instance-token": "owned-token" } });
     expect(accepted.status).toBe(202);
     await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+  });
+
+  it("serves a global SSE stream for cross-session updates", async () => {
+    const base = await fixture();
+    const response = await fetch(`${base}/api/events`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    await response.body?.cancel();
   });
 
   it("creates sessions and saves single-provider API settings", async () => {

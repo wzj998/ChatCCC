@@ -29,16 +29,16 @@ describe("DeepCCC web sessions", () => {
 
   it("persists independent model and effort metadata for each session", async () => {
     const store = await storeFixture();
-    const first = await store.create({ cwd: "C:\\repo", model: "model-a", effort: "high" });
-    const second = await store.create({ cwd: "C:\\repo", model: "model-b", effort: "low" });
+    const first = await store.create({ cwd: "C:\\repo", model: "model-a", subModel: "sub-a", effort: "high" });
+    const second = await store.create({ cwd: "C:\\repo", model: "model-b", subModel: "sub-b", effort: "low" });
 
-    await store.update(first.sessionId, { title: "Frontend", model: "model-c", effort: "xhigh" });
+    await store.update(first.sessionId, { title: "Frontend", model: "model-c", subModel: "sub-c", effort: "xhigh" });
 
     expect(await store.list()).toEqual([
-      expect.objectContaining({ sessionId: first.sessionId, title: "Frontend", model: "model-c", effort: "xhigh" }),
-      expect.objectContaining({ sessionId: second.sessionId, model: "model-b", effort: "low" }),
+      expect.objectContaining({ sessionId: first.sessionId, title: "Frontend", model: "model-c", subModel: "sub-c", effort: "xhigh" }),
+      expect.objectContaining({ sessionId: second.sessionId, model: "model-b", subModel: "sub-b", effort: "low" }),
     ]);
-    expect(await store.get(first.sessionId)).toMatchObject({ cwd: "C:\\repo", model: "model-c", effort: "xhigh" });
+    expect(await store.get(first.sessionId)).toMatchObject({ cwd: "C:\\repo", model: "model-c", subModel: "sub-c", effort: "xhigh" });
   });
 
   it("makes existing CLI sessions available in the Web UI", async () => {
@@ -103,6 +103,43 @@ describe("DeepCCC web sessions", () => {
     await Promise.all([runtime.waitForIdle(first.sessionId), runtime.waitForIdle(second.sessionId)]);
   });
 
+  it("atomically rejects concurrent sends for the same session", async () => {
+    const store = await storeFixture();
+    let release!: () => void;
+    const runtime = new DeepCccWebRuntime({
+      store,
+      loadConfig: () => ({
+        provider: "openai",
+        apiKey: "test-key",
+        baseURL: "https://example.test/v1",
+        model: "default-model",
+        subModel: "",
+        effort: "",
+        maxOutputTokens: undefined,
+        contextWindow: 1_000_000,
+        streaming: true,
+      }),
+      sessionFactory: () => ({
+        async *chat(): AsyncGenerator<ChatEvent> {
+          await new Promise<void>((resolve) => { release = resolve; });
+          yield { type: "done", text: "ok" };
+        },
+      }),
+    });
+    const session = await runtime.createSession({ cwd: "C:\\repo" });
+
+    const results = await Promise.allSettled([
+      runtime.sendMessage(session.sessionId, "first"),
+      runtime.sendMessage(session.sessionId, "second"),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    release();
+    await runtime.waitForIdle(session.sessionId);
+  });
+
   it("surfaces high-risk permission requests and resumes after approval", async () => {
     const store = await storeFixture();
     let permissionResolver: unknown;
@@ -151,5 +188,112 @@ describe("DeepCCC web sessions", () => {
     expect(completed.approvals).toEqual([
       expect.objectContaining({ approvalId: approval.approvalId, answer: "allow-session", status: "resolved" }),
     ]);
+  });
+
+  it("publishes session changes to global subscribers", async () => {
+    const store = await storeFixture();
+    let release!: () => void;
+    const runtime = new DeepCccWebRuntime({
+      store,
+      loadConfig: () => ({
+        provider: "openai",
+        apiKey: "test-key",
+        baseURL: "https://example.test/v1",
+        model: "default-model",
+        subModel: "",
+        effort: "",
+        maxOutputTokens: undefined,
+        contextWindow: 1_000_000,
+        streaming: true,
+      }),
+      sessionFactory: () => ({
+        async *chat(): AsyncGenerator<ChatEvent> {
+          await new Promise<void>((resolve) => { release = resolve; });
+          yield { type: "done", text: "ok" };
+        },
+      }),
+    });
+    const events: Array<{ sessionId: string; type: string }> = [];
+    const unsubscribeThrowingGlobal = runtime.subscribeAll(() => { throw new Error("disconnected global SSE"); });
+    const unsubscribe = runtime.subscribeAll((event) => events.push(event));
+
+    const session = await runtime.createSession({ cwd: "C:\\repo" });
+    const unsubscribeThrowingSession = runtime.subscribe(session.sessionId, () => { throw new Error("disconnected session SSE"); });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      sessionId: session.sessionId,
+      type: "session_updated",
+    }));
+    await runtime.sendMessage(session.sessionId, "run it");
+    expect(await runtime.listSessions()).toContainEqual(expect.objectContaining({
+      sessionId: session.sessionId,
+      status: "running",
+    }));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    release();
+    await runtime.waitForIdle(session.sessionId);
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      sessionId: session.sessionId,
+      type: "session_updated",
+      data: expect.objectContaining({ status: "idle" }),
+    }));
+    expect(events.some((event) => event.type === "user" || event.type === "agent")).toBe(false);
+    await runtime.deleteSession(session.sessionId);
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      sessionId: session.sessionId,
+      type: "session_deleted",
+    }));
+    unsubscribeThrowingSession();
+    unsubscribeThrowingGlobal();
+    unsubscribe();
+  });
+
+  it("immediately denies and clears a pending approval when the session is stopped", async () => {
+    const store = await storeFixture();
+    const runtime = new DeepCccWebRuntime({
+      store,
+      loadConfig: () => ({
+        provider: "openai",
+        apiKey: "test-key",
+        baseURL: "https://example.test/v1",
+        model: "default-model",
+        subModel: "",
+        effort: "",
+        maxOutputTokens: undefined,
+        contextWindow: 1_000_000,
+        streaming: true,
+      }),
+      sessionFactory: (input) => ({
+        async *chat(): AsyncGenerator<ChatEvent> {
+          await input.permissionResolver({
+            tool: "run_command",
+            action: "git clean -fd",
+            reason: "high-risk",
+            detail: "危险命令",
+          });
+          yield { type: "done", text: "finished" };
+        },
+      }),
+      approvalTimeoutMs: 30_000,
+    });
+    const session = await runtime.createSession({ cwd: "C:\\repo" });
+    await runtime.sendMessage(session.sessionId, "clean it");
+    const approval = await vi.waitFor(async () => {
+      const snapshot = await runtime.getSession(session.sessionId);
+      expect(snapshot.pendingApproval).toBeTruthy();
+      return snapshot.pendingApproval!;
+    });
+
+    expect(await runtime.stopSession(session.sessionId)).toBe(true);
+    await runtime.waitForIdle(session.sessionId);
+
+    const stopped = await runtime.getSession(session.sessionId);
+    expect(stopped.pendingApproval).toBeNull();
+    expect(stopped.status).toBe("idle");
+    expect(stopped.approvals).toContainEqual(expect.objectContaining({
+      approvalId: approval.approvalId,
+      answer: "deny",
+      status: "resolved",
+    }));
   });
 });
