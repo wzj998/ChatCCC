@@ -28,7 +28,9 @@ export class JsonTaskRunRepository implements TaskRunRepository {
       try {
         return parseTaskRun(JSON.parse(await readFile(this.pathFor(projectId, runId), "utf8")));
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+        await quarantineCorruptRun(this.pathFor(projectId, runId), err);
+        return null;
       }
     }
     return null;
@@ -52,8 +54,18 @@ export class JsonTaskRunRepository implements TaskRunRepository {
     }
     const runs = await Promise.all(entries
       .filter((entry) => entry.endsWith(".json"))
-      .map(async (entry) => parseTaskRun(JSON.parse(await readFile(join(directory, entry), "utf8")))));
-    return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId));
+      .map(async (entry): Promise<TaskRun | null> => {
+        const path = join(directory, entry);
+        try {
+          return parseTaskRun(JSON.parse(await readFile(path, "utf8")));
+        } catch (err) {
+          await quarantineCorruptRun(path, err);
+          return null;
+        }
+      }));
+    return runs
+      .filter((run): run is TaskRun => run !== null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId));
   }
 
   async listActive(): Promise<TaskRun[]> {
@@ -108,4 +120,10 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
     await unlink(tempPath).catch(() => {});
     throw err;
   }
+}
+
+async function quarantineCorruptRun(path: string, err: unknown): Promise<void> {
+  const quarantinePath = `${path}.corrupt-${Date.now()}`;
+  await rename(path, quarantinePath).catch(() => {});
+  console.error(`[Agent Team] Quarantined corrupt task run ${path}: ${(err as Error).message}`);
 }

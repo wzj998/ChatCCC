@@ -12,8 +12,14 @@ import { feishuP2pContactStore } from "./repositories/feishu-p2p-contact-store.t
 import { JsonMainAgentBindingRepository } from "./repositories/main-agent-binding-repository.ts";
 import { JsonTaskRunRepository } from "./repositories/json-task-run-repository.ts";
 
+const TASK_RUN_CHECKPOINT_INTERVAL_MS = 3_000;
+let taskRunMonitor: ReturnType<typeof setInterval> | null = null;
+let taskRunMonitorBusy = false;
+let taskRunMonitorGeneration = 0;
+
 /** Wire runtime dependencies only from index.ts, keeping the standalone Web UI import side-effect free. */
 export function configureAgentTeamMainAgent(platform: PlatformAdapter): void {
+  const monitorGeneration = ++taskRunMonitorGeneration;
   const bindingRepository = new JsonMainAgentBindingRepository();
   const mainAgentService = new MainAgentService({
     boardService: defaultAgentTeamBoardService,
@@ -30,7 +36,22 @@ export function configureAgentTeamMainAgent(platform: PlatformAdapter): void {
   });
   setDefaultAgentTeamMainAgentService(mainAgentService);
   setDefaultAgentTeamTaskExecutionService(taskExecutionService);
-  void taskExecutionService.recoverInterruptedRuns().catch((err) => {
-    console.error(`[Agent Team] Failed to recover interrupted task runs: ${(err as Error).message}`);
-  });
+  if (taskRunMonitor) clearInterval(taskRunMonitor);
+  void taskExecutionService.recoverInterruptedRuns()
+    .catch((err) => {
+      console.error(`[Agent Team] Failed to recover interrupted task runs: ${(err as Error).message}`);
+    })
+    .finally(() => {
+      if (monitorGeneration !== taskRunMonitorGeneration) return;
+      taskRunMonitor = setInterval(() => {
+        if (taskRunMonitorBusy) return;
+        taskRunMonitorBusy = true;
+        void taskExecutionService.checkpointActiveRuns()
+          .catch((err) => {
+            console.error(`[Agent Team] Failed to checkpoint task runs: ${(err as Error).message}`);
+          })
+          .finally(() => { taskRunMonitorBusy = false; });
+      }, TASK_RUN_CHECKPOINT_INTERVAL_MS);
+      taskRunMonitor.unref?.();
+    });
 }

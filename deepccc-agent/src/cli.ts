@@ -90,6 +90,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--effort" && next !== undefined) {
       config.effort = next;
       i++;
+    } else if (arg === "--max-output-tokens" && next !== undefined) {
+      config.maxOutputTokens = parsePositiveIntegerOption("--max-output-tokens", next);
+      i++;
     } else if (arg === "--base-url" && next !== undefined) {
       config.baseURL = next;
       i++;
@@ -148,6 +151,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     `  --model <name>       Model name (current default ${appConfig.model})`,
     `  --sub-model <name>   Sub-model for lightweight steps (compaction/task; empty = follow main model)`,
     `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.effort)`,
+    `  --max-output-tokens <n>  Maximum output tokens (unset = Provider default)`,
     `  --base-url <url>     Provider API base URL (current default ${appConfig.baseURL})`,
     "  --api-key <key>      API key",
     "  --cwd <path>         Working directory",

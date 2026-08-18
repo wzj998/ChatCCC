@@ -17,6 +17,8 @@ export interface DeepCccConfig {
   subModel: string;
   /** Reasoning effort（none/minimal/low/medium/high/xhigh/max），留空不传 reasoning_effort */
   effort: string;
+  /** 主对话最大输出 token；未配置时不传，使用 Provider 默认值。 */
+  maxOutputTokens?: number;
   /** 主对话是否使用流式请求；默认开启 */
   streaming: boolean;
   /**
@@ -96,6 +98,12 @@ function numberEnv(name: string): number | undefined {
   return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function optionalPositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function normalizeDeepCccProvider(value: unknown): DeepCccProvider {
   if (value === undefined || value === null || String(value).trim() === "") return "openai";
   const normalized = String(value).trim().toLowerCase();
@@ -118,6 +126,8 @@ function loadConfig(): DeepCccConfig {
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,
     subModel: env("DEEPCCC_SUB_MODEL") ?? file.subModel ?? DEFAULT_CONFIG.subModel,
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
+    maxOutputTokens: optionalPositiveInteger(env("DEEPCCC_MAX_OUTPUT_TOKENS"))
+      ?? optionalPositiveInteger(file.maxOutputTokens),
     streaming: boolEnv("DEEPCCC_STREAMING") ?? file.streaming ?? DEFAULT_CONFIG.streaming,
     contextWindow: numberEnv("DEEPCCC_CONTEXT_WINDOW") ?? file.contextWindow ?? DEFAULT_CONFIG.contextWindow,
     git: {

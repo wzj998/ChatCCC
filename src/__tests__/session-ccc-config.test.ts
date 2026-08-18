@@ -32,6 +32,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       subModel: "",
       effort: "high",
+      maxOutputTokens: null,
       provider: "",
       compactionTimeoutMs: 12345,
     });
@@ -56,6 +57,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       subModel: "chatccc-sub-model",
       effort: "high",
+      maxOutputTokens: null,
       provider: "",
       compactionTimeoutMs: 12345,
     });
@@ -80,6 +82,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       model: "chatccc-model",
       subModel: "",
       effort: "",
+      maxOutputTokens: null,
       provider: "anthropic",
       compactionTimeoutMs: 12345,
     });
@@ -94,5 +97,35 @@ describe("CCC Agent ChatCCC configuration", () => {
       compactionTimeoutMs: 12345,
       contextWindow: config.ccc.contextWindow,
     });
+  });
+
+  it("forwards explicit effort and maxOutputTokens overrides but omits inherited values", () => {
+    Object.assign(config.ccc, {
+      DEEPSEEK_API_KEY: "chatccc-api-key",
+      DEEPSEEK_BASE_URL: "https://chatccc.example.com/v1",
+      model: "chatccc-model",
+      subModel: "",
+      effort: "low",
+      maxOutputTokens: 8192,
+      provider: "",
+      compactionTimeoutMs: 12345,
+    });
+
+    getAdapterForTool("ccc");
+
+    expect(createCccAdapterMock).toHaveBeenCalledWith(expect.objectContaining({
+      effort: "low",
+      maxOutputTokens: 8192,
+    }));
+
+    _clearAdapterCacheForTest();
+    createCccAdapterMock.mockClear();
+    Object.assign(config.ccc, { effort: "", maxOutputTokens: null });
+    getAdapterForTool("ccc");
+
+    expect(createCccAdapterMock).toHaveBeenCalledWith(expect.not.objectContaining({
+      effort: expect.anything(),
+      maxOutputTokens: expect.anything(),
+    }));
   });
 });

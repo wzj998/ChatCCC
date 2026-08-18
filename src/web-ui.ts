@@ -67,6 +67,7 @@ interface AppConfig {
     model?: string;
     alternativeModel?: string;
     effort?: string;
+    maxOutputTokens?: number | null;
     /** 留空（""）= 不 override，跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER） */
     provider?: "" | "openai" | "anthropic";
     gitCoAuthor?: boolean | null;
@@ -544,6 +545,13 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CCC_EFFORT") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).effort = val;
+    } else if (key === "CHATCCC_CCC_MAX_OUTPUT_TOKENS") {
+      result.ccc = result.ccc || {};
+      const raw = String(val ?? "").trim();
+      const parsed = Number(raw);
+      (result.ccc as Record<string, unknown>).maxOutputTokens = raw && Number.isInteger(parsed) && parsed > 0
+        ? parsed
+        : null;
     } else if (key === "CHATCCC_CCC_PROVIDER") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).provider = val;
@@ -973,7 +981,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
             <div class="form-group">
               <label>Effort（推理强度，选填）</label>
               <select id="field-CHATCCC_CCC_EFFORT">
-                <option value="">(留空/默认，服务端 medium)</option>
+                <option value="">跟随 DeepCCC 内核配置（默认）</option>
                 <option value="none">none - 直接作答，最省 token</option>
                 <option value="minimal">minimal</option>
                 <option value="low">low</option>
@@ -982,6 +990,12 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
                 <option value="xhigh">xhigh</option>
                 <option value="max">max - 最强推理</option>
               </select>
+              <div class="hint">留空时读取 ~/.deepccc/config.json 或 DEEPCCC_EFFORT；DeepCCC 也留空时使用模型服务端默认值。</div>
+            </div>
+            <div class="form-group">
+              <label>最大输出 Token（选填）</label>
+              <input type="number" id="field-CHATCCC_CCC_MAX_OUTPUT_TOKENS" min="1" step="1" placeholder="留空跟随 DeepCCC 内核配置">
+              <div class="hint">限制主对话单次输出长度。留空时读取 ~/.deepccc/config.json 或 DEEPCCC_MAX_OUTPUT_TOKENS；DeepCCC 也未配置时使用模型服务端默认值。</div>
             </div>
             <div class="form-group">
               <label>上下文窗口（模型最大上下文）</label>
@@ -1318,6 +1332,8 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CCC_MODEL">-</span></div>
         <div class="config-row"><span class="key">子模型</span><span class="val" id="cfg-CCC_SUB_MODEL">-</span></div>
         <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CCC_ALTERNATIVE_MODEL">-</span></div>
+        <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-CCC_EFFORT">-</span></div>
+        <div class="config-row"><span class="key">最大输出 Token</span><span class="val" id="cfg-CCC_MAX_OUTPUT_TOKENS">-</span></div>
         <div class="config-row"><span class="key">Git 共同作者</span><span class="val" id="cfg-CCC_GIT_COAUTHOR">-</span></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-ccc" onchange="setDashboardDefaultAgent('ccc', this.checked)"> 设为默认 Agent</label>
         <div class="hint" style="margin-top:6px;line-height:1.6">备选模型仅加入 /model 人工切换列表；保存后下一条消息或下个新会话生效。</div>
@@ -1369,7 +1385,7 @@ const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
-  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_GIT_COAUTHOR','CHATCCC_CCC_CONTEXT_WINDOW'],
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_MAX_OUTPUT_TOKENS','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_GIT_COAUTHOR','CHATCCC_CCC_CONTEXT_WINDOW'],
   dsh: ['CHATCCC_DSH_API_KEY','CHATCCC_DSH_BASE_URL','CHATCCC_DSH_MODEL','CHATCCC_DSH_SUB_MODEL','CHATCCC_DSH_ALTERNATIVE_MODEL','CHATCCC_DSH_PROVIDER','CHATCCC_DSH_MAX_TOKENS']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
@@ -1767,6 +1783,7 @@ function renderStep2() {
     prefillNested('field-CHATCCC_CCC_SUB_MODEL', c.ccc.subModel);
     prefillNested('field-CHATCCC_CCC_ALTERNATIVE_MODEL', c.ccc.alternativeModel);
     prefillNested('field-CHATCCC_CCC_EFFORT', c.ccc.effort);
+    prefillNested('field-CHATCCC_CCC_MAX_OUTPUT_TOKENS', c.ccc.maxOutputTokens);
     prefillContextWindow('field-', c.ccc.contextWindow);
   }
   if (c.dsh) {
@@ -1975,6 +1992,7 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">子模型</span><span class="val">' + (vars.CHATCCC_CCC_SUB_MODEL || '(留空，跟随主模型)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CCC_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CCC_EFFORT || '(留空)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">最大输出 Token</span><span class="val">' + (vars.CHATCCC_CCC_MAX_OUTPUT_TOKENS || '(跟随 DeepCCC)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">上下文窗口</span><span class="val">' + contextWindowTokensLabel(vars.CHATCCC_CCC_CONTEXT_WINDOW || 1048576) + '</span></div>');
     } else if (t === 'dsh') {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">DeepSeek Harness</h4>');
@@ -2206,6 +2224,10 @@ function updateDashboardUI() {
   document.getElementById('cfg-CCC_MODEL').textContent = (c.ccc && c.ccc.model) || '(留空)';
   document.getElementById('cfg-CCC_SUB_MODEL').textContent = (c.ccc && c.ccc.subModel) || '(留空，跟随主模型)';
   document.getElementById('cfg-CCC_ALTERNATIVE_MODEL').textContent = (c.ccc && c.ccc.alternativeModel) || '(留空)';
+  document.getElementById('cfg-CCC_EFFORT').textContent = (c.ccc && c.ccc.effort) || '(跟随 DeepCCC 内核配置)';
+  document.getElementById('cfg-CCC_MAX_OUTPUT_TOKENS').textContent = c.ccc && c.ccc.maxOutputTokens
+    ? String(c.ccc.maxOutputTokens)
+    : '(跟随 DeepCCC 内核配置)';
   document.getElementById('cfg-CCC_GIT_COAUTHOR').textContent = !c.ccc || c.ccc.gitCoAuthor == null
     ? '跟随 DeepCCC 全局设置（缺省开启）'
     : (c.ccc.gitCoAuthor ? '强制开启' : '强制关闭');
@@ -2294,7 +2316,7 @@ function editSection(section) {
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
     'CHATCCC_CCC_PROVIDER': 'API 协议（选填）',
     'CHATCCC_CCC_GIT_COAUTHOR': 'Git 提交共同作者',
-    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口',
+    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_MAX_OUTPUT_TOKENS': '最大输出 Token', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口',
     'CHATCCC_DSH_API_KEY': 'API Key', 'CHATCCC_DSH_BASE_URL': 'Base URL', 'CHATCCC_DSH_MODEL': '模型', 'CHATCCC_DSH_SUB_MODEL': '子模型', 'CHATCCC_DSH_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_DSH_PROVIDER': 'Provider 路由', 'CHATCCC_DSH_MAX_TOKENS': '单次最大输出 Tokens'
   };
   var hintMap = {
@@ -2303,6 +2325,8 @@ function editSection(section) {
     'CHATCCC_CHROME_DEVTOOLS_PORT': '默认 15166，健康检查端点为 http://127.0.0.1:15166/json/version。',
     'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。',
     'CHATCCC_CCC_PROVIDER': '与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER），改动需重启 ChatCCC 生效。',
+    'CHATCCC_CCC_EFFORT': '留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_EFFORT）；内核也留空时使用模型服务端默认值。',
+    'CHATCCC_CCC_MAX_OUTPUT_TOKENS': '正整数；留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_MAX_OUTPUT_TOKENS）；内核也未配置时使用模型服务端默认值。',
     'CHATCCC_CCC_GIT_COAUTHOR': '跟随全局时读取 ~/.deepccc/config.json 的 git.coAuthor.enabled（缺省为开启）。强制选项只影响 ChatCCC 内置 CCC Agent。',
     'CHATCCC_CCC_CONTEXT_WINDOW': '压缩阈值自动 = 窗口 × 80%（超出即把较早消息压缩为摘要）。⚠️ 超过模型/服务端实际上限时请求会被 API 直接拒绝（context length exceeded），实际窗口以模型与所用服务端为准（如 litellm 代理的 max_input_tokens）；单位 k = 1024 tokens，1M = 1,048,576 tokens。',
     'CHATCCC_CCC_SUB_MODEL': '用于 DeepCCC 内部轻量环节（上下文压缩摘要生成、task 子代理任务）。留空 = 跟随主模型；改动需重启 ChatCCC 生效。'
@@ -2353,6 +2377,7 @@ function editSection(section) {
         else if (key === 'CHATCCC_CCC_SUB_MODEL') val = state.config.ccc.subModel || '';
         else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
         else if (key === 'CHATCCC_CCC_EFFORT') val = state.config.ccc.effort || '';
+        else if (key === 'CHATCCC_CCC_MAX_OUTPUT_TOKENS') val = state.config.ccc.maxOutputTokens || '';
         else if (key === 'CHATCCC_CCC_CONTEXT_WINDOW') val = state.config.ccc.contextWindow || '1048576';
       } else if (section === 'dsh' && state.config.dsh) {
         if (key === 'CHATCCC_DSH_API_KEY') val = state.config.dsh.apiKey || '';
@@ -2417,12 +2442,14 @@ function editSection(section) {
       var rowId = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'
         ? ' id="edit-cursor-on-demand-budget-row"'
         : (section === 'chromeDevtools' && key !== 'CHATCCC_CHROME_DEVTOOLS_ENABLED' ? ' id="edit-row-' + key + '"' : '');
-      var isNumber = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' || key === 'CHATCCC_CHROME_DEVTOOLS_PORT';
+      var isNumber = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' || key === 'CHATCCC_CHROME_DEVTOOLS_PORT' || key === 'CHATCCC_CCC_MAX_OUTPUT_TOKENS';
       var inputType = isNumber ? 'number' : (isSecret ? 'password' : 'text');
       var attrs = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'
         ? ' min="1" step="1"'
         : key === 'CHATCCC_CHROME_DEVTOOLS_PORT'
           ? ' min="1" max="65535" step="1" placeholder="15166"'
+          : key === 'CHATCCC_CCC_MAX_OUTPUT_TOKENS'
+            ? ' min="1" step="1" placeholder="留空跟随 DeepCCC 内核配置"'
           : '';
       html += '<div class="form-group"' + rowId + '><label>' + (labelMap[key] || key) + '</label>';
       html += '<input type="' + inputType + '" id="edit-' + key + '"' + attrs + ' value="' + String(val).replace(/"/g,'&quot;') + '">';

@@ -57,7 +57,10 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.subModel !== undefined ? { subModel: options.subModel } : {}),
-    ...(options.effort !== undefined ? { effort: options.effort } : {}),
+    ...(options.effort?.trim() ? { effort: options.effort.trim() } : {}),
+    ...(options.maxOutputTokens !== undefined
+      ? { maxOutputTokens: options.maxOutputTokens }
+      : {}),
   };
 
   return {

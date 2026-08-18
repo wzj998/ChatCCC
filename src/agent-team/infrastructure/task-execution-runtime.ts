@@ -27,8 +27,13 @@ export function createTaskExecutionRuntime(platform: PlatformAdapter): TaskExecu
         ...(stream?.terminalError?.message ? { error: stream.terminalError.message } : {}),
       };
     },
-    async getTranscript(sessionId) {
-      return (await readStreamState(sessionId))?.transcript ?? [];
+    async getSnapshot(sessionId) {
+      const state = await readStreamState(sessionId);
+      return {
+        transcript: state?.transcript ?? [],
+        ...(state?.updatedAt ? { updatedAt: new Date(state.updatedAt).toISOString() } : {}),
+        ...(state?.status ? { status: state.status } : {}),
+      };
     },
     stop: stopSession,
     isSessionRunning,

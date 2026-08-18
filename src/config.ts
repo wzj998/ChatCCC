@@ -131,10 +131,12 @@ export interface CccConfig {
   /** Optional model exposed through /model for manual per-session switching. */
   alternativeModel: string;
   /**
-   * Reasoning effort (none/minimal/low/medium/high/xhigh/max)，透传到
-   * DeepSeek reasoning_effort 请求字段；留空表示不传（服务端默认 medium）。
+   * Reasoning effort (none/minimal/low/medium/high/xhigh/max)。留空表示
+   * 不 override，跟随 DeepCCC 内核配置；内核也留空时使用服务端默认值。
    */
   effort: string;
+  /** null follows DeepCCC config; a positive integer explicitly overrides it. */
+  maxOutputTokens: number | null;
   /**
    * API 协议 override（选填）：openai（OpenAI 兼容协议）或 anthropic（Anthropic
    * Messages 协议）。留空（""）表示不 override，跟随 DeepCCC 内核配置
@@ -476,6 +478,16 @@ function normalizePositiveInteger(raw: unknown, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+function normalizeNullablePositiveInteger(raw: unknown, label: string): number | null {
+  if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) {
+    return null;
+  }
+  const value = typeof raw === "string" ? Number(raw.trim()) : Number(raw);
+  if (Number.isInteger(value) && value > 0) return value;
+  console.warn(`[CONFIG] ${label} 必须为正整数或留空，已按留空处理。`);
+  return null;
+}
+
 function normalizeRawStreamAgentLogConfig(raw: unknown): RawStreamAgentLogConfig {
   const obj = typeof raw === "object" && raw !== null
     ? raw as Record<string, unknown>
@@ -524,6 +536,7 @@ function loadConfig(): AppConfig {
       subModel: "",
       alternativeModel: "",
       effort: "",
+      maxOutputTokens: null,
       provider: "",
       gitCoAuthor: null,
       compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
@@ -601,6 +614,7 @@ function loadConfig(): AppConfig {
       subModel?: unknown;
       alternativeModel?: unknown;
       effort?: unknown;
+      maxOutputTokens?: unknown;
       provider?: unknown;
       gitCoAuthor?: unknown;
       compactionTimeoutMs?: unknown;
@@ -793,6 +807,10 @@ function loadConfig(): AppConfig {
       subModel: normalizeOptionalConfigField(cccRaw.subModel, { label: "ccc.subModel" }),
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
+      maxOutputTokens: normalizeNullablePositiveInteger(
+        cccRaw.maxOutputTokens,
+        "ccc.maxOutputTokens",
+      ),
       provider: normalizeCccProviderOverride(cccRaw.provider),
       gitCoAuthor: typeof cccRaw.gitCoAuthor === "boolean" ? cccRaw.gitCoAuthor : null,
       compactionTimeoutMs: normalizePositiveInteger(

@@ -696,11 +696,28 @@ export function setSessionFastModeOverride(sessionId: string, fastMode: boolean)
   adapterCache.clear();
 }
 
+function buildAdapterCacheKey(
+  tool: string,
+  model: string,
+  effort: string,
+  fastMode: boolean,
+): string {
+  const base = `${tool}:${model}:${effort}:${fastMode ? "fast" : "default"}`;
+  return tool === "ccc"
+    ? `${base}:${config.ccc.maxOutputTokens ?? "inherit"}`
+    : base;
+}
+
 export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter {
   const effectiveModel = getEffectiveModelForTool(tool, sessionId);
   const effectiveEffort = getEffectiveEffortForTool(tool, sessionId);
   const effectiveFastMode = getEffectiveFastModeForTool(tool, sessionId);
-  const cacheKey = `${tool}:${effectiveModel || ""}:${effectiveEffort || ""}:${effectiveFastMode ? "fast" : "default"}`;
+  const cacheKey = buildAdapterCacheKey(
+    tool,
+    effectiveModel || "",
+    effectiveEffort || "",
+    effectiveFastMode,
+  );
   const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
@@ -721,6 +738,9 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       compactionTimeoutMs: config.ccc.compactionTimeoutMs,
       contextWindow: config.ccc.contextWindow,
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+      ...(config.ccc.maxOutputTokens !== null
+        ? { maxOutputTokens: config.ccc.maxOutputTokens }
+        : {}),
       // 留空（""）不传 → ChatSession 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER）
       ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
       ...(config.ccc.subModel ? { subModel: config.ccc.subModel } : {}),
@@ -2718,7 +2738,7 @@ export function _setAdapterForToolForTest(tool: string, adapter: ToolAdapter): v
   const effective = getEffectiveModelForTool(tool);
   const effort = getEffectiveEffortForTool(tool);
   const fastMode = getEffectiveFastModeForTool(tool);
-  adapterCache.set(`${tool}:${effective || ""}:${effort || ""}:${fastMode ? "fast" : "default"}`, adapter);
+  adapterCache.set(buildAdapterCacheKey(tool, effective || "", effort || "", fastMode), adapter);
   if (effective) adapterCache.set(`${tool}:${effective}`, adapter);
 }
 

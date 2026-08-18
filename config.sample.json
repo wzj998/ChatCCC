@@ -59,6 +59,7 @@
     "subModel": "",
     "alternativeModel": "",
     "effort": "",
+    "maxOutputTokens": null,
     "provider": "",
     "gitCoAuthor": null,
     "compactionTimeoutMs": 300000,

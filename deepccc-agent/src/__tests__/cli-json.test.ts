@@ -16,6 +16,26 @@ const cliBin = [
 ].find(existsSync);
 
 describe("deepccc cli --stream-json", () => {
+  it("documents max output tokens and rejects non-positive values", async () => {
+    const help = await execFileAsync(process.execPath, [cliBin!, "--help"], {
+      cwd: dirname(cliBin!),
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    expect(help.stdout).toContain("--max-output-tokens <n>");
+
+    await expect(execFileAsync(process.execPath, [
+      cliBin!,
+      "--max-output-tokens",
+      "0",
+      "--help",
+    ], {
+      cwd: dirname(cliBin!),
+      timeout: 10_000,
+      windowsHide: true,
+    })).rejects.toMatchObject({ code: 1 });
+  });
+
   it("writes only JSON lines to stdout when startup fails", async () => {
     let caught: unknown;
     try {

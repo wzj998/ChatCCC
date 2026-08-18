@@ -47,6 +47,8 @@ deepccc 的本地缓存优化实测命中率 **96.7%**，有效降低重复请�
 export DEEPCCC_API_KEY="sk-..."
 export DEEPCCC_BASE_URL="https://api.deepseek.com/v1"
 export DEEPCCC_MODEL="deepseek-v4-pro"
+export DEEPCCC_EFFORT="high"
+export DEEPCCC_MAX_OUTPUT_TOKENS="32768"
 export DEEPCCC_STREAMING="true"
 ```
 
@@ -57,6 +59,8 @@ $env:DEEPCCC_API_KEY="sk-..."
 $env:DEEPCCC_PROVIDER="openai"
 $env:DEEPCCC_BASE_URL="https://api.deepseek.com/v1"
 $env:DEEPCCC_MODEL="deepseek-v4-pro"
+$env:DEEPCCC_EFFORT="high"
+$env:DEEPCCC_MAX_OUTPUT_TOKENS="32768"
 $env:DEEPCCC_STREAMING="true"
 ```
 
@@ -77,6 +81,7 @@ $env:DEEPCCC_STREAMING="true"
   "model": "deepseek-v4-pro",
   "subModel": "",
   "effort": "",
+  "maxOutputTokens": null,
   "streaming": true,
   "contextWindow": 1048576,
   "git": {
@@ -104,10 +109,15 @@ $env:DEEPCCC_STREAMING="true"
 `DEEPCCC_PROVIDER` 或命令行 `--provider` 覆盖：
 
 - `openai` 使用 OpenAI-compatible Chat Completions 协议，兼容 DeepSeek、OpenAI、LiteLLM、vLLM 等服务。
-- `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` **完全按填写值使用，不自动补 `/v1`**，请填写到完整版本化地址，例如 DeepSeek 官方 Anthropic 端点为 `https://api.deepseek.com/anthropic/v1`（官方 Anthropic SDK 使用的 `https://api.deepseek.com/anthropic` 基址会拼接为 `.../anthropic/v1/messages`）。`effort` 是 OpenAI/DeepSeek 扩展参数，在 Anthropic 模式下不会发送。
+- `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` **完全按填写值使用，不自动补 `/v1`**，请填写到完整版本化地址，例如 DeepSeek 官方 Anthropic 端点为 `https://api.deepseek.com/anthropic/v1`（官方 Anthropic SDK 使用的 `https://api.deepseek.com/anthropic` 基址会拼接为 `.../anthropic/v1/messages`）。`effort` 在 OpenAI-compatible 模式映射为 `reasoning_effort`，在 Anthropic 模式映射为 `output_config.effort`；目标服务不支持时应留空。
 
 `streaming` 控制主对话是否使用流式请求，默认 `true`；也可以通过
 `DEEPCCC_STREAMING=true|false` 覆盖。关闭后，终端会在整条模型响应完成后一次性显示结果。
+
+`maxOutputTokens` 限制主对话单次最大输出 token，默认不配置（`null`/缺失），此时不向
+Provider 发送 `max_tokens`，使用模型服务端默认值。可通过 `DEEPCCC_MAX_OUTPUT_TOKENS`
+或命令行 `--max-output-tokens` 覆盖；只接受正整数。该限制会同时覆盖模型思考内容、
+工具参数和最终回答，设置过小可能导致工具调用或长回复被截断。
 
 `contextWindow` 是模型上下文窗口（token），默认 `1048576`（1M，DeepSeek V4 Pro/Flash
 原生规格）；上下文压缩阈值自动 = `contextWindow × 0.8`（超出即把较早消息压缩为摘要）。
@@ -179,6 +189,14 @@ deepccc --effort high
 ```
 
 可选值：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（留空则不传 `reasoning_effort` 请求字段）。
+
+限制主对话最大输出 token：
+
+```bash
+deepccc --max-output-tokens 8192
+```
+
+不设置时使用 Provider 默认值。
 
 ## 权限机制
 

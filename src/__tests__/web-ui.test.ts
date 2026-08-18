@@ -10,6 +10,9 @@ vi.mock("../engines/engine-specs.ts", () => ({
     startInstall: engineStartInstallMock,
   },
 }));
+vi.mock("../safe-maintenance.ts", () => ({
+  isSafeMaintenanceAdmissionClosed: vi.fn(() => false),
+}));
 
 import {
   AGENT_TEAM_PAGE_HTML,
@@ -80,6 +83,11 @@ describe("Agent Team page", () => {
     expect(AGENT_TEAM_PAGE_HTML).toContain('id="task-execution-details"');
     expect(AGENT_TEAM_PAGE_HTML).toContain("function renderTaskExecution(task,run)");
     expect(AGENT_TEAM_PAGE_HTML).toContain("run.transcript");
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="task-run-history"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain('id="copy-task-run"');
+    expect(AGENT_TEAM_PAGE_HTML).toContain("run.lastProgressAt");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("run.traceId");
+    expect(AGENT_TEAM_PAGE_HTML).toContain("run.failureCode");
     expect(AGENT_TEAM_PAGE_HTML).toContain("if(!dragged)showEdit(task)");
   });
 
@@ -170,6 +178,7 @@ describe("unflattenConfig", () => {
         CHATCCC_CCC_SUB_MODEL: "deepseek-v4-flash",
         CHATCCC_CCC_ALTERNATIVE_MODEL: "deepseek-v4-pro",
         CHATCCC_CCC_EFFORT: "max",
+        CHATCCC_CCC_MAX_OUTPUT_TOKENS: "8192",
         CHATCCC_CCC_PROVIDER: "anthropic",
         CHATCCC_CCC_CONTEXT_WINDOW: "524288",
       }),
@@ -183,8 +192,23 @@ describe("unflattenConfig", () => {
         subModel: "deepseek-v4-flash",
         alternativeModel: "deepseek-v4-pro",
         effort: "max",
+        maxOutputTokens: 8192,
         provider: "anthropic",
         contextWindow: 524288,
+      },
+    });
+  });
+
+  it("maps a blank CCC max output token field to an inherited null override", () => {
+    expect(
+      unflattenConfig({
+        CHATCCC_CCC_EFFORT: "",
+        CHATCCC_CCC_MAX_OUTPUT_TOKENS: "",
+      }),
+    ).toEqual({
+      ccc: {
+        effort: "",
+        maxOutputTokens: null,
       },
     });
   });
@@ -333,6 +357,9 @@ describe("dashboard edit modal", () => {
     expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_MODEL"');
     expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_ALTERNATIVE_MODEL"');
     expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_EFFORT"');
+    expect(PAGE_HTML).toContain('id="field-CHATCCC_CCC_MAX_OUTPUT_TOKENS"');
+    expect(PAGE_HTML).toContain('id="cfg-CCC_MAX_OUTPUT_TOKENS"');
+    expect(PAGE_HTML).toContain("跟随 DeepCCC 内核配置");
     expect(PAGE_HTML).toContain('id="dash-ccc"');
     expect(PAGE_HTML).toContain("editSection('ccc')");
   });
