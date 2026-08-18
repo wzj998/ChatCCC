@@ -29,6 +29,8 @@ describe("Agent Team page", () => {
     expect(PAGE_HTML).toContain('class="agent-team-entry"');
     expect(PAGE_HTML).toContain("Agent Team");
     expect(PAGE_HTML).toContain("linear-gradient");
+    expect(PAGE_HTML).toContain("DeepCCC Web");
+    expect(PAGE_HTML).toContain("/api/deepccc-web/start");
   });
 
   it("contains the local five-column task board", () => {

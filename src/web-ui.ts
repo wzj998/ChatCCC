@@ -731,8 +731,9 @@ header{background:#0f172a;color:#fff;padding:16px 24px;display:flex;align-items:
 header h1{font-size:20px;font-weight:600}
 header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500}
 .header-actions{display:flex;align-items:center;gap:12px}
-.agent-team-entry{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border:1px solid rgba(255,255,255,.2);border-radius:999px;background:linear-gradient(135deg,#6366f1,#8b5cf6 55%,#d946ef);color:#fff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.01em;box-shadow:0 8px 24px rgba(99,102,241,.38);transition:transform .18s ease,box-shadow .18s ease,filter .18s ease}
-.agent-team-entry:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(139,92,246,.52);filter:saturate(1.16)}
+.agent-team-entry,.deepccc-web-entry{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border:1px solid rgba(255,255,255,.2);border-radius:999px;background:linear-gradient(135deg,#6366f1,#8b5cf6 55%,#d946ef);color:#fff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.01em;box-shadow:0 8px 24px rgba(99,102,241,.38);transition:transform .18s ease,box-shadow .18s ease,filter .18s ease}
+.deepccc-web-entry{background:linear-gradient(135deg,#171a23,#413a76);box-shadow:0 8px 24px rgba(42,38,78,.38)}
+.agent-team-entry:hover,.deepccc-web-entry:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(139,92,246,.52);filter:saturate(1.16)}
 .agent-team-entry:focus-visible{outline:3px solid rgba(196,181,253,.65);outline-offset:3px}
 .agent-team-entry .agent-team-icon{font-size:16px;line-height:1}
 .badge-running{background:#16a34a;color:#fff}
@@ -808,13 +809,14 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media(max-width:520px){header{padding:12px 14px}.header-actions{gap:8px}.agent-team-entry{padding:8px 11px;font-size:13px}header .badge{padding:4px 8px}}
+@media(max-width:520px){header{padding:12px 14px}.header-actions{gap:8px}.agent-team-entry,.deepccc-web-entry{padding:8px 11px;font-size:13px}header .badge{padding:4px 8px}.deepccc-web-entry span:last-child{display:none}}
 </style>
 </head>
 <body>
 <header>
   <h1>ChatCCC</h1>
   <div class="header-actions">
+    <button type="button" class="deepccc-web-entry" onclick="openDeepCccWeb()"><span aria-hidden="true">D</span><span>DeepCCC Web</span></button>
     <a href="/agent-team" class="agent-team-entry"><span class="agent-team-icon" aria-hidden="true">✦</span>Agent Team <span aria-hidden="true">→</span></a>
     <span id="header-badge" class="badge badge-stopped">未启动</span>
   </div>
@@ -2633,6 +2635,16 @@ function installEngine(engineId) {
 }
 
 // ---- Start ----
+async function openDeepCccWeb() {
+  try {
+    var result = await api('/api/deepccc-web/start', 'POST');
+    if (!result.ok) throw new Error(result.error || '启动失败');
+    window.open(result.url, '_blank', 'noopener');
+  } catch (error) {
+    toast('DeepCCC Web 启动失败: ' + String(error), 'error');
+  }
+}
+
 init();
 
 // 页面刷新后从持久化任务文件恢复每一步的安装进度。
@@ -2661,6 +2673,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === "/api/start" && method === "POST") return handleStartService(req, res);
   if (url === "/api/stop" && method === "POST") return handleStopService(req, res);
   if (url === "/api/restart" && method === "POST") return handleRestartService(req, res);
+  if (url === "/api/deepccc-web/start" && method === "POST") {
+    const { startDeepCccWebServer } = await import("../deepccc-agent/src/web-server.ts");
+    const handle = await startDeepCccWebServer({ openBrowser: false, defaultCwd: process.cwd() });
+    return jsonReply(res, 200, { ok: true, url: handle.url, port: handle.port, reused: handle.reused });
+  }
   if (url === "/api/validate" && method === "POST") return handleValidate(req, res);
   if (url === "/api/ilink/forget" && method === "POST") return handleForgetIlink(req, res);
   const engineStatusMatch = pathname.match(/^\/api\/engines\/([^/]+)\/status$/);
