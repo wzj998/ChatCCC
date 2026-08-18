@@ -55,6 +55,8 @@ describe("DeepCCC web HTTP API", () => {
     expect(html).toContain('id="session-list"');
     expect(html).not.toContain('id="approval-modal"');
     expect(html).toContain("approval-card");
+    expect(html).toContain("⚠ 操作审批");
+    expect(html).not.toContain("高风险操作审批");
     expect(html).toContain("color-scheme:light");
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();

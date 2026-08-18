@@ -470,6 +470,16 @@ describe("buildSessionsCard", () => {
     expect(parsed.elements[0].text.content).toContain("帮我写代码-src");
   });
 
+  it("prefers displayTitle without changing chatName and marks pinned or archived sessions", () => {
+    const card = buildSessionsCard([
+      { sessionId: "abc123", chatName: "unchanged-group", displayTitle: "Release checklist", pinned: true, archivedAt: 123, chatId: "oc_abc123", active: false, turnCount: 2, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },
+    ]);
+    const content: string = JSON.parse(card).elements[0].text.content;
+    expect(content).toContain("📌 **Release checklist**");
+    expect(content).toContain("已归档");
+    expect(content).not.toContain("unchanged-group");
+  });
+
   it("shows (群聊) tag for group chat sessions and not for private chats", () => {
     const card = buildSessionsCard([
       { sessionId: "g1", chatName: "group-chat", chatId: "oc_group1", chatType: "group", active: false, turnCount: 1, elapsedSeconds: null, model: "Claude Opus 4.7", tool: "claude" },

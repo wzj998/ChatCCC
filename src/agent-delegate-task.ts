@@ -9,9 +9,10 @@ import {
   recordSessionRegistry,
   resumeAndPrompt,
   saveSessionTool,
+  saveSessionPresentation,
 } from "./session.ts";
 import { bindChatToSession } from "./session-chat-binding.ts";
-import { sessionChatName } from "./session-name.ts";
+import { sessionChatName, sessionDisplayTitleFromPrompt } from "./session-name.ts";
 
 export interface DelegateAgentTaskInput {
   platform: PlatformAdapter;
@@ -39,6 +40,7 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
   const sessionId = init.sessionId;
   const chatNamePrefix = input.chatNamePrefix?.trim() || (hasPrompt ? input.promptText.slice(0, 10) : "新会话");
   const chatName = sessionChatName(chatNamePrefix, cwd);
+  const displayTitle = hasPrompt ? sessionDisplayTitleFromPrompt(input.promptText) : "新会话";
 
   let chatId: string;
   try {
@@ -52,11 +54,13 @@ export async function delegateAgentTask(input: DelegateAgentTaskInput): Promise<
       tool: input.tool,
       chatType: "group",
       chatName,
+      displayTitle,
       turnCount: 0,
       startTime: Date.now(),
       running: false,
     });
     await saveSessionTool(sessionId, input.tool, chatName);
+    await saveSessionPresentation(sessionId, { displayTitle });
   } catch (err) {
     console.error(`[${ts()}] [AGENT-DELEGATE-TASK] create group failed: ${(err as Error).message}`);
     throw err;

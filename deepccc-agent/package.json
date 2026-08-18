@@ -1,6 +1,6 @@
 {
   "name": "deepccc",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A lightweight coding agent with OpenAI-compatible and Anthropic Messages API support.",
   "license": "Apache-2.0",
   "keywords": [

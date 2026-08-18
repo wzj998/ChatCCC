@@ -1273,6 +1273,37 @@ describe("handleCommand WeChat processing ack", () => {
     expect(mockGetCodexUsageSummary).not.toHaveBeenCalled();
   });
 
+  it("renames only the display title and never changes the Feishu group name", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockResolvedValue({ name: "original-group-name", description: "Claude Session: sid-rename" });
+    vi.mocked(platform.extractSessionInfo).mockReturnValue({ sessionId: "sid-rename", tool: "claude" });
+    await recordSessionRegistry({
+      chatId: "rename-chat",
+      sessionId: "sid-rename",
+      tool: "claude",
+      chatType: "group",
+      chatName: "original-group-name",
+    });
+    sessionInfoMap.set("rename-chat", {
+      sessionId: "sid-rename",
+      tool: "claude",
+      turnCount: 0,
+      lastContextTokens: 0,
+      startTime: Date.now(),
+    });
+
+    await handleCommand(platform, "/rename Release checklist", "rename-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.updateChatInfo).not.toHaveBeenCalled();
+    expect(platform.sendText).toHaveBeenCalledWith(
+      "rename-chat",
+      expect.stringContaining("Release checklist"),
+    );
+    const record = (await loadSessionRegistryForBinding())["rename-chat"];
+    expect(record?.displayTitle).toBe("Release checklist");
+    expect(record?.chatName).toBe("original-group-name");
+  });
+
   it("does not query balance for a non-official DSH API endpoint", async () => {
     const platform = mockPlatform("feishu");
     const fetchMock = vi.fn();
