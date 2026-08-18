@@ -40,7 +40,7 @@ export interface PublicDeepCccConfig {
 export interface DeepCccWebRequestHandlerOptions {
   runtime: Pick<DeepCccWebRuntime,
     "listSessions" | "createSession" | "getSession" | "updateSession" | "deleteSession" |
-    "sendMessage" | "stopSession" | "resolveApproval" | "subscribe"
+    "sendMessage" | "stopSession" | "resolveApproval" | "subscribe" | "subscribeAll"
   >;
   getPublicConfig: () => PublicDeepCccConfig;
   saveConfig: (patch: DeepCccConfigPatch) => Promise<PublicDeepCccConfig> | PublicDeepCccConfig;
@@ -146,6 +146,9 @@ export function createDeepCccWebRequestHandler(options: DeepCccWebRequestHandler
       }
       if (method === "GET" && path === "/api/sessions") {
         return jsonReply(res, 200, { ok: true, sessions: await options.runtime.listSessions() });
+      }
+      if (method === "GET" && path === "/api/events") {
+        return openGlobalEventStream(req, res, options.runtime);
       }
       if (method === "POST" && path === "/api/sessions") {
         const body = await readJson<{ cwd?: string; title?: string; model?: string; subModel?: string; effort?: string }>(req);
@@ -321,6 +324,25 @@ function openEventStream(
   res.write(": connected\n\n");
   const send = (event: WebRuntimeEvent) => res.write(`id: ${event.eventId}\ndata: ${JSON.stringify(event)}\n\n`);
   const unsubscribe = runtime.subscribe(sessionId, send);
+  const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
+  heartbeat.unref?.();
+  req.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
+}
+
+function openGlobalEventStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  runtime: Pick<DeepCccWebRuntime, "subscribeAll">,
+): void {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  res.write(": connected\n\n");
+  const send = (event: WebRuntimeEvent) => res.write(`id: ${event.eventId}\ndata: ${JSON.stringify(event)}\n\n`);
+  const unsubscribe = runtime.subscribeAll(send);
   const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
   heartbeat.unref?.();
   req.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
