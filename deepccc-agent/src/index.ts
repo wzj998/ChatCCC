@@ -312,6 +312,8 @@ export interface ChatSessionConfig {
   effort?: string;
   /** Maximum output tokens for the main conversation; unset uses the Provider default. */
   maxOutputTokens?: number;
+  /** Override whether the main conversation uses streaming requests. */
+  streaming?: boolean;
 }
 
 export interface ChatSessionOptions {
@@ -400,6 +402,7 @@ export class ChatSession {
   private maxSteps?: number;
   private effort: string;
   private maxOutputTokens?: number;
+  private streaming: boolean;
   private permissionMode: PermissionMode;
   private permissionResolver?: PermissionResolver;
   private permissionGate: PermissionGate;
@@ -478,6 +481,7 @@ export class ChatSession {
     this.maxOutputTokens = normalizeMaxOutputTokens(
       overrides.maxOutputTokens ?? appConfig.maxOutputTokens,
     );
+    this.streaming = overrides.streaming ?? appConfig.streaming;
     this.apiKey = apiKey;
     this.baseURL = baseURL;
 
@@ -646,7 +650,7 @@ export class ChatSession {
           messages: attemptMessages as any,
         };
         let stream: AsyncIterable<TextStreamPart<any>>;
-        if (appConfig.streaming) {
+        if (this.streaming) {
           const result = streamText(generationOptions);
           stream = result.fullStream ?? textStreamToFullStream(result.textStream);
         } else {

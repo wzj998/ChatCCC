@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -39,11 +39,15 @@ export interface DeepCccConfig {
     retentionDays: number;
     keepCompleted: boolean;
   };
+  web: {
+    port: number;
+    openOnStart: boolean;
+  };
 }
 
 export const DEEPCCC_HOME = join(homedir(), ".deepccc");
 export const RAW_STREAM_LOGS_DIR = join(DEEPCCC_HOME, "raw-stream-logs");
-const CONFIG_PATH = join(DEEPCCC_HOME, "config.json");
+export const CONFIG_PATH = join(DEEPCCC_HOME, "config.json");
 
 /**
  * 默认配置（不读环境/文件）。导出供测试断言默认值；运行时请用 loadConfig 结果。
@@ -72,9 +76,13 @@ export const DEFAULT_CONFIG: DeepCccConfig = {
     retentionDays: 7,
     keepCompleted: false,
   },
+  web: {
+    port: 28_080,
+    openOnStart: true,
+  },
 };
 
-function readConfigFile(): Partial<DeepCccConfig> {
+export function readConfigFile(): Partial<DeepCccConfig> {
   if (!existsSync(CONFIG_PATH)) return {};
   const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<DeepCccConfig>;
   return raw && typeof raw === "object" ? raw : {};
@@ -111,13 +119,14 @@ export function normalizeDeepCccProvider(value: unknown): DeepCccProvider {
   throw new Error(`DEEPCCC_PROVIDER/provider must be "openai" or "anthropic", received: ${String(value)}`);
 }
 
-function loadConfig(): DeepCccConfig {
+export function loadConfig(): DeepCccConfig {
   const file = readConfigFile();
   const rawLogs: Partial<DeepCccConfig["rawStreamLogs"]> = file.rawStreamLogs && typeof file.rawStreamLogs === "object"
     ? file.rawStreamLogs
     : {};
   const git: Partial<DeepCccConfig["git"]> = file.git && typeof file.git === "object" ? file.git : {};
   const coAuthor: Partial<DeepCccConfig["git"]["coAuthor"]> = git.coAuthor && typeof git.coAuthor === "object" ? git.coAuthor : {};
+  const web: Partial<DeepCccConfig["web"]> = file.web && typeof file.web === "object" ? file.web : {};
 
   return {
     provider: normalizeDeepCccProvider(env("DEEPCCC_PROVIDER") ?? file.provider ?? DEFAULT_CONFIG.provider),
@@ -143,11 +152,54 @@ function loadConfig(): DeepCccConfig {
       retentionDays: numberEnv("DEEPCCC_RAW_STREAM_RETENTION_DAYS") ?? rawLogs.retentionDays ?? DEFAULT_CONFIG.rawStreamLogs.retentionDays,
       keepCompleted: boolEnv("DEEPCCC_RAW_STREAM_KEEP_COMPLETED") ?? rawLogs.keepCompleted ?? DEFAULT_CONFIG.rawStreamLogs.keepCompleted,
     },
+    web: {
+      port: normalizeWebPort(web.port),
+      openOnStart: web.openOnStart ?? DEFAULT_CONFIG.web.openOnStart,
+    },
   };
 }
 
 export function ensureConfigDir(): void {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+}
+
+export type DeepCccConfigPatch = Partial<Pick<
+  DeepCccConfig,
+  "provider" | "apiKey" | "baseURL" | "model" | "subModel" | "effort" | "maxOutputTokens" | "streaming" | "contextWindow"
+>> & { web?: Partial<DeepCccConfig["web"]> };
+
+/** Persist only user-editable Web fields while preserving advanced configuration. */
+export function saveConfigPatch(patch: DeepCccConfigPatch): DeepCccConfig {
+  const existing = readConfigFile();
+  const { web: webPatch, ...flatPatch } = patch;
+  const next: Partial<DeepCccConfig> = {
+    ...existing,
+    ...flatPatch,
+    ...(webPatch ? { web: { ...DEFAULT_CONFIG.web, ...(existing.web ?? {}), ...webPatch } } : {}),
+  };
+  if (patch.provider !== undefined) next.provider = normalizeDeepCccProvider(patch.provider);
+  if (patch.baseURL !== undefined && !patch.baseURL.trim()) throw new Error("baseURL must not be empty");
+  if (patch.model !== undefined && !patch.model.trim()) throw new Error("model must not be empty");
+  if (patch.effort !== undefined && !["", "none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(patch.effort)) {
+    throw new Error(`Unsupported effort: ${patch.effort}`);
+  }
+  if (patch.contextWindow !== undefined && (!Number.isInteger(patch.contextWindow) || patch.contextWindow <= 0)) {
+    throw new Error("contextWindow must be a positive integer");
+  }
+  if (webPatch?.port !== undefined) {
+    next.web = { ...(next.web ?? DEFAULT_CONFIG.web), port: normalizeWebPort(webPatch.port) };
+  }
+  ensureConfigDir();
+  const tempPath = `${CONFIG_PATH}.${process.pid}.tmp`;
+  writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  renameSync(tempPath, CONFIG_PATH);
+  return loadConfig();
+}
+
+function normalizeWebPort(value: unknown): number {
+  const parsed = Number(value ?? DEFAULT_CONFIG.web.port);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) return DEFAULT_CONFIG.web.port;
+  return parsed;
 }
 
 export const config = loadConfig();

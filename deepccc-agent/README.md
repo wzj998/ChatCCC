@@ -2,7 +2,7 @@
 
 `deepccc` 是一个轻量级本地编程 Agent，针对 DeepSeek 使用体验做了优化，同时支持其他 OpenAI-compatible 模型接口。
 
-它提供交互式命令行、JSONL 流式输出、本地文件工具、命令执行、项目提示词自动注入和持久化上下文。
+它提供本地 Web UI、交互式命令行、JSONL 流式输出、本地文件工具、命令执行、项目提示词自动注入和持久化上下文。
 
 ## 当前状态
 
@@ -96,9 +96,28 @@ $env:DEEPCCC_STREAMING="true"
     "maxBytesPerTurn": 1048576,
     "retentionDays": 7,
     "keepCompleted": false
+  },
+  "web": {
+    "port": 28080,
+    "openOnStart": true
   }
 }
 ```
+
+## Web UI
+
+全局安装后可以直接启动本地网页版：
+
+```bash
+deepccc web
+```
+
+默认只监听 `http://127.0.0.1:28080/`，不会暴露到局域网。可在
+`~/.deepccc/config.json` 的 `web.port` 修改端口，`web.openOnStart` 控制启动时是否自动打开浏览器；也可以临时使用 `deepccc web --port 28081 --no-open`。
+
+Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以同时运行，即使它们指向同一个工作目录。每个会话可独立选择 model、subModel 和 effort，并持续复用 CLI 已保存的历史。注意：当前版本不自动创建 Git worktree；同目录的多个运行中 Agent 直接修改同一组文件，页面会提示覆盖与冲突风险。
+
+API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic Messages。完整 API Key 只保存在本机 `~/.deepccc/config.json`，浏览器读取设置时仅返回掩码。高风险命令会在网页中暂停并请求“拒绝、允许一次、本会话允许、永久允许”，浏览器断开或审批超时默认拒绝。
 
 `git.coAuthor.enabled` 默认开启。DeepCCC 通过 `run_command` 创建 Git 提交时会保留用户为
 主 Author，并追加 `Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>`。

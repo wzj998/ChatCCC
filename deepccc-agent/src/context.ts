@@ -203,6 +203,20 @@ export function getBuiltinContextSession(
   return readSessionInfo(contextDir, sessionId);
 }
 
+export function readBuiltinContextState(
+  sessionId: string,
+  contextDir: string = DEFAULT_BUILTIN_CONTEXT_DIR,
+): BuiltinContextState | null {
+  const normalizedSessionId = normalizeBuiltinSessionId(sessionId);
+  const filePath = contextFilePath(contextDir, normalizedSessionId);
+  if (!existsSync(filePath)) return null;
+  try {
+    return normalizeState(JSON.parse(readFileSync(filePath, "utf8")), normalizedSessionId);
+  } catch {
+    return null;
+  }
+}
+
 export function listBuiltinContextSessions(
   contextDir: string = DEFAULT_BUILTIN_CONTEXT_DIR,
 ): BuiltinContextSessionInfo[] {
