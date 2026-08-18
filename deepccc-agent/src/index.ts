@@ -109,6 +109,7 @@ const COMPACTION_RECOVERY_HINT_DISABLED = [
 
 export const DEFAULT_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_COMPACTION_OUTPUT_TOKENS = 16_384;
+const OPENAI_COMPATIBLE_PROVIDER_NAME = "deepccc";
 /** task 子代理工具：子代理单轮对话的最大工具步数（防失控循环，结果收敛后即结束） */
 const TASK_MAX_STEPS = 20;
 
@@ -276,6 +277,14 @@ function normalizeMaxSteps(value: number | undefined): number | undefined {
   return value;
 }
 
+function normalizeMaxOutputTokens(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error("maxOutputTokens must be a positive integer when provided");
+  }
+  return value;
+}
+
 function normalizeAnthropicBaseURL(baseURL: string): string {
   // 完全按用户填写的地址使用，不自动补 /v1（AI SDK 仅对官方 api.anthropic.com
   // 特判补一次 /v1，其他地址原样拼接 /messages）。
@@ -301,6 +310,8 @@ export interface ChatSessionConfig {
    * overrides config.effort; empty omits the reasoning_effort request field.
    */
   effort?: string;
+  /** Maximum output tokens for the main conversation; unset uses the Provider default. */
+  maxOutputTokens?: number;
 }
 
 export interface ChatSessionOptions {
@@ -388,6 +399,7 @@ export class ChatSession {
   private compactionTimeoutMs: number;
   private maxSteps?: number;
   private effort: string;
+  private maxOutputTokens?: number;
   private permissionMode: PermissionMode;
   private permissionResolver?: PermissionResolver;
   private permissionGate: PermissionGate;
@@ -419,6 +431,7 @@ export class ChatSession {
           baseURL: this.baseURL,
           model: this.subModelId || this.modelId,
           effort: this.effort,
+          maxOutputTokens: this.maxOutputTokens,
         },
         {
           cwd: taskCwd,
@@ -462,6 +475,9 @@ export class ChatSession {
     this.subModelId = (overrides.subModel ?? appConfig.subModel ?? "").trim();
     this.provider = normalizeDeepCccProvider(overrides.provider ?? appConfig.provider);
     this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();
+    this.maxOutputTokens = normalizeMaxOutputTokens(
+      overrides.maxOutputTokens ?? appConfig.maxOutputTokens,
+    );
     this.apiKey = apiKey;
     this.baseURL = baseURL;
 
@@ -471,7 +487,7 @@ export class ChatSession {
           apiKey,
         })
       : createOpenAICompatible({
-          name: "deepccc",
+          name: OPENAI_COMPATIBLE_PROVIDER_NAME,
           baseURL,
           apiKey,
           includeUsage: true,
@@ -587,14 +603,14 @@ export class ChatSession {
         ? addAnthropicToolJsonCompatibilityNote(hintedMessages)
         : hintedMessages;
       // effort 按协议映射：
-      // - OpenAI 兼容：providerOptions.deepseek.reasoningEffort 由 @ai-sdk/openai-compatible
-      //   自动映射为请求体 reasoning_effort 字段（DeepSeek 原生支持）；
+      // - OpenAI 兼容：providerOptions 的 key 必须与 createOpenAICompatible.name 一致；
+      //   reasoningEffort 由 SDK 映射为请求体 reasoning_effort 字段；
       // - Anthropic：providerOptions.anthropic.effort 由 @ai-sdk/anthropic 组装为请求体
       //   output_config.effort（官方 Effort API，见 platform.claude.com/docs/en/build-with-claude/effort）
       let effortProviderOptions: Record<string, JSONObject> | undefined;
       if (this.effort) {
         effortProviderOptions = this.provider === "openai"
-          ? { deepseek: { reasoningEffort: this.effort } }
+          ? { [OPENAI_COMPATIBLE_PROVIDER_NAME]: { reasoningEffort: this.effort } }
           : { anthropic: { effort: this.effort } };
       }
       const baseGenerationOptions = {
@@ -610,6 +626,9 @@ export class ChatSession {
         }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
+        ...(this.maxOutputTokens !== undefined
+          ? { maxOutputTokens: this.maxOutputTokens }
+          : {}),
         ...(effortProviderOptions ? { providerOptions: effortProviderOptions } : {}),
       };
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -804,7 +823,7 @@ export class ChatSession {
         // output_config.effort=low），避免继承主对话的高 effort 拖慢"压缩上下文中"阶段。
         maxOutputTokens: MAX_COMPACTION_OUTPUT_TOKENS,
         providerOptions: this.provider === "openai"
-          ? { deepseek: { reasoningEffort: "none" } }
+          ? { [OPENAI_COMPATIBLE_PROVIDER_NAME]: { reasoningEffort: "none" } }
           : { anthropic: { effort: "low" } },
       });
 

@@ -17,6 +17,7 @@ const originalRawStreamLogs = structuredClone(config.rawStreamLogs);
 const originalStreaming = config.streaming;
 const originalProvider = config.provider;
 const originalEffort = config.effort;
+const originalMaxOutputTokens = config.maxOutputTokens;
 const createOpenAICompatibleMock = vi.fn(() => (modelId: string) => ({ modelId }));
 const createAnthropicMock = vi.fn(() => (modelId: string) => ({ modelId, provider: "anthropic" }));
 
@@ -66,6 +67,7 @@ beforeEach(() => {
   config.provider = "openai";
   config.streaming = true;
   config.effort = "";
+  config.maxOutputTokens = undefined;
 });
 
 afterEach(() => {
@@ -78,6 +80,7 @@ afterEach(() => {
   config.provider = originalProvider;
   config.streaming = originalStreaming;
   config.effort = originalEffort;
+  config.maxOutputTokens = originalMaxOutputTokens;
   createOpenAICompatibleMock.mockClear();
   createAnthropicMock.mockClear();
   vi.useRealTimers();
@@ -301,7 +304,7 @@ describe("ChatSession response transport", () => {
     );
   });
 
-  it("maps OpenAI-compatible effort to DeepSeek reasoningEffort", async () => {
+  it("maps OpenAI-compatible effort under the configured provider name", async () => {
     const { ChatSession } = await import("../index.js");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
     const session = new ChatSession({
@@ -316,8 +319,37 @@ describe("ChatSession response transport", () => {
 
     expect(streamTextMock).toHaveBeenCalledOnce();
     expect(streamTextMock.mock.calls[0]?.[0]).toMatchObject({
-      providerOptions: { deepseek: { reasoningEffort: "max" } },
+      providerOptions: { deepccc: { reasoningEffort: "max" } },
     });
+  });
+
+  it("forwards an explicit maxOutputTokens override to the main generation", async () => {
+    const { ChatSession } = await import("../index.js");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+    const session = new ChatSession({
+      apiKey: "sk-test",
+      maxOutputTokens: 8_192,
+    });
+
+    await collect(session.chat("hello"));
+
+    expect(streamTextMock.mock.calls[0]?.[0]).toMatchObject({
+      maxOutputTokens: 8_192,
+    });
+  });
+
+  it("inherits maxOutputTokens from DeepCCC config and omits it when unset", async () => {
+    const { ChatSession } = await import("../index.js");
+    streamTextMock.mockReturnValue({ textStream: textStream("done") });
+    config.maxOutputTokens = 16_384;
+
+    await collect(new ChatSession({ apiKey: "sk-test" }).chat("configured"));
+    expect(streamTextMock.mock.calls[0]?.[0]).toMatchObject({ maxOutputTokens: 16_384 });
+
+    streamTextMock.mockClear();
+    config.maxOutputTokens = undefined;
+    await collect(new ChatSession({ apiKey: "sk-test" }).chat("provider default"));
+    expect(streamTextMock.mock.calls[0]?.[0]).not.toHaveProperty("maxOutputTokens");
   });
 
   it("asks the provider to include usage in streaming responses", async () => {
@@ -614,7 +646,7 @@ describe("ChatSession context management", () => {
     expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
       temperature: 0,
       maxOutputTokens: 16_384,
-      providerOptions: { deepseek: { reasoningEffort: "none" } },
+      providerOptions: { deepccc: { reasoningEffort: "none" } },
     }));
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
       messages: expect.arrayContaining([

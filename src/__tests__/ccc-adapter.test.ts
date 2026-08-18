@@ -210,7 +210,7 @@ describe("createCccAdapter", () => {
     }
 
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
-      providerOptions: { deepseek: { reasoningEffort: "xhigh" } },
+      providerOptions: { deepccc: { reasoningEffort: "xhigh" } },
     }));
   });
 });

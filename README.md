@@ -159,9 +159,11 @@ Agent Team 提供本地任务看板和项目主 Agent 入口。每个规范化�
 
 打开项目后可以选择 CCC、Claude、Cursor 或 Codex 作为主 Agent。首次设置会创建固定命名为 `主Agent-<目录短名>` 的飞书群和空 Agent Session；后续切换 Agent 或重新关联目录会复用原群，运行中的主 Agent 不允许切换。建群成员取自机器人最近一次收到的飞书私聊；如果尚无私聊记录，网页会提示先给机器人发送任意私聊消息并自动检测。项目群名不会随第一句话或 `/forget` 改变。
 
-任务卡片可通过“交给主 Agent”启动真实执行：任务会从 Todo 移到 Doing，成功后自动移到 Done，失败则保留在 Doing 并显示错误，支持停止与重试。同一项目同一时间只运行一个看板任务；运行记录持久化在本地 JSON 中，服务异常退出后会把未完成执行标记为中断，避免错误显示为仍在运行。
+任务卡片可通过“交给主 Agent”启动真实执行：任务会从 Todo 移到 Doing，成功后自动移到 Done，失败、停止或中断则移到搁置并显示具体原因，支持安全重试。同一项目同一时间只运行一个看板任务；每次尝试都有独立的 Run ID、Trace ID、失败类型、耗时和完整执行时间线，可以在任务详情中切换历史尝试或复制记录。
 
-看板数据默认保存在 `~/.chatccc/agent-team/`，其中 `workspaces.json` 保存最近工作目录索引，`boards/` 保存按稳定 ID 分隔的看板 JSON，`main-agent-bindings/` 单独保存本机飞书群与 Session 绑定。目录移动或重命名后，可从最近目录列表重新关联。数据访问通过仓储接口隔离，后续接入飞书多维表格时可增加双向同步适配器，无需把本机群聊和 Session 状态混入任务同步模型。选择目录、创建群聊和启动 Agent 等操作都由本机 Node 后端执行；当前实现不依赖 Electron。
+运行中的时间线和最后进度会定期持久化；长时间没有进度会在看板中标记为疑似停滞，停止请求超过截止时间会强制收敛到终态。服务异常退出后会保留最后已写入的执行过程并把未完成任务标记为中断；启动时还会自动对账任务终态与卡片列，修复“Agent 已完成但卡片移动失败”等部分成功。损坏的单条运行 JSON 会被隔离为 `.corrupt-*` 文件，不会阻断同项目其他历史记录。
+
+看板数据默认保存在 `~/.chatccc/agent-team/`，其中 `workspaces.json` 保存最近工作目录索引，`boards/` 保存按稳定 ID 分隔的看板 JSON，`main-agent-bindings/` 单独保存本机飞书群与 Session 绑定，`task-runs/` 保存每次任务执行及其诊断时间线。目录移动或重命名后，可从最近目录列表重新关联。数据访问通过仓储接口隔离，后续接入飞书多维表格时可增加双向同步适配器，无需把本机群聊和 Session 状态混入任务同步模型。选择目录、创建群聊和启动 Agent 等操作都由本机 Node 后端执行；当前实现不依赖 Electron。
 
 #### 从源码运行
 
@@ -224,7 +226,7 @@ Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
-ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effort 显式传给内置 Agent；API Key 为空时 CCC Agent 会自动保持禁用。DeepCCC 的传输层选项 `provider`（默认 `openai`）和 `streaming`（默认 `true`）可通过 `~/.deepccc/config.json` 或 `DEEPCCC_PROVIDER` / `DEEPCCC_STREAMING` 配置，无需额外安装独立 CLI。
+ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL` 和模型显式传给内置 Agent；API Key 为空时 CCC Agent 会自动保持禁用。`ccc.effort` 与 `ccc.maxOutputTokens` 是可选 override：非空时覆盖 DeepCCC，留空时跟随 `~/.deepccc/config.json` / `DEEPCCC_*` 环境变量，DeepCCC 也未配置时使用模型服务端默认值。DeepCCC 的传输层选项 `provider`（默认 `openai`）和 `streaming`（默认 `true`）同样可通过内核配置，无需额外安装独立 CLI。
 
 **协议 override：** 也可以在 ChatCCC 的配置（`config.json` 的 `ccc.provider`，或 Web 管理页的「CCC Agent → API 协议」）显式指定 `openai` / `anthropic` 覆盖内核配置；留空（默认）时跟随 `~/.deepccc/config.json` / `DEEPCCC_PROVIDER`。`streaming` 不做 override，始终由 DeepCCC 内核配置控制。
 
@@ -240,7 +242,7 @@ ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL`、模型和 effo
 | 通义千问 / 智谱 GLM / 豆包 / MiniMax | 各家 `…/v1` 端点 | 国内 OpenAI 兼容服务 |
 | Ollama / vLLM / LM Studio | `http://localhost:11434/v1` | 本地或自建推理服务 |
 
-更换服务只需把 `ccc.DEEPSEEK_BASE_URL` 改为对应端点、`ccc.DEEPSEEK_API_KEY` 改为对应 Key、`ccc.model` 改为目标模型名即可。`reasoning_effort` 等 DeepSeek 扩展字段对不认识的模型会自动忽略，不影响其他服务。余额查询仅对官方 DeepSeek 域名（`api.deepseek.com`）生效，指向其他端点时自动跳过，不影响对话。
+更换服务只需把 `ccc.DEEPSEEK_BASE_URL` 改为对应端点、`ccc.DEEPSEEK_API_KEY` 改为对应 Key、`ccc.model` 改为目标模型名即可。`effort` 留空时不会由 ChatCCC override DeepCCC；若两边都留空，则不发送 `reasoning_effort`。只有确认目标模型支持时才应显式填写，否则服务端可能返回参数错误。余额查询仅对官方 DeepSeek 域名（`api.deepseek.com`）生效，指向其他端点时自动跳过，不影响对话。
 
 `ccc.alternativeModel` 是单个备选模型，只会加入 `/model` 的人工切换列表，不会在请求失败时自动重试或切换，避免重复执行带副作用的工具调用。
 
@@ -384,6 +386,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 | `ccc.DEEPSEEK_API_KEY` / `ccc.DEEPSEEK_BASE_URL` | CCC Agent 的 API Key 和服务地址；**不限于 DeepSeek**——可填任意 OpenAI 兼容端点（OpenAI、Kimi、通义、智谱、Ollama 本地等） |
 | `ccc.model` | CCC Agent 默认模型 |
 | `ccc.subModel` | CCC Agent 子模型（选填）：用于内部轻量环节（压缩摘要生成、task 子代理任务）；留空跟随主模型 |
+| `ccc.effort` | CCC Agent 推理强度 override；留空跟随 DeepCCC 内核配置，内核也留空时使用模型服务端默认值 |
+| `ccc.maxOutputTokens` | CCC Agent 主对话最大输出 token override；正整数，`null`/留空时跟随 DeepCCC 内核配置，内核也未配置时使用模型服务端默认值 |
 | `ccc.compactionTimeoutMs` | CCC Agent 上下文压缩单轮超时（毫秒），默认 300000（5 分钟）；压缩超时会让整轮对话失败，建议保持默认或调大 |
 | `ccc.contextWindow` | CCC Agent 模型上下文窗口（token），默认 1048576（1M，DeepSeek V4 Pro/Flash 原生规格）；压缩阈值自动 = 窗口 × 80%；超过模型/服务端实际上限会被 API 拒绝，可在 Web UI 下拉选择或自定义（单位 k） |
 | `dsh.apiKey` / `dsh.baseUrl` | DeepSeek Harness 的 API Key 和官方 DeepSeek 服务地址 |

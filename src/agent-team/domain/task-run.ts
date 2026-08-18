@@ -11,6 +11,15 @@ export type TaskRunState =
   | "canceled"
   | "interrupted";
 
+export type TaskRunFailureCode =
+  | "agent_error"
+  | "agent_timeout"
+  | "user_stopped"
+  | "stop_timeout"
+  | "process_missing"
+  | "chatccc_restart"
+  | "task_deleted";
+
 export interface TaskRun {
   schemaVersion: typeof TASK_RUN_SCHEMA_VERSION;
   runId: string;
@@ -25,13 +34,21 @@ export interface TaskRun {
   sessionId: string;
   createdAt: string;
   updatedAt: string;
+  traceId?: string;
   startedAt?: string;
   stopRequestedAt?: string;
+  stopDeadlineAt?: string;
   finishedAt?: string;
+  lastProgressAt?: string;
+  stalledAt?: string;
   /** Ordered prompt, reasoning, tool, and response events for this specific attempt. */
   transcript?: ExecutionTranscriptEntry[];
   result?: string;
   error?: string;
+  failureCode?: TaskRunFailureCode;
+  boardSyncPending?: boolean;
+  reconciledAt?: string;
+  syncError?: string;
 }
 
 export interface TaskRunRepository {
@@ -59,8 +76,21 @@ export function parseTaskRun(value: unknown): TaskRun {
     throw new Error("Invalid task run state");
   }
   if (!isAgentTool(run.agentId)) throw new Error("Invalid task run Agent");
-  for (const field of ["startedAt", "stopRequestedAt", "finishedAt", "result", "error"] as const) {
+  for (const field of [
+    "traceId", "startedAt", "stopRequestedAt", "stopDeadlineAt", "finishedAt", "lastProgressAt",
+    "stalledAt", "result", "error", "reconciledAt", "syncError",
+  ] as const) {
     if (run[field] !== undefined && typeof run[field] !== "string") throw new Error(`Invalid task run ${field}`);
+  }
+  const failureCodes: TaskRunFailureCode[] = [
+    "agent_error", "agent_timeout", "user_stopped", "stop_timeout", "process_missing",
+    "chatccc_restart", "task_deleted",
+  ];
+  if (run.failureCode !== undefined && !failureCodes.includes(run.failureCode)) {
+    throw new Error("Invalid task run failureCode");
+  }
+  if (run.boardSyncPending !== undefined && typeof run.boardSyncPending !== "boolean") {
+    throw new Error("Invalid task run boardSyncPending");
   }
   if (run.transcript !== undefined && (!Array.isArray(run.transcript) || !run.transcript.every(isExecutionTranscriptEntry))) {
     throw new Error("Invalid task run transcript");

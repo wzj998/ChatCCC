@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -41,7 +41,11 @@ describe("Agent Team task execution", () => {
     await Promise.all(tempRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  async function fixture() {
+  async function fixture(options: {
+    now?: () => Date;
+    stopTimeoutMs?: number;
+    staleAfterMs?: number;
+  } = {}) {
     const root = await mkdtemp(join(tmpdir(), "chatccc-task-run-"));
     tempRoots.push(root);
     const workspace = join(root, "workspace");
@@ -71,9 +75,13 @@ describe("Agent Team task execution", () => {
     });
     const runtime: TaskExecutionRuntime = {
       run: vi.fn(() => execution),
-      getTranscript: vi.fn(async (): Promise<ExecutionTranscriptEntry[]> => [
-        { type: "tool_use", at: "2026-08-17T00:00:03.000Z", name: "read_file", toolUseId: "live-1", input: "README.md" },
-      ]),
+      getSnapshot: vi.fn(async () => ({
+        transcript: [
+          { type: "tool_use", at: "2026-08-17T00:00:03.000Z", name: "read_file", toolUseId: "live-1", input: "README.md" },
+        ] satisfies ExecutionTranscriptEntry[],
+        updatedAt: "2026-08-17T00:00:03.000Z",
+        status: "running" as const,
+      })),
       stop: vi.fn(() => true),
       isSessionRunning: vi.fn(() => false),
     };
@@ -96,10 +104,12 @@ describe("Agent Team task execution", () => {
       runtime,
       getBinding: async () => binding,
       idFactory: () => `run-${++runId}`,
-      now: (() => {
+      now: options.now ?? (() => {
         let tick = 0;
         return () => new Date(Date.UTC(2026, 7, 17, 0, 0, tick++));
       })(),
+      stopTimeoutMs: options.stopTimeoutMs,
+      staleAfterMs: options.staleAfterMs,
     });
 
     return {
@@ -177,6 +187,36 @@ describe("Agent Team task execution", () => {
     expect((await repository.get(started.run.runId))?.transcript?.map((entry) => entry.type)).toEqual(["prompt"]);
   });
 
+  it("checkpoints live progress into the durable task run", async () => {
+    const { board, repository, service } = await fixture();
+    const started = await service.startTask(board.boardId, "task-1", board.revision);
+
+    await service.checkpointActiveRuns();
+
+    expect(await repository.get(started.run.runId)).toMatchObject({
+      state: "running",
+      lastProgressAt: "2026-08-17T00:00:03.000Z",
+      transcript: [
+        expect.objectContaining({ type: "prompt" }),
+        expect.objectContaining({ type: "tool_use", toolUseId: "live-1" }),
+      ],
+    });
+  });
+
+  it("marks an active run as stalled when its persisted progress is too old", async () => {
+    let nowMs = Date.UTC(2026, 7, 17, 0, 0, 0);
+    const { board, repository, service } = await fixture({
+      now: () => new Date(nowMs),
+      staleAfterMs: 5 * 60_000,
+    });
+    const started = await service.startTask(board.boardId, "task-1", board.revision);
+    nowMs += 6 * 60_000;
+
+    await service.checkpointActiveRuns();
+
+    expect((await repository.get(started.run.runId))?.stalledAt).toBe(new Date(nowMs).toISOString());
+  });
+
   it("stops a running task and leaves it On hold", async () => {
     const { board, boardService, runtime, service, finish } = await fixture();
     const started = await service.startTask(board.boardId, "task-1", board.revision);
@@ -189,6 +229,27 @@ describe("Agent Team task execution", () => {
     const stopped = await service.waitForRun(started.run.runId);
     expect(stopped.state).toBe("canceled");
     expect((await boardService.getBoard(board.boardId)).tasks.find((task) => task.id === "task-1")?.columnId).toBe("on_hold");
+  });
+
+  it("forces a terminal state when a stop request misses its deadline", async () => {
+    let nowMs = Date.UTC(2026, 7, 17, 0, 0, 0);
+    const { board, boardService, repository, runtime, service, finish } = await fixture({
+      now: () => new Date(nowMs),
+      stopTimeoutMs: 10_000,
+    });
+    const started = await service.startTask(board.boardId, "task-1", board.revision);
+    await service.stopRun(board.boardId, started.run.runId);
+    nowMs += 11_000;
+
+    await service.checkpointActiveRuns();
+
+    expect(await repository.get(started.run.runId)).toMatchObject({
+      state: "canceled",
+      failureCode: "stop_timeout",
+    });
+    expect(runtime.stop).toHaveBeenCalledTimes(2);
+    expect((await boardService.getBoard(board.boardId)).tasks.find((task) => task.id === "task-1")?.columnId).toBe("on_hold");
+    finish({ outcome: "stopped" });
   });
 
   it("records failures, supports a new retry attempt, and never replays interrupted work", async () => {
@@ -233,6 +294,46 @@ describe("Agent Team task execution", () => {
     expect((await boardService.getBoard(board.boardId)).tasks.find((task) => task.id === "task-2")?.columnId).toBe("on_hold");
   });
 
+  it("reconciles a terminal run after its board move initially fails", async () => {
+    const { board, boardService, repository, service, finish } = await fixture();
+    const started = await service.startTask(board.boardId, "task-1", board.revision);
+    const move = vi.spyOn(boardService, "moveTask");
+    move.mockRejectedValueOnce(new Error("simulated board write failure"));
+
+    finish({ outcome: "done", result: "Code complete" });
+    const completed = await service.waitForRun(started.run.runId);
+    expect(completed).toMatchObject({
+      state: "succeeded",
+      boardSyncPending: true,
+      syncError: "simulated board write failure",
+    });
+
+    await service.reconcileProject(board.boardId);
+
+    expect(await repository.get(started.run.runId)).toMatchObject({
+      state: "succeeded",
+      boardSyncPending: false,
+    });
+    expect((await boardService.getBoard(board.boardId)).tasks.find((task) => task.id === "task-1")?.columnId).toBe("done");
+  });
+
+  it("recovers the last durable stream transcript before marking a restarted run interrupted", async () => {
+    const { board, repository, service, runtime } = await fixture();
+    const started = await service.startTask(board.boardId, "task-1", board.revision);
+
+    await service.recoverInterruptedRuns();
+
+    expect(runtime.getSnapshot).toHaveBeenCalledWith("session-main");
+    expect(await repository.get(started.run.runId)).toMatchObject({
+      state: "interrupted",
+      failureCode: "chatccc_restart",
+      transcript: [
+        expect.objectContaining({ type: "prompt" }),
+        expect.objectContaining({ type: "tool_use", toolUseId: "live-1" }),
+      ],
+    });
+  });
+
   it("persists task runs as project-scoped JSON records", async () => {
     const root = await mkdtemp(join(tmpdir(), "chatccc-task-run-json-"));
     tempRoots.push(root);
@@ -264,5 +365,37 @@ describe("Agent Team task execution", () => {
 
     await repository.save({ ...run, state: "succeeded", finishedAt: "2026-08-17T00:01:00.000Z" });
     expect(await repository.listActive()).toEqual([]);
+  });
+
+  it("quarantines a malformed run without hiding valid project history", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatccc-task-run-corrupt-"));
+    tempRoots.push(root);
+    const repository = new JsonTaskRunRepository({ rootDir: root });
+    const projectDir = join(root, "project-json");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "broken.json"), "{ definitely not json", "utf8");
+    const run: TaskRun = {
+      schemaVersion: 1,
+      runId: "run-valid",
+      projectId: "project-json",
+      taskId: "task-json",
+      taskTitle: "Valid run",
+      taskDescription: "",
+      attempt: 1,
+      state: "succeeded",
+      agentId: "codex",
+      chatId: "oc_main",
+      sessionId: "session-main",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      updatedAt: "2026-08-17T00:01:00.000Z",
+      finishedAt: "2026-08-17T00:01:00.000Z",
+    };
+    await repository.save(run);
+
+    expect(await repository.listByProject(run.projectId)).toEqual([run]);
+    expect(await readdir(projectDir)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^broken\.json\.corrupt-/),
+      "run-valid.json",
+    ]));
   });
 });

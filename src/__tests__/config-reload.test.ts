@@ -73,7 +73,7 @@ const baseAppConfig: AppConfig = {
     onDemandMonthlyBudget: 1000,
   },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort", fastMode: false },
-  ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", subModel: "", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", provider: "", gitCoAuthor: null, compactionTimeoutMs: 300000, contextWindow: 1048576 },
+  ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", subModel: "", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", maxOutputTokens: null, provider: "", gitCoAuthor: null, compactionTimeoutMs: 300000, contextWindow: 1048576 },
   dsh: { enabled: false, defaultAgent: false, apiKey: "", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", subModel: "", alternativeModel: "", provider: "deepseek-official", maxTokens: 49152 },
 };
 
@@ -224,6 +224,18 @@ describe("applyLoadedConfig — config 对象引用契约", () => {
     expect(config.feishu.appId).toBe("REF_TEST_APP");
     expect(config.codex.path).toBe("/refresh/codex");
     expect(config.codex.fastMode).toBe(true);
+  });
+
+  it("刷新 CCC maxOutputTokens override 并保持 null 继承语义", () => {
+    const configured = structuredClone(baseAppConfig);
+    configured.ccc.maxOutputTokens = 8192;
+    applyLoadedConfig(configured);
+    expect(config.ccc.maxOutputTokens).toBe(8192);
+
+    const inherited = structuredClone(baseAppConfig);
+    inherited.ccc.maxOutputTokens = null;
+    applyLoadedConfig(inherited);
+    expect(config.ccc.maxOutputTokens).toBeNull();
   });
 
   it("刷新 chromeDevtools 配置但保持 config 引用", () => {

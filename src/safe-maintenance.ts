@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { USER_DATA_DIR } from "./config.ts";
 
@@ -52,7 +53,9 @@ export interface SafeMaintenanceRuntime {
   notify(requester: SafeMaintenanceRequester, message: string): Promise<void>;
 }
 
-export const SAFE_MAINTENANCE_FILE = join(USER_DATA_DIR, "state", "safe-maintenance.json");
+export const SAFE_MAINTENANCE_FILE = process.env.VITEST
+  ? join(tmpdir(), `chatccc-vitest-safe-maintenance-${process.pid}-${randomUUID()}.json`)
+  : join(USER_DATA_DIR, "state", "safe-maintenance.json");
 export const SAFE_MAINTENANCE_STABLE_IDLE_MS = 1_000;
 
 const EMPTY_SNAPSHOT: SafeMaintenanceSnapshot = {

@@ -28,6 +28,10 @@ describe("builtin ChatSession config", () => {
     expect(DEFAULT_CONFIG.subModel).toBe("");
   });
 
+  it("leaves maxOutputTokens unset so the provider default is preserved", () => {
+    expect(DEFAULT_CONFIG.maxOutputTokens).toBeUndefined();
+  });
+
   it("defaults Git co-author attribution to the linked DeepCCC identity", () => {
     expect(DEFAULT_CONFIG.git.coAuthor).toEqual({
       enabled: true,
