@@ -43,8 +43,7 @@ npm run dev
 实际运行结果。
 
 多会话可以并行处理不同任务，每个会话分别选择 model、subModel 和 effort。下图来自
-真实提问“DeepCCC 这个项目妙在哪”，同时展示了图片附件输入与 Agent `present_file`
-图片回传：
+`deepccc-agent/` 工作目录中的真实提问“这个项目妙在哪？”：
 
 ![DeepCCC Web UI 图片附件与真实 Agent 回复](docs/deepccc-web-ui.png)
 
