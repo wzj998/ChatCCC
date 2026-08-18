@@ -1,14 +1,21 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stat } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  DEEPCCC_HOME,
   loadConfig,
   saveConfigPatch,
   type DeepCccConfig,
   type DeepCccConfigPatch,
 } from "./config.js";
 import type { PermissionAnswer } from "./permissions.js";
+import { killProcessTree } from "./proc-tree-kill.js";
 import { DeepCccWebRuntime, type WebRuntimeConfig, type WebRuntimeEvent } from "./web-runtime.js";
 import { DEEPCCC_WEB_PAGE } from "./web-page.js";
 
@@ -38,12 +45,15 @@ export interface DeepCccWebRequestHandlerOptions {
   getPublicConfig: () => PublicDeepCccConfig;
   saveConfig: (patch: DeepCccConfigPatch) => Promise<PublicDeepCccConfig> | PublicDeepCccConfig;
   defaultCwd: string;
+  instance?: DeepCccWebInstance & { shutdown: () => void };
 }
 
 export interface StartDeepCccWebOptions {
   port?: number;
   openBrowser?: boolean;
   defaultCwd?: string;
+  reuseExisting?: boolean;
+  stateFile?: string;
 }
 
 export interface DeepCccWebHandle {
@@ -53,7 +63,17 @@ export interface DeepCccWebHandle {
   close(): Promise<void>;
 }
 
+export interface DeepCccWebInstance {
+  pid: number;
+  port: number;
+  startedAt: string;
+  token: string;
+}
+
+export interface LaunchDeepCccWebProcessOptions extends StartDeepCccWebOptions {}
+
 let defaultHandle: DeepCccWebHandle | null = null;
+export const DEEPCCC_WEB_STATE_FILE = join(DEEPCCC_HOME, "web", "server.json");
 
 function runtimeConfig(): WebRuntimeConfig {
   const config = loadConfig();
@@ -97,7 +117,24 @@ export function createDeepCccWebRequestHandler(options: DeepCccWebRequestHandler
         return textReply(res, 200, DEEPCCC_WEB_PAGE, "text/html; charset=utf-8");
       }
       if (method === "GET" && path === "/api/health") {
-        return jsonReply(res, 200, { ok: true, service: "deepccc-web" });
+        return jsonReply(res, 200, {
+          ok: true,
+          service: "deepccc-web",
+          ...(options.instance ? {
+            pid: options.instance.pid,
+            port: options.instance.port,
+            startedAt: options.instance.startedAt,
+            instanceToken: options.instance.token,
+          } : {}),
+        });
+      }
+      if (method === "POST" && path === "/api/shutdown") {
+        if (!options.instance || req.headers["x-deepccc-instance-token"] !== options.instance.token) {
+          throw new WebHttpError(403, "DeepCCC Web shutdown token mismatch");
+        }
+        jsonReply(res, 202, { ok: true, shuttingDown: true });
+        setTimeout(options.instance.shutdown, 0).unref?.();
+        return;
       }
       if (method === "GET" && path === "/api/config") {
         return jsonReply(res, 200, { ok: true, config: { ...options.getPublicConfig(), defaultCwd: options.defaultCwd } });
@@ -173,21 +210,35 @@ export async function startDeepCccWebServer(options: StartDeepCccWebOptions = {}
   const port = options.port ?? config.web.port;
   const url = `http://${HOST}:${port}/`;
   if (defaultHandle?.port === port) {
-    if (options.openBrowser !== false) openBrowser(url);
-    return defaultHandle;
+    if (options.reuseExisting) {
+      if (options.openBrowser !== false) openBrowser(url);
+      return defaultHandle;
+    }
+    await defaultHandle.close();
   }
-  if (await isExistingDeepCccServer(port)) {
+  const stateFile = options.stateFile ?? DEEPCCC_WEB_STATE_FILE;
+  const existing = await inspectDeepCccWebServer(port);
+  if (existing && options.reuseExisting) {
     const reused: DeepCccWebHandle = { url, port, reused: true, close: async () => {} };
     if (options.openBrowser !== false) openBrowser(url);
     return reused;
   }
+  if (existing) await stopOwnedDeepCccWebServer(existing, stateFile);
   const runtime = new DeepCccWebRuntime({ loadConfig: runtimeConfig });
   const defaultCwd = options.defaultCwd ?? process.cwd();
+  const instance: DeepCccWebInstance = {
+    pid: process.pid,
+    port,
+    startedAt: new Date().toISOString(),
+    token: randomUUID(),
+  };
+  let closeServer = () => {};
   const handler = createDeepCccWebRequestHandler({
     runtime,
     defaultCwd,
     getPublicConfig: () => toPublicConfig(loadConfig(), defaultCwd),
     saveConfig: (patch) => toPublicConfig(saveConfigPatch(patch), defaultCwd),
+    instance: { ...instance, shutdown: () => closeServer() },
   });
   const server = createServer((req, res) => { void handler(req, res); });
   await new Promise<void>((resolve, reject) => {
@@ -202,11 +253,57 @@ export async function startDeepCccWebServer(options: StartDeepCccWebOptions = {}
     url,
     port,
     reused: false,
-    close: () => new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve())),
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) return reject(err);
+        removeOwnedState(stateFile, instance.token);
+        if (defaultHandle?.port === port) defaultHandle = null;
+        resolve();
+      });
+      // SSE and keep-alive sockets would otherwise keep a replaced standalone
+      // process alive after it has released the listening port.
+      server.closeAllConnections?.();
+    }),
   };
+  closeServer = () => { void handle.close(); };
   defaultHandle = handle;
+  writeOwnedState(stateFile, instance);
   if (options.openBrowser ?? config.web.openOnStart) openBrowser(url);
   return handle;
+}
+
+export async function launchDeepCccWebProcess(options: LaunchDeepCccWebProcessOptions = {}): Promise<{ url: string; port: number; reused: boolean }> {
+  const config = loadConfig();
+  const port = options.port ?? config.web.port;
+  const url = `http://${HOST}:${port}/`;
+  if (options.reuseExisting && await inspectDeepCccWebServer(port)) {
+    if (options.openBrowser !== false) openBrowser(url);
+    return { url, port, reused: true };
+  }
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const compiledEntry = join(moduleDir, "web-entry.js");
+  const args = [
+    ...(options.reuseExisting ? ["--reuse-existing"] : []),
+    "--port", String(port),
+    ...(options.openBrowser === false ? ["--no-open"] : []),
+  ];
+  const require = createRequire(import.meta.url);
+  const commandArgs = existsSync(compiledEntry)
+    ? [compiledEntry, ...args]
+    : [require.resolve("tsx/cli"), join(moduleDir, "web-entry.ts"), ...args];
+  const child = spawn(process.execPath, commandArgs, {
+    cwd: options.defaultCwd ?? process.cwd(),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    if (await inspectDeepCccWebServer(port)) return { url, port, reused: false };
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`DeepCCC Web did not become ready on port ${port}`);
 }
 
 function openEventStream(
@@ -274,13 +371,73 @@ class WebHttpError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
-async function isExistingDeepCccServer(port: number): Promise<boolean> {
+export async function inspectDeepCccWebServer(port: number): Promise<(DeepCccWebInstance & { service: "deepccc-web" }) | null> {
   try {
     const response = await fetch(`http://${HOST}:${port}/api/health`, { signal: AbortSignal.timeout(800) });
-    return response.ok && (await response.json() as { service?: string }).service === "deepccc-web";
+    if (!response.ok) return null;
+    const health = await response.json() as Record<string, unknown>;
+    if (health.service !== "deepccc-web") return null;
+    return {
+      service: "deepccc-web",
+      pid: typeof health.pid === "number" ? health.pid : 0,
+      port: typeof health.port === "number" ? health.port : port,
+      startedAt: typeof health.startedAt === "string" ? health.startedAt : "",
+      token: typeof health.instanceToken === "string" ? health.instanceToken : "",
+    };
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function stopOwnedDeepCccWebServer(existing: DeepCccWebInstance, stateFile: string): Promise<void> {
+  const owned = readOwnedState(stateFile);
+  if (!owned || !sameInstance(owned, existing)) {
+    throw new Error(`Port ${existing.port} is occupied by an unverified DeepCCC Web instance; use --reuse-existing or stop it manually`);
+  }
+  try {
+    await fetch(`http://${HOST}:${existing.port}/api/shutdown`, {
+      method: "POST",
+      headers: { "x-deepccc-instance-token": existing.token },
+      signal: AbortSignal.timeout(1_500),
+    });
+  } catch { /* fall through to verified force-kill */ }
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (!await inspectDeepCccWebServer(existing.port)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const current = await inspectDeepCccWebServer(existing.port);
+  if (current && sameInstance(owned, current)) await killProcessTree(owned.pid);
+  const finalDeadline = Date.now() + 3_000;
+  while (Date.now() < finalDeadline) {
+    if (!await inspectDeepCccWebServer(existing.port)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Verified DeepCCC Web process ${owned.pid} did not release port ${existing.port}`);
+}
+
+function sameInstance(left: DeepCccWebInstance, right: DeepCccWebInstance): boolean {
+  return left.pid > 0 && left.pid === right.pid && left.port === right.port && !!left.token && left.token === right.token && left.startedAt === right.startedAt;
+}
+
+function readOwnedState(path: string): DeepCccWebInstance | null {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<DeepCccWebInstance>;
+    if (typeof value.pid !== "number" || typeof value.port !== "number" || typeof value.startedAt !== "string" || typeof value.token !== "string") return null;
+    return value as DeepCccWebInstance;
+  } catch { return null; }
+}
+
+function writeOwnedState(path: string, instance: DeepCccWebInstance): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(instance, null, 2)}\n`, "utf8");
+  renameSync(temp, path);
+}
+
+function removeOwnedState(path: string, token: string): void {
+  if (readOwnedState(path)?.token !== token) return;
+  try { unlinkSync(path); } catch { /* already removed */ }
 }
 
 function openBrowser(url: string): void {

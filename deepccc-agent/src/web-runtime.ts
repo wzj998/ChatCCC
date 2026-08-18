@@ -133,6 +133,7 @@ export class DeepCccWebRuntime {
       summary: context?.summary ?? "",
       events: this.events.get(sessionId) ?? [],
       pendingApproval,
+      approvals: meta.approvals,
     };
   }
 
@@ -187,6 +188,7 @@ export class DeepCccWebRuntime {
     if (!waiter) return false;
     clearTimeout(waiter.timeout);
     this.approvals.delete(approvalId);
+    await this.store.resolveApproval(waiter.approval.sessionId, approvalId, answer);
     waiter.resolve(answer);
     this.emit(waiter.approval.sessionId, "approval_resolved", { approvalId, answer });
     return true;
@@ -235,12 +237,23 @@ export class DeepCccWebRuntime {
     return new Promise<PermissionAnswer>((resolve) => {
       const timeout = setTimeout(() => {
         this.approvals.delete(approvalId);
-        resolve("deny");
-        this.emit(sessionId, "approval_resolved", { approvalId, answer: "deny", timedOut: true });
+        void this.store.resolveApproval(sessionId, approvalId, "deny").finally(() => {
+          resolve("deny");
+          this.emit(sessionId, "approval_resolved", { approvalId, answer: "deny", timedOut: true });
+        });
       }, this.approvalTimeoutMs);
       timeout.unref?.();
-      this.approvals.set(approvalId, { approval, resolve, timeout });
-      this.emit(sessionId, "approval", approval);
+      void this.store.addApproval(sessionId, {
+        ...approval,
+        status: "pending",
+      }).then(() => {
+        this.approvals.set(approvalId, { approval, resolve, timeout });
+        this.emit(sessionId, "approval", approval);
+      }).catch(() => {
+        clearTimeout(timeout);
+        this.approvals.delete(approvalId);
+        resolve("deny");
+      });
     });
   }
 

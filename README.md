@@ -226,7 +226,7 @@ Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
-DeepCCC 同时提供独立端口的本地 Web UI。ChatCCC 管理页顶部点击 **DeepCCC Web** 会按需启动并打开该服务；只全局安装 `deepccc` 的用户也可运行 `deepccc web`。默认地址为 `http://127.0.0.1:28080/`，端口可通过 `~/.deepccc/config.json` 的 `web.port` 修改。网页版支持多会话并发、持久化历史、会话级 model/effort、API 设置和高风险操作审批。
+DeepCCC 同时提供独立端口的本地 Web UI。ChatCCC 管理页顶部点击 **DeepCCC Web** 会复用或按需启动该服务；只全局安装 `deepccc` 的用户直接运行 `deepccc` 即可启动并打开网页版，终端模式改用 `deepccc-cli`。默认地址为 `http://127.0.0.1:28080/`，端口可通过 `~/.deepccc/config.json` 的 `web.port` 修改。网页版支持多会话并发、持久化历史、会话级 model/effort、API 设置和会话内高风险操作审批。
 
 ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL` 和模型显式传给内置 Agent；API Key 为空时 CCC Agent 会自动保持禁用。`ccc.effort` 与 `ccc.maxOutputTokens` 是可选 override：非空时覆盖 DeepCCC，留空时跟随 `~/.deepccc/config.json` / `DEEPCCC_*` 环境变量，DeepCCC 也未配置时使用模型服务端默认值。DeepCCC 的传输层选项 `provider`（默认 `openai`）和 `streaming`（默认 `true`）同样可通过内核配置，无需额外安装独立 CLI。
 
