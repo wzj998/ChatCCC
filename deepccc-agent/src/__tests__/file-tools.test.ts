@@ -64,6 +64,25 @@ afterEach(async () => {
 });
 
 describe("DeepCCC file tools", () => {
+  it("presents a supported local image as a structured artifact", async () => {
+    const dir = await makeTempDir();
+    const imagePath = join(dir, "result.png");
+    await writeFile(imagePath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]));
+    const tools = createBuiltinFileTools(dir) as unknown as Record<
+      string,
+      { execute: (input: unknown, options?: { abortSignal?: AbortSignal }) => Promise<unknown> }
+    >;
+
+    await expect(tools.present_file.execute({ path: "result.png", caption: "运行结果" })).resolves.toEqual(
+      expect.objectContaining({
+        path: imagePath,
+        name: "result.png",
+        mimeType: "image/png",
+        caption: "运行结果",
+      }),
+    );
+  });
+
   it("adds the DeepCCC trailer to git commits and chained git commits", () => {
     const identity = { enabled: true, name: "DeepCCC", email: "20184052+wzj998@users.noreply.github.com" };
     expect(withGitCoAuthor('git commit -m "feat: x"', identity)).toContain(
