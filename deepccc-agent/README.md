@@ -58,6 +58,7 @@ npm run dev
 ## 核心能力
 
 - Web-first：多会话、持久化历史、实时流式过程、停止和恢复
+- 工具时间线：ChatCCC 风格 emoji 摘要、参数/结果折叠、省略行展开和状态记忆
 - 会话配置：每个会话独立选择 model、subModel 和 effort
 - 图片附件：Web 支持选择、粘贴和拖拽 PNG/JPEG/WebP；Agent 可用 `present_file` 回传图片
 - 本地工具：代码搜索、文件读写、补丁、命令执行、Git、网页搜索和抓取
@@ -153,6 +154,8 @@ deepccc
 从源码开发时，`npm run dev` 启动 Web Server 并打开页面（不启用 watch）；`npm run dev:cli` 启动终端模式。
 
 Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以同时运行，即使它们指向同一个工作目录。每个会话可独立选择 model、subModel 和 effort，并持续复用 CLI 已保存的历史。注意：当前版本不自动创建 Git worktree；同目录的多个运行中 Agent 直接修改同一组文件，页面会提示覆盖与冲突风险。
+
+模型文本、reasoning 心跳和工具事件通过 SSE 实时更新。每次工具调用与对应结果合并成一张卡片，折叠态显示 emoji、工具名、状态和关键参数；展开后调用参数默认保留前 8/后 4 行，工具结果保留前 12/后 6 行，省略内容可继续展开。工具卡及省略行的展开状态保存在当前浏览器标签页的 `sessionStorage`，持续生成、切换会话和刷新页面均不会自动收起。消息正文支持标题、表格、列表、引用、链接和代码块等常用 Markdown。
 
 图片始终按本地附件处理，不转换为 Provider 原生多模态消息。Web 支持文件选择、剪贴板粘贴和拖拽，每条消息最多 10 张 PNG/JPEG/WebP、单张最大 20 MB；附件复制到 `~/.deepccc/attachments/<session-id>/`，Agent 收到本地绝对路径后使用可用工具自行处理。Agent 可调用 `present_file` 把当前工作目录或会话附件目录中的图片直接展示在会话中；删除会话时对应附件一并清理。
 

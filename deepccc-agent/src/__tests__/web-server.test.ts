@@ -89,6 +89,11 @@ describe("DeepCCC web HTTP API", () => {
     expect(html).toContain("handleAttachmentFiles");
     expect(html).toContain("present_file");
     expect(html).toContain("withoutToolTranscript");
+    expect(html).toContain("toolSummaryRules");
+    expect(html).toContain("sessionStorage");
+    expect(html).toContain("data-tool-overflow");
+    expect(html).toContain("buildToolGroups");
+    expect(html).toContain("正在加载会话");
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
