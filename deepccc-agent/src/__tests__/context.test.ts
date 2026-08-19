@@ -263,7 +263,13 @@ describe("BuiltinContextManager", () => {
         "tool_result run_command: {\"exitCode\":0}",
       ],
       toolCalls: [
-        { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+        { id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      ],
+      timeline: [
+        { type: "text", text: "先检查。" },
+        { type: "tool_use", id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}" },
+        { type: "tool_result", tool_use_id: "call-1", name: "run_command", output: "{\"exitCode\":0}" },
+        { type: "text", text: "检查完成。" },
       ],
     });
 
@@ -272,7 +278,13 @@ describe("BuiltinContextManager", () => {
     expect(message.content).toContain("[工具记录]");
     expect(message.content).toContain("tool_call run_command");
     expect(message.toolCalls).toEqual([
-      { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      { id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+    ]);
+    expect(message.timeline).toEqual([
+      { type: "text", text: "先检查。" },
+      { type: "tool_use", id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}" },
+      { type: "tool_result", tool_use_id: "call-1", name: "run_command", output: "{\"exitCode\":0}" },
+      { type: "text", text: "检查完成。" },
     ]);
   });
 

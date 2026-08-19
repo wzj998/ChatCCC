@@ -93,6 +93,9 @@ describe("DeepCCC web HTTP API", () => {
     expect(html).toContain("sessionStorage");
     expect(html).toContain("data-tool-overflow");
     expect(html).toContain("buildToolGroups");
+    expect(html).toContain("function timelineHtml");
+    expect(html).toContain("function liveTimeline");
+    expect(html).toContain("message.timeline");
     expect(html).toContain("正在加载会话");
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
