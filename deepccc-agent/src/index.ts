@@ -562,7 +562,7 @@ export class ChatSession {
     let completed = false;
     // 结构化工具调用存档：按 toolCallId 关联入参/出参/错误，落盘到 context.json 的
     // assistant 消息 toolCalls 字段；[Tool transcript] 文本视图仍按原格式生成。
-    const toolCallsById = new Map<string, { name: string; input?: string; output?: string; is_error?: boolean }>();
+    const toolCallsById = new Map<string, { id: string; name: string; input?: string; output?: string; is_error?: boolean }>();
     const toolCallOrder: string[] = [];
 
     try {
@@ -677,7 +677,7 @@ export class ChatSession {
             yield { type: "text", text: safeText, accumulated: safeAccumulated };
           } else if (part.type === "tool-call") {
             toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
-            toolCallsById.set(part.toolCallId, { name: part.toolName, input: safeJson(part.input) });
+            toolCallsById.set(part.toolCallId, { id: part.toolCallId, name: part.toolName, input: safeJson(part.input) });
             toolCallOrder.push(part.toolCallId);
             yield {
               type: "tool_use",
@@ -743,7 +743,7 @@ export class ChatSession {
         completed = true;
         const collectedToolCalls = toolCallOrder
           .map((id) => toolCallsById.get(id))
-          .filter((call): call is { name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
+          .filter((call): call is { id: string; name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
         this.context.appendMessage(buildPersistedAssistantMessage({
           fullText,
           transcriptLines: toolContext,

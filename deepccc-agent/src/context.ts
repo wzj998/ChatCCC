@@ -12,6 +12,8 @@ export type BuiltinContextRole = "user" | "assistant";
  * content 文本保持不变供模型消费；toolCalls 数组提供可检索、可回放的结构化数据。
  */
 export interface BuiltinContextToolCall {
+  /** Provider tool-call id，用于 Web 在流式运行与持久化消息之间保持同一张工具卡状态。 */
+  id?: string;
   name: string;
   /** 工具入参（JSON 文本，已截断到安全上限） */
   input?: string;
@@ -123,9 +125,10 @@ function normalizeToolCalls(value: unknown): BuiltinContextToolCall[] {
   const calls: BuiltinContextToolCall[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
-    const raw = entry as { name?: unknown; input?: unknown; output?: unknown; is_error?: unknown };
+    const raw = entry as { id?: unknown; name?: unknown; input?: unknown; output?: unknown; is_error?: unknown };
     if (typeof raw.name !== "string" || raw.name.length === 0) continue;
     const call: BuiltinContextToolCall = { name: raw.name };
+    if (typeof raw.id === "string" && raw.id.length > 0) call.id = raw.id;
     if (typeof raw.input === "string") call.input = raw.input;
     if (typeof raw.output === "string") call.output = raw.output;
     if (typeof raw.is_error === "boolean") call.is_error = raw.is_error;

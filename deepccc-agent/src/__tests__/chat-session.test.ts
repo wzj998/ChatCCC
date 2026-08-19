@@ -946,7 +946,7 @@ describe("ChatSession context management", () => {
     const state = JSON.parse(raw) as { messages: Array<{ content: string; toolCalls?: unknown }> };
     expect(state.messages).toHaveLength(2);
     expect(state.messages[1].toolCalls).toEqual([
-      { name: "read_file", input: "{\"path\":\"package.json\"}", output: "{\"content\":\"{}\"}" },
+      { id: "call-1", name: "read_file", input: "{\"path\":\"package.json\"}", output: "{\"content\":\"{}\"}" },
     ]);
     expect(state.messages[1].content).toContain("[工具记录]");
   });
@@ -975,8 +975,8 @@ describe("ChatSession context management", () => {
     const raw = await readFile(join(dir, "structured-tools-order", "context.json"), "utf8");
     const state = JSON.parse(raw) as { messages: Array<{ toolCalls?: unknown[] }> };
     expect(state.messages[1].toolCalls).toEqual([
-      { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
-      { name: "read_file", input: "{\"path\":\"a.ts\"}", output: "boom", is_error: true },
+      { id: "c1", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      { id: "c2", name: "read_file", input: "{\"path\":\"a.ts\"}", output: "boom", is_error: true },
     ]);
   });
 
