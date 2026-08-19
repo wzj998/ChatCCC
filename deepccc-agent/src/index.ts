@@ -29,6 +29,7 @@ import {
   BuiltinContextManager,
   defaultBuiltinSessionId,
   type BuiltinContextMessage,
+  type BuiltinContextTimelineEntry,
 } from "./context.js";
 import { createBuiltinFileTools, MAX_TASK_OUTPUT_CHARS, type TaskRunnerInput } from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
@@ -564,6 +565,8 @@ export class ChatSession {
     // assistant 消息 toolCalls 字段；[Tool transcript] 文本视图仍按原格式生成。
     const toolCallsById = new Map<string, { id: string; name: string; input?: string; output?: string; is_error?: boolean }>();
     const toolCallOrder: string[] = [];
+    const timeline: BuiltinContextTimelineEntry[] = [];
+    let toolContext: string[] = [];
 
     try {
       if (this.context.planCompaction()) {
@@ -638,9 +641,10 @@ export class ChatSession {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         fullText = "";
         safeAccumulated = "";
-        const toolContext: string[] = [];
+        toolContext = [];
         toolCallsById.clear();
         toolCallOrder.length = 0;
+        timeline.length = 0;
         let lastReasoningProgressAt: number | undefined;
         const attemptMessages = attempt === 0
           ? modelMessages
@@ -670,15 +674,20 @@ export class ChatSession {
             }
           } else if (part.type === "text-delta") {
             fullText += part.text;
+            const previous = timeline[timeline.length - 1];
+            if (previous?.type === "text") previous.text += part.text;
+            else timeline.push({ type: "text", text: part.text });
             // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
             // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
             const safeText = applyPrivacy(part.text);
             safeAccumulated += safeText;
             yield { type: "text", text: safeText, accumulated: safeAccumulated };
           } else if (part.type === "tool-call") {
-            toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
-            toolCallsById.set(part.toolCallId, { id: part.toolCallId, name: part.toolName, input: safeJson(part.input) });
+            const input = safeJson(part.input);
+            toolContext.push(`tool_call ${part.toolName}: ${input}`);
+            toolCallsById.set(part.toolCallId, { id: part.toolCallId, name: part.toolName, input });
             toolCallOrder.push(part.toolCallId);
+            timeline.push({ type: "tool_use", id: part.toolCallId, name: part.toolName, input });
             yield {
               type: "tool_use",
               id: part.toolCallId,
@@ -686,9 +695,11 @@ export class ChatSession {
               input: applyPrivacyToJson(part.input),
             };
           } else if (part.type === "tool-result") {
-            toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
+            const output = truncateToolContext(safeJson(part.output));
+            toolContext.push(`tool_result ${part.toolName}: ${output}`);
             const call = toolCallsById.get(part.toolCallId);
-            if (call) call.output = truncateToolContext(safeJson(part.output));
+            if (call) call.output = output;
+            timeline.push({ type: "tool_result", tool_use_id: part.toolCallId, name: part.toolName, output });
             yield {
               type: "tool_result",
               tool_use_id: part.toolCallId,
@@ -704,6 +715,7 @@ export class ChatSession {
               call.output = message;
               call.is_error = true;
             }
+            timeline.push({ type: "tool_result", tool_use_id: part.toolCallId, name: part.toolName, output: message, is_error: true });
             yield {
               type: "tool_result",
               tool_use_id: part.toolCallId,
@@ -748,6 +760,7 @@ export class ChatSession {
           fullText,
           transcriptLines: toolContext,
           toolCalls: collectedToolCalls,
+          timeline,
         }));
         yield { type: "done", text: safeAccumulated };
         return;
@@ -757,9 +770,20 @@ export class ChatSession {
       const malformedProtocolOutput = hasMalformedToolProtocolText(fullText);
       if (malformedProtocolOutput) yield { type: "text_reset" };
       if ((err as Error).name === "AbortError" || signal?.aborted) {
-        // 被中断时，不保存不完整的助手消息
-        if (fullText && !malformedProtocolOutput) {
-          this.context.appendMessage({ role: "assistant", content: `${fullText}\n[interrupted]` });
+        if ((fullText || toolCallOrder.length > 0) && !malformedProtocolOutput) {
+          const collectedToolCalls = toolCallOrder
+            .map((id) => toolCallsById.get(id))
+            .filter((call): call is { id: string; name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
+          const interruptedTimeline = timeline.map((entry) => ({ ...entry }));
+          const previous = interruptedTimeline[interruptedTimeline.length - 1];
+          if (previous?.type === "text") previous.text += "\n[interrupted]";
+          else interruptedTimeline.push({ type: "text", text: "[interrupted]" });
+          this.context.appendMessage(buildPersistedAssistantMessage({
+            fullText: `${fullText}\n[interrupted]`,
+            transcriptLines: toolContext,
+            toolCalls: collectedToolCalls,
+            timeline: interruptedTimeline,
+          }));
         }
         yield { type: "done", text: safeAccumulated };
         return;

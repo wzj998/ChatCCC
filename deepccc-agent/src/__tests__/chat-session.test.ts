@@ -934,19 +934,26 @@ describe("ChatSession context management", () => {
 
     streamTextMock.mockReturnValueOnce({
       fullStream: fullStream(
+        { type: "text-delta", text: "先检查。" },
         { type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "package.json" } },
         { type: "tool-result", toolCallId: "call-1", toolName: "read_file", output: { content: "{}" } },
-        { type: "text-delta", text: "done" },
+        { type: "text-delta", text: "检查完成。" },
       ),
     });
 
     await collect(session.chat("read package"));
 
     const raw = await readFile(join(dir, "structured-tools", "context.json"), "utf8");
-    const state = JSON.parse(raw) as { messages: Array<{ content: string; toolCalls?: unknown }> };
+    const state = JSON.parse(raw) as { messages: Array<{ content: string; toolCalls?: unknown; timeline?: unknown }> };
     expect(state.messages).toHaveLength(2);
     expect(state.messages[1].toolCalls).toEqual([
       { id: "call-1", name: "read_file", input: "{\"path\":\"package.json\"}", output: "{\"content\":\"{}\"}" },
+    ]);
+    expect(state.messages[1].timeline).toEqual([
+      { type: "text", text: "先检查。" },
+      { type: "tool_use", id: "call-1", name: "read_file", input: "{\"path\":\"package.json\"}" },
+      { type: "tool_result", tool_use_id: "call-1", name: "read_file", output: "{\"content\":\"{}\"}" },
+      { type: "text", text: "检查完成。" },
     ]);
     expect(state.messages[1].content).toContain("[工具记录]");
   });

@@ -22,11 +22,18 @@ export interface BuiltinContextToolCall {
   is_error?: boolean;
 }
 
+export type BuiltinContextTimelineEntry =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input?: string }
+  | { type: "tool_result"; tool_use_id: string; name?: string; output?: string; is_error?: boolean };
+
 export interface BuiltinContextMessage {
   role: BuiltinContextRole;
   content: string;
   /** 可选结构化工具调用记录（assistant 消息专用） */
   toolCalls?: BuiltinContextToolCall[];
+  /** 文本与工具事件的真实发生顺序，仅供 UI 回放；模型上下文仍使用 content。 */
+  timeline?: BuiltinContextTimelineEntry[];
 }
 
 export interface BuiltinContextState {
@@ -111,13 +118,43 @@ export function newBuiltinSessionId(now: Date = new Date(), suffix: string = ran
 
 function normalizeMessage(value: unknown): BuiltinContextMessage | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as { role?: unknown; content?: unknown; toolCalls?: unknown };
+  const raw = value as { role?: unknown; content?: unknown; toolCalls?: unknown; timeline?: unknown };
   if (raw.role !== "user" && raw.role !== "assistant") return null;
   if (typeof raw.content !== "string") return null;
   const message: BuiltinContextMessage = { role: raw.role, content: raw.content };
   const toolCalls = normalizeToolCalls(raw.toolCalls);
   if (toolCalls.length > 0) message.toolCalls = toolCalls;
+  const timeline = normalizeTimeline(raw.timeline);
+  if (timeline.length > 0) message.timeline = timeline;
   return message;
+}
+
+function normalizeTimeline(value: unknown): BuiltinContextTimelineEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: BuiltinContextTimelineEntry[] = [];
+  for (const item of value.slice(0, 1000)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const raw = item as Record<string, unknown>;
+    if (raw.type === "text" && typeof raw.text === "string") {
+      entries.push({ type: "text", text: raw.text });
+    } else if (raw.type === "tool_use" && typeof raw.id === "string" && typeof raw.name === "string") {
+      entries.push({
+        type: "tool_use",
+        id: raw.id,
+        name: raw.name,
+        ...(typeof raw.input === "string" ? { input: raw.input } : {}),
+      });
+    } else if (raw.type === "tool_result" && typeof raw.tool_use_id === "string") {
+      entries.push({
+        type: "tool_result",
+        tool_use_id: raw.tool_use_id,
+        ...(typeof raw.name === "string" ? { name: raw.name } : {}),
+        ...(typeof raw.output === "string" ? { output: raw.output } : {}),
+        ...(typeof raw.is_error === "boolean" ? { is_error: raw.is_error } : {}),
+      });
+    }
+  }
+  return entries;
 }
 
 function normalizeToolCalls(value: unknown): BuiltinContextToolCall[] {
@@ -290,6 +327,8 @@ export function buildPersistedAssistantMessage(params: {
   transcriptLines: readonly string[];
   /** 结构化工具调用（按调用顺序）；有则写入消息的 toolCalls 字段 */
   toolCalls?: readonly BuiltinContextToolCall[];
+  /** 文本和工具事件的有序时间线；不参与模型输入。 */
+  timeline?: readonly BuiltinContextTimelineEntry[];
   maxAssistantChars?: number;
   maxTranscriptChars?: number;
 }): BuiltinContextMessage {
@@ -312,7 +351,50 @@ export function buildPersistedAssistantMessage(params: {
   const message: BuiltinContextMessage = { role: "assistant", content };
   const toolCalls = normalizeToolCalls(params.toolCalls);
   if (toolCalls.length > 0) message.toolCalls = toolCalls;
+  const timeline = truncatePersistedTimeline(normalizeTimeline(params.timeline));
+  if (timeline.length > 0) message.timeline = timeline;
   return message;
+}
+
+function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): BuiltinContextTimelineEntry[] {
+  const maxTextChars = DEFAULT_PERSISTED_ASSISTANT_TEXT_CHARS;
+  const maxToolChars = DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS;
+  const totalText = entries.reduce((sum, entry) => sum + (entry.type === "text" ? entry.text.length : 0), 0);
+  const textPayloads = entries.filter((entry) => entry.type === "text" && entry.text.length > 0).length;
+  const totalTool = entries.reduce((sum, entry) => {
+    if (entry.type === "tool_use") return sum + (entry.input?.length ?? 0);
+    if (entry.type === "tool_result") return sum + (entry.output?.length ?? 0);
+    return sum;
+  }, 0);
+  const toolPayloads = entries.filter((entry) =>
+    (entry.type === "tool_use" && (entry.input?.length ?? 0) > 0)
+    || (entry.type === "tool_result" && (entry.output?.length ?? 0) > 0)
+  ).length;
+  const payloadBudget = (length: number, total: number, count: number, maximum: number): number => {
+    if (total <= maximum) return length;
+    const sharedBudget = Math.max(0, maximum - count);
+    return length > 0 ? 1 + Math.floor(sharedBudget * length / Math.max(1, total)) : 0;
+  };
+  const truncatePayload = (value: string, budget: number, marker: string): string => {
+    if (value.length <= budget) return value;
+    if (budget <= marker.length + 2) return value.slice(0, budget);
+    return truncateMiddle(value, budget, marker);
+  };
+  return entries.map((entry) => {
+    if (entry.type === "text") {
+      const budget = payloadBudget(entry.text.length, totalText, textPayloads, maxTextChars);
+      return { ...entry, text: truncatePayload(entry.text, budget, ASSISTANT_TRUNCATED_MARKER) };
+    }
+    if (entry.type === "tool_use" && entry.input !== undefined) {
+      const budget = payloadBudget(entry.input.length, totalTool, toolPayloads, maxToolChars);
+      return { ...entry, input: truncatePayload(entry.input, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
+    }
+    if (entry.type === "tool_result" && entry.output !== undefined) {
+      const budget = payloadBudget(entry.output.length, totalTool, toolPayloads, maxToolChars);
+      return { ...entry, output: truncatePayload(entry.output, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
+    }
+    return entry;
+  });
 }
 
 function serializeMessagesForCompaction(messages: readonly BuiltinContextMessage[]): string {
