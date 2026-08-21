@@ -1147,8 +1147,8 @@ async function handleCommandInternal(
     return;
   }
 
-  if (isCommandText && normalizedCommandText === "/restart safe") {
-    logTrace(tid, "BRANCH", { cmd: "/restart safe" });
+  if (isCommandText && ["/restart safe", "/restartsf"].includes(normalizedCommandText)) {
+    logTrace(tid, "BRANCH", { cmd: "/restart safe", alias: normalizedCommandText });
     try {
       const job = await safeMaintenanceCoordinator.schedule(
         "restart",
@@ -1170,8 +1170,8 @@ async function handleCommandInternal(
     return;
   }
 
-  if (isCommandText && normalizedCommandText === "/update safe") {
-    logTrace(tid, "BRANCH", { cmd: "/update safe" });
+  if (isCommandText && ["/update safe", "/updatesf"].includes(normalizedCommandText)) {
+    logTrace(tid, "BRANCH", { cmd: "/update safe", alias: normalizedCommandText });
     const isGlobal = isRunningFromGlobalNpm();
     if (!isGlobal) {
       await platform.sendText(chatId, "当前进程非 npm 全局安装，无法使用 /update safe。请通过 npm install -g chatccc 安装后使用。").catch(() => {});
@@ -1206,7 +1206,7 @@ async function handleCommandInternal(
   }
 
   const maintenanceAllowedCommands = new Set([
-    "/stop", "/cancel", "/state", "/sessions", "/usage", "/safestatus", "/cancelsf", "/restart", "/update", "/reload", "/help",
+    "/stop", "/cancel", "/state", "/sessions", "/usage", "/safestatus", "/cancelsf", "/restart", "/restartsf", "/update", "/updatesf", "/reload", "/help",
     "/pin", "/unpin", "/archive", "/unarchive",
   ]);
   const maintenancePresentationCommand = normalizedCommandText.startsWith("/rename ")
