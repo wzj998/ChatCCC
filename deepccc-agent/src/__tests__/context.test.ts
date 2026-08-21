@@ -365,6 +365,39 @@ describe("BuiltinContextManager", () => {
     ]);
   });
 
+  it("groups consecutive legacy tool calls before their matching tool results", () => {
+    const context = new BuiltinContextManager();
+    context.appendMessage({
+      role: "assistant",
+      content: "检查完成。",
+      toolCalls: [
+        { id: "call-1", name: "read_file", input: "{\"path\":\"a.ts\"}", output: "{\"content\":\"a\"}" },
+        { id: "call-2", name: "read_file", input: "{\"path\":\"b.ts\"}", output: "{\"content\":\"b\"}" },
+        { id: "call-3", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      ],
+    });
+
+    expect(context.buildModelMessages()).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "a.ts" } },
+          { type: "tool-call", toolCallId: "call-2", toolName: "read_file", input: { path: "b.ts" } },
+          { type: "tool-call", toolCallId: "call-3", toolName: "run_command", input: { command: "npm test" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "call-1", toolName: "read_file", output: { type: "json", value: { content: "a" } } },
+          { type: "tool-result", toolCallId: "call-2", toolName: "read_file", output: { type: "json", value: { content: "b" } } },
+          { type: "tool-result", toolCallId: "call-3", toolName: "run_command", output: { type: "json", value: { exitCode: 0 } } },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "检查完成。" }] },
+    ]);
+  });
+
   it("drops orphaned historical tool results instead of emitting an invalid tool message", () => {
     const context = new BuiltinContextManager();
     context.appendMessage({
