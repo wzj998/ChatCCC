@@ -516,7 +516,10 @@ function replayStructuredAssistantMessage(
     messages.push({ role: "assistant", content: assistantParts });
     assistantParts = [];
   };
-  const flushTools = (): void => {
+  const completeToolStep = (): void => {
+    // OpenAI/LiteLLM requires every tool message to immediately follow the
+    // assistant message that declared all matching tool_calls for that step.
+    flushAssistant();
     for (const [toolCallId, toolName] of pendingCalls) {
       toolParts.push({
         type: "tool-result",
@@ -533,12 +536,14 @@ function replayStructuredAssistantMessage(
 
   for (const entry of timeline) {
     if (entry.type === "text") {
-      flushTools();
+      if (pendingCalls.size > 0 || toolParts.length > 0) completeToolStep();
       const previous = assistantParts[assistantParts.length - 1];
       if (previous?.type === "text") previous.text += entry.text;
       else if (entry.text) assistantParts.push({ type: "text", text: entry.text });
     } else if (entry.type === "tool_use") {
-      flushTools();
+      // Consecutive tool calls belong to one assistant step. Only close the
+      // previous step after at least one result has arrived.
+      if (toolParts.length > 0) completeToolStep();
       knownNames.set(entry.id, entry.name);
       pendingCalls.set(entry.id, entry.name);
       emittedCallIds.add(entry.id);
@@ -562,8 +567,8 @@ function replayStructuredAssistantMessage(
       });
     }
   }
-  flushAssistant();
-  flushTools();
+  if (pendingCalls.size > 0 || toolParts.length > 0) completeToolStep();
+  else flushAssistant();
   return messages;
 }
 

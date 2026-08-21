@@ -220,6 +220,29 @@ describe("BuiltinContextManager", () => {
     ]);
   });
 
+  it("groups consecutive legacy tool calls before their matching tool results", () => {
+    const context = new BuiltinContextManager();
+    context.appendMessage({
+      role: "assistant",
+      content: "检查完成。",
+      toolCalls: [
+        { id: "call-1", name: "read_file", input: "{\"path\":\"a.ts\"}", output: "{\"content\":\"a\"}" },
+        { id: "call-2", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      ],
+    });
+
+    const messages = context.buildModelMessages() as Array<{ role: string; content: unknown }>;
+    expect(messages.map((message) => message.role)).toEqual(["assistant", "tool", "assistant"]);
+    expect((messages[0]?.content as Array<{ toolCallId?: string }>).map((part) => part.toolCallId)).toEqual([
+      "call-1",
+      "call-2",
+    ]);
+    expect((messages[1]?.content as Array<{ toolCallId?: string }>).map((part) => part.toolCallId)).toEqual([
+      "call-1",
+      "call-2",
+    ]);
+  });
+
   it("builds a plain assistant message without tool transcript when no tools ran", () => {
     const message = buildPersistedAssistantMessage({
       fullText: "纯文本回复",
