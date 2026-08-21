@@ -199,7 +199,7 @@ describe("BuiltinContextManager", () => {
     expect(restored.totalMessages).toBe(2);
   });
 
-  it("builds a persisted assistant message with transcript text plus structured tool calls", () => {
+  it("persists tool calls structurally without duplicating their transcript into assistant text", () => {
     const message = buildPersistedAssistantMessage({
       fullText: "回复正文",
       transcriptLines: [
@@ -212,9 +212,9 @@ describe("BuiltinContextManager", () => {
     });
 
     expect(message.role).toBe("assistant");
-    expect(message.content).toContain("回复正文");
-    expect(message.content).toContain("[工具记录]");
-    expect(message.content).toContain("tool_call run_command");
+    expect(message.content).toBe("回复正文");
+    expect(message.content).not.toContain("[工具记录]");
+    expect(message.content).not.toContain("tool_call run_command");
     expect(message.toolCalls).toEqual([
       { name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
     ]);
@@ -231,17 +231,23 @@ describe("BuiltinContextManager", () => {
     expect(message.toolCalls).toBeUndefined();
   });
 
-  it("caps both assistant text and tool transcript in persisted messages", () => {
+  it("caps assistant text and structured tool payloads in persisted messages", () => {
     const message = buildPersistedAssistantMessage({
       fullText: "a".repeat(10_000),
       transcriptLines: Array.from({ length: 12 }, () => "x".repeat(8_000)),
+      toolCalls: Array.from({ length: 12 }, (_, index) => ({
+        id: `call-${index}`,
+        name: "read_file",
+        input: `{\"path\":\"${index}.txt\"}`,
+        output: "x".repeat(8_000),
+      })),
       maxAssistantChars: 2_000,
       maxTranscriptChars: 4_000,
     });
 
-    expect(message.content.length).toBeLessThan(7_000);
+    expect(message.content.length).toBeLessThan(3_000);
     expect(message.content).toContain("助手回复已在上下文中截断");
-    expect(message.content).toContain("工具记录已截断");
+    expect(JSON.stringify(message.toolCalls)).toContain("工具记录已截断");
   });
 
   it("reset clears memory and the persisted context file", async () => {

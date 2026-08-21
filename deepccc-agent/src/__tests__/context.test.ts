@@ -13,13 +13,32 @@ import {
   newBuiltinSessionId,
   serializeMessagesForSummary,
 } from "../context.js";
-import { hasMalformedToolProtocolText } from "../tool-protocol.js";
+import {
+  hasImitatedToolTranscriptText,
+  hasMalformedToolProtocolText,
+} from "../tool-protocol.js";
 
 describe("BuiltinContextManager", () => {
   it("does not mistake ordinary DSML discussion for a malformed tool call", () => {
     expect(hasMalformedToolProtocolText("DSML is an internal protocol.")).toBe(false);
     expect(hasMalformedToolProtocolText("quoted </｜｜DSML｜｜parameter> elsewhere\nmore text")).toBe(false);
     expect(hasMalformedToolProtocolText("[调用 create_file]\n</｜｜DSML｜｜parameter>")).toBe(true);
+  });
+
+  it("detects copied tool transcript blocks without flagging ordinary discussion", () => {
+    expect(hasImitatedToolTranscriptText("工具记录应该在界面里折叠展示。")).toBe(false);
+    expect(hasImitatedToolTranscriptText("示例：`tool_call run_command` 是内部格式。")).toBe(false);
+    expect(hasImitatedToolTranscriptText([
+      "[工具调用]",
+      "[工具记录]",
+      "tool_call run_command: {\"command\":\"git status\"}",
+      "tool_result run_command: {\"exitCode\":0}",
+    ].join("\n"))).toBe(true);
+    expect(hasMalformedToolProtocolText([
+      "[工具调用]",
+      "[工具记录]",
+      "tool_call run_command: {\"command\":\"git status\"}",
+    ].join("\n"))).toBe(true);
   });
 
   it("quarantines previously persisted malformed DSML assistant replies from model context", () => {
@@ -33,11 +52,31 @@ describe("BuiltinContextManager", () => {
 
     expect(context.buildModelMessages()).toEqual([
       { role: "user", content: "创建文件" },
+      { role: "assistant", content: expect.stringContaining("工具协议异常") },
       { role: "user", content: "继续" },
     ]);
     expect(context.planCompaction()?.oldMessages).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ content: expect.stringContaining("DSML") }),
     ]));
+  });
+
+  it("quarantines copied tool transcript text while preserving message alignment", () => {
+    const context = new BuiltinContextManager({ compactAtTokens: 1, keepRecentMessages: 1 });
+    context.appendMessage({ role: "user", content: "检查仓库" });
+    context.appendMessage({
+      role: "assistant",
+      content: "[工具调用]\n[工具记录]\ntool_call run_command: {\"command\":\"git status\"}",
+    });
+    context.appendMessage({ role: "user", content: "继续" });
+
+    const modelMessages = context.buildModelMessages();
+    expect(JSON.stringify(modelMessages)).not.toContain("tool_call run_command");
+    expect(modelMessages).toEqual([
+      { role: "user", content: "检查仓库" },
+      { role: "assistant", content: expect.stringContaining("不能视为已执行") },
+      { role: "user", content: "继续" },
+    ]);
+    expect(context.planCompaction()?.oldMessages).toHaveLength(2);
   });
 
   it("defaults the compaction threshold to 1M x 80% (838,860 tokens) for the default 1M model window", () => {
@@ -255,7 +294,7 @@ describe("BuiltinContextManager", () => {
     expect(restored.totalMessages).toBe(2);
   });
 
-  it("builds a persisted assistant message with transcript text plus structured tool calls", () => {
+  it("persists tool calls structurally without duplicating their transcript into assistant text", () => {
     const message = buildPersistedAssistantMessage({
       fullText: "回复正文",
       transcriptLines: [
@@ -274,9 +313,9 @@ describe("BuiltinContextManager", () => {
     });
 
     expect(message.role).toBe("assistant");
-    expect(message.content).toContain("回复正文");
-    expect(message.content).toContain("[工具记录]");
-    expect(message.content).toContain("tool_call run_command");
+    expect(message.content).toBe("回复正文");
+    expect(message.content).not.toContain("[工具记录]");
+    expect(message.content).not.toContain("tool_call run_command");
     expect(message.toolCalls).toEqual([
       { id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
     ]);
@@ -286,6 +325,86 @@ describe("BuiltinContextManager", () => {
       { type: "tool_result", tool_use_id: "call-1", name: "run_command", output: "{\"exitCode\":0}" },
       { type: "text", text: "检查完成。" },
     ]);
+  });
+
+  it("replays legacy tool transcripts as structured model messages", () => {
+    const context = new BuiltinContextManager();
+    context.appendMessage({ role: "user", content: "检查项目" });
+    context.appendMessage({
+      role: "assistant",
+      content: "先检查。\n\n[工具记录]\ntool_call run_command: {\"command\":\"npm test\"}\ntool_result run_command: {\"exitCode\":0}",
+      toolCalls: [
+        { id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}", output: "{\"exitCode\":0}" },
+      ],
+      timeline: [
+        { type: "text", text: "先检查。" },
+        { type: "tool_use", id: "call-1", name: "run_command", input: "{\"command\":\"npm test\"}" },
+        { type: "tool_result", tool_use_id: "call-1", name: "run_command", output: "{\"exitCode\":0}" },
+        { type: "text", text: "测试通过。" },
+      ],
+    });
+
+    const messages = context.buildModelMessages();
+    expect(JSON.stringify(messages)).not.toContain("[工具记录]");
+    expect(messages).toEqual([
+      { role: "user", content: "检查项目" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "先检查。" },
+          { type: "tool-call", toolCallId: "call-1", toolName: "run_command", input: { command: "npm test" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "call-1", toolName: "run_command", output: { type: "json", value: { exitCode: 0 } } },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "测试通过。" }] },
+    ]);
+  });
+
+  it("drops orphaned historical tool results instead of emitting an invalid tool message", () => {
+    const context = new BuiltinContextManager();
+    context.appendMessage({
+      role: "assistant",
+      content: "检查已结束。",
+      timeline: [
+        { type: "tool_result", tool_use_id: "missing-call", name: "run_command", output: "ok" },
+        { type: "text", text: "检查已结束。" },
+      ],
+    });
+
+    expect(context.buildModelMessages()).toEqual([
+      { role: "assistant", content: [{ type: "text", text: "检查已结束。" }] },
+    ]);
+  });
+
+  it("compacts proactively when retained tool payload exceeds its independent budget", () => {
+    const context = new BuiltinContextManager({
+      compactAtTokens: 1_000_000,
+      maxToolContextTokens: 100,
+      keepRecentMessages: 2,
+    });
+    context.appendMessage({ role: "user", content: "read files" });
+    for (let index = 0; index < 4; index += 1) {
+      context.appendMessage(buildPersistedAssistantMessage({
+        fullText: `result ${index}`,
+        transcriptLines: [],
+        toolCalls: [{
+          id: `call-${index}`,
+          name: "read_file",
+          input: `{\"path\":\"${index}.txt\"}`,
+          output: "x".repeat(250),
+        }],
+      }));
+    }
+
+    const plan = context.planCompaction();
+    expect(plan).not.toBeNull();
+    expect(plan!.oldMessages.length).toBeGreaterThan(0);
+    expect(plan!.recentMessages.length).toBeLessThan(5);
   });
 
   it("builds a plain assistant message without tool transcript when no tools ran", () => {
@@ -299,17 +418,23 @@ describe("BuiltinContextManager", () => {
     expect(message.toolCalls).toBeUndefined();
   });
 
-  it("caps both assistant text and tool transcript in persisted messages", () => {
+  it("caps assistant text and structured tool payloads in persisted messages", () => {
     const message = buildPersistedAssistantMessage({
       fullText: "a".repeat(10_000),
       transcriptLines: Array.from({ length: 12 }, () => "x".repeat(8_000)),
+      toolCalls: Array.from({ length: 12 }, (_, index) => ({
+        id: `call-${index}`,
+        name: "read_file",
+        input: `{\"path\":\"${index}.txt\"}`,
+        output: "x".repeat(8_000),
+      })),
       maxAssistantChars: 2_000,
       maxTranscriptChars: 4_000,
     });
 
-    expect(message.content.length).toBeLessThan(7_000);
+    expect(message.content.length).toBeLessThan(3_000);
     expect(message.content).toContain("助手回复已在上下文中截断");
-    expect(message.content).toContain("工具记录已截断");
+    expect(JSON.stringify(message.toolCalls)).toContain("工具记录已截断");
   });
 
   it("reset clears memory and the persisted context file", async () => {
