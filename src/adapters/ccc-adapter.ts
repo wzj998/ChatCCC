@@ -18,6 +18,7 @@ export interface CccAdapterOptions extends ChatSessionConfig {
   contextDir?: string;
   contextWindow?: number;
   compactAtTokens?: number;
+  maxToolContextTokens?: number;
   keepRecentMessages?: number;
   compactionTimeoutMs?: number;
   maxSteps?: number;
@@ -36,6 +37,7 @@ function toChatSessionOptions(
     contextDir: options.contextDir,
     contextWindow: options.contextWindow,
     compactAtTokens: options.compactAtTokens,
+    maxToolContextTokens: options.maxToolContextTokens,
     keepRecentMessages: options.keepRecentMessages,
     compactionTimeoutMs: options.compactionTimeoutMs,
     maxSteps: options.maxSteps,

@@ -131,9 +131,46 @@ describe("ChatSession response transport", () => {
     expect(streamTextMock.mock.calls[1]?.[0].messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role: "user",
-        content: expect.stringContaining("不要把 DSML 或工具参数作为普通文本输出"),
+        content: expect.stringContaining("不要把 DSML"),
       }),
     ]));
+  });
+
+  it("retries copied tool transcript text instead of treating it as executed tools", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    const imitated = [
+      "先检查状态。",
+      "[工具调用]",
+      "[工具记录]",
+      "tool_call run_command: {\"command\":\"git status\"}",
+      "tool_result run_command: {\"exitCode\":0}",
+    ].join("\n");
+    streamTextMock
+      .mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: imitated }) })
+      .mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: "已通过真实工具调用完成检查。" }) });
+
+    const events = await collect(session.chat("检查仓库"));
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual({ type: "text_reset" });
+    expect(events.at(-1)).toEqual({ type: "done", text: "已通过真实工具调用完成检查。" });
+    expect(session.history.map((message) => message.content).join("\n")).not.toContain("tool_call run_command");
+    expect(JSON.stringify(streamTextMock.mock.calls[1]?.[0].messages)).toContain("不要伪造工具已执行");
+  });
+
+  it("fails closed when copied tool transcript text repeats after recovery", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" });
+    const imitated = "[工具调用]\n[工具记录]\ntool_call run_command: {\"command\":\"git status\"}";
+    streamTextMock
+      .mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: imitated }) })
+      .mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: imitated }) });
+
+    await expect(collect(session.chat("检查仓库"))).rejects.toThrow("工具调用协议异常");
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2);
+    expect(session.history.map((message) => message.content).join("\n")).not.toContain("tool_call run_command");
   });
 
   it("fails closed after a repeated malformed DSML reply and keeps it out of history", async () => {
@@ -900,7 +937,7 @@ describe("ChatSession context management", () => {
     expect(events).toContainEqual({ type: "text", text: "done", accumulated: "done" });
   });
 
-  it("caps the total persisted tool transcript for a turn", async () => {
+  it("caps the total persisted structured tool payload for a turn", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-tool-cap-"));
     const session = new ChatSession(
@@ -919,12 +956,13 @@ describe("ChatSession context management", () => {
 
     await collect(session.chat("read many files"));
 
-    const persisted = session.history.at(-1)?.content ?? "";
-    expect(persisted.length).toBeLessThan(40_000);
-    expect(persisted).toContain("工具记录已截断");
+    const raw = await readFile(join(dir, "tool-cap", "context.json"), "utf8");
+    const state = JSON.parse(raw) as { messages: Array<{ content: string; timeline?: unknown }> };
+    expect(state.messages[1]?.content).toBe("done");
+    expect(JSON.stringify(state.messages[1]?.timeline)).toContain("工具记录已截断");
   });
 
-  it("persists structured tool calls alongside the text transcript", async () => {
+  it("persists structured tool calls without duplicating a text transcript", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-structured-tools-"));
     const session = new ChatSession(
@@ -955,7 +993,8 @@ describe("ChatSession context management", () => {
       { type: "tool_result", tool_use_id: "call-1", name: "read_file", output: "{\"content\":\"{}\"}" },
       { type: "text", text: "检查完成。" },
     ]);
-    expect(state.messages[1].content).toContain("[工具记录]");
+    expect(state.messages[1].content).toBe("先检查。检查完成。");
+    expect(state.messages[1].content).not.toContain("[工具记录]");
   });
 
   it("records tool errors and preserves tool call order in structured tool calls", async () => {

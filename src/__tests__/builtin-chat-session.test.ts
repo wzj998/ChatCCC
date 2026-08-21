@@ -486,7 +486,7 @@ describe("ChatSession context management", () => {
     expect(events).toContainEqual({ type: "text", text: "done", accumulated: "done" });
   });
 
-  it("caps the total persisted tool transcript for a turn", async () => {
+  it("caps the total persisted structured tool payload for a turn", async () => {
     const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-tool-cap-"));
     const session = new ChatSession(
@@ -505,12 +505,13 @@ describe("ChatSession context management", () => {
 
     await collect(session.chat("read many files"));
 
-    const persisted = session.history.at(-1)?.content ?? "";
-    expect(persisted.length).toBeLessThan(40_000);
-    expect(persisted).toContain("工具记录已截断");
+    const raw = await readFile(join(dir, "tool-cap", "context.json"), "utf8");
+    const state = JSON.parse(raw) as { messages: Array<{ content: string; timeline?: unknown }> };
+    expect(state.messages[1]?.content).toBe("done");
+    expect(JSON.stringify(state.messages[1]?.timeline)).toContain("工具记录已截断");
   });
 
-  it("persists structured tool calls alongside the text transcript", async () => {
+  it("persists structured tool calls without duplicating a text transcript", async () => {
     const { ChatSession } = await import("../../deepccc-agent/src/index.ts");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-structured-tools-"));
     const session = new ChatSession(
@@ -541,7 +542,8 @@ describe("ChatSession context management", () => {
       { type: "tool_result", tool_use_id: "call-1", name: "read_file", output: "{\"content\":\"{}\"}" },
       { type: "text", text: "检查完成。" },
     ]);
-    expect(state.messages[1].content).toContain("[工具记录]");
+    expect(state.messages[1].content).toBe("先检查。检查完成。");
+    expect(state.messages[1].content).not.toContain("[工具记录]");
   });
 
   it("records tool errors and preserves tool call order in structured tool calls", async () => {

@@ -2,14 +2,24 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type {
+  JSONValue,
+  ModelMessage,
+  TextPart,
+  ToolCallPart,
+  ToolResultPart,
+} from "ai";
 
-import { hasMalformedToolProtocolText } from "./tool-protocol.js";
+import {
+  hasImitatedToolTranscriptText,
+  hasMalformedToolProtocolText,
+} from "./tool-protocol.js";
 
 export type BuiltinContextRole = "user" | "assistant";
 
 /**
- * 结构化工具调用存档（与 content 里的 [Tool transcript] 文本互为冗余视图）：
- * content 文本保持不变供模型消费；toolCalls 数组提供可检索、可回放的结构化数据。
+ * 结构化工具调用存档。content 只保存面向用户的回答正文；工具输入与结果
+ * 独立保存，供模型按标准 tool-call/tool-result 消息重放以及 UI 检索、回放。
  */
 export interface BuiltinContextToolCall {
   /** Provider tool-call id，用于 Web 在流式运行与持久化消息之间保持同一张工具卡状态。 */
@@ -32,7 +42,7 @@ export interface BuiltinContextMessage {
   content: string;
   /** 可选结构化工具调用记录（assistant 消息专用） */
   toolCalls?: BuiltinContextToolCall[];
-  /** 文本与工具事件的真实发生顺序，仅供 UI 回放；模型上下文仍使用 content。 */
+  /** 文本与工具事件的真实发生顺序，同时用于 UI 与模型的结构化历史重放。 */
   timeline?: BuiltinContextTimelineEntry[];
 }
 
@@ -74,6 +84,8 @@ export interface BuiltinContextOptions {
   contextWindow?: number;
   /** 直接指定压缩阈值（token），优先于 contextWindow 的 80% 派生。 */
   compactAtTokens?: number;
+  /** Independent budget for retained structured tool inputs/results. */
+  maxToolContextTokens?: number;
   keepRecentMessages?: number;
 }
 
@@ -89,6 +101,11 @@ const RECENT_CONTEXT_BUDGET_RATIO = 0.6;
 const MAX_COMPACTION_SUMMARY_CHARS = 8_000;
 const MAX_COMPACTION_MESSAGE_CHARS = 24_000;
 const MAX_COMPACTION_SOURCE_CHARS = 64_000;
+export const DEFAULT_MAX_TOOL_CONTEXT_TOKENS = 64_000;
+const TOOL_CONTEXT_BUDGET_RATIO = 0.25;
+const RECENT_TOOL_CONTEXT_BUDGET_RATIO = 0.6;
+const STORED_TOOL_TRANSCRIPT_MARKER = "\n\n[工具记录]\n";
+const QUARANTINED_PROTOCOL_REPLY = "[上一轮响应因工具协议异常已隔离，不能视为已执行；请根据后续用户消息继续。]";
 
 export function normalizeBuiltinSessionId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "default";
@@ -288,14 +305,44 @@ export function latestBuiltinSessionForCwd(
  * 按字符类型加权，比旧版 chars/3 更接近真实：CJK 字符 ≈ 1 token/字，
  * 其他字符 ≈ 3.5 chars/token。避免中文长上下文被严重低估导致压缩过晚。
  */
-export function estimateBuiltinContextTokens(summary: string, messages: readonly BuiltinContextMessage[]): number {
-  const text = summary + messages.reduce((sum, m) => sum + `${m.role}\n${m.content}\n`, "");
+function stripStoredToolTranscript(content: string): string {
+  const markerIndex = content.indexOf(STORED_TOOL_TRANSCRIPT_MARKER);
+  return markerIndex >= 0 ? content.slice(0, markerIndex) : content;
+}
+
+function estimateTextTokens(text: string): number {
   let cjk = 0;
   for (const ch of text) {
     if (/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]/.test(ch)) cjk++;
   }
   const other = text.length - cjk;
   return Math.ceil(cjk + other / 3.5);
+}
+
+export function estimateBuiltinToolContextTokens(messages: readonly BuiltinContextMessage[]): number {
+  let text = "";
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    if (message.toolCalls?.length) {
+      for (const call of message.toolCalls) {
+        text += `${call.name}\n${call.input ?? ""}\n${call.output ?? ""}\n`;
+      }
+      continue;
+    }
+    for (const entry of message.timeline ?? []) {
+      if (entry.type === "tool_use") text += `${entry.name}\n${entry.input ?? ""}\n`;
+      if (entry.type === "tool_result") text += `${entry.name ?? ""}\n${entry.output ?? ""}\n`;
+    }
+  }
+  return estimateTextTokens(text);
+}
+
+export function estimateBuiltinContextTokens(summary: string, messages: readonly BuiltinContextMessage[]): number {
+  const text = summary + messages.reduce(
+    (sum, message) => sum + `${message.role}\n${stripStoredToolTranscript(message.content)}\n`,
+    "",
+  );
+  return estimateTextTokens(text) + estimateBuiltinToolContextTokens(messages);
 }
 
 export function serializeMessagesForSummary(messages: readonly BuiltinContextMessage[]): string {
@@ -317,13 +364,33 @@ export const DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS = 24_000;
 const ASSISTANT_TRUNCATED_MARKER = "...[助手回复已在上下文中截断]...";
 const TOOL_TRANSCRIPT_TRUNCATED_MARKER = "...[工具记录已截断]...";
 
+function truncateStructuredToolCalls(
+  calls: BuiltinContextToolCall[],
+  maxChars: number,
+): BuiltinContextToolCall[] {
+  const payloads = calls.flatMap((call) => [call.input ?? "", call.output ?? ""]).filter(Boolean);
+  const total = payloads.reduce((sum, value) => sum + value.length, 0);
+  if (total <= maxChars) return calls;
+  const sharedBudget = Math.max(0, maxChars - payloads.length);
+  const truncatePayload = (value: string | undefined): string | undefined => {
+    if (value === undefined || value.length === 0) return value;
+    const budget = 1 + Math.floor(sharedBudget * value.length / Math.max(1, total));
+    return truncateMiddle(value, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER);
+  };
+  return calls.map((call) => ({
+    ...call,
+    ...(call.input !== undefined ? { input: truncatePayload(call.input) } : {}),
+    ...(call.output !== undefined ? { output: truncatePayload(call.output) } : {}),
+  }));
+}
+
 /**
- * 构造持久化的 assistant 消息：content 保持既有"正文 + [Tool transcript]"文本格式
- * （模型上下文行为不变），同时附加结构化 toolCalls 存档（供 session-search 等检索）。
+ * 构造持久化 assistant 消息。content 仅保存回答正文，工具事件保存在
+ * toolCalls/timeline，避免内部 transcript 语法回流并诱导模型伪造工具执行。
  */
 export function buildPersistedAssistantMessage(params: {
   fullText: string;
-  /** [Tool transcript] 的文本行（按原始流顺序，含 tool_call / tool_result / tool_error） */
+  /** @deprecated 兼容旧调用方；工具记录只从 toolCalls/timeline 持久化。 */
   transcriptLines: readonly string[];
   /** 结构化工具调用（按调用顺序）；有则写入消息的 toolCalls 字段 */
   toolCalls?: readonly BuiltinContextToolCall[];
@@ -340,16 +407,8 @@ export function buildPersistedAssistantMessage(params: {
     maxAssistantChars,
     ASSISTANT_TRUNCATED_MARKER,
   );
-  const content = params.transcriptLines.length > 0
-    ? `${persistedAssistantText}\n\n[工具记录]\n${truncateMiddle(
-      params.transcriptLines.join("\n"),
-      maxTranscriptChars,
-      TOOL_TRANSCRIPT_TRUNCATED_MARKER,
-    )}`
-    : persistedAssistantText;
-
-  const message: BuiltinContextMessage = { role: "assistant", content };
-  const toolCalls = normalizeToolCalls(params.toolCalls);
+  const message: BuiltinContextMessage = { role: "assistant", content: persistedAssistantText };
+  const toolCalls = truncateStructuredToolCalls(normalizeToolCalls(params.toolCalls), maxTranscriptChars);
   if (toolCalls.length > 0) message.toolCalls = toolCalls;
   const timeline = truncatePersistedTimeline(normalizeTimeline(params.timeline));
   if (timeline.length > 0) message.timeline = timeline;
@@ -395,6 +454,117 @@ function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): Buil
     }
     return entry;
   });
+}
+
+function parseToolInput(value: string | undefined): unknown {
+  if (!value?.trim()) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return { raw: value };
+  }
+}
+
+function parseToolOutput(value: string | undefined): ToolResultPart["output"] {
+  if (!value?.trim()) return { type: "text", value: "" };
+  try {
+    return { type: "json", value: JSON.parse(value) as JSONValue };
+  } catch {
+    return { type: "text", value };
+  }
+}
+
+function replayStructuredAssistantMessage(
+  message: BuiltinContextMessage,
+  messageIndex: number,
+): ModelMessage[] {
+  const plainText = stripStoredToolTranscript(message.content);
+  const hasStructuredTools = Boolean(
+    message.toolCalls?.length
+    || message.timeline?.some((entry) => entry.type === "tool_use" || entry.type === "tool_result"),
+  );
+  if (!hasStructuredTools) return [{ role: "assistant", content: plainText }];
+
+  const timeline = message.timeline?.length
+    ? message.timeline
+    : [
+        ...(message.toolCalls ?? []).map((call, callIndex): BuiltinContextTimelineEntry => ({
+          type: "tool_use",
+          id: call.id ?? `context-tool-${messageIndex}-${callIndex}`,
+          name: call.name,
+          ...(call.input !== undefined ? { input: call.input } : {}),
+        })),
+        ...(message.toolCalls ?? []).map((call, callIndex): BuiltinContextTimelineEntry => ({
+          type: "tool_result",
+          tool_use_id: call.id ?? `context-tool-${messageIndex}-${callIndex}`,
+          name: call.name,
+          ...(call.output !== undefined ? { output: call.output } : {}),
+          ...(call.is_error !== undefined ? { is_error: call.is_error } : {}),
+        })),
+        ...(plainText ? [{ type: "text" as const, text: plainText }] : []),
+      ];
+
+  const messages: ModelMessage[] = [];
+  let assistantParts: Array<TextPart | ToolCallPart> = [];
+  let toolParts: ToolResultPart[] = [];
+  const pendingCalls = new Map<string, string>();
+  const knownNames = new Map<string, string>();
+  const emittedCallIds = new Set<string>();
+
+  const flushAssistant = (): void => {
+    if (!assistantParts.length) return;
+    messages.push({ role: "assistant", content: assistantParts });
+    assistantParts = [];
+  };
+  const flushTools = (): void => {
+    for (const [toolCallId, toolName] of pendingCalls) {
+      toolParts.push({
+        type: "tool-result",
+        toolCallId,
+        toolName,
+        output: { type: "text", value: "[tool execution interrupted; result unavailable]" },
+      });
+    }
+    pendingCalls.clear();
+    if (!toolParts.length) return;
+    messages.push({ role: "tool", content: toolParts });
+    toolParts = [];
+  };
+
+  for (const entry of timeline) {
+    if (entry.type === "text") {
+      flushTools();
+      const previous = assistantParts[assistantParts.length - 1];
+      if (previous?.type === "text") previous.text += entry.text;
+      else if (entry.text) assistantParts.push({ type: "text", text: entry.text });
+    } else if (entry.type === "tool_use") {
+      flushTools();
+      knownNames.set(entry.id, entry.name);
+      pendingCalls.set(entry.id, entry.name);
+      emittedCallIds.add(entry.id);
+      assistantParts.push({
+        type: "tool-call",
+        toolCallId: entry.id,
+        toolName: entry.name,
+        input: parseToolInput(entry.input),
+      });
+    } else {
+      if (!emittedCallIds.has(entry.tool_use_id)) continue;
+      const toolName = entry.name ?? knownNames.get(entry.tool_use_id);
+      if (!toolName) continue;
+      flushAssistant();
+      pendingCalls.delete(entry.tool_use_id);
+      toolParts.push({
+        type: "tool-result",
+        toolCallId: entry.tool_use_id,
+        toolName,
+        output: parseToolOutput(entry.output),
+      });
+    }
+  }
+  flushAssistant();
+  flushTools();
+  return messages;
 }
 
 function serializeMessagesForCompaction(messages: readonly BuiltinContextMessage[]): string {
@@ -454,6 +624,7 @@ export class BuiltinContextManager {
   readonly contextDir: string;
   readonly sessionId: string;
   readonly compactAtTokens: number;
+  readonly maxToolContextTokens: number;
   readonly keepRecentMessages: number;
 
   private readonly cwd?: string;
@@ -466,6 +637,11 @@ export class BuiltinContextManager {
     this.cwd = options.cwd;
     this.compactAtTokens = options.compactAtTokens
       ?? Math.floor((options.contextWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS) * COMPACTION_THRESHOLD_RATIO);
+    this.maxToolContextTokens = Math.max(
+      1,
+      options.maxToolContextTokens
+        ?? Math.min(DEFAULT_MAX_TOOL_CONTEXT_TOKENS, Math.floor(this.compactAtTokens * TOOL_CONTEXT_BUDGET_RATIO)),
+    );
     this.keepRecentMessages = Math.max(1, options.keepRecentMessages ?? DEFAULT_KEEP_RECENT_MESSAGES);
     this.state = this.load();
   }
@@ -497,8 +673,8 @@ export class BuiltinContextManager {
     this.save();
   }
 
-  buildModelMessages(): BuiltinContextMessage[] {
-    const messages: BuiltinContextMessage[] = [];
+  buildModelMessages(): ModelMessage[] {
+    const messages: ModelMessage[] = [];
     if (this.state.summary.trim()) {
       messages.push({
         role: "user",
@@ -512,7 +688,10 @@ export class BuiltinContextManager {
     // Keep malformed provider output on disk for diagnosis, but quarantine it
     // from future prompts so one protocol failure cannot teach the model to
     // repeat the same invalid tool syntax on every later turn.
-    messages.push(...this.modelSafeMessages());
+    for (const [index, message] of this.modelSafeMessages().entries()) {
+      if (message.role === "user") messages.push({ role: "user", content: message.content });
+      else messages.push(...replayStructuredAssistantMessage(message, index));
+    }
     return messages;
   }
 
@@ -521,16 +700,24 @@ export class BuiltinContextManager {
     // leaks here too, otherwise a later summary could reintroduce the bad syntax.
     const messages = this.modelSafeMessages();
     const estimated = estimateBuiltinContextTokens(this.state.summary, messages);
-    if (estimated <= this.compactAtTokens) return null;
+    const toolEstimated = estimateBuiltinToolContextTokens(messages);
+    if (estimated <= this.compactAtTokens && toolEstimated <= this.maxToolContextTokens) return null;
 
     if (messages.length <= 1) return null;
 
     const earliestAllowed = Math.max(0, messages.length - this.keepRecentMessages);
     const recentTokenBudget = Math.max(1, Math.floor(this.compactAtTokens * RECENT_CONTEXT_BUDGET_RATIO));
+    const recentToolBudget = Math.max(
+      1,
+      Math.floor(this.maxToolContextTokens * RECENT_TOOL_CONTEXT_BUDGET_RATIO),
+    );
     let splitAt = messages.length - 1;
     for (let index = messages.length - 2; index >= earliestAllowed; index -= 1) {
       const candidate = messages.slice(index);
-      if (estimateBuiltinContextTokens("", candidate) > recentTokenBudget) break;
+      if (
+        estimateBuiltinContextTokens("", candidate) > recentTokenBudget
+        || estimateBuiltinToolContextTokens(candidate) > recentToolBudget
+      ) break;
       splitAt = index;
     }
 
@@ -541,8 +728,8 @@ export class BuiltinContextManager {
 
     return {
       previousSummary: this.state.summary,
-      oldMessages: this.state.messages.slice(0, splitAt),
-      recentMessages: this.state.messages.slice(splitAt),
+      oldMessages: messages.slice(0, splitAt),
+      recentMessages: messages.slice(splitAt),
     };
   }
 
@@ -569,9 +756,18 @@ export class BuiltinContextManager {
   }
 
   private modelSafeMessages(): BuiltinContextMessage[] {
-    return this.state.messages.filter((message) =>
-      message.role !== "assistant" || !hasMalformedToolProtocolText(message.content)
-    );
+    return this.state.messages.map((message) => {
+      if (message.role !== "assistant") return message;
+      const hasStructuredTools = Boolean(
+        message.toolCalls?.length
+        || message.timeline?.some((entry) => entry.type === "tool_use" || entry.type === "tool_result"),
+      );
+      const copiedStoredTranscript = hasImitatedToolTranscriptText(message.content) && hasStructuredTools;
+      if (hasMalformedToolProtocolText(message.content) && !copiedStoredTranscript) {
+        return { role: "assistant", content: QUARANTINED_PROTOCOL_REPLY };
+      }
+      return { ...message, content: stripStoredToolTranscript(message.content) };
+    });
   }
 
   private load(): BuiltinContextState {

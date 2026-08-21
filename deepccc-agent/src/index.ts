@@ -7,7 +7,14 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { JSONObject } from "@ai-sdk/provider";
-import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamPart } from "ai";
+import {
+  generateText,
+  isLoopFinished,
+  stepCountIs,
+  streamText,
+  type ModelMessage,
+  type TextStreamPart,
+} from "ai";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -28,7 +35,6 @@ import {
   buildSummaryPrompt,
   BuiltinContextManager,
   defaultBuiltinSessionId,
-  type BuiltinContextMessage,
   type BuiltinContextTimelineEntry,
 } from "./context.js";
 import { createBuiltinFileTools, MAX_TASK_OUTPUT_CHARS, type TaskRunnerInput } from "./file-tools.js";
@@ -171,8 +177,8 @@ function buildRuntimeWorkspacePrompt(cwd: string): string {
 }
 
 function addAnthropicToolJsonCompatibilityNote(
-  messages: BuiltinContextMessage[],
-): BuiltinContextMessage[] {
+  messages: ModelMessage[],
+): ModelMessage[] {
   let lastUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role === "user") {
@@ -186,7 +192,7 @@ function addAnthropicToolJsonCompatibilityNote(
   // 实现工具调用，却只在 messages 中校验 JSON 关键词、不读取顶层 system。
   // 这里仅声明工具参数的编码方式，并明确不要求普通最终回复输出 JSON。
   return messages.map((message, index) => (
-    index === lastUserIndex
+    index === lastUserIndex && message.role === "user" && typeof message.content === "string"
       ? {
           ...message,
           content: `${message.content}\n\n${ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE}`,
@@ -203,19 +209,21 @@ function addAnthropicToolJsonCompatibilityNote(
  * - raw stream logs 关闭：仅告知原文未保留，不给出误导性承诺。
  */
 function maybeAppendCompactionRecoveryHint(
-  messages: BuiltinContextMessage[],
+  messages: ModelMessage[],
   summary: string,
   rawLogsEnabled: boolean,
   sessionId: string,
-): BuiltinContextMessage[] {
+): ModelMessage[] {
   if (!summary.trim()) return messages;
   const summaryIndex = messages.findIndex(
-    (message) => message.role === "user" && message.content.startsWith("以下是更早的对话摘要"),
+    (message) => message.role === "user"
+      && typeof message.content === "string"
+      && message.content.startsWith("以下是更早的对话摘要"),
   );
   if (summaryIndex < 0) return messages;
   const hint = rawLogsEnabled ? buildCompactionRecoveryHint(sessionId) : COMPACTION_RECOVERY_HINT_DISABLED;
   return messages.map((message, index) => (
-    index === summaryIndex
+    index === summaryIndex && message.role === "user" && typeof message.content === "string"
       ? { ...message, content: `${message.content}\n\n${hint}` }
       : message
   ));
@@ -330,6 +338,8 @@ export interface ChatSessionOptions {
   sessionId?: string;
   /** Compact older context when the rough token estimate exceeds this value. */
   compactAtTokens?: number;
+  /** Independent retained-tool budget; defaults to min(64K, compaction threshold x 25%). */
+  maxToolContextTokens?: number;
   /**
    * 模型上下文窗口（token），默认 1048576（1M）。压缩阈值自动 = contextWindow × 0.8；
    * 显式 compactAtTokens 优先于该派生值。
@@ -519,6 +529,7 @@ export class ChatSession {
       cwd: this.cwd,
       contextWindow: options.contextWindow ?? appConfig.contextWindow,
       compactAtTokens: options.compactAtTokens,
+      maxToolContextTokens: options.maxToolContextTokens,
       keepRecentMessages: options.keepRecentMessages,
     });
     this.permissionGate = new PermissionGate(this.permissionMode, this.permissionResolver);
@@ -732,7 +743,7 @@ export class ChatSession {
 
         if (hasMalformedToolProtocolText(fullText)) {
           console.warn(
-            `[DeepCCC] malformed DSML tool output detected for ${this.context.sessionId} `
+            `[DeepCCC] malformed tool protocol text detected for ${this.context.sessionId} `
             + `(attempt ${attempt + 1}/2, structuredToolCalls=${toolCallOrder.length})`,
           );
           rawLog?.writeLine(safeRawStreamJson({
@@ -747,8 +758,8 @@ export class ChatSession {
           }
           throw new Error(
             toolCallOrder.length > 0
-              ? "工具调用协议异常：检测到混合的结构化与 DSML 文本调用，为避免重复执行工具，本轮已安全终止"
-              : "工具调用协议异常：模型重试后仍输出了无效的 DSML 工具调用",
+              ? "工具调用协议异常：检测到混合的结构化调用与伪造工具文本，为避免重复执行工具，本轮已安全终止"
+              : "工具调用协议异常：模型重试后仍输出了无效或伪造的工具调用文本",
           );
         }
 
