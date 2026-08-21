@@ -55,15 +55,27 @@ describe("safe maintenance commands", () => {
     return instance;
   }
 
-  it("schedules /restart safe and rejects new ordinary work", async () => {
+  it.each(["/restart safe", "/restartsf"])("schedules safe restart through %s and rejects new ordinary work", async (command) => {
     const instance = await coordinator();
     const adapter = platform();
-    await handleCommand(adapter, "/restart safe", "wx-chat", "wx-user", Date.now(), "group");
+    await handleCommand(adapter, command, "wx-chat", "wx-user", Date.now(), "group");
     expect((await instance.status()).job).toMatchObject({ kind: "restart", phase: "draining" });
     expect(adapter.sendText).toHaveBeenCalledWith("wx-chat", expect.stringContaining("已预约安全重启"));
 
     await handleCommand(adapter, "开始一个新任务", "wx-chat", "wx-user", Date.now() + 1, "group");
     expect(adapter.sendText).toHaveBeenCalledWith("wx-chat", expect.stringContaining("当前不接受新的任务"));
+  });
+
+  it("routes /updatesf through the safe update branch", async () => {
+    await coordinator();
+    const adapter = platform();
+
+    await handleCommand(adapter, "/updatesf", "wx-chat", "wx-user", Date.now(), "group");
+
+    expect(adapter.sendText).toHaveBeenCalledWith(
+      "wx-chat",
+      expect.stringContaining("无法使用 /update safe"),
+    );
   });
 
   it("reports and cancels a draining maintenance request", async () => {
