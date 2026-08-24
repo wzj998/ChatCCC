@@ -8,6 +8,7 @@ import { readUtf8JsonBody } from "./agent-rpc-body.ts";
 import { getAdapterForTool } from "./session.ts";
 import { getChatsForSession } from "./session-chat-binding.ts";
 import { splitFeishuTargetChats } from "./agent-platform-routing.ts";
+import { validateAgentCapabilityGrant } from "./agent-capability-grants.ts";
 
 export const AGENT_SEND_FILE_PATH = "/api/agent/send-file";
 
@@ -59,7 +60,7 @@ export async function handleAgentFileRequest(
     return true;
   }
 
-  let payload: { session_id?: unknown; path?: unknown; caption?: unknown };
+  let payload: { session_id?: unknown; grant?: unknown; path?: unknown; caption?: unknown };
   try {
     payload = await readUtf8JsonBody(req, MAX_REQUEST_BYTES);
   } catch (err) {
@@ -70,6 +71,10 @@ export async function handleAgentFileRequest(
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
   if (!sessionId) {
     jsonReply(res, 400, { ok: false, error: "Missing session_id" });
+    return true;
+  }
+  if (!validateAgentCapabilityGrant(sessionId, payload.grant)) {
+    jsonReply(res, 403, { ok: false, error: "Invalid or expired agent capability grant" });
     return true;
   }
 
@@ -147,6 +152,7 @@ export function buildAgentFileCapabilityPrompt(input: {
   url: string;
   sessionId?: string;
   cwd?: string;
+  grant?: string;
 }): string {
   const lines = [
     "[ChatCCC local capability: send file]",
@@ -155,7 +161,7 @@ export function buildAgentFileCapabilityPrompt(input: {
     `POST ${input.url}`,
     "Content-Type: application/json; charset=utf-8",
     "",
-    `Body: {"session_id":"${input.sessionId ?? "YOUR_SESSION_ID"}","path":"absolute file path","caption":"optional caption"}`,
+    `Body: {"session_id":"${input.sessionId ?? "YOUR_SESSION_ID"}","grant":"${input.grant ?? "YOUR_SESSION_GRANT"}","path":"absolute file path","caption":"optional caption"}`,
     "",
     "Rules:",
     "- Save or choose a local file first, then call the endpoint.",

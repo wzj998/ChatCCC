@@ -45,7 +45,16 @@ import { createCccAdapter } from "./adapters/ccc-adapter.ts";
 import { createDshAdapter } from "./adapters/dsh-adapter.ts";
 import { killProcessTree } from "./adapters/proc-tree-kill.ts";
 import { resourceMonitor, registerProcess, unregisterProcess } from "./adapters/resource-monitor.ts";
-import { buildImSkillsPromptCached, exportSkillSubDocs, clearImSkillsPromptCache } from "./im-skills.ts";
+import {
+  buildImSkillsPromptCached,
+  exportSkillSubDocs,
+  clearImSkillsPromptCache,
+  sessionImSkillsCacheDir,
+} from "./im-skills.ts";
+import {
+  clearAgentCapabilityGrants,
+  issueAgentCapabilityGrant,
+} from "./agent-capability-grants.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { hasResponseStalled, observeResponseProgress } from "./response-stall.ts";
 import {
@@ -546,6 +555,7 @@ export function resetState(): void {
   sessionModelOverrides.clear();
   sessionEffortOverrides.clear();
   sessionFastModeOverrides.clear();
+  clearAgentCapabilityGrants();
   adapterCache.clear();
   stopUnifiedDisplayLoop();
   console.log(`[${ts()}] [RESET] State cleared (dedup + active sessions + bindings)`);
@@ -1441,16 +1451,18 @@ export async function runAgentSession(
       `[${ts()}] Running ${adapter.displayName} session: ${sessionId} (${formatToolConfigForLog(tool, info?.model, sessionId)}, cwd=${cwd})`
     );
 
-    // 构建 IM skills prompt（sessionId 方式，无 token）
+    // 会话专属目录防止并发覆盖；capability grant 防止跨会话投递。
     const feishuSkillDir = join(PROJECT_ROOT, "im-skills", "feishu-skill");
     const wechatImageSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-image-skill");
     const wechatFileSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-file-skill");
     const wechatVideoSkillDir = join(PROJECT_ROOT, "im-skills", "wechat-video-skill");
-    const imSkillsCacheDir = join(USER_DATA_DIR, "im-skills");
+    const imSkillsCacheDir = sessionImSkillsCacheDir(join(USER_DATA_DIR, "im-skills"), sessionId);
+    const agentCapabilityGrant = issueAgentCapabilityGrant(sessionId);
     const skillVariables = {
       cwd,
       session_id: sessionId,
       open_id: options.initiatorOpenId,
+      agent_capability_grant: agentCapabilityGrant,
       im_skills_cache_dir: imSkillsCacheDir,
       delegate_task_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/delegate-task`,
       set_cwd_url: `http://127.0.0.1:${CHATCCC_PORT}/api/agent/set-cwd`,

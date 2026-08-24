@@ -7,7 +7,7 @@
 ### Script
 
 ```bash
-node "{{send_image_script}}" --url "{{send_image_url}}" --session-id "{{session_id}}" --path "<absolute image path>" --caption "<optional caption>"
+node "{{send_image_script}}" --url "{{send_image_url}}" --session-id "{{session_id}}" --grant "{{agent_capability_grant}}" --path "<absolute image path>" --caption "<optional caption>"
 ```
 
 ### Rules
@@ -15,6 +15,7 @@ node "{{send_image_script}}" --url "{{send_image_url}}" --session-id "{{session_
 - Use the node script above — never curl or raw HTTP.
 - Save or choose a local image file first.
 - Use an absolute local path.
+- Use only the session ID and capability grant shown above; they are a bound pair.
 - Supported formats: .png, .jpg, .jpeg, .webp, .gif, .bmp.
 - Max image size: 10MB.
 - Only send an image when the user asked for one or when it materially helps the answer.
