@@ -14,22 +14,23 @@ function parseArgs(argv) {
 
 function usage() {
   console.error(`Usage:
-  node ${basename(process.argv[1])} --url <url> --session-id <session_id> --path <absolute file path> [--caption <text>]`);
+  node ${basename(process.argv[1])} --url <url> --session-id <session_id> --grant <session_grant> --path <absolute file path> [--caption <text>]`);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const url = args.url || process.env.CHATCCC_SEND_FILE_URL;
   const sessionId = args["session-id"] || args.session_id || process.env.CHATCCC_SESSION_ID;
+  const grant = args.grant || process.env.CHATCCC_AGENT_CAPABILITY_GRANT;
   const path = args.path;
   const caption = args.caption || "";
 
-  if (!url || !sessionId || !path) {
+  if (!url || !sessionId || !grant || !path) {
     usage();
     process.exit(1);
   }
 
-  const body = Buffer.from(JSON.stringify({ session_id: sessionId, path, caption }), "utf8");
+  const body = Buffer.from(JSON.stringify({ session_id: sessionId, grant, path, caption }), "utf8");
   const response = await fetch(url, {
     method: "POST",
     headers: {

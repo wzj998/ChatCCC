@@ -1,9 +1,16 @@
 import { readdir, readFile, mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 
 import { PROJECT_ROOT } from "./config.ts";
 
 export const DEFAULT_IM_SKILLS_DIR = join(PROJECT_ROOT, "im-skills");
+
+export function sessionImSkillsCacheDir(cacheRoot: string, sessionId: string): string {
+  if (!sessionId) throw new Error("sessionId is required for the IM skills cache");
+  const sessionKey = createHash("sha256").update(sessionId, "utf8").digest("hex").slice(0, 24);
+  return join(cacheRoot, sessionKey);
+}
 
 export interface ImSkillVariableMap {
   [key: string]: string | undefined;
@@ -80,8 +87,8 @@ function promptCacheKey(input: BuildImSkillsPromptInput): string {
   const names = input.enabledSkillNames
     ? [...input.enabledSkillNames].sort().join(",")
     : "*";
-  const { session_id, cwd, open_id } = input.variables;
-  return `${input.skillsDir ?? DEFAULT_IM_SKILLS_DIR}|${names}|${session_id}|${cwd}|${open_id}`;
+  const { session_id, cwd, open_id, agent_capability_grant } = input.variables;
+  return `${input.skillsDir ?? DEFAULT_IM_SKILLS_DIR}|${names}|${session_id}|${cwd}|${open_id}|${agent_capability_grant}`;
 }
 
 /** 带会话级缓存的 buildImSkillsPrompt。同 session + 同 cwd 时直接返回缓存的渲染结果。 */

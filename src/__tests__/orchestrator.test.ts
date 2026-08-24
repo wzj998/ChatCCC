@@ -16,6 +16,8 @@ vi.mock("../im-skills.ts", () => ({
   buildImSkillsPrompt: async () => "",
   buildImSkillsPromptCached: async () => "",
   exportSkillSubDocs: async () => {},
+  clearImSkillsPromptCache: () => {},
+  sessionImSkillsCacheDir: (root: string, sessionId: string) => join(root, `test-${sessionId}`),
 }));
 
 vi.mock("../stream-state.ts", () => ({

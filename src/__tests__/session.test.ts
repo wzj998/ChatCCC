@@ -798,6 +798,9 @@ describe("runAgentSession process monitor", () => {
       expect(text).toContain("[ChatCCC IM skill: feishu-skill]");
       expect(text).toContain("[/ChatCCC IM skill: feishu-skill]");
       expect(text).toContain('"session_id":"sid-resume"');
+      expect(text).toMatch(/"grant":"[A-Za-z0-9_-]{43}"/);
+      expect(text).toMatch(/\.chatccc[\\/]im-skills[\\/][a-f0-9]{24}[\\/]feishu-skill/);
+      expect(text).not.toMatch(/\.chatccc[\\/]im-skills[\\/]feishu-skill/);
       expect(text).toContain("http://127.0.0.1:");
       expect(text).toContain("/api/agent/send-image");
       expect(text).toContain("[User message]");
@@ -805,6 +808,10 @@ describe("runAgentSession process monitor", () => {
     }
     expect(sentTexts[0]).toContain("first prompt");
     expect(sentTexts[1]).toContain("second prompt");
+    const firstGrant = sentTexts[0].match(/"grant":"([A-Za-z0-9_-]{43})"/)?.[1];
+    const secondGrant = sentTexts[1].match(/"grant":"([A-Za-z0-9_-]{43})"/)?.[1];
+    expect(firstGrant).toBeTruthy();
+    expect(secondGrant).toBe(firstGrant);
   });
 });
 

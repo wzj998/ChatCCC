@@ -8,6 +8,7 @@ import {
   buildImSkillsPromptCached,
   clearImSkillsPromptCache,
   exportSkillSubDocs,
+  sessionImSkillsCacheDir,
 } from "../im-skills.ts";
 
 let tempRoot: string | null = null;
@@ -121,5 +122,38 @@ describe("IM skills prompt rendering", () => {
 
     expect(cached).toBe(first);
     expect(refreshed).toContain("changed");
+  });
+
+  it("keeps rendered helper documents isolated between concurrent sessions", async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), "chatccc-im-skills-isolation-"));
+    const skillsDir = join(tempRoot, "skills");
+    const skillDir = join(skillsDir, "feishu-skill");
+    const cacheRoot = join(tempRoot, "cache");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "skill.md"), "session={{session_id}}", "utf-8");
+    await writeFile(
+      join(skillDir, "receive-send-image.md"),
+      "session={{session_id}} grant={{agent_capability_grant}}",
+      "utf-8",
+    );
+
+    const firstDir = sessionImSkillsCacheDir(cacheRoot, "sid-first");
+    const secondDir = sessionImSkillsCacheDir(cacheRoot, "sid-second");
+    await Promise.all([
+      exportSkillSubDocs({
+        skillsDir,
+        variables: { session_id: "sid-first", agent_capability_grant: "grant-first" },
+      }, firstDir),
+      exportSkillSubDocs({
+        skillsDir,
+        variables: { session_id: "sid-second", agent_capability_grant: "grant-second" },
+      }, secondDir),
+    ]);
+
+    expect(firstDir).not.toBe(secondDir);
+    await expect(readFile(join(firstDir, "feishu-skill", "receive-send-image.md"), "utf8"))
+      .resolves.toBe("session=sid-first grant=grant-first");
+    await expect(readFile(join(secondDir, "feishu-skill", "receive-send-image.md"), "utf8"))
+      .resolves.toBe("session=sid-second grant=grant-second");
   });
 });
