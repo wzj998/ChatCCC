@@ -243,6 +243,27 @@ describe("BuiltinContextManager", () => {
     ]);
   });
 
+  it("keeps interleaved parallel tool results paired with the declaring assistant message", () => {
+    const context = new BuiltinContextManager();
+    context.appendMessage({
+      role: "assistant",
+      content: "done",
+      timeline: [
+        { type: "tool_use", id: "call-1", name: "websearch", input: "{}" },
+        { type: "tool_use", id: "call-2", name: "websearch", input: "{}" },
+        { type: "tool_result", tool_use_id: "call-1", name: "websearch", output: "one" },
+        { type: "tool_use", id: "call-3", name: "websearch", input: "{}" },
+        { type: "tool_result", tool_use_id: "call-3", name: "websearch", output: "three" },
+        { type: "tool_result", tool_use_id: "call-2", name: "websearch", output: "two" },
+      ],
+    });
+
+    const messages = context.buildModelMessages() as Array<{ role: string; content: Array<{ toolCallId?: string }> }>;
+    expect(messages.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(messages[0].content.map((part) => part.toolCallId)).toEqual(["call-1", "call-2", "call-3"]);
+    expect(messages[1].content.map((part) => part.toolCallId)).toEqual(["call-1", "call-2", "call-3"]);
+  });
+
   it("builds a plain assistant message without tool transcript when no tools ran", () => {
     const message = buildPersistedAssistantMessage({
       fullText: "纯文本回复",

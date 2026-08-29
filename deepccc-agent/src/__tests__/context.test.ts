@@ -398,6 +398,31 @@ describe("BuiltinContextManager", () => {
     ]);
   });
 
+  it("replays interleaved parallel tool results as one valid assistant/tool batch", () => {
+    const context = new BuiltinContextManager();
+    context.appendMessage({
+      role: "assistant",
+      content: "搜索完成。",
+      timeline: [
+        { type: "text", text: "开始搜索。" },
+        { type: "tool_use", id: "call-1", name: "websearch", input: "{\"query\":\"one\"}" },
+        { type: "tool_use", id: "call-2", name: "websearch", input: "{\"query\":\"two\"}" },
+        { type: "tool_result", tool_use_id: "call-1", name: "websearch", output: "{\"result\":\"one\"}" },
+        { type: "tool_use", id: "call-3", name: "websearch", input: "{\"query\":\"three\"}" },
+        { type: "tool_result", tool_use_id: "call-3", name: "websearch", output: "{\"result\":\"three\"}" },
+        { type: "tool_result", tool_use_id: "call-2", name: "websearch", output: "{\"result\":\"two\"}" },
+        { type: "text", text: "搜索完成。" },
+      ],
+    });
+
+    const messages = context.buildModelMessages();
+    expect(messages.map((message) => message.role)).toEqual(["assistant", "tool", "assistant"]);
+    expect((messages[0]!.content as Array<{ type: string; toolCallId?: string }>).filter((part) => part.type === "tool-call").map((part) => part.toolCallId))
+      .toEqual(["call-1", "call-2", "call-3"]);
+    expect((messages[1]!.content as Array<{ toolCallId?: string }>).map((part) => part.toolCallId))
+      .toEqual(["call-1", "call-2", "call-3"]);
+  });
+
   it("drops orphaned historical tool results instead of emitting an invalid tool message", () => {
     const context = new BuiltinContextManager();
     context.appendMessage({

@@ -506,46 +506,46 @@ function replayStructuredAssistantMessage(
 
   const messages: ModelMessage[] = [];
   let assistantParts: Array<TextPart | ToolCallPart> = [];
-  let toolParts: ToolResultPart[] = [];
-  const pendingCalls = new Map<string, string>();
-  const knownNames = new Map<string, string>();
+  const batchCalls = new Map<string, string>();
+  const batchResults = new Map<string, ToolResultPart>();
   const emittedCallIds = new Set<string>();
 
-  const flushAssistant = (): void => {
-    if (!assistantParts.length) return;
-    messages.push({ role: "assistant", content: assistantParts });
-    assistantParts = [];
-  };
-  const completeToolStep = (): void => {
-    // OpenAI/LiteLLM requires every tool message to immediately follow the
-    // assistant message that declared all matching tool_calls for that step.
-    flushAssistant();
-    for (const [toolCallId, toolName] of pendingCalls) {
-      toolParts.push({
+  const completeToolBatch = (): void => {
+    if (assistantParts.length > 0) {
+      messages.push({ role: "assistant", content: assistantParts });
+      assistantParts = [];
+    }
+    if (batchCalls.size === 0) {
+      batchResults.clear();
+      return;
+    }
+    const toolParts: ToolResultPart[] = [];
+    for (const [toolCallId, toolName] of batchCalls) {
+      toolParts.push(batchResults.get(toolCallId) ?? {
         type: "tool-result",
         toolCallId,
         toolName,
         output: { type: "text", value: "[tool execution interrupted; result unavailable]" },
       });
     }
-    pendingCalls.clear();
-    if (!toolParts.length) return;
     messages.push({ role: "tool", content: toolParts });
-    toolParts = [];
+    batchCalls.clear();
+    batchResults.clear();
   };
 
   for (const entry of timeline) {
     if (entry.type === "text") {
-      if (pendingCalls.size > 0 || toolParts.length > 0) completeToolStep();
+      if (batchCalls.size > 0 || batchResults.size > 0) completeToolBatch();
       const previous = assistantParts[assistantParts.length - 1];
       if (previous?.type === "text") previous.text += entry.text;
       else if (entry.text) assistantParts.push({ type: "text", text: entry.text });
     } else if (entry.type === "tool_use") {
-      // Consecutive tool calls belong to one assistant step. Only close the
-      // previous step after at least one result has arrived.
-      if (toolParts.length > 0) completeToolStep();
-      knownNames.set(entry.id, entry.name);
-      pendingCalls.set(entry.id, entry.name);
+      // Providers may interleave parallel tool results with later tool-call
+      // events from the same assistant step. Keep the whole contiguous tool
+      // segment together until text resumes; closing on the first result can
+      // emit a later real result as an orphaned `role: tool` message.
+      if (emittedCallIds.has(entry.id)) continue;
+      batchCalls.set(entry.id, entry.name);
       emittedCallIds.add(entry.id);
       assistantParts.push({
         type: "tool-call",
@@ -554,12 +554,10 @@ function replayStructuredAssistantMessage(
         input: parseToolInput(entry.input),
       });
     } else {
-      if (!emittedCallIds.has(entry.tool_use_id)) continue;
-      const toolName = entry.name ?? knownNames.get(entry.tool_use_id);
+      if (!batchCalls.has(entry.tool_use_id)) continue;
+      const toolName = entry.name ?? batchCalls.get(entry.tool_use_id);
       if (!toolName) continue;
-      flushAssistant();
-      pendingCalls.delete(entry.tool_use_id);
-      toolParts.push({
+      batchResults.set(entry.tool_use_id, {
         type: "tool-result",
         toolCallId: entry.tool_use_id,
         toolName,
@@ -567,8 +565,7 @@ function replayStructuredAssistantMessage(
       });
     }
   }
-  if (pendingCalls.size > 0 || toolParts.length > 0) completeToolStep();
-  else flushAssistant();
+  completeToolBatch();
   return messages;
 }
 
