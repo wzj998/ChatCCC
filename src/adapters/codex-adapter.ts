@@ -112,6 +112,8 @@ interface CodexItem {
 interface CodexEvent {
   type: string;
   thread_id?: string;
+  message?: string;
+  error?: { message?: string } | string;
   item?: CodexItem;
   usage?: {
     input_tokens?: number;
@@ -128,6 +130,15 @@ interface CodexEvent {
 export function normalizeCodexMessage(
   msg: CodexEvent,
 ): UnifiedStreamMessage | null {
+  if (msg.type === "error" && msg.message?.trim()) {
+    throw new Error(`Codex turn failed: ${msg.message.trim()}`);
+  }
+
+  if (msg.type === "turn.failed") {
+    const detail = typeof msg.error === "string" ? msg.error : msg.error?.message;
+    throw new Error(`Codex turn failed: ${detail?.trim() || "unknown Codex error"}`);
+  }
+
   // agent_message 只是 Codex 的一条阶段性文本 item。即使内容看起来像完整答复，
   // 后面仍可能继续发出工具调用，因此不能用它关闭 response-stall watchdog。
   if (
