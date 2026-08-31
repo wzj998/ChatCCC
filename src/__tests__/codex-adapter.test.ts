@@ -158,6 +158,24 @@ describe("normalizeCodexMessage", () => {
     expect(normalizeCodexMessage({ type: "turn.started" })).toBeNull();
   });
 
+  it("surfaces top-level Codex errors instead of treating an empty stream as success", () => {
+    expect(() => normalizeCodexMessage({
+      type: "error",
+      message: "Selected model is at capacity. Please try a different model.",
+    } as Parameters<typeof normalizeCodexMessage>[0])).toThrow(
+      "Selected model is at capacity. Please try a different model.",
+    );
+  });
+
+  it("surfaces turn.failed even when Codex exits with code zero", () => {
+    expect(() => normalizeCodexMessage({
+      type: "turn.failed",
+      error: { message: "request failed after partial output" },
+    } as Parameters<typeof normalizeCodexMessage>[0])).toThrow(
+      "request failed after partial output",
+    );
+  });
+
   it("marks turn.completed as the authoritative final response", () => {
     expect(
       normalizeCodexMessage({
@@ -198,6 +216,27 @@ describe("normalizeCodexMessage", () => {
 // ---------------------------------------------------------------------------
 
 describe("Codex stream fixtures", () => {
+  it("fails the turn when turn.failed arrives after partial assistant output", () => {
+    const state: AccumulatorState = {
+      accumulatedContent: "",
+      finalText: "",
+      finalCompleteText: "",
+      chunkCount: 0,
+    };
+    const events = [
+      { type: "item.completed", item: { type: "agent_message", text: "partial reply" } },
+      { type: "turn.failed", error: { message: "model became unavailable" } },
+    ];
+
+    expect(() => {
+      for (const raw of events) {
+        const normalized = normalizeCodexMessage(raw);
+        for (const block of normalized?.blocks ?? []) accumulateBlockContent(block, state);
+      }
+    }).toThrow("model became unavailable");
+    expect(pickFinalReply(state)).toBe("partial reply");
+  });
+
   it("simple text: 流结束后 pickFinalReply 返回正确文本", () => {
     const lines = readFixture("codex_simple_text.jsonl");
     const state: AccumulatorState = {
