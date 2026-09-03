@@ -5,7 +5,7 @@ description: Create, clone, or configure a Feishu enterprise self-built bot appl
 
 # Create a ChatCCC Feishu App
 
-Use the logged-in Feishu developer console to create and completely configure a ChatCCC bot app. Treat this repository's README as the minimum requirement and the existing app named exactly lowercase `chatccc` as the configuration template.
+Use the logged-in Feishu developer console to create and completely configure a ChatCCC bot app. Treat this repository's README as the authoritative source for permissions and required capabilities. When imitation is requested, use the existing app named exactly lowercase `chatccc` only as a template for presentation, subscriptions, and release settings.
 
 ## 1. Establish the target and authorization
 
@@ -21,13 +21,12 @@ Use the logged-in Feishu developer console to create and completely configure a 
 3. Record its non-secret configuration:
    - app description and icon;
    - application capabilities, especially `机器人`;
-   - every granted permission and its identity type;
    - event and callback subscription modes;
    - every event and callback identifier;
    - version availability, external sharing choices, and release state.
 4. Never reveal, log, export to chat, or persist the template App Secret.
 
-Prefer current console data over a stale hard-coded list. At the time this workflow was verified, lowercase `chatccc` had 62 application-identity permissions, one user-identity permission, 12 application events, and one callback. Use those counts as a sanity check, not as a replacement for inspecting the template.
+Do not use the template's permission set or permission counts as the source of truth. Permissions must always follow the current README rule below. Prefer current console data over a stale hard-coded list for the remaining template settings.
 
 ## 3. Create the target app
 
@@ -36,16 +35,17 @@ Prefer current console data over a stale hard-coded list. At the time this workf
 3. Click the final `创建` action only after confirmation.
 4. Click once and wait for SPA navigation. Verify the exact app name, App ID, URL, and status before retrying; the console can temporarily show stale text after a successful mutation.
 
-## 4. Clone the complete ChatCCC configuration
+## 4. Configure the complete README-defined ChatCCC setup
 
 Perform the configuration in this order:
 
 1. Add the `机器人` application capability and verify that the page offers `删除能力`, which means the capability is enabled.
-2. Clone permissions with `权限管理` > `批量处理` > `批量导入/导出权限`:
-   - export from lowercase `chatccc`;
-   - import into the target app;
-   - confirm all additions and verify both application-identity and user-identity totals;
-   - do not save the export JSON in the repository or chat.
+2. Configure permissions from the README, not from the lowercase template:
+   - under `权限管理`, search for the `im:` prefix and enable every permission whose name starts with `im:`;
+   - search for the `cardkit:` prefix and enable every permission whose name starts with `cardkit:`;
+   - separately search for the exact scope `im:message.p2p_msg:readonly` and verify that it is enabled. This private-message read permission is easy to miss and must not be inferred from other message permissions;
+   - confirm all permission changes and complete any required administrator approval;
+   - do not use template permission export/import as an authoritative shortcut, because the template may be incomplete or stale.
 3. Under `事件与回调` > `事件配置`, set the subscription mode to `使用长连接接收事件`, then add every event present in the template. The verified baseline is:
    - `im.chat.disbanded_v1`
    - `im.chat.member.bot.added_v1`
@@ -62,7 +62,7 @@ Perform the configuration in this order:
 4. Under `回调配置`, independently set `使用长连接接收回调` and add `card.action.trigger`. Configuring the event mode does not configure the callback mode.
 5. Verify that every listed event shows a sufficient permission as `已开通`.
 
-The README minimum is the bot capability, relevant `im:` and `cardkit:` permissions, `im.message.receive_v1`, and `card.action.trigger`; a clone request requires the complete current template configuration, not only that minimum.
+The README requires the bot capability, every permission whose name starts with `im:` or `cardkit:`, explicit verification of `im:message.p2p_msg:readonly`, `im.message.receive_v1`, and `card.action.trigger`. A clone request may copy the current template's presentation, subscriptions, availability, and release settings, but it must not weaken the README permission rule.
 
 ## 5. Create and publish a version
 
@@ -78,8 +78,8 @@ The README minimum is the bot capability, relevant `im:` and `cardkit:` permissi
 
 ## 6. Verify and hand off safely
 
-- Re-open the bot, permission, event/callback, and version pages after publication. Verify the bot is enabled, permission identity counts match, both subscription modes are long connection, event/callback identifiers match, and the version is published.
+- Re-open the bot, permission, event/callback, and version pages after publication. Verify the bot is enabled, all current `im:` and `cardkit:` permissions are enabled, `im:message.p2p_msg:readonly` is explicitly present, both subscription modes are long connection, event/callback identifiers match, and the version is published.
 - Treat network responses and a refreshed page as stronger evidence than an immediately stale SPA view. Never repeat a create, add, or publish action only because the first page read is stale.
-- Report the app name, App ID, capability, permission counts, event/callback counts, version, release state, and any remaining action.
+- Report the app name, App ID, capability, whether the README permission checks passed, event/callback counts, version, release state, and any remaining action.
 - Never print the App Secret. If the user explicitly asks to configure ChatCCC, transfer the App ID and App Secret directly into the local private configuration without echoing the secret in commands, logs, screenshots, files tracked by Git, or chat.
 - Do not modify local ChatCCC configuration or transmit credentials elsewhere unless explicitly authorized.
