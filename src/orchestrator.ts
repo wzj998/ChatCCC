@@ -7,7 +7,7 @@
 
 import { execSync, spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { config as deepCccConfig } from "../deepccc-agent/src/config.ts";
@@ -105,7 +105,11 @@ import {
 } from "./session-name.ts";
 import { reloadRuntimeConfig } from "./runtime-reload.ts";
 import { acquireUpdateCommandGuard } from "./update-command-guard.ts";
-import { createInternalRestartEnv, INTERNAL_RESTART_ENV_VAR } from "./startup-lifecycle.ts";
+import {
+  createInternalRestartEnv,
+  INTERNAL_RESTART_ENV_VAR,
+  INTERNAL_RESTART_READY_MESSAGE,
+} from "./startup-lifecycle.ts";
 import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
 import { engineManager } from "./engines/engine-specs.ts";
 import {
@@ -840,42 +844,18 @@ function syncUpdateAndRestart(options: { spawnOnUpdateFailure?: boolean } = {}):
     return undefined;
   }
 
-  // 2. resolve bin path
-  const npmPrefix = process.env.NPM_PREFIX || "";
-  const binName = process.platform === "win32" ? "chatccc.cmd" : "chatccc";
-  const binPath = npmPrefix ? join(npmPrefix, binName) : "chatccc";
-  updLog(`bin path: npmPrefix=${npmPrefix || "(empty)"}, binPath=${binPath}`);
-  appendStartupTrace("update: spawn begin", { npmPrefix: npmPrefix || "(empty)", binPath });
-
-  // 3. spawn new chatccc：优先 node + 全局包入口绝对路径（不依赖 PATH/shell），
-  //    避免继承环境 PATH 异常时秒退；失败时回退到 binPath（走 shell）。
+  // 2. Spawn the updated runtime directly through Node. Reusing the restart
+  // launcher guarantees an IPC handoff channel and avoids shell/PATH variance.
+  const spawnSpec = buildRestartSpawnSpec(PROJECT_ROOT);
+  updLog(`runtime path: ${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
+  appendStartupTrace("update: spawn begin", { runtimeEntry: spawnSpec.args[0] });
   try {
-    let spawnSpec: { command: string; args: string[] } | null = null;
-    if (npmPrefix) {
-      const entry = join(npmPrefix, "node_modules", "chatccc", "bin", "chatccc.mjs");
-      if (existsSync(entry)) {
-        spawnSpec = { command: process.execPath, args: [entry] };
-      }
-    }
-    const child = spawnSpec
-      ? spawn(spawnSpec.command, spawnSpec.args, {
-          detached: true,
-          stdio: "ignore",
-          shell: false,
-          env: createInternalRestartEnv(),
-        })
-      : spawn(binPath, [], {
-          detached: true,
-          stdio: "ignore",
-          shell: true,
-          env: createInternalRestartEnv(),
-        });
+    const child = spawnRestartChild({ projectRoot: PROJECT_ROOT });
     child.unref();
-    const spawnedAs = spawnSpec ? `${spawnSpec.command} ${spawnSpec.args.join(" ")}` : binPath;
-    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${spawnedAs}`);
+    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
     appendStartupTrace("update: spawn OK", {
       childPid: child.pid,
-      binPath: spawnSpec ? spawnSpec.args[0] : binPath,
+      binPath: spawnSpec.args[0],
     });
     return child;
   } catch (e) {
@@ -890,8 +870,8 @@ function syncUpdateAndRestart(options: { spawnOnUpdateFailure?: boolean } = {}):
 // /restart — 自重启子进程（不经过 npx/npm，避免 PATH 注入秒退；防空窗兜底）
 // ---------------------------------------------------------------------------
 
-/** 父进程等待子进程稳定启动的时间窗口（毫秒）。 */
-export const RESTART_CHILD_READY_MS = 3000;
+/** 父进程等待替代进程通过 IPC 完成启动预检的最长时间（毫秒）。 */
+export const RESTART_CHILD_READY_MS = 15_000;
 
 /**
  * 构建自重启的 spawn 参数：发布包直接运行编译后的 JavaScript；只有尚未
@@ -913,12 +893,75 @@ export interface RestartSpawnDeps {
   isTty?: () => boolean;
 }
 
+type RestartChildHandle = Pick<ChildProcess, "pid" | "exitCode" | "signalCode">
+  & Partial<Pick<ChildProcess, "on" | "off" | "disconnect" | "connected" | "kill">>;
+
+type RestartHandoffOutcome =
+  | { kind: "ready" }
+  | { kind: "exit" }
+  | { kind: "error"; error: Error }
+  | { kind: "no_ipc" };
+
+interface RestartHandoffMonitor {
+  promise: Promise<RestartHandoffOutcome>;
+  cancel(): void;
+}
+
+const restartHandoffMonitors = new WeakMap<object, RestartHandoffMonitor>();
+
+function getOrCreateRestartHandoffMonitor(child: RestartChildHandle): RestartHandoffMonitor {
+  const existing = restartHandoffMonitors.get(child);
+  if (existing) return existing;
+  if (typeof child.on !== "function") {
+    const unavailable = { promise: Promise.resolve({ kind: "no_ipc" } as const), cancel() {} };
+    restartHandoffMonitors.set(child, unavailable);
+    return unavailable;
+  }
+
+  const addListener = child.on.bind(child) as (event: string, listener: (...args: any[]) => void) => unknown;
+  const removeListener = typeof child.off === "function"
+    ? child.off.bind(child) as (event: string, listener: (...args: any[]) => void) => unknown
+    : undefined;
+  let resolveOutcome: (outcome: RestartHandoffOutcome) => void = () => {};
+  let settled = false;
+  const cleanup = () => {
+    removeListener?.("message", onMessage);
+    removeListener?.("exit", onExit);
+    removeListener?.("error", onError);
+  };
+  const settle = (outcome: RestartHandoffOutcome) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolveOutcome(outcome);
+  };
+  const onMessage = (message: unknown) => {
+    const ready = message as { type?: unknown; pid?: unknown; parentPid?: unknown } | null;
+    if (!ready || ready.type !== INTERNAL_RESTART_READY_MESSAGE) return;
+    if (typeof ready.pid === "number" && child.pid !== undefined && ready.pid !== child.pid) return;
+    if (ready.parentPid !== process.pid) return;
+    settle({ kind: "ready" });
+  };
+  const onExit = () => settle({ kind: "exit" });
+  const onError = (error: Error) => settle({ kind: "error", error });
+  const promise = new Promise<RestartHandoffOutcome>((resolve) => {
+    resolveOutcome = resolve;
+  });
+  const monitor = { promise, cancel: cleanup };
+  restartHandoffMonitors.set(child, monitor);
+  addListener("message", onMessage);
+  addListener("exit", onExit);
+  addListener("error", onError);
+  if (child.exitCode !== null || child.signalCode !== null) settle({ kind: "exit" });
+  return monitor;
+}
+
 /**
  * spawn 自重启子进程。
  *
  * stdout/stderr 按启动方式分流：
  * - **终端（TTY）场景**（用户从 cmd/PowerShell/node.exe 窗口启动）：stdio 用
- *   ["ignore", "inherit", "inherit"] 直接继承终端句柄，restart 后窗口日志不中断。
+ *   前三个 stdio 直接继承终端句柄，第四个通道保留给 IPC 握手；restart 后窗口日志不中断。
  *   终端句柄的生命周期不随父进程退出而关闭，因此不存在 EPIPE 风险。
  * - **非终端场景**（守护进程/黑匣子等管道或文件启动）：stderr 重定向到磁盘日志
  *   文件（restart-*.log），子进程继承文件句柄，父进程退出不影响写入。
@@ -935,7 +978,7 @@ export function spawnRestartChild(deps: RestartSpawnDeps = {}): ChildProcess {
   const { command, args } = buildRestartSpawnSpec(projectRoot);
 
   let stderrFd: number | undefined;
-  const stdio: StdioOptions = ["ignore", "ignore", "pipe"];
+  const stdio: StdioOptions = ["ignore", "ignore", "pipe", "ipc"];
   const tty = isTty();
   if (tty) {
     // 终端场景：全部 inherit（含 stdin）。注意 stdin 不能是 "ignore"：
@@ -972,8 +1015,11 @@ export function spawnRestartChild(deps: RestartSpawnDeps = {}): ChildProcess {
     detached: true,
     stdio,
     shell: false,
-    env: createInternalRestartEnv(),
+    env: createInternalRestartEnv(process.env, process.pid),
   });
+  // Attach before returning so an extremely fast replacement cannot emit its
+  // IPC readiness message between spawnRestartChild() and the caller's wait.
+  getOrCreateRestartHandoffMonitor(child);
   // 子进程已继承 stderr 文件句柄；父进程关闭自己的副本，避免"子进程早退、
   // 父进程留下继续服务"时 fd 泄漏。
   if (stderrFd !== undefined) {
@@ -995,29 +1041,60 @@ export function spawnRestartChild(deps: RestartSpawnDeps = {}): ChildProcess {
 
 /**
  * 决定父进程是否应退出（防空窗兜底）：
- * - 窗口内子进程已退出（死亡或信号终止）→ 返回 false，父进程留下继续服务；
- * - 子进程存活满整个窗口 → 返回 true，父进程退出并把端口让给新进程。
+ * - 替代进程通过 IPC 明确完成预检 → 返回 true，父进程退出并交出端口；
+ * - 替代进程退出、报错或握手超时 → 返回 false，父进程继续服务。
  */
 export async function decideRestartParentExit(
-  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  child: RestartChildHandle,
   timeoutMs: number,
-  pollMs = 500,
+  _pollMs = 500,
   trace: typeof appendStartupTrace = appendStartupTrace,
 ): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      trace("restart: child died during window, keeping parent", {
-        childPid: child.pid,
-        exitCode: child.exitCode,
-        signalCode: child.signalCode,
-      });
-      return false;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  if (child.exitCode !== null || child.signalCode !== null) {
+    trace("restart: child died during window, keeping parent", {
+      childPid: child.pid,
+      exitCode: child.exitCode,
+      signalCode: child.signalCode,
+    });
+    return false;
   }
-  trace("restart: child alive after window, parent exiting", { childPid: child.pid });
-  return true;
+  const monitor = getOrCreateRestartHandoffMonitor(child);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutOutcome = new Promise<RestartHandoffOutcome>((resolve) => {
+    timeout = setTimeout(() => resolve({ kind: "no_ipc" }), timeoutMs);
+    timeout.unref?.();
+  });
+  const outcome = await Promise.race([monitor.promise, timeoutOutcome]);
+  if (timeout) clearTimeout(timeout);
+  monitor.cancel();
+
+  if (outcome.kind === "ready") {
+    if (child.connected && typeof child.disconnect === "function") {
+      try { child.disconnect(); } catch { /* child may disconnect first */ }
+    }
+    trace("restart: child handoff ready, parent exiting", { childPid: child.pid });
+    return true;
+  }
+  if (outcome.kind === "exit") {
+    trace("restart: child died during window, keeping parent", {
+      childPid: child.pid,
+      exitCode: child.exitCode,
+      signalCode: child.signalCode,
+    });
+    return false;
+  }
+  if (outcome.kind === "error") {
+    trace("restart: child handoff error, keeping parent", {
+      childPid: child.pid,
+      error: outcome.error.message,
+    });
+    return false;
+  }
+  if (typeof child.kill === "function") {
+    try { child.kill(); } catch { /* best effort */ }
+  }
+  trace("restart: child handoff timeout, keeping parent", { childPid: child.pid });
+  return false;
 }
 
 const safeMaintenancePlatforms = new Map<string, PlatformAdapter>();
@@ -1297,8 +1374,8 @@ async function handleCommandInternal(
     const child = spawnRestartChild();
     child.unref();
 
-    // 子进程存活满窗口才退出父进程；若子进程在窗口内死亡，父进程留下继续
-    // 服务（防空窗），并已把子进程 stderr 写入 startup-trace 供排查。
+    // 只有替代进程通过 IPC 明确完成预检才退出父进程；超时或早退时父进程
+    // 继续服务，并保留替代进程 stderr 日志供排查。
     void decideRestartParentExit(child, RESTART_CHILD_READY_MS).then((shouldExit) => {
       if (!shouldExit) return;
       appendStartupTrace("restart: parent exit", { childPid: child.pid });
@@ -1351,18 +1428,16 @@ async function handleCommandInternal(
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
     logTrace(tid, "DONE", { outcome: "update" });
     appendStartupTrace("update: sync update begin", { fromPid: process.pid });
-    const child = syncUpdateAndRestart();
+    const child = syncUpdateAndRestart({ spawnOnUpdateFailure: false });
     if (child) {
-      // 子进程存活满窗口才退出父进程；若子进程在窗口内死亡，父进程留下继续
-      // 服务（防空窗）。
+      // 只有替代进程通过 IPC 明确完成预检才退出父进程；否则父进程继续服务。
       void decideRestartParentExit(child, RESTART_CHILD_READY_MS).then((shouldExit) => {
         if (!shouldExit) return;
         appendStartupTrace("update: parent exit", { childPid: child.pid });
         process.exit(0);
       });
     } else {
-      // spawn 失败：没有子进程可等，给残留日志写入时间后退出
-      setTimeout(() => process.exit(0), 2000);
+      appendStartupTrace("update: replacement unavailable, parent stays alive", {});
     }
     return;
   }

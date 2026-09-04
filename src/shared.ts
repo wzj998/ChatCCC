@@ -175,22 +175,39 @@ export function freeRelayListenPort(port: number): number {
 }
 
 /**
- * 轮询等待端口释放（Windows 下 taskkill 后端口可能不会立即释放）。
- * 在 freeRelayListenPort kill 了进程后调用，确认端口真正空闲再 listen。
+ * 跨平台轮询等待端口释放。既用于 Windows taskkill 后的延迟释放，也用于
+ * Linux/macOS 内部重启时等待父进程交出监听端口。
  */
-export async function waitForPortFree(port: number, timeoutMs = 3000): Promise<void> {
-  if (process.platform !== "win32") return;
+async function canBindLoopbackPort(port: number): Promise<boolean> {
+  const probe = createServer();
+  probe.unref();
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (available: boolean) => {
+      if (settled) return;
+      settled = true;
+      probe.removeAllListeners();
+      if (probe.listening) {
+        probe.close(() => resolve(available));
+      } else {
+        resolve(available);
+      }
+    };
+    probe.once("error", () => finish(false));
+    probe.once("listening", () => finish(true));
+    probe.listen(port, "127.0.0.1");
+  });
+}
+
+/** Wait until the loopback port can actually be bound on every supported OS. */
+export async function waitForPortFree(port: number, timeoutMs = 3000, pollMs = 200): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const out = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8", windowsHide: true });
-      const pids = collectListeningPidsOnPortWindows(port, out);
-      if (pids.length === 0) return;
-    } catch {
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
+  do {
+    if (await canBindLoopbackPort(port)) return true;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  } while (Date.now() <= deadline);
+  return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   INTERNAL_RESTART_ENV_VAR,
+  INTERNAL_RESTART_PARENT_PID_ENV_VAR,
+  INTERNAL_RESTART_READY_MESSAGE,
+  announceInternalRestartReady,
   buildWebUiUrl,
   createServiceLifecycleGuard,
   createInternalRestartEnv,
@@ -27,11 +30,34 @@ describe("ChatCCC startup lifecycle", () => {
   });
 
   it("marks internal restart children without losing the inherited environment", () => {
-    expect(createInternalRestartEnv({ PATH: "test-path", CUSTOM: "value" })).toEqual({
+    expect(createInternalRestartEnv({ PATH: "test-path", CUSTOM: "value" }, 4321)).toEqual({
       PATH: "test-path",
       CUSTOM: "value",
       [INTERNAL_RESTART_ENV_VAR]: "1",
+      [INTERNAL_RESTART_PARENT_PID_ENV_VAR]: "4321",
     });
+  });
+
+  it("announces readiness over IPC only for an internal restart", async () => {
+    const send = vi.fn((_message: unknown, callback: (error: Error | null) => void) => {
+      callback(null);
+      return true;
+    });
+
+    await expect(announceInternalRestartReady({
+      env: {
+        [INTERNAL_RESTART_ENV_VAR]: "1",
+        [INTERNAL_RESTART_PARENT_PID_ENV_VAR]: "4321",
+      },
+      pid: 9876,
+      send,
+    })).resolves.toBe(true);
+    expect(send).toHaveBeenCalledWith(
+      { type: INTERNAL_RESTART_READY_MESSAGE, pid: 9876, parentPid: 4321 },
+      expect.any(Function),
+    );
+    await expect(announceInternalRestartReady({ env: {}, pid: 9876, send })).resolves.toBe(false);
+    expect(send).toHaveBeenCalledOnce();
   });
 
   it("uses localhost and the configured port for the Web UI URL", () => {

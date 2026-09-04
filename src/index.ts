@@ -33,6 +33,7 @@ import { configureAgentTeamMainAgent } from "./agent-team/main-agent-bootstrap.t
 import {
   buildWebUiUrl,
   createServiceLifecycleGuard,
+  announceInternalRestartReady,
   INTERNAL_RESTART_ENV_VAR,
   openWebUiInDefaultBrowser,
   shouldAutoOpenWebUi,
@@ -838,6 +839,24 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const isInternalRestart = process.env[INTERNAL_RESTART_ENV_VAR] === "1";
+  if (isInternalRestart) {
+    const announced = await announceInternalRestartReady();
+    appendStartupTrace("restart-handoff: replacement preflight ready", {
+      announced,
+      port: CHATCCC_PORT,
+    });
+    const portReleased = await waitForPortFree(CHATCCC_PORT, 30_000);
+    appendStartupTrace("restart-handoff: parent port wait finished", {
+      port: CHATCCC_PORT,
+      portReleased,
+    });
+    if (!portReleased) {
+      printServiceDidNotStart(`内部重启交接超时：端口 ${CHATCCC_PORT} 在 30 秒内未释放`);
+      process.exit(1);
+    }
+  }
+
   console.log(`\n[启动 1/7] 单实例：按 PID 文件清理旧 ChatCCC 进程`);
   console.log(`  PID 文件: ${PID_FILE}`);
   appendStartupTrace("main: before ensureSingleInstance", { PID_FILE, CHATCCC_PORT });
@@ -915,14 +934,15 @@ async function main(): Promise<void> {
   // 启动 HTTP server（同时挂 UI router，供 dashboard / setup / agent image/file 使用）
   appendStartupTrace("main: before freeRelayListenPort", { CHATCCC_PORT });
   const killed = freeRelayListenPort(CHATCCC_PORT);
-  const isInternalRestart = process.env[INTERNAL_RESTART_ENV_VAR] === "1";
   appendStartupTrace("main: after freeRelayListenPort", { CHATCCC_PORT, killed, isInternalRestart });
-  // 内部自重启（/restart、/update）时父进程还占着端口（祖先链 PID 不会被杀）：
-  // 无条件等待端口释放再 listen，避免子进程一上来就 EADDRINUSE 秒退
-  // （Windows 端口释放有额外延迟，重试窗口容易不够）。
-  if (killed > 0 || isInternalRestart) {
-    await waitForPortFree(CHATCCC_PORT, isInternalRestart ? 5000 : undefined);
-    appendStartupTrace("main: port free confirmed", { CHATCCC_PORT, isInternalRestart });
+  // 普通启动清理过旧实例后，也必须确认端口真正释放再继续监听。
+  if (killed > 0) {
+    const portReleased = await waitForPortFree(CHATCCC_PORT, 5_000);
+    appendStartupTrace("main: post-kill port wait finished", { CHATCCC_PORT, portReleased });
+    if (!portReleased) {
+      printServiceDidNotStart(`旧进程退出后端口 ${CHATCCC_PORT} 在 5 秒内仍未释放`);
+      process.exit(1);
+    }
   }
   const httpServer = createServer(createUiRouter());
   await listenWithRetry(httpServer, CHATCCC_PORT, "127.0.0.1").catch((err: NodeJS.ErrnoException) => {
