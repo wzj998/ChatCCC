@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +12,11 @@ import {
   spawnRestartChild,
   RESTART_CHILD_READY_MS,
 } from "../orchestrator.ts";
-import { INTERNAL_RESTART_ENV_VAR } from "../startup-lifecycle.ts";
+import {
+  INTERNAL_RESTART_ENV_VAR,
+  INTERNAL_RESTART_PARENT_PID_ENV_VAR,
+  INTERNAL_RESTART_READY_MESSAGE,
+} from "../startup-lifecycle.ts";
 
 describe("buildRestartSpawnSpec", () => {
   it("uses the local tsx CLI only for an unbuilt development checkout", () => {
@@ -52,6 +56,9 @@ describe("spawnRestartChild", () => {
     signalCode: number | string | null = null;
     unref = vi.fn();
     stderr = new EventEmitter();
+    connected = true;
+    disconnect = vi.fn(() => { this.connected = false; });
+    kill = vi.fn(() => true);
   }
 
   let tmpDirs: string[] = [];
@@ -80,7 +87,10 @@ describe("spawnRestartChild", () => {
       [join("F:/proj", "node_modules", "tsx", "dist", "cli.mjs"), "src/index.ts"],
       expect.objectContaining({
         detached: true,
-        env: expect.objectContaining({ [INTERNAL_RESTART_ENV_VAR]: "1" }),
+        env: expect.objectContaining({
+          [INTERNAL_RESTART_ENV_VAR]: "1",
+          [INTERNAL_RESTART_PARENT_PID_ENV_VAR]: String(process.pid),
+        }),
         // 不使用 shell：避免 npm/npx 的 PATH 注入问题
         shell: false,
       }),
@@ -98,6 +108,7 @@ describe("spawnRestartChild", () => {
     expect(stdio[1]).toBe("ignore");
     expect(typeof stdio[2]).toBe("number");
     expect(stdio[2] as number).toBeGreaterThan(2);
+    expect(stdio[3]).toBe("ipc");
 
     const files = await readdir(logDir);
     expect(files.some((f) => f.startsWith("restart-") && f.endsWith(".log"))).toBe(true);
@@ -123,6 +134,43 @@ describe("spawnRestartChild", () => {
     }));
     // 不再用 pipe 收集 stderr，trace 里不再有 stderr 字段
     expect(exitCall![1]).not.toHaveProperty("stderr");
+  });
+
+  it("does not lose a readiness message emitted before the caller starts waiting", async () => {
+    const logDir = await tmpLogDir();
+    const fake = new FakeChild();
+    const spawnImpl = vi.fn(() => fake as never);
+    const trace = vi.fn();
+
+    const child = spawnRestartChild({ projectRoot: "F:/proj", spawnImpl, trace, restartLogDir: logDir });
+    fake.emit("message", { type: INTERNAL_RESTART_READY_MESSAGE, pid: fake.pid, parentPid: process.pid });
+
+    await expect(decideRestartParentExit(child, 100, 20, trace)).resolves.toBe(true);
+  });
+
+  it("completes a real IPC handoff with a detached replacement process", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatccc-restart-runtime-"));
+    tmpDirs.push(root);
+    const entryDir = join(root, "dist", "src");
+    mkdirSync(entryDir, { recursive: true });
+    writeFileSync(join(entryDir, "index.js"), [
+      "const parentPid = Number(process.env.CHATCCC_RESTART_PARENT_PID);",
+      `process.send?.({ type: ${JSON.stringify(INTERNAL_RESTART_READY_MESSAGE)}, pid: process.pid, parentPid }, () => {});`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n"), "utf8");
+    const logDir = await tmpLogDir();
+    const trace = vi.fn();
+    const child = spawnRestartChild({ projectRoot: root, trace, restartLogDir: logDir, isTty: () => false });
+
+    try {
+      await expect(decideRestartParentExit(child, 2_000, 20, trace)).resolves.toBe(true);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill();
+        await exited;
+      }
+    }
   });
 
   it("falls back to pipe capture when the stderr log file cannot be opened", async () => {
@@ -163,7 +211,7 @@ describe("spawnRestartChild", () => {
     const stdio = (callArgs[2] as { stdio: unknown[] }).stdio;
     // 全部 inherit（含 stdin）：避免 detached + stdin=ignore 在 Windows 上
     // 弹新控制台/丢失控制台关联，日志必须留在用户当前窗口
-    expect(stdio).toEqual(["inherit", "inherit", "inherit"]);
+    expect(stdio).toEqual(["inherit", "inherit", "inherit", "ipc"]);
     // TTY 场景 stderr 走终端，不再生成 restart-*.log 文件
     const files = await readdir(logDir);
     expect(files.filter((f) => f.startsWith("restart-") && f.endsWith(".log"))).toHaveLength(0);
@@ -172,7 +220,7 @@ describe("spawnRestartChild", () => {
     expect(spawnCall).toBeTruthy();
     expect(spawnCall![1]).toEqual({
       isTty: true,
-      stdio: JSON.stringify(["inherit", "inherit", "inherit"]),
+      stdio: JSON.stringify(["inherit", "inherit", "inherit", "ipc"]),
     });
   });
 
@@ -196,13 +244,14 @@ describe("spawnRestartChild", () => {
     expect(stdio[1]).toBe("ignore");
     expect(typeof stdio[2]).toBe("number");
     expect(stdio[2] as number).toBeGreaterThan(2);
+    expect(stdio[3]).toBe("ipc");
     const files = await readdir(logDir);
     expect(files.some((f) => f.startsWith("restart-") && f.endsWith(".log"))).toBe(true);
   });
 });
 
 describe("decideRestartParentExit", () => {
-  it("returns false (parent stays alive) when the child dies during the window", async () => {
+  it("returns false (parent stays alive) when the child dies before handoff", async () => {
     const child = { exitCode: 1, signalCode: null, pid: 42 } as never;
     const trace = vi.fn();
 
@@ -215,15 +264,55 @@ describe("decideRestartParentExit", () => {
     );
   });
 
-  it("returns true (parent exits) when the child stays alive through the window", async () => {
-    const child = { exitCode: null, signalCode: null, pid: 42 } as never;
+  it("returns true only after the child explicitly announces handoff readiness", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+      pid: number;
+      connected: boolean;
+      disconnect: ReturnType<typeof vi.fn>;
+    };
+    child.exitCode = null;
+    child.signalCode = null;
+    child.pid = 42;
+    child.connected = true;
+    child.disconnect = vi.fn();
     const trace = vi.fn();
+    setTimeout(() => child.emit("message", {
+      type: INTERNAL_RESTART_READY_MESSAGE,
+      pid: 42,
+      parentPid: process.pid,
+    }), 20);
 
-    const shouldExit = await decideRestartParentExit(child, 150, 30, trace);
+    const shouldExit = await decideRestartParentExit(child as never, 200, 20, trace);
 
     expect(shouldExit).toBe(true);
     expect(trace).toHaveBeenCalledWith(
-      "restart: child alive after window, parent exiting",
+      "restart: child handoff ready, parent exiting",
+      expect.objectContaining({ childPid: 42 }),
+    );
+    expect(child.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the parent alive when a child never announces readiness", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+      pid: number;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.exitCode = null;
+    child.signalCode = null;
+    child.pid = 42;
+    child.kill = vi.fn(() => true);
+    const trace = vi.fn();
+
+    const shouldExit = await decideRestartParentExit(child as never, 80, 20, trace);
+
+    expect(shouldExit).toBe(false);
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(trace).toHaveBeenCalledWith(
+      "restart: child handoff timeout, keeping parent",
       expect.objectContaining({ childPid: 42 }),
     );
   });
@@ -241,8 +330,9 @@ describe("decideRestartParentExit", () => {
     );
   });
 
-  it("exports a sane default readiness window", () => {
+  it("exports a startup-friendly handoff timeout", () => {
     expect(RESTART_CHILD_READY_MS).toBeGreaterThan(0);
     expect(RESTART_CHILD_READY_MS).toBeLessThan(60_000);
+    expect(RESTART_CHILD_READY_MS).toBeGreaterThanOrEqual(10_000);
   });
 });

@@ -447,6 +447,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 `/restart safe`（短别名 `/restartsf`）与 `/update safe`（短别名 `/updatesf`）会先建立全局准入门禁：指令到达前已经运行或进入单会话缓存队列的工作会继续完成，之后到达的新普通任务会被提示在维护完成后重发。维护任务持久化到 `~/.chatccc/state/safe-maintenance.json`，进程意外退出后可继续排空；依赖安装、会话收尾、自动恢复和 Agent Teams 执行也计入等待条件。内存缓存随重启自然重建，磁盘会话、看板、图片等持久数据不会被清理。
 
+ChatCCC 的内部重启和更新使用跨平台父子进程握手：替代进程完成启动预检后通知父进程退出，再等待旧监听端口实际释放并接管 PID；替代进程未就绪或握手超时时，父进程会保留并继续服务。
+
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex、CCC Agent 和 DSH 使用各自的 `model` / `alternativeModel`。
 
 > **Codex Fast 模式**：Web UI 中的“Fast 模式”设置新 Codex 会话的全局默认值，默认关闭。进入 Codex 会话后，`/fast` 查询当前状态，`/fast on` 和 `/fast off` 只覆盖当前会话并从下一条消息生效。ChatCCC 会显式向 Codex CLI 传入 `service_tier="fast"` 或 `service_tier="default"`，因此关闭时不会继承用户 `config.toml` 中可能开启的 Fast。

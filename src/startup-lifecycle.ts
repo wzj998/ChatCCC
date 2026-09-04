@@ -162,16 +162,70 @@ export function createServiceLifecycleGuard(
  * 会自然穿过 cmd/bash/npx 这几层启动器，因此也适用于 Windows 与 Linux。
  */
 export const INTERNAL_RESTART_ENV_VAR = "CHATCCC_INTERNAL_RESTART";
+export const INTERNAL_RESTART_PARENT_PID_ENV_VAR = "CHATCCC_RESTART_PARENT_PID";
+export const INTERNAL_RESTART_READY_MESSAGE = "chatccc:restart-handoff-ready";
 
 type Environment = Record<string, string | undefined>;
 
 export function createInternalRestartEnv(
   inherited: Environment = process.env,
+  parentPid: number = process.pid,
 ): NodeJS.ProcessEnv {
   return {
     ...inherited,
     [INTERNAL_RESTART_ENV_VAR]: "1",
+    [INTERNAL_RESTART_PARENT_PID_ENV_VAR]: String(parentPid),
   };
+}
+
+type RestartIpcSend = (
+  message: { type: typeof INTERNAL_RESTART_READY_MESSAGE; pid: number; parentPid: number },
+  callback: (error: Error | null) => void,
+) => boolean;
+
+interface AnnounceInternalRestartReadyOptions {
+  env?: Environment;
+  pid?: number;
+  send?: RestartIpcSend;
+  timeoutMs?: number;
+}
+
+/**
+ * Tell the current parent that the replacement runtime loaded successfully and
+ * is ready to wait for the listening port. Older parents do not provide IPC;
+ * returning false preserves the port-wait fallback used during an upgrade from
+ * a pre-handoff ChatCCC version.
+ */
+export async function announceInternalRestartReady(
+  options: AnnounceInternalRestartReadyOptions = {},
+): Promise<boolean> {
+  const env = options.env ?? process.env;
+  if (env[INTERNAL_RESTART_ENV_VAR] !== "1") return false;
+  const send = options.send ?? (typeof process.send === "function"
+    ? process.send.bind(process) as RestartIpcSend
+    : undefined);
+  if (!send) return false;
+
+  const pid = options.pid ?? process.pid;
+  const parentPid = Number(env[INTERNAL_RESTART_PARENT_PID_ENV_VAR]);
+  if (!Number.isInteger(parentPid) || parentPid <= 0) return false;
+  const timeoutMs = options.timeoutMs ?? 2_000;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    try {
+      send({ type: INTERNAL_RESTART_READY_MESSAGE, pid, parentPid }, (error) => finish(!error));
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 /** 用户直接启动时打开；ChatCCC 内部重启产生的替代进程不打开。 */
