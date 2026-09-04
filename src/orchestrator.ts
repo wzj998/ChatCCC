@@ -189,31 +189,63 @@ function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: 
   };
 
   const formatResetCredits = () => {
+    const formatDateTime = (value: string) => {
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return value;
+      const pad = (part: number) => String(part).padStart(2, "0");
+      return [
+        date.getFullYear(),
+        "-",
+        pad(date.getMonth() + 1),
+        "-",
+        pad(date.getDate()),
+        " ",
+        pad(date.getHours()),
+        ":",
+        pad(date.getMinutes()),
+        ":",
+        pad(date.getSeconds()),
+      ].join("");
+    };
+    const failureReason = () => {
+      const raw = usage.rateLimitResetCreditsError?.replace(/\s+/g, " ").trim();
+      if (!raw) return "OpenAI 未返回主动重置数据";
+      if (/HTTP 429/i.test(raw)) return "OpenAI 返回 HTTP 429（请求受限）";
+      if (/HTTP 404/i.test(raw)) return "OpenAI 返回 HTTP 404（接口暂不可用）";
+      return raw.length > 180 ? `${raw.slice(0, 180)}...` : raw;
+    };
+    const source = usage.rateLimitResetCreditsSource ?? "live";
+    if (source === "unavailable") {
+      return [
+        `**主动重置:** 本次查询失败（${failureReason()}）`,
+        "- 没有可用的历史缓存结果",
+      ].join("\n");
+    }
+    if (source === "cache") {
+      const lines = [
+        `**主动重置:** 本次查询失败（${failureReason()}）`,
+        `**上次缓存结果:** 剩余 ${usage.rateLimitResetCreditsAvailable ?? 0} 次`,
+      ];
+      if (usage.rateLimitResetCreditsQueriedAt) {
+        lines.push(`- 查询时间: ${formatDateTime(usage.rateLimitResetCreditsQueriedAt)}`);
+      }
+      if (usage.rateLimitResetCreditsLocallyAdjusted) {
+        lines.push("- 状态: 本地推算，待下次查询确认");
+      }
+      const credits = usage.rateLimitResetCredits ?? [];
+      if (credits.length > 0) {
+        lines.push("**缓存中的过期时间:**");
+        for (const credit of credits) lines.push(`- ${formatDateTime(credit.expiresAt)}`);
+      }
+      return lines.join("\n");
+    }
     if (usage.rateLimitResetCreditsAvailable === null) return "**主动重置:** 暂无数据";
     const lines = [`**主动重置:** 剩余 ${usage.rateLimitResetCreditsAvailable} 次`];
     const credits = usage.rateLimitResetCredits ?? [];
     if (credits.length > 0) {
-      const pad = (value: number) => String(value).padStart(2, "0");
-      const formatExpiresAt = (value: string) => {
-        const date = new Date(value);
-        if (!Number.isFinite(date.getTime())) return value;
-        return [
-          date.getFullYear(),
-          "-",
-          pad(date.getMonth() + 1),
-          "-",
-          pad(date.getDate()),
-          " ",
-          pad(date.getHours()),
-          ":",
-          pad(date.getMinutes()),
-          ":",
-          pad(date.getSeconds()),
-        ].join("");
-      };
       lines.push("**过期时间:**");
       for (const credit of credits) {
-        lines.push(`- ${formatExpiresAt(credit.expiresAt)}`);
+        lines.push(`- ${formatDateTime(credit.expiresAt)}`);
       }
     }
     return lines.join("\n");
@@ -518,7 +550,11 @@ async function sendUsageSummary(
   if (platform.kind === "wechat") {
     await platform.sendText(chatId, content).catch(() => {});
   } else if (platform.kind === "feishu") {
-    await platform.sendRawCard(chatId, buildCodexUsageCard(content, usage.rateLimitResetCreditsAvailable));
+    const liveResetCredits = usage.rateLimitResetCreditsSource === undefined
+      || usage.rateLimitResetCreditsSource === "live"
+      ? usage.rateLimitResetCreditsAvailable
+      : null;
+    await platform.sendRawCard(chatId, buildCodexUsageCard(content, liveResetCredits));
   } else {
     await platform.sendCard(chatId, "Codex Usage", content, "blue");
   }

@@ -47,8 +47,8 @@ async function writeCodexAuth(homeDir: string): Promise<void> {
   );
 }
 
-function mockAvatarFetch(uploadedNames: string[], usageResponse: Response): void {
-  vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+function mockAvatarFetch(uploadedNames: string[], usageResponse: Response): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const urlText = String(url);
     if (urlText === "https://chatgpt.com/backend-api/wham/usage") {
       return usageResponse.clone();
@@ -66,7 +66,9 @@ function mockAvatarFetch(uploadedNames: string[], usageResponse: Response): void
       return new Response(JSON.stringify({ code: 0 }), { status: 200 });
     }
     throw new Error(`unexpected fetch: ${urlText}`);
-  }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 function mockAvatarUploadOnlyFetch(
@@ -186,7 +188,7 @@ describe("Codex avatar usage battery", () => {
     const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
     const uploadedNames: string[] = [];
     await writeCodexAuth(homeDir);
-    mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
+    const fetchMock = mockAvatarFetch(uploadedNames, new Response(JSON.stringify({
       rate_limit: {
         primary_window: {
           used_percent: 23,
@@ -211,7 +213,11 @@ describe("Codex avatar usage battery", () => {
           limitWindowSeconds: 604800,
         },
         rateLimitResetCreditsAvailable: null,
-        rateLimitResetCredits: [],
+        rateLimitResetCredits: null,
+        rateLimitResetCreditsSource: "unavailable",
+        rateLimitResetCreditsQueriedAt: null,
+        rateLimitResetCreditsLocallyAdjusted: false,
+        rateLimitResetCreditsError: "OpenAI returned no reset-credit data",
       });
 
       await setChatAvatar("tenant-token", "chat_1", "codex", "busy");
@@ -237,10 +243,18 @@ describe("Codex avatar usage battery", () => {
           weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: null, resetAfterSeconds: null },
           rateLimitResetCreditsAvailable: null,
           rateLimitResetCredits: null,
+          rateLimitResetCreditsSource: "not_requested",
+          rateLimitResetCreditsQueriedAt: null,
+          rateLimitResetCreditsLocallyAdjusted: false,
+          rateLimitResetCreditsError: null,
         },
       });
 
       expect(uploadedNames).toEqual(["avatar_codex_busy_7d_88_5h_63.jpg"]);
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+        expect.anything(),
+      );
       expect(fetchMock).not.toHaveBeenCalledWith("https://chatgpt.com/backend-api/wham/usage", expect.anything());
     } finally {
       await rm(homeDir, { recursive: true, force: true });
@@ -357,6 +371,10 @@ describe("Codex avatar usage battery", () => {
           { grantedAt: "2026-06-12T04:01:47.770016Z", expiresAt: "2026-07-12T04:01:47.770016Z" },
           { grantedAt: "2026-06-18T00:44:23.904386Z", expiresAt: "2026-07-18T00:44:23.904386Z" },
         ],
+        rateLimitResetCreditsSource: "live",
+        rateLimitResetCreditsQueriedAt: expect.any(String),
+        rateLimitResetCreditsLocallyAdjusted: false,
+        rateLimitResetCreditsError: null,
       });
       expect(fetchMock).toHaveBeenCalledWith(
         "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
@@ -369,6 +387,153 @@ describe("Codex avatar usage battery", () => {
           }),
         }),
       );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the last successful reset-credit snapshot when the live lookup fails", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    await writeCodexAuth(homeDir);
+    let resetLookupCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
+      const urlText = String(url);
+      if (urlText === "https://chatgpt.com/backend-api/wham/usage") {
+        return new Response(JSON.stringify({
+          rate_limit: {
+            primary_window: { used_percent: 37, limit_window_seconds: 18000 },
+            secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
+          },
+          rate_limit_reset_credits: null,
+        }), { status: 200 });
+      }
+      if (urlText === "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") {
+        resetLookupCount += 1;
+        if (resetLookupCount === 1) {
+          return new Response(JSON.stringify({
+            available_count: 2,
+            credits: [{ status: "available", granted_at: null, expires_at: "2026-10-01T00:00:00Z" }],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          detail: { type: "connector_rate_limit", message: "Connector rate limit exceeded" },
+        }), { status: 429 });
+      }
+      throw new Error(`unexpected fetch: ${urlText}`);
+    }));
+
+    try {
+      const { getCodexUsageSummary } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      const live = await getCodexUsageSummary();
+      const cached = await getCodexUsageSummary();
+
+      expect(live.rateLimitResetCreditsSource).toBe("live");
+      expect(cached).toMatchObject({
+        rateLimitResetCreditsAvailable: 2,
+        rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-10-01T00:00:00Z" }],
+        rateLimitResetCreditsSource: "cache",
+        rateLimitResetCreditsQueriedAt: live.rateLimitResetCreditsQueriedAt,
+        rateLimitResetCreditsLocallyAdjusted: false,
+      });
+      expect(cached.rateLimitResetCreditsError).toContain("HTTP 429");
+      const snapshot = JSON.parse(await readFile(
+        join(userDataDir, "state", "codex-reset-credits.json"),
+        "utf-8",
+      ));
+      expect(snapshot.accounts["account:codex-account-id"].availableCount).toBe(2);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unavailable reset-credit lookup when no successful snapshot exists", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    await writeCodexAuth(homeDir);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
+      const urlText = String(url);
+      if (urlText === "https://chatgpt.com/backend-api/wham/usage") {
+        return new Response(JSON.stringify({
+          rate_limit: {
+            primary_window: { used_percent: 37, limit_window_seconds: 18000 },
+            secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
+          },
+          rate_limit_reset_credits: null,
+        }), { status: 200 });
+      }
+      if (urlText === "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") {
+        return new Response("not found", { status: 404 });
+      }
+      throw new Error(`unexpected fetch: ${urlText}`);
+    }));
+
+    try {
+      const { getCodexUsageSummary } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await expect(getCodexUsageSummary()).resolves.toMatchObject({
+        rateLimitResetCreditsAvailable: null,
+        rateLimitResetCredits: null,
+        rateLimitResetCreditsSource: "unavailable",
+        rateLimitResetCreditsQueriedAt: null,
+        rateLimitResetCreditsLocallyAdjusted: false,
+        rateLimitResetCreditsError: expect.stringContaining("HTTP 404"),
+      });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("decrements the cached reset-credit count after a successful consume", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    await writeCodexAuth(homeDir);
+    let resetLookupCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
+      const urlText = String(url);
+      if (urlText === "https://chatgpt.com/backend-api/wham/usage") {
+        return new Response(JSON.stringify({
+          rate_limit: {
+            primary_window: { used_percent: 37, limit_window_seconds: 18000 },
+            secondary_window: { used_percent: 12, limit_window_seconds: 604800 },
+          },
+          rate_limit_reset_credits: null,
+        }), { status: 200 });
+      }
+      if (urlText === "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") {
+        resetLookupCount += 1;
+        if (resetLookupCount === 1) {
+          return new Response(JSON.stringify({
+            available_count: 2,
+            credits: [
+              { status: "available", granted_at: null, expires_at: "2026-10-01T00:00:00Z" },
+              { status: "available", granted_at: null, expires_at: "2026-11-01T00:00:00Z" },
+            ],
+          }), { status: 200 });
+        }
+        return new Response("limited", { status: 429 });
+      }
+      if (urlText === "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume") {
+        return new Response(JSON.stringify({ code: "reset", windows_reset: 2 }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${urlText}`);
+    }));
+
+    try {
+      const { consumeCodexRateLimitResetCredit, getCodexUsageSummary } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await getCodexUsageSummary();
+      await consumeCodexRateLimitResetCredit("request-1");
+      const cached = await getCodexUsageSummary();
+
+      expect(cached).toMatchObject({
+        rateLimitResetCreditsAvailable: 1,
+        rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-11-01T00:00:00Z" }],
+        rateLimitResetCreditsSource: "cache",
+        rateLimitResetCreditsLocallyAdjusted: true,
+      });
     } finally {
       await rm(homeDir, { recursive: true, force: true });
       await rm(userDataDir, { recursive: true, force: true });
