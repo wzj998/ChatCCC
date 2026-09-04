@@ -24,6 +24,12 @@ import {
 import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
 import type { ChatAvatarUsageHints } from "./platform-adapter.ts";
 import { applyPrivacy } from "./privacy.ts";
+import {
+  codexResetCreditsAccountKey,
+  decrementCachedCodexResetCredits,
+  readCodexResetCreditsSnapshot,
+  saveCodexResetCreditsSnapshot,
+} from "./codex-reset-credits-cache.ts";
 
 // ---------------------------------------------------------------------------
 // 合并转发消息类型
@@ -348,6 +354,10 @@ export interface CodexUsageSummary {
   weekly: CodexUsageBalance | null;
   rateLimitResetCreditsAvailable: number | null;
   rateLimitResetCredits: CodexRateLimitResetCredit[] | null;
+  rateLimitResetCreditsSource: "live" | "cache" | "unavailable" | "not_requested";
+  rateLimitResetCreditsQueriedAt: string | null;
+  rateLimitResetCreditsLocallyAdjusted: boolean;
+  rateLimitResetCreditsError: string | null;
 }
 
 export type CodexResetConsumeCode = "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
@@ -490,10 +500,6 @@ async function getCodexAuth(): Promise<CodexAuth | null> {
   }
 }
 
-async function getCodexAccessToken(): Promise<string | null> {
-  return (await getCodexAuth())?.accessToken ?? null;
-}
-
 function codexAuthHeaders(auth: CodexAuth): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${auth.accessToken}`,
@@ -525,28 +531,52 @@ function parseCodexResetCreditDetails(data: Record<string, unknown>): {
   };
 }
 
-async function fetchCodexRateLimitResetCredits(auth: CodexAuth): Promise<{
-  availableCount: number | null;
-  availableCredits: CodexRateLimitResetCredit[];
-} | null> {
-  try {
-    const resp = await fetch(CODEX_RESET_CREDITS_URL, {
-      headers: codexAuthHeaders(auth),
-    });
-    const text = await resp.text();
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
-    return parseCodexResetCreditDetails(JSON.parse(text) as Record<string, unknown>);
-  } catch (err) {
-    console.warn(`[Codex] reset credits lookup failed: ${(err as Error).message}`);
-    return null;
-  }
+interface CodexResetCreditsLookup {
+  details: {
+    availableCount: number | null;
+    availableCredits: CodexRateLimitResetCredit[];
+  } | null;
+  error: string | null;
 }
 
-export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
+const codexResetCreditsInFlight = new Map<string, Promise<CodexResetCreditsLookup>>();
+
+async function fetchCodexRateLimitResetCredits(auth: CodexAuth): Promise<CodexResetCreditsLookup> {
+  const accountKey = codexResetCreditsAccountKey(auth.accountId, auth.accessToken);
+  const existing = codexResetCreditsInFlight.get(accountKey);
+  if (existing) return existing;
+
+  const lookup = (async (): Promise<CodexResetCreditsLookup> => {
+    try {
+      const resp = await fetch(CODEX_RESET_CREDITS_URL, {
+        headers: codexAuthHeaders(auth),
+      });
+      const text = await resp.text();
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);
+      return {
+        details: parseCodexResetCreditDetails(JSON.parse(text) as Record<string, unknown>),
+        error: null,
+      };
+    } catch (err) {
+      const error = (err as Error).message;
+      console.warn(`[Codex] reset credits lookup failed: ${error}`);
+      return { details: null, error };
+    }
+  })().finally(() => {
+    codexResetCreditsInFlight.delete(accountKey);
+  });
+  codexResetCreditsInFlight.set(accountKey, lookup);
+  return lookup;
+}
+
+export async function getCodexUsageSummary(
+  options: { includeResetCredits?: boolean } = {},
+): Promise<CodexUsageSummary> {
   const auth = await getCodexAuth();
   if (!auth) throw new Error("missing ~/.codex/auth.json access token");
 
-  const resetCreditsPromise = fetchCodexRateLimitResetCredits(auth);
+  const includeResetCredits = options.includeResetCredits !== false;
+  const resetCreditsPromise = includeResetCredits ? fetchCodexRateLimitResetCredits(auth) : null;
 
   const resp = await fetch(CODEX_USAGE_URL, {
     headers: { Authorization: `Bearer ${auth.accessToken}` },
@@ -575,25 +605,80 @@ export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
     ?? (primaryWindow?.limitWindowSeconds === undefined ? primaryWindow : null);
   const weekly = windows.find((window) => isUsageWindowDuration(window, SEVEN_DAY_WINDOW_SECONDS))
     ?? (secondaryWindow?.limitWindowSeconds === undefined ? secondaryWindow : null);
-  const resetCredits = await resetCreditsPromise;
+  if (!includeResetCredits) {
+    return {
+      fiveHour,
+      weekly,
+      rateLimitResetCreditsAvailable: null,
+      rateLimitResetCredits: null,
+      rateLimitResetCreditsSource: "not_requested",
+      rateLimitResetCreditsQueriedAt: null,
+      rateLimitResetCreditsLocallyAdjusted: false,
+      rateLimitResetCreditsError: null,
+    };
+  }
+
+  const accountKey = codexResetCreditsAccountKey(auth.accountId, auth.accessToken);
+  const resetLookup = await resetCreditsPromise!;
+  const embeddedAvailableCount = parseRateLimitResetCredits(data);
+  const liveAvailableCount = resetLookup.details?.availableCount ?? embeddedAvailableCount;
+  if (liveAvailableCount !== null) {
+    const queriedAt = new Date().toISOString();
+    const liveCredits = resetLookup.details?.availableCredits ?? [];
+    await saveCodexResetCreditsSnapshot(accountKey, {
+      availableCount: liveAvailableCount,
+      credits: liveCredits,
+      queriedAt,
+    }).catch((err) => {
+      console.warn(`[Codex] reset credits snapshot write failed: ${(err as Error).message}`);
+    });
+    return {
+      fiveHour,
+      weekly,
+      rateLimitResetCreditsAvailable: liveAvailableCount,
+      rateLimitResetCredits: liveCredits,
+      rateLimitResetCreditsSource: "live",
+      rateLimitResetCreditsQueriedAt: queriedAt,
+      rateLimitResetCreditsLocallyAdjusted: false,
+      rateLimitResetCreditsError: null,
+    };
+  }
+
+  const cached = await readCodexResetCreditsSnapshot(accountKey);
+  if (cached) {
+    return {
+      fiveHour,
+      weekly,
+      rateLimitResetCreditsAvailable: cached.availableCount,
+      rateLimitResetCredits: cached.credits,
+      rateLimitResetCreditsSource: "cache",
+      rateLimitResetCreditsQueriedAt: cached.queriedAt,
+      rateLimitResetCreditsLocallyAdjusted: cached.locallyAdjusted,
+      rateLimitResetCreditsError: resetLookup.error ?? "OpenAI returned no reset-credit data",
+    };
+  }
 
   return {
     fiveHour,
     weekly,
-    rateLimitResetCreditsAvailable: resetCredits?.availableCount ?? parseRateLimitResetCredits(data),
-    rateLimitResetCredits: resetCredits?.availableCredits ?? null,
+    rateLimitResetCreditsAvailable: null,
+    rateLimitResetCredits: null,
+    rateLimitResetCreditsSource: "unavailable",
+    rateLimitResetCreditsQueriedAt: null,
+    rateLimitResetCreditsLocallyAdjusted: false,
+    rateLimitResetCreditsError: resetLookup.error ?? "OpenAI returned no reset-credit data",
   };
 }
 
 export async function consumeCodexRateLimitResetCredit(redeemRequestId: string): Promise<CodexResetConsumeResult> {
   if (!redeemRequestId.trim()) throw new Error("missing redeem_request_id");
-  const token = await getCodexAccessToken();
-  if (!token) throw new Error("missing ~/.codex/auth.json access token");
+  const auth = await getCodexAuth();
+  if (!auth) throw new Error("missing ~/.codex/auth.json access token");
 
   const resp = await fetch(CODEX_RESET_CONSUME_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${auth.accessToken}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ redeem_request_id: redeemRequestId }),
@@ -612,10 +697,17 @@ export async function consumeCodexRateLimitResetCredit(redeemRequestId: string):
     throw new Error("missing or unknown reset result code");
   }
   const windowsReset = Number(data.windows_reset);
-  return {
+  const result: CodexResetConsumeResult = {
     code,
     windowsReset: Number.isFinite(windowsReset) ? Math.max(0, Math.trunc(windowsReset)) : 0,
   };
+  if (result.code === "reset") {
+    const accountKey = codexResetCreditsAccountKey(auth.accountId, auth.accessToken);
+    await decrementCachedCodexResetCredits(accountKey).catch((err) => {
+      console.warn(`[Codex] reset credits snapshot update failed: ${(err as Error).message}`);
+    });
+  }
+  return result;
 }
 
 async function resolveCodexAvatarUsage(usageHint?: CodexUsageSummary | null): Promise<CodexUsageSummary | null> {
@@ -625,7 +717,7 @@ async function resolveCodexAvatarUsage(usageHint?: CodexUsageSummary | null): Pr
   }
 
   try {
-    const summary = await getCodexUsageSummary();
+    const summary = await getCodexUsageSummary({ includeResetCredits: false });
     if (!summary.weekly) throw new Error("missing weekly usage window");
     return summary;
   } catch (err) {

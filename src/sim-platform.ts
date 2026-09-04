@@ -133,6 +133,10 @@ export const SimulatedPlatform: FeishuPlatform = {
       weekly: { usedPercent: 0, remainingPercent: 100, resetAtEpochSeconds: null, resetAfterSeconds: null },
       rateLimitResetCreditsAvailable: null,
       rateLimitResetCredits: null,
+      rateLimitResetCreditsSource: "unavailable" as const,
+      rateLimitResetCreditsQueriedAt: null,
+      rateLimitResetCreditsLocallyAdjusted: false,
+      rateLimitResetCreditsError: "Simulated platform has no reset-credit data",
     };
   },
 

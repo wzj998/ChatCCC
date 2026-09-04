@@ -1037,6 +1037,52 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.setChatAvatar).toHaveBeenCalledWith("feishu-p2p", "codex", "idle", { codexUsage: usage });
   });
 
+  it("labels cached reset-credit data and hides the reset action when the live lookup fails", async () => {
+    const platform = mockPlatform("feishu");
+    mockGetCodexUsageSummary.mockResolvedValue({
+      fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      rateLimitResetCreditsAvailable: 2,
+      rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-10-01T00:00:00Z" }],
+      rateLimitResetCreditsSource: "cache",
+      rateLimitResetCreditsQueriedAt: "2026-09-04T00:30:00Z",
+      rateLimitResetCreditsLocallyAdjusted: true,
+      rateLimitResetCreditsError: "HTTP 429: Connector rate limit exceeded",
+    });
+
+    await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    const content = card.elements[0].text.content as string;
+    expect(content).toContain("本次查询失败");
+    expect(content).toContain("上次缓存结果");
+    expect(content).toContain("2026-09-04 08:30:00");
+    expect(content).toContain("本地推算，待下次查询确认");
+    expect(card.elements.some((element: { tag?: string }) => element.tag === "action")).toBe(false);
+  });
+
+  it("shows the live failure when no reset-credit snapshot exists", async () => {
+    const platform = mockPlatform("feishu");
+    mockGetCodexUsageSummary.mockResolvedValue({
+      fiveHour: { usedPercent: 37, remainingPercent: 63, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      weekly: { usedPercent: 12, remainingPercent: 88, resetAtEpochSeconds: null, resetAfterSeconds: null },
+      rateLimitResetCreditsAvailable: null,
+      rateLimitResetCredits: null,
+      rateLimitResetCreditsSource: "unavailable",
+      rateLimitResetCreditsQueriedAt: null,
+      rateLimitResetCreditsLocallyAdjusted: false,
+      rateLimitResetCreditsError: "HTTP 404: not found",
+    });
+
+    await handleCommand(platform, "/usage", "feishu-p2p", "ou-user", Date.now(), "p2p");
+
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    const content = card.elements[0].text.content as string;
+    expect(content).toContain("本次查询失败");
+    expect(content).toContain("没有可用的历史缓存结果");
+    expect(card.elements.some((element: { tag?: string }) => element.tag === "action")).toBe(false);
+  });
+
   it("adds ChatGPT subscription expiry to Codex /usage when CDP lookup succeeds", async () => {
     const platform = mockPlatform("feishu");
     mockGetCodexUsageSummary.mockResolvedValue({

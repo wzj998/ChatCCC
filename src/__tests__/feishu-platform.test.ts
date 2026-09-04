@@ -33,6 +33,10 @@ describe("feishu-platform", () => {
         weekly: { usedPercent: 20, remainingPercent: 80, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
         rateLimitResetCreditsAvailable: 1,
         rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-07-12T04:01:47.770016Z" }],
+        rateLimitResetCreditsSource: "live",
+        rateLimitResetCreditsQueriedAt: "2026-06-12T04:01:47.770016Z",
+        rateLimitResetCreditsLocallyAdjusted: false,
+        rateLimitResetCreditsError: null,
       }),
       consumeCodexRateLimitResetCredit: async () => ({ code: "reset", windowsReset: 2 }),
       getOrDownloadImage: async () => "/tmp/img.png",
@@ -60,6 +64,10 @@ describe("feishu-platform", () => {
         weekly: { usedPercent: 20, remainingPercent: 80, resetAtEpochSeconds: 1781842926, resetAfterSeconds: 325063 },
         rateLimitResetCreditsAvailable: 1,
         rateLimitResetCredits: [{ grantedAt: null, expiresAt: "2026-07-12T04:01:47.770016Z" }],
+        rateLimitResetCreditsSource: "live",
+        rateLimitResetCreditsQueriedAt: "2026-06-12T04:01:47.770016Z",
+        rateLimitResetCreditsLocallyAdjusted: false,
+        rateLimitResetCreditsError: null,
       });
       expect(await consumeCodexRateLimitResetCredit("request-1")).toEqual({ code: "reset", windowsReset: 2 });
     } finally {
