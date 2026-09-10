@@ -25,6 +25,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import { WSClient, EventDispatcher, Domain } from "@larksuiteoapi/node-sdk";
+import { createFeishuConnectionSupervisor } from "./feishu-connection.ts";
 import WebSocket from "ws";
 
 import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, installEpipeGuard, waitForPortFree } from "./shared.ts";
@@ -417,6 +418,8 @@ async function startBotService(opts: StartBotServiceOptions): Promise<void> {
   }
 }
 
+let feishuConnection: ReturnType<typeof createFeishuConnectionSupervisor> | undefined;
+
 async function startBotServiceCore(): Promise<void> {
   const modeTag = USE_LOCAL ? " (local relay mode)" : "";
   console.log(`${"=".repeat(60)}`);
@@ -606,25 +609,34 @@ async function startBotServiceCore(): Promise<void> {
     //   - 已处理消息的去重 set 必须保留,避免 SDK 重推老消息时 prompt 跑两遍
     // 历史 bug:此处曾误调 resetState() 导致重连即让所有后台任务变孤儿,
     // 同一 session 还可能双开 prompt(详见 session.ts::resetState 注释)。
-    const wsClient = new WSClient({
-      appId: APP_ID,
-      appSecret: APP_SECRET,
-      domain: FEISHU_PLATFORM_TYPE === "lark" ? Domain.Lark : Domain.Feishu,
-      onReady: async () => {
-        await rebuildBindingsFromRegistry().catch((err) =>
-          console.error(`[${ts()}] [SDK READY] rebuild bindings failed: ${(err as Error).message}`)
-        );
+    feishuConnection?.stop();
+    feishuConnection = createFeishuConnectionSupervisor({
+      createClient(callbacks) {
+        const client = new WSClient({
+          appId: APP_ID,
+          appSecret: APP_SECRET,
+          domain: FEISHU_PLATFORM_TYPE === "lark" ? Domain.Lark : Domain.Feishu,
+          autoReconnect: true,
+          handshakeTimeoutMs: 15_000,
+          wsConfig: { pingTimeout: 30 },
+          ...callbacks,
+        });
+        return {
+          start: () => client.start({ eventDispatcher }),
+          close: (options) => client.close(options),
+          getConnectionStatus: () => client.getConnectionStatus(),
+        };
       },
-      onReconnected: async () => {
-        await rebuildBindingsFromRegistry().catch((err) =>
-          console.error(`[${ts()}] [SDK RECONNECT] rebuild bindings failed: ${(err as Error).message}`)
-        );
+      onConnected: rebuildBindingsFromRegistry,
+      log(event, detail) {
+        appendStartupTrace(`feishu-connection: ${event}`, detail);
+        console.log(`[${ts()}] [FEISHU-CONNECTION] ${event}${detail ? ` ${JSON.stringify(detail)}` : ""}`);
       },
     });
 
     console.log(`\n[启动 6/7] 飞书长连接：正在通过 SDK 建立 WebSocket …`);
     try {
-      await wsClient.start({ eventDispatcher });
+      await feishuConnection.start();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("  失败：飞书 WebSocket 未能启动。");
@@ -1042,6 +1054,7 @@ function installShutdownHandlers(
   process.on("SIGINT", () => {
     console.log("\nShutting down...");
     serviceLifecycle.beginShutdown("SIGINT");
+    feishuConnection?.stop();
     wechatSignal.stopped = true;
     stopChromeDevtoolsGuard();
     httpServer.close();
@@ -1049,6 +1062,7 @@ function installShutdownHandlers(
   });
   process.on("SIGTERM", () => {
     serviceLifecycle.beginShutdown("SIGTERM");
+    feishuConnection?.stop();
     wechatSignal.stopped = true;
     stopChromeDevtoolsGuard();
     httpServer.close();

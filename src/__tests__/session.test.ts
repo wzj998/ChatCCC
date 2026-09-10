@@ -1906,11 +1906,11 @@ describe("unified display loop terminal card update", () => {
     expect(displayCards.has("chat-network-error")).toBe(false);
   });
 
-  it("falls back to a root-cause text when the error card cannot be updated", async () => {
+  it.each(["CardKit unavailable", "CardKit update: [300317] sequence number compare failed"])("falls back to a root-cause text when the error card fails: %s", async (failure) => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const platform = mockPlatform("feishu");
     platform.cardUpdate = vi.fn(async () => {
-      throw new Error("CardKit unavailable");
+      throw new Error(failure);
     });
     setSessionPlatform(platform);
 
@@ -2000,13 +2000,14 @@ describe("unified display loop terminal card update", () => {
     await vi.advanceTimersByTimeAsync(3000);
     await vi.advanceTimersByTimeAsync(3000);
 
-    expect(platform.cardUpdate).toHaveBeenCalledTimes(1);
-    expect(platform.cardUpdate).toHaveBeenCalledWith(
+    expect(platform.cardUpdate).toHaveBeenCalledTimes(2);
+    expect(platform.cardUpdate).toHaveBeenNthCalledWith(1,
       "card-terminal",
       expect.any(String),
       110,
     );
-    expect(displayCards.get("chat-terminal")?.sequence).toBe(110);
+    expect(platform.cardUpdate).toHaveBeenNthCalledWith(2, "card-terminal", expect.any(String), 111);
+    expect(displayCards.get("chat-terminal")?.sequence).toBe(111);
   });
 
   it("keeps terminal display and retries final text when sending fails", async () => {
