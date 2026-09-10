@@ -120,7 +120,31 @@ export async function streamCardKitElement(
   // console.log(`[${ts()}] [CARDIKT] streamElement OK cardId=${cardId} seq=${sequence}`);
 }
 
-export async function updateCardKitCard(
+// Keep bounded per-card sequence history; never reuse an attempted sequence
+// because a failed fetch can mean the response (not the update) was lost.
+const cardUpdateQueues = new Map<string, { sequence: number; tail: Promise<void>; pending: number }>();
+
+export function updateCardKitCard(token: string, cardId: string, cardJson: string, sequence: number): Promise<void> {
+  let state = cardUpdateQueues.get(cardId);
+  if (!state) {
+    for (const [key, candidate] of cardUpdateQueues) {
+      if (cardUpdateQueues.size < 512) break;
+      if (candidate.pending === 0) cardUpdateQueues.delete(key);
+    }
+    state = { sequence: 0, tail: Promise.resolve(), pending: 0 };
+    cardUpdateQueues.set(cardId, state);
+  }
+  const queue = state;
+  queue.pending++;
+  const result = queue.tail.then(async () => {
+    queue.sequence = Math.max(sequence, queue.sequence + 1);
+    await performCardKitUpdate(token, cardId, cardJson, queue.sequence);
+  });
+  queue.tail = result.catch(() => {}).finally(() => { queue.pending--; });
+  return result;
+}
+
+async function performCardKitUpdate(
   token: string,
   cardId: string,
   cardJson: string,

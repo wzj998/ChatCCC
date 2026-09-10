@@ -45,6 +45,9 @@ describe("terminal error classification", () => {
     ["HTTP 429 too many requests", "rate_limit", "请求受到限流"],
     ["HTTP 503 service unavailable", "provider", "模型服务暂时不可用"],
     ["getaddrinfo ENOTFOUND api.example.test", "network", "无法连接模型服务"],
+    ["Codex turn failed: Reconnecting... 2/5 (stream disconnected before completion: tls handshake eof)", "network", "无法连接模型服务"],
+    ["Client network socket disconnected before secure TLS connection was established", "network", "无法连接模型服务"],
+    ["websocket closed by server before response.completed", "network", "无法连接模型服务"],
   ] as const)("classifies %s as %s", (message, kind, title) => {
     const error = classifyTerminalError(new Error(message), 999);
 

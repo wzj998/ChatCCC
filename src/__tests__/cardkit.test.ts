@@ -9,6 +9,28 @@ function abortError(): Error {
 }
 
 describe("CardKit request timeout", () => {
+  it("serializes concurrent updates and never reuses a sequence after a lost response", async () => {
+    let rejectFirst!: (error: Error) => void;
+    const sequences: number[] = [];
+    vi.stubGlobal("fetch", vi.fn((_url, init) => {
+      sequences.push(JSON.parse(init.body).sequence);
+      if (sequences.length === 1) return new Promise<Response>((_resolve, reject) => { rejectFirst = reject; });
+      return Promise.resolve(new Response(JSON.stringify({ code: 0 })));
+    }));
+    const first = expect(updateCardKitCard("token", "serialized-card", "{}", 12)).rejects.toThrow("fetch failed");
+    const second = updateCardKitCard("token", "serialized-card", "{}", 12);
+    await vi.waitFor(() => expect(sequences).toEqual([12]));
+    rejectFirst(new Error("fetch failed"));
+    await first;
+    await second;
+    expect(sequences).toEqual([12, 13]);
+  });
+
+  it("surfaces a rejected sequence instead of claiming successful delivery", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ code: 300317, msg: "sequence number compare failed" }))));
+    await expect(updateCardKitCard("token", "conflict-card", "{}", 3)).rejects.toThrow("300317");
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();

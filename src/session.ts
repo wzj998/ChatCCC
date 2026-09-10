@@ -2304,7 +2304,6 @@ export function startUnifiedDisplayLoop(): void {
                   console.error(`[${ts()}] [DISPLAY] terminal cardUpdate failed: ${(err as Error).message}`);
                   if (isCardKitSequenceConflict(err)) {
                     display.sequence = nextSeq;
-                    terminalCardUpdateAccepted = true;
                   }
                 });
                 if (terminalCardUpdateAccepted) {
@@ -2468,6 +2467,8 @@ export function startUnifiedDisplayLoop(): void {
                 } catch (err) {
                   const errMsg = (err as Error).message;
                   console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${errMsg}`);
+                  display.lastSentContent = "";
+                  display.lastSentHeaderTitle = "";
                   if (errMsg.includes("300317")) {
                     display.sequence = mySeq;
                   } else if (!display.streamErrorNotified) {
@@ -2501,6 +2502,8 @@ export function startUnifiedDisplayLoop(): void {
               } catch (err) {
                 const errMsg = (err as Error).message;
                 console.error(`[${ts()}] CardKit update error: chatId=${chatId} ${errMsg}`);
+                display.lastSentContent = "";
+                display.lastSentHeaderTitle = "";
                 if (errMsg.includes("300317")) {
                   display.sequence = mySeq;
                 } else if (!display.streamErrorNotified) {

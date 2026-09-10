@@ -89,7 +89,7 @@ export function classifyTerminalError(error: unknown, occurredAt = Date.now()): 
     };
   }
 
-  if (/econnrefused|econnreset|enotfound|eai_again|socket hang up|network error|cannot connect/.test(lower)) {
+  if (/econnrefused|econnreset|enotfound|eai_again|socket hang up|network error|cannot connect|tls handshake|before secure tls connection|stream disconnected before completion|websocket closed/.test(lower)) {
     return {
       kind: "network",
       title: "无法连接模型服务",
