@@ -57,7 +57,7 @@ export function classifyTerminalError(error: unknown, occurredAt = Date.now()): 
   const attempts = parsePositiveInt(raw, /\bafter\s+(\d+)\s+attempts?\b/i);
   const timeoutMs = parsePositiveInt(raw, /\btimeout\s*:\s*(\d+)\s*ms\b/i);
 
-  if (/\b429\b|rate[ _-]?limit|too many requests/.test(lower)) {
+  if (/\b429\b|rate[ _-]?limit|too many requests|resource_exhausted/.test(lower)) {
     return {
       kind: "rate_limit",
       title: "请求受到限流",
@@ -99,7 +99,7 @@ export function classifyTerminalError(error: unknown, occurredAt = Date.now()): 
   }
 
   const httpStatus = raw.match(/\b(?:HTTP\s*)?(5\d\d)\b/i)?.[1];
-  if (httpStatus || /service unavailable|bad gateway|gateway timeout|provider error/.test(lower)) {
+  if (httpStatus || /service unavailable|\[unavailable\]|bad gateway|gateway timeout|provider error/.test(lower)) {
     return {
       kind: "provider",
       title: "模型服务暂时不可用",

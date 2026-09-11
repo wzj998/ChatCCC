@@ -7,6 +7,12 @@ import {
 } from "../agent-activity.ts";
 
 describe("agent activity", () => {
+  it("updates reconnection attempt counts without adding reply text", () => {
+    const tracker = createAgentActivityTracker(0);
+    updateAgentActivity(tracker, { type: "agent_status", status: "reconnecting", attempt: 1 }, 1000);
+    updateAgentActivity(tracker, { type: "agent_status", status: "reconnecting", attempt: 3 }, 2000);
+    expect(formatAgentActivityTitle(tracker.activity, 3000)).toContain("第 3 次");
+  });
   it("starts with an explicit startup status", () => {
     const tracker = createAgentActivityTracker(1_000);
 

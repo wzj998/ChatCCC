@@ -44,10 +44,21 @@ afterEach(() => {
 });
 
 describe("Claude raw stream logs", () => {
+  it.each([
+    [{ type: "system", subtype: "init" }],
+    [{ type: "assistant", message: { content: [{ type: "text", text: "partial" }] } }],
+    [{ type: "result", subtype: "error_max_turns", errors: ["turn limit reached"] }],
+    [{ type: "result", subtype: "success" }],
+  ])("rejects incomplete, failed or empty turns: %j", async (...messages) => {
+    resumeSessionMock.mockReturnValueOnce({ send: async () => {}, close: vi.fn(), stream: async function* () { yield* messages; } });
+    createRawStreamLogMock.mockResolvedValueOnce(null);
+    await expect(collect(createClaudeAdapter({ model: "test", effort: "", isEmpty: value => !value.trim() }).prompt("sid", "hi", "F:/repo"))).rejects.toThrow(/Claude/);
+  });
   it("writes raw Claude SDK stream messages when enabled", async () => {
     const rawMessages = [
       { type: "system", subtype: "init", session_id: "sid-raw", cwd: "F:/project", model: "claude-test" },
       { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } },
+      { type: "result", subtype: "success" },
     ];
     const session = {
       send: vi.fn(async () => {}),

@@ -75,7 +75,8 @@ export interface UnifiedCompactBoundaryBlock {
 
 export interface UnifiedAgentStatusBlock {
   type: "agent_status";
-  status: "compacting" | "responding";
+  status: "compacting" | "responding" | "reconnecting";
+  attempt?: number;
 }
 
 /** Invisible liveness signal; never contains private reasoning text. */

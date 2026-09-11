@@ -514,7 +514,7 @@ describe("normalizeCursorMessage - result 消息（官方权威最终文本）",
 
   it("result 消息没有 result 字段时返回 null（无可用文本）", () => {
     expect(
-      normalizeCursorMessage({ type: "result", subtype: "error" }),
+      normalizeCursorMessage({ type: "result", subtype: "success" }),
     ).toBeNull();
   });
 
@@ -746,6 +746,57 @@ describe("Cursor stream fixture - 端到端不重复", () => {
 });
 
 describe("Cursor adapter process failures", () => {
+  it("accepts a real final reply without mixing status notifications into it", async () => {
+    const stdout = [
+      { type: "connection", subtype: "reconnecting", attempt: 1 },
+      { type: "connection", subtype: "reconnected" },
+      { type: "result", subtype: "success", result: "answer" },
+    ].map(e => JSON.stringify(e)).join("\n");
+    const adapter = createCursorAdapter({ metaStore: createInMemoryMetaStore(), spawn: (() => createMockCursorProcess({ stdout })) as CursorSpawnForTest });
+    const events = [];
+    for await (const e of adapter.prompt("sid", "hi", "F:/repo")) events.push(e);
+    expect(events.at(-1)).toMatchObject({ isFinalResponse: true, blocks: [{ type: "text_final", text: "answer" }] });
+    expect(events[0].blocks[0]).toEqual({ type: "agent_status", status: "reconnecting", attempt: 1 });
+  });
+
+  it("does not classify user cancellation after partial output as a failed turn", async () => {
+    const controller = new AbortController();
+    const stdout = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "partial" }] } });
+    const adapter = createCursorAdapter({ metaStore: createInMemoryMetaStore(), spawn: (() => createMockCursorProcess({ stdout })) as CursorSpawnForTest });
+    await expect((async () => {
+      for await (const _e of adapter.prompt("sid", "hi", "F:/repo", controller.signal)) controller.abort();
+    })()).resolves.toBeUndefined();
+  });
+  it.each([
+    { code: 1, stderr: "RetriableError: [resource_exhausted] Error", partial: false },
+    { code: 1, stderr: "RetriableError: [unavailable] Error", partial: true },
+    { code: 0, stderr: "", partial: false },
+  ])("rejects missing completion after status/partial output: %j", async ({ code, stderr, partial }) => {
+    const lines = [
+      { type: "system", subtype: "init", session_id: "sid" },
+      { type: "user", message: { content: [{ type: "text", text: "echo" }] } },
+      { type: "connection", subtype: "reconnecting", attempt: 3 },
+      ...(partial ? [{ type: "assistant", message: { content: [{ type: "text", text: "partial answer" }] } }] : []),
+    ];
+    const adapter = createCursorAdapter({ metaStore: createInMemoryMetaStore(), spawn: (() => createMockCursorProcess({
+      stdout: lines.map(line => JSON.stringify(line)).join("\n") + "\n", stderr, exitCode: code,
+    })) as CursorSpawnForTest });
+    const events: UnifiedStreamMessage[] = [];
+    await expect((async () => { for await (const e of adapter.prompt("sid", "hi", "F:/repo")) events.push(e); })()).rejects.toThrow(/Cursor/);
+    expect(events.some(e => e.isFinalResponse)).toBe(false);
+    if (partial) expect(JSON.stringify(events)).toContain("partial answer");
+  });
+
+  it.each([
+    { type: "result", subtype: "error_during_execution", result: "service failed" },
+    { type: "result", subtype: "success", is_error: true, result: "service failed" },
+    { type: "result", subtype: "success", result: "   " },
+  ])("does not accept failed or empty results: %j", async (result) => {
+    const adapter = createCursorAdapter({ metaStore: createInMemoryMetaStore(), spawn: (() => createMockCursorProcess({
+      stdout: JSON.stringify(result) + "\n",
+    })) as CursorSpawnForTest });
+    await expect((async () => { for await (const _e of adapter.prompt("sid", "hi", "F:/repo")) {} })()).rejects.toThrow();
+  });
   it("formats empty stdout auth stderr as a cautious visible message", () => {
     const message = formatCursorAgentEmptyOutputMessage({
       exitCode: 1,

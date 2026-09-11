@@ -6,6 +6,7 @@ export type AgentActivityKind =
   | "tool"
   | "processing"
   | "responding"
+  | "reconnecting"
   | "searching"
   | "compacting";
 
@@ -16,6 +17,7 @@ export interface AgentActivity {
   startedAt: number;
   toolName?: string;
   toolCount?: number;
+  attempt?: number;
 }
 
 interface ActiveTool {
@@ -40,6 +42,7 @@ export function createAgentActivityTracker(now = Date.now()): AgentActivityTrack
 
 function sameVisibleActivity(left: AgentActivity, right: AgentActivity): boolean {
   return left.kind === right.kind
+    && left.attempt === right.attempt
     && left.toolName === right.toolName
     && left.toolCount === right.toolCount;
 }
@@ -111,8 +114,9 @@ export function updateAgentActivity(
       return setActivity(tracker, { kind: "responding", startedAt: now });
     case "agent_status":
       return setActivity(tracker, {
-        kind: block.status === "compacting" ? "compacting" : "responding",
+        kind: block.status,
         startedAt: now,
+        ...(block.attempt ? { attempt: block.attempt } : {}),
       });
     case "thinking":
     case "redacted_thinking":
@@ -167,6 +171,9 @@ export function formatAgentActivityTitle(
       break;
     case "responding":
       label = "正在生成回复";
+      break;
+    case "reconnecting":
+      label = `正在重新连接模型服务${activity.attempt ? `（第 ${activity.attempt} 次）` : ""}`;
       break;
     case "searching":
       label = "正在处理搜索结果";

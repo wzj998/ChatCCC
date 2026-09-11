@@ -665,16 +665,22 @@ export class ChatSession {
           messages: attemptMessages as any,
         };
         let stream: AsyncIterable<TextStreamPart<any>>;
+        let requiresFinish = false;
+        let receivedFinish = false;
+        let finishReason: string | undefined;
         if (this.streaming) {
           const result = streamText(generationOptions);
+          requiresFinish = result.fullStream != null;
           stream = result.fullStream ?? textStreamToFullStream(result.textStream);
         } else {
           const result = await generateText(generationOptions);
+          finishReason = result.finishReason;
           stream = generateResultToFullStream(result);
         }
 
         for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
           rawLog?.writeLine(safeRawStreamJson(part));
+          if (part.type === "finish") { receivedFinish = true; finishReason = part.finishReason; }
           if (part.type === "reasoning-start" || part.type === "reasoning-delta") {
             // Reasoning content remains private. A throttled heartbeat is enough
             // for ChatCCC to distinguish active inference from a stalled stream.
@@ -741,6 +747,11 @@ export class ChatSession {
           }
         }
 
+        if (!signal?.aborted) {
+          if (requiresFinish && !receivedFinish) throw new Error("DeepCCC 输出流中断：未收到模型完成事件，回复可能不完整");
+          if (finishReason === "error" || finishReason === "length") throw new Error(`DeepCCC 未正常完成：finishReason=${finishReason}，回复可能不完整`);
+          if (!fullText.trim() && toolCallOrder.length === 0) throw new Error("DeepCCC 本轮未产生有效回复");
+        }
         if (hasMalformedToolProtocolText(fullText)) {
           console.warn(
             `[DeepCCC] malformed tool protocol text detected for ${this.context.sessionId} `

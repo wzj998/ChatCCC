@@ -92,7 +92,7 @@ describe("DshAdapter", () => {
     expect(capturedEnv?.DSH_SUBAGENT_MODEL).toBe("dsh-main");
   });
 
-  it("rethrows a turn/end error instead of silently ending with empty output", async () => {
+  it.each(["", "partial response"])("rethrows a turn/end error even with response %s", async (text) => {
     class FakeHarness {
       async start(): Promise<void> {}
       async close(): Promise<void> {}
@@ -101,7 +101,7 @@ describe("DshAdapter", () => {
           type: "turn/end",
           data: { turn: 1, reason: { kind: "error", error: { message: "unauthorized", code: "AUTH", status: 401 } } },
         } } });
-        return { sessionId: options.sessionId, finalResponse: "" };
+        return { sessionId: options.sessionId, finalResponse: text };
       }
     }
     __setDshSdkModuleForTest({ DeepSeekHarness: FakeHarness as never });
@@ -130,12 +130,9 @@ describe("DshAdapter", () => {
     __setDshSdkModuleForTest({ DeepSeekHarness: FakeHarness as never });
     const adapter = createDshAdapter({ model: "deepseek-v4-flash" });
     const created = await adapter.createSession("C:/workspace");
-    const messages = [];
-    for await (const message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) messages.push(message);
-
-    const last = messages.at(-1);
-    expect(last?.blocks.map((block) => block.type)).toEqual(["text_final"]);
-    expect((last?.blocks[0] as { text?: string }).text).toContain("未产生任何回复");
+    await expect((async () => {
+      for await (const _message of adapter.prompt(created.sessionId, "hi", "C:/workspace")) { /* drain */ }
+    })()).rejects.toThrow("未产生有效回复");
   });
 
   it("reuses the long-lived runtime across prompts for the same session (no id collision)", async () => {
