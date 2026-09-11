@@ -8,6 +8,7 @@
 // =============================================================================
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { createTurnCompletion } from "./turn-completion.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -130,8 +131,8 @@ interface CodexEvent {
 export function normalizeCodexMessage(
   msg: CodexEvent,
 ): UnifiedStreamMessage | null {
-  if (msg.type === "error" && msg.message?.trim()) {
-    throw new Error(`Codex turn failed: ${msg.message.trim()}`);
+  if (msg.type === "error") {
+    throw new Error(`Codex turn failed: ${msg.message?.trim() || "未提供错误详情"}`);
   }
 
   if (msg.type === "turn.failed") {
@@ -237,7 +238,7 @@ function spawnCodex(
   modelOverride?: string,
   effortOverride?: string,
   fastModeOverride?: boolean,
-): ChildProcess {
+): { proc: ChildProcess; failureDetail(): Promise<string> } {
   const allArgs = buildCodexInvocationArgs(
     args,
     modelOverride,
@@ -253,10 +254,18 @@ function spawnCodex(
   });
 
   let stderr = "";
+  let exitCode: number | null = null;
+  let signal: string | null = null;
+  let settleClose = () => {};
+  const closed = new Promise<void>(resolve => { settleClose = resolve; });
+  proc.once("error", (error) => { stderr += `\n${error.message}`; settleClose(); });
   proc.stderr!.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  proc.on("close", (code) => {
+  proc.on("close", (code, exitSignal) => {
+    exitCode = code;
+    signal = exitSignal;
+    settleClose();
     if (code !== 0 && stderr.trim()) {
       console.error(
         `[Codex stderr] exit=${code}: ${stderr.trim().slice(0, 2000)}`,
@@ -268,7 +277,13 @@ function spawnCodex(
     proc.stdin!.write(stdinText);
     proc.stdin!.end();
   }
-  return proc;
+  return { proc, async failureDetail() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([closed, new Promise<void>(resolve => { timer = setTimeout(resolve, 2_000); })]);
+      return `exit=${exitCode ?? "unknown"}; signal=${signal ?? "none"}; ${stderr.trim() || "无 stderr 详情"}`;
+    } finally { if (timer) clearTimeout(timer); }
+  } };
 }
 
 async function* readJsonLines(
@@ -338,7 +353,7 @@ class CodexAdapter implements ToolAdapter {
       ? [...baseArgs, "-C", cwd, "-"]
       : [...baseArgs, "resume", threadId, "-"];
 
-    const proc = spawnCodex(
+    const handle = spawnCodex(
       args,
       cwd,
       buildCodexPromptText(userText),
@@ -346,6 +361,7 @@ class CodexAdapter implements ToolAdapter {
       this.effortOverride,
       this.fastModeOverride,
     );
+    const proc = handle.proc;
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     const rawLogConfig = config.rawStreamLogs.codex;
@@ -371,11 +387,11 @@ class CodexAdapter implements ToolAdapter {
     const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
     let completed = false;
+    const completion = createTurnCompletion("Codex");
 
     try {
       for await (const raw of readJsonLines(proc, signal, rawLog)) {
         if (signal?.aborted) break;
-        if (raw.type === "turn.completed") completed = true;
 
         if (
           isFirstPrompt &&
@@ -388,8 +404,12 @@ class CodexAdapter implements ToolAdapter {
         }
 
         const normalized = normalizeCodexMessage(raw);
+        completion.observe(normalized);
+        if (raw.type === "turn.completed") { completion.complete(); completed = true; }
         if (normalized) yield normalized;
+        if (completed) break;
       }
+      if (!signal?.aborted && !completed) completion.assertComplete(await handle.failureDetail());
     } finally {
       signal?.removeEventListener("abort", onAbort);
       await killProcessTree(proc.pid);

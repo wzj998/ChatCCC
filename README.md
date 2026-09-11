@@ -453,6 +453,8 @@ ChatCCC 的内部重启和更新使用跨平台父子进程握手：替代进程
 
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex、CCC Agent 和 DSH 使用各自的 `model` / `alternativeModel`。
 
+Agent 的初始化、输入回显与重连通知不代表任务成功。Cursor、Codex 和 Claude 缺少成功完成事件，或任一 Agent 没有产生有效回复时，会明确提示异常；已生成的部分回复会保留并标为可能不完整。Cursor 重连过程显示在状态区，上游的 `resource_exhausted` / `unavailable` 分别提示请求受限 / 服务暂不可用，不推断为余额耗尽。执行失败不会自动重放整条任务。
+
 > **Codex Fast 模式**：Web UI 中的“Fast 模式”设置新 Codex 会话的全局默认值，默认关闭。进入 Codex 会话后，`/fast` 查询当前状态，`/fast on` 和 `/fast off` 只覆盖当前会话并从下一条消息生效。ChatCCC 会显式向 Codex CLI 传入 `service_tier="fast"` 或 `service_tier="default"`，因此关闭时不会继承用户 `config.toml` 中可能开启的 Fast。
 
 ---

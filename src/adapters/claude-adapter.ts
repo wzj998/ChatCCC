@@ -12,6 +12,8 @@ import type {
   UnifiedStreamMessage,
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
+import { createTurnCompletion } from "./turn-completion.ts";
+import { sanitizeTerminalErrorDetail } from "../terminal-error.ts";
 import { CHATCCC_PORT, config, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultClaudeSessionMetaStore,
@@ -48,6 +50,8 @@ interface SdkMessageLike {
   type?: string;
   subtype?: string;
   result?: string;
+  is_error?: boolean;
+  errors?: unknown;
   message?: { content?: SdkContentBlock[] };
   compact_metadata?: {
     trigger?: "manual" | "auto";
@@ -193,6 +197,9 @@ function logMcpConfig(): void {
 }
 
 export function normalizeSdkMessage(msg: SdkMessageLike): UnifiedStreamMessage | null {
+  if (msg.type === "result" && (msg.subtype !== "success" || msg.is_error === true)) {
+    throw new Error(`Claude 执行失败：${sanitizeTerminalErrorDetail(JSON.stringify(msg.errors ?? msg.result ?? msg.subtype ?? "未提供错误详情"))}`);
+  }
   // SDK result/success 是 Claude 对本轮完整结束的权威确认。文本已经由之前的
   // assistant 消息累计，因此这里只发送终态信号，避免重复追加 result 文本。
   if (msg.type === "result" && msg.subtype === "success") {
@@ -561,6 +568,7 @@ class ClaudeAdapter implements ToolAdapter {
     if (abortController.signal.aborted) return;
     let aborted = false;
     let completed = false;
+    const completion = createTurnCompletion("Claude");
     const rawLogConfig = config.rawStreamLogs.claude;
     let rawLog: RawStreamLogHandle | null = null;
 
@@ -618,9 +626,21 @@ class ClaudeAdapter implements ToolAdapter {
         }
 
         const normalized = normalizeSdkMessage(msg);
+        completion.observe(normalized);
+        if (msg.type === "result") {
+          // Some SDK modes only put the final reply in result.result.
+          if (msg.result?.trim()) {
+            const final: UnifiedStreamMessage = { type: "assistant", blocks: [{ type: "text_final", text: msg.result }] };
+            completion.observe(final);
+            yield final;
+          }
+          completion.complete();
+          completed = true;
+        }
         if (normalized) yield normalized;
+        if (completed) break;
       }
-      completed = !aborted && !abortController.signal.aborted;
+      if (!aborted && !abortController.signal.aborted) completion.assertComplete();
     } finally {
       removeAbortListener?.();
       if (aborted || abortController.signal.aborted) {

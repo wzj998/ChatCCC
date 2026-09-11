@@ -167,20 +167,15 @@ export function createDshAdapter(options: DshAdapterOptions = {}): ToolAdapter {
               if (message) queue.push(message);
             },
           });
-          if (result.finalResponse) {
+          if (turnError) {
+            if (result.finalResponse?.trim()) queue.push({ type: "assistant", blocks: [{ type: "text_final", text: result.finalResponse }] });
+            queue.fail(turnError);
+          } else if (result.finalResponse?.trim()) {
             rawLog?.writeLine(JSON.stringify({ type: "run.result", result }));
             queue.push({ type: "assistant", blocks: [{ type: "text_final", text: result.finalResponse }], isFinalResponse: true });
             completed = true;
-          } else if (turnError) {
-            queue.fail(turnError);
           } else {
-            // 引擎正常结束但零输出（无错误、无回复）：给出明确提示，避免用户只看到"失败"。
-            queue.push({
-              type: "assistant",
-              blocks: [{ type: "text_final", text: "DeepSeek Harness 本轮未产生任何回复（引擎未报告错误）。" }],
-              isFinalResponse: true,
-            });
-            completed = true;
+            queue.fail(new Error("DeepSeek Harness 本轮未产生有效回复（引擎未报告错误）。"));
           }
           if (completed) {
             knownSessions.set(sessionId, { sessionId, cwd, lastModified: Date.now(), model: options.model ?? "deepseek-v4-flash" });

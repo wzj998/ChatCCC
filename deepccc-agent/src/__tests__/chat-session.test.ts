@@ -54,6 +54,7 @@ async function* textStream(...chunks: string[]): AsyncIterable<string> {
 
 async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
+  if (!parts.some(part => (part as { type?: string }).type === "finish")) yield { type: "finish", finishReason: "stop" };
 }
 
 async function* malformedThenAbort(text: string): AsyncIterable<unknown> {
@@ -87,6 +88,19 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it.each(["missing", "length", "error"])("rejects an incomplete provider finish: %s", async (reason) => {
+    const { ChatSession } = await import("../index.js");
+    const contextDir = await mkdtemp(join(tmpdir(), "deepccc-incomplete-"));
+    const session = new ChatSession({ apiKey: "sk-test" }, { contextDir, cwd: "F:/repo" });
+    streamTextMock.mockReturnValueOnce({ fullStream: (async function* () {
+      yield { type: "text-delta", text: "partial" };
+      if (reason !== "missing") yield { type: "finish", finishReason: reason };
+    })() });
+    const events: Array<{ type: string }> = [];
+    await expect((async () => { for await (const e of session.chat("hi")) events.push(e); })()).rejects.toThrow();
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "text")).toBe(true);
+  });
   it("emits an invisible progress heartbeat for provider reasoning deltas", async () => {
     const { ChatSession } = await import("../index.js");
     const session = new ChatSession({ apiKey: "sk-test" });
@@ -377,7 +391,7 @@ describe("ChatSession response transport", () => {
 
   it("inherits maxOutputTokens from DeepCCC config and omits it when unset", async () => {
     const { ChatSession } = await import("../index.js");
-    streamTextMock.mockReturnValue({ textStream: textStream("done") });
+    streamTextMock.mockImplementation(() => ({ textStream: textStream("done") }));
     config.maxOutputTokens = 16_384;
 
     await collect(new ChatSession({ apiKey: "sk-test" }).chat("configured"));
@@ -526,7 +540,7 @@ describe("ChatSession context management", () => {
     await writeFile(join(dir, "AGENTS.local.md"), "agents local guidance", "utf-8");
     await writeFile(join(dir, "CLAUDE.md"), "claude root guidance", "utf-8");
     await writeFile(join(dir, "CLAUDE.local.md"), "claude local guidance", "utf-8");
-    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
 
     const session = new ChatSession(
       { apiKey: "sk-test" },
@@ -594,7 +608,7 @@ describe("ChatSession context management", () => {
     const child = join(parent, "child");
     await mkdir(child);
     await writeFile(join(parent, "AGENTS.md"), "parent-only guidance", "utf-8");
-    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
 
     const session = new ChatSession(
       { apiKey: "sk-test" },

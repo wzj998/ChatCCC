@@ -30,6 +30,7 @@ async function* textStream(...chunks: string[]): AsyncIterable<string> {
 
 async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
+  if (!parts.some(part => (part as { type?: string }).type === "finish")) yield { type: "finish", finishReason: "stop" };
 }
 
 afterEach(() => {
@@ -38,6 +39,14 @@ afterEach(() => {
 });
 
 describe("createCccAdapter", () => {
+  it("rejects an empty model reply", async () => {
+    const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
+    const contextDir = await mkdtemp(join(tmpdir(), "chatccc-empty-ccc-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("   ") });
+    const adapter = createCccAdapter({ apiKey: "sk-test", provider: "openai", contextDir });
+    const { sessionId } = await adapter.createSession("F:/repo");
+    await expect((async () => { for await (const _e of adapter.prompt(sessionId, "hi", "F:/repo")) {} })()).rejects.toThrow(/未产生有效回复/);
+  });
   it("disables response-stall detection when DeepCCC streaming is disabled", async () => {
     const { config: deepCccConfig } = await import("../../deepccc-agent/src/config.ts");
     const previousStreaming = deepCccConfig.streaming;
@@ -116,6 +125,7 @@ describe("createCccAdapter", () => {
       fullStream: fullStream(
         { type: "tool-call", toolCallId: "call-1", toolName: "read_file", input: { path: "README.md" } },
         { type: "tool-result", toolCallId: "call-1", toolName: "read_file", output: { content: "hello" } },
+        { type: "text-delta", text: "read complete" },
       ),
     });
 
@@ -134,6 +144,7 @@ describe("createCccAdapter", () => {
         type: "assistant",
         blocks: [{ type: "tool_result", tool_use_id: "call-1", content: { content: "hello" }, is_error: false }],
       },
+      { type: "assistant", blocks: [{ type: "text", text: "read complete" }] },
       { type: "assistant", blocks: [], isFinalResponse: true },
     ]);
   });

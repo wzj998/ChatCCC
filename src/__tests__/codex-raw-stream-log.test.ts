@@ -44,7 +44,7 @@ function createProc(lines: string[]): EventEmitter & {
   proc.stderr = new PassThrough();
   proc.stdin = new PassThrough();
   proc.pid = 4242;
-  queueMicrotask(() => {
+  setImmediate(() => {
     for (const line of lines) proc.stdout.write(`${line}\n`);
     proc.stdout.end();
     proc.stderr.end();
@@ -102,6 +102,15 @@ afterEach(() => {
 });
 
 describe("Codex raw stream logs", () => {
+  it.each([
+    [{ type: "thread.started", thread_id: "thread" }],
+    [{ type: "item.completed", item: { type: "agent_message", text: "partial" } }],
+    [{ type: "turn.completed" }],
+  ])("rejects incomplete or empty turns: %j", async (...events) => {
+    spawnMock.mockReturnValueOnce(createProc(events.map(e => JSON.stringify(e))));
+    createRawStreamLogMock.mockResolvedValueOnce(null);
+    await expect(collect(createCodexAdapter({ metaStore: metaStore() }).prompt("sid-raw", "hi", "F:/project"))).rejects.toThrow(/Codex/);
+  });
   it("writes raw Codex JSONL stdout lines when enabled", async () => {
     const lines = [
       JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),

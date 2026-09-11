@@ -18,6 +18,7 @@ import type {
   SessionInfo,
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
+import { createTurnCompletion } from "./turn-completion.ts";
 import { config, CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultCursorSessionMetaStore,
@@ -78,6 +79,10 @@ interface CursorMessageLine {
     content?: CursorContentBlock[];
   };
   result?: string;
+  is_error?: boolean;
+  errors?: unknown;
+  error?: unknown;
+  attempt?: number;
   duration_ms?: number;
   usage?: {
     inputTokens?: number;
@@ -222,6 +227,15 @@ function mapToolCallKey(key: string): string {
 export function normalizeCursorMessage(
   msg: CursorMessageLine,
 ): UnifiedStreamMessage | null {
+  if (msg.type === "error" || (msg.type === "result" && (msg.is_error === true || msg.subtype?.startsWith("error")))) {
+    throw new Error(`Cursor 执行失败：${formatCursorVisibleStderr(JSON.stringify(msg.errors ?? msg.error ?? msg.result ?? msg.subtype ?? "未提供错误详情"))}`);
+  }
+  if (msg.type === "connection" || msg.type === "retry") {
+    return { type: "system", blocks: [{ type: "agent_status",
+      status: msg.subtype === "reconnected" ? "responding" : "reconnecting",
+      ...(Number.isInteger(msg.attempt) && msg.attempt! > 0 ? { attempt: msg.attempt } : {}),
+    }] };
+  }
   if (msg.type === "assistant" && msg.message?.content) {
     // 按 cursor 官方 stream-json 规范区分三类 assistant 事件，避免 text 重复累加：
     //   ┌────────────────┬───────────────┬─────────────────┐
@@ -446,8 +460,13 @@ function spawnAgent(
     getStderr: () => stderr,
     waitForClose: async () => {
       if (closeInfo) return { ...closeInfo, stderr };
-      const info = await closePromise;
-      return { ...info, stderr };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const info = await Promise.race([closePromise, new Promise<CursorProcessCloseInfo>(resolve => {
+          timer = setTimeout(() => resolve({ code: null, signal: null, stderr }), 2_000);
+        })]);
+        return { ...info, stderr };
+      } finally { if (timer) clearTimeout(timer); }
     },
   };
 }
@@ -587,6 +606,7 @@ class CursorAdapter implements ToolAdapter {
     const onAbort = () => { void killProcessTree(proc.pid); };
     signal?.addEventListener("abort", onAbort, { once: true });
     let sawResult = false;
+    const completion = createTurnCompletion("Cursor");
     const stats = createCursorStreamStats();
 
     try {
@@ -603,10 +623,13 @@ class CursorAdapter implements ToolAdapter {
             .catch(() => {});
         }
         const normalized = normalizeCursorMessage(raw);
+        completion.observe(normalized);
+        if (raw.type === "result") completion.complete();
         if (normalized) yield normalized;
 
         // result 是流末事件，收到后立即结束进程，防止 CLI 僵死导致 readline 挂起。
         if (raw.type === "result") {
+          if (!normalized?.isFinalResponse) yield { type: "assistant", blocks: [], isFinalResponse: true };
           sawResult = true;
           void killProcessTree(proc.pid);
           break;
@@ -626,6 +649,7 @@ class CursorAdapter implements ToolAdapter {
           };
           throw createCursorAgentFailureError(closeInfo);
         }
+        completion.assertComplete(`exit=${closeInfo.code ?? "unknown"}; signal=${closeInfo.signal ?? "none"}; ${formatCursorVisibleStderr(closeInfo.stderr) || "无 stderr 详情"}`);
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);

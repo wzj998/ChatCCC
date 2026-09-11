@@ -75,6 +75,7 @@ async function collect(iterable: AsyncIterable<unknown>): Promise<unknown[]> {
 
 async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
+  if (!parts.some(part => (part as { type?: string }).type === "finish")) yield { type: "finish", finishReason: "stop" };
 }
 
 beforeEach(() => {

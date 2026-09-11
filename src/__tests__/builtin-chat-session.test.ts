@@ -48,6 +48,7 @@ async function* textStream(...chunks: string[]): AsyncIterable<string> {
 
 async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
   for (const part of parts) yield part;
+  if (!parts.some(part => (part as { type?: string }).type === "finish")) yield { type: "finish", finishReason: "stop" };
 }
 
 beforeEach(() => {
@@ -146,7 +147,7 @@ describe("ChatSession context management", () => {
     await writeFile(join(dir, "AGENTS.local.md"), "agents local guidance", "utf-8");
     await writeFile(join(dir, "CLAUDE.md"), "claude root guidance", "utf-8");
     await writeFile(join(dir, "CLAUDE.local.md"), "claude local guidance", "utf-8");
-    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
 
     const session = new ChatSession(
       { apiKey: "sk-test" },
@@ -214,7 +215,7 @@ describe("ChatSession context management", () => {
     const child = join(parent, "child");
     await mkdir(child);
     await writeFile(join(parent, "AGENTS.md"), "parent-only guidance", "utf-8");
-    streamTextMock.mockReturnValueOnce({ textStream: textStream() });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
 
     const session = new ChatSession(
       { apiKey: "sk-test" },

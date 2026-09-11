@@ -6,6 +6,7 @@ import {
   normalizeBuiltinSessionId,
 } from "../../deepccc-agent/src/context.ts";
 import { config, CCC_SESSION_PREFIX } from "../config.ts";
+import { createTurnCompletion } from "./turn-completion.ts";
 import type {
   CreateSessionResult,
   SessionInfo,
@@ -95,7 +96,10 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
         toChatSessionOptions(normalizedSessionId, cwd, options),
       );
 
+      const completion = createTurnCompletion("CCC Agent");
       for await (const event of session.chat(userText, signal)) {
+        if (event.type === "text") completion.observe({ type: "assistant", blocks: [{ type: "text", text: event.text }] });
+        if (event.type === "text_reset") completion.observe({ type: "assistant", blocks: [{ type: "text_reset" }] });
         if (event.type === "status") {
           yield {
             type: "assistant",
@@ -140,6 +144,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
             }],
           };
         } else if (event.type === "done" && !signal?.aborted) {
+          completion.complete();
           yield {
             type: "assistant",
             blocks: [],
@@ -149,6 +154,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
           throw new Error(event.message);
         }
       }
+      if (!signal?.aborted) completion.assertComplete();
     },
 
     async getSessionInfo(sessionId: string): Promise<SessionInfo | undefined> {

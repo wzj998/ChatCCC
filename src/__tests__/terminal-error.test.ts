@@ -43,6 +43,8 @@ describe("terminal error classification", () => {
   it.each([
     ["HTTP 401 unauthorized", "authentication", "模型服务鉴权失败"],
     ["HTTP 429 too many requests", "rate_limit", "请求受到限流"],
+    ["Cursor exit=1: RetriableError: [resource_exhausted] Error", "rate_limit", "请求受到限流"],
+    ["Cursor exit=1: RetriableError: [unavailable] Error", "provider", "模型服务暂时不可用"],
     ["HTTP 503 service unavailable", "provider", "模型服务暂时不可用"],
     ["getaddrinfo ENOTFOUND api.example.test", "network", "无法连接模型服务"],
     ["Codex turn failed: Reconnecting... 2/5 (stream disconnected before completion: tls handshake eof)", "network", "无法连接模型服务"],
