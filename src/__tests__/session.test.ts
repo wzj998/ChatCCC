@@ -711,7 +711,7 @@ describe("runAgentSession process monitor", () => {
     setQueueConsumer(() => {});
   });
 
-  it("sends the stopped notice only after the prompt generator exits", async () => {
+  it.each([false, true])("confirms stop only after successful cleanup (failure=%s)", async (cleanupFails) => {
     const platform = mockPlatform("feishu");
     setSessionPlatform(platform);
     bindChatToSession("sid-stop-notice", "chat-stop-notice");
@@ -742,6 +742,7 @@ describe("runAgentSession process monitor", () => {
         });
         yield { type: "assistant", blocks: [{ type: "text", text: "partial answer" }] };
         await waitForStop;
+        if (cleanupFails) throw Object.assign(new Error("Agent 进程未确认退出"), { code: "PROCESS_CLEANUP_FAILED" });
       },
     };
     _setAdapterForToolForTest("claude", adapter);
@@ -766,7 +767,12 @@ describe("runAgentSession process monitor", () => {
 
     await runPromise;
 
-    expect(platform.sendText).toHaveBeenCalledWith("chat-stop-notice", "会话已停止。");
+    if (cleanupFails) {
+      expect(platform.sendText).not.toHaveBeenCalledWith("chat-stop-notice", "会话已停止。");
+      expect(mockStreamStates.get("sid-stop-notice")?.status).toBe("error");
+    } else {
+      expect(platform.sendText).toHaveBeenCalledWith("chat-stop-notice", "会话已停止。");
+    }
     expect(activePrompts.has("sid-stop-notice")).toBe(false);
   });
 
@@ -2177,11 +2183,11 @@ describe("getSessionStatus", () => {
     expect(status!.accumulatedLength).toBe(16); // "thinking..."(11) + "reply"(5)
   });
 
-  it("returns running=false for stopped session", async () => {
+  it("keeps a stop-requested session busy until cleanup finishes", async () => {
     mockSessionInfo("chat1");
     mockActiveSession("chat1", { stopped: true });
     const status = await getSessionStatus("chat1");
-    expect(status!.running).toBe(false);
+    expect(status!.running).toBe(true);
   });
 
   it("returns correct turnCount and other info fields", async () => {

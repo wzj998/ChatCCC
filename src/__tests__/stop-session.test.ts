@@ -3,8 +3,7 @@
 // =============================================================================
 // 覆盖修复"幽灵 codex 会话"的两条关键行为：
 // 1) controller.abort() 必须被触发（让 adapter finally 走 killProcessTree）
-// 2) 立刻把 stream-state.status 改成 stopped，不依赖 runAgentSession 的 finally
-//    （那个 finally 要等 generator 自然结束，子进程没死透就一直停在 running）
+// 2) 清理确认前保留 running 和会话占用，防止“已停止”掩盖残留进程
 // =============================================================================
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -91,7 +90,7 @@ describe("stopSession 行为护栏", () => {
     expect(writeCalls).toHaveLength(0);
   });
 
-  it("abort controller + 立刻把 stream-state.status 写成 stopped", async () => {
+  it("abort controller 后保持 running，直到 adapter 确认清理完成", async () => {
     const controller = seedRunningSession("sid-A", "hello world");
     let aborted = false;
     controller.signal.addEventListener("abort", () => { aborted = true; });
@@ -102,13 +101,10 @@ describe("stopSession 行为护栏", () => {
 
     await flush();
 
-    // 关键护栏：必须有一次 writeStreamState 把 status 改成 stopped
-    expect(writeCalls.length).toBeGreaterThanOrEqual(1);
-    const lastWrite = writeCalls[writeCalls.length - 1];
-    expect(lastWrite.sessionId).toBe("sid-A");
-    expect(lastWrite.status).toBe("stopped");
-    // 累积内容不丢
-    expect(lastWrite.accumulatedContent).toBe("hello world");
+    expect(writeCalls).toHaveLength(0);
+    expect(stateStore.get("sid-A")?.status).toBe("running");
+    expect(stateStore.get("sid-A")?.accumulatedContent).toBe("hello world");
+    expect(activePrompts.has("sid-A")).toBe(true);
   });
 
   it("已经是终态(done/stopped/error)的 stream-state 不会被覆盖", async () => {

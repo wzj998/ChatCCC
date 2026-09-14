@@ -19,6 +19,7 @@ import type {
 } from "./adapter-interface.ts";
 import { parseUserCommand } from "./adapter-interface.ts";
 import { createTurnCompletion } from "./turn-completion.ts";
+import { cliProcessOptions, ensureCliSessionReleased, ownCliProcess } from "./managed-cli-process.ts";
 import { config, CURSOR_AGENT_COMMAND, CURSOR_AGENT_ARGS, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   defaultCursorSessionMetaStore,
@@ -425,6 +426,7 @@ function spawnAgent(
     stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     windowsHide: true,
     shell: true,
+    ...cliProcessOptions(),
   });
 
   console.log(`[Cursor debug] spawn: cmd=${CURSOR_AGENT_COMMAND}, args=[${allArgs.join(", ")}], cwd=${cwd ?? "(none)"}, stdinLen=${stdinText?.length ?? 0}, pid=${proc.pid}`);
@@ -559,7 +561,7 @@ class CursorAdapter implements ToolAdapter {
       throw new Error("No session ID in Cursor init event");
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      await killProcessTree(proc.pid);
+      if (await killProcessTree(proc.pid) === false) throw new Error(`Cursor 初始化进程未确认退出（PID ${proc.pid}）`);
       this.activeProcs.delete(proc);
     }
   }
@@ -571,6 +573,8 @@ class CursorAdapter implements ToolAdapter {
     signal?: AbortSignal,
     options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
+    if (signal?.aborted) return;
+    await ensureCliSessionReleased(sessionId);
     console.log(`[Cursor debug] prompt start: sessionId=${sessionId}, cwd=${cwd}, userTextLen=${userText.length}`);
     const cmd = parseUserCommand(userText);
     const handle = spawnAgent(
@@ -582,6 +586,7 @@ class CursorAdapter implements ToolAdapter {
       this.spawnImpl,
     );
     const proc = handle.proc;
+    const ownership = ownCliProcess(sessionId, proc.pid);
     this.activeProcs.add(proc);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
@@ -603,7 +608,7 @@ class CursorAdapter implements ToolAdapter {
 
     // 见 codex-adapter.ts 同位置注释：spawn 用了 shell:true，必须杀整棵树，
     // 否则 abort 后真正在跑的孙进程 cursor-agent 还会继续输出 & 占用资源。
-    const onAbort = () => { void killProcessTree(proc.pid); };
+    const onAbort = () => { void ownership.stop().catch(() => {}); };
     signal?.addEventListener("abort", onAbort, { once: true });
     let sawResult = false;
     const completion = createTurnCompletion("Cursor");
@@ -631,7 +636,7 @@ class CursorAdapter implements ToolAdapter {
         if (raw.type === "result") {
           if (!normalized?.isFinalResponse) yield { type: "assistant", blocks: [], isFinalResponse: true };
           sawResult = true;
-          void killProcessTree(proc.pid);
+          void ownership.stop().catch(() => {});
           break;
         }
       }
@@ -653,10 +658,13 @@ class CursorAdapter implements ToolAdapter {
       }
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      await killProcessTree(proc.pid);
-      await rawLog?.close({ keep: rawLogConfig.keepCompleted || signal?.aborted === true || !sawResult });
-      this.activeProcs.delete(proc);
-      if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
+      let released = false;
+      try { await ownership.stop(); released = true; }
+      finally {
+        await rawLog?.close({ keep: !released || rawLogConfig.keepCompleted || signal?.aborted === true || !sawResult });
+        this.activeProcs.delete(proc);
+        if (released && proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
+      }
       console.log(`[Cursor debug] prompt end: sessionId=${sessionId}, signalAborted=${signal?.aborted ?? false}`);
     }
   }

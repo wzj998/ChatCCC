@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeFileSync, unlinkSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { killProcessTree } from "../adapters/proc-tree-kill.ts";
+import { killProcessTree, terminatePosixGroup } from "../adapters/proc-tree-kill.ts";
 
 function isAlive(pid: number): boolean {
   try {
@@ -99,10 +99,32 @@ describe("killProcessTree", () => {
   }, 30000);
 
   it("does not throw when pid does not exist", async () => {
-    await expect(killProcessTree(999999)).resolves.toBeUndefined();
+    await expect(killProcessTree(999999)).resolves.toBe(true);
   });
 
   it("does not throw when pid is undefined", async () => {
-    await expect(killProcessTree(undefined)).resolves.toBeUndefined();
+    await expect(killProcessTree(undefined)).resolves.toBe(true);
+  });
+});
+
+describe("POSIX group confirmation", () => {
+  it("escalates after the shell exits while a group member still holds resources", async () => {
+    const signals: Array<[number, string]> = [];
+    let childAlive = true;
+    const ok = await terminatePosixGroup(12345, {
+      signal(target, signal) {
+        signals.push([target, signal]);
+        if (target === -12345 && signal === "SIGKILL") childAlive = false;
+      },
+      hasLiveMembers: async () => childAlive,
+      sleep: async () => {},
+    });
+    expect(ok).toBe(true);
+    expect(signals).toContainEqual([-12345, "SIGKILL"]);
+  });
+  it("reports failure if descendants survive all signals", async () => {
+    await expect(terminatePosixGroup(12345, {
+      signal() { throw new Error("EPERM"); }, hasLiveMembers: async () => true, sleep: async () => {},
+    })).resolves.toBe(false);
   });
 });
