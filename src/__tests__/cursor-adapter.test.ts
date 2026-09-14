@@ -752,11 +752,13 @@ describe("Cursor adapter process failures", () => {
       { type: "connection", subtype: "reconnected" },
       { type: "result", subtype: "success", result: "answer" },
     ].map(e => JSON.stringify(e)).join("\n");
-    const adapter = createCursorAdapter({ metaStore: createInMemoryMetaStore(), spawn: (() => createMockCursorProcess({ stdout })) as CursorSpawnForTest });
+    const spawnForTest = vi.fn(() => createMockCursorProcess({ stdout }));
+    const adapter = createCursorAdapter({ metaStore: createInMemoryMetaStore(), spawn: spawnForTest as CursorSpawnForTest });
     const events = [];
     for await (const e of adapter.prompt("sid", "hi", "F:/repo")) events.push(e);
     expect(events.at(-1)).toMatchObject({ isFinalResponse: true, blocks: [{ type: "text_final", text: "answer" }] });
     expect(events[0].blocks[0]).toEqual({ type: "agent_status", status: "reconnecting", attempt: 1 });
+    expect((spawnForTest.mock.calls[0] as unknown as [unknown, unknown, { detached: boolean }])[2].detached).toBe(process.platform !== "win32");
   });
 
   it("does not classify user cancellation after partial output as a failed turn", async () => {

@@ -132,6 +132,7 @@ describe("Codex raw stream logs", () => {
 
     const adapter = createCodexAdapter({ metaStore: metaStore() });
     const events = await collect(adapter.prompt("sid-raw", "hi", "F:/project"));
+    expect(spawnMock.mock.calls[0][2].detached).toBe(process.platform !== "win32");
 
     expect(createRawStreamLogMock).toHaveBeenCalledWith(expect.objectContaining({
       enabled: true,

@@ -9,6 +9,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createTurnCompletion } from "./turn-completion.ts";
+import { cliProcessOptions, ensureCliSessionReleased, ownCliProcess } from "./managed-cli-process.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -26,7 +27,6 @@ import {
   defaultCodexSessionMetaStore,
   type CodexSessionMetaStore,
 } from "./codex-session-meta-store.ts";
-import { killProcessTree } from "./proc-tree-kill.ts";
 import { config, PROJECT_ROOT, RAW_STREAM_LOGS_DIR } from "../config.ts";
 import {
   createRawStreamLog,
@@ -251,6 +251,7 @@ function spawnCodex(
     stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     windowsHide: true,
     shell: true,
+    ...cliProcessOptions(),
   });
 
   let stderr = "";
@@ -339,6 +340,8 @@ class CodexAdapter implements ToolAdapter {
     signal?: AbortSignal,
     options?: ToolPromptOptions,
   ): AsyncIterable<UnifiedStreamMessage> {
+    if (signal?.aborted) return;
+    await ensureCliSessionReleased(sessionId);
     let meta = await this.metaStore.get(sessionId);
     const threadId = meta?.threadId;
     const isFirstPrompt = !threadId;
@@ -362,6 +365,7 @@ class CodexAdapter implements ToolAdapter {
       this.fastModeOverride,
     );
     const proc = handle.proc;
+    const ownership = ownCliProcess(sessionId, proc.pid);
     if (proc.pid !== undefined) options?.onProcessStart?.({ pid: proc.pid });
 
     const rawLogConfig = config.rawStreamLogs.codex;
@@ -384,7 +388,7 @@ class CodexAdapter implements ToolAdapter {
     // 真正干活的是壳的孙子 codex.exe。普通 proc.kill() 在 Windows 上只杀第一层，
     // 会留下幽灵 node + codex.exe 继续烧 token、stream-state 永远停在 running。
     // 因此 abort 与 finally 都必须用 killProcessTree 整棵进程树一起收尸。
-    const onAbort = () => { void killProcessTree(proc.pid); };
+    const onAbort = () => { void ownership.stop().catch(() => {}); };
     signal?.addEventListener("abort", onAbort, { once: true });
     let completed = false;
     const completion = createTurnCompletion("Codex");
@@ -412,9 +416,12 @@ class CodexAdapter implements ToolAdapter {
       if (!signal?.aborted && !completed) completion.assertComplete(await handle.failureDetail());
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      await killProcessTree(proc.pid);
-      await rawLog?.close({ keep: rawLogConfig.keepCompleted || signal?.aborted === true || !completed });
-      if (proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
+      let released = false;
+      try { await ownership.stop(); released = true; }
+      finally {
+        await rawLog?.close({ keep: !released || rawLogConfig.keepCompleted || signal?.aborted === true || !completed });
+        if (released && proc.pid !== undefined) options?.onProcessExit?.({ pid: proc.pid });
+      }
     }
   }
 

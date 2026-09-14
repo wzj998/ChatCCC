@@ -449,6 +449,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 ChatCCC 的内部重启和更新使用跨平台父子进程握手：替代进程完成启动预检后通知父进程退出，再等待旧监听端口实际释放并接管 PID；替代进程未就绪或握手超时时，父进程会保留并继续服务。
 
+Codex 和 Cursor 在 Linux/macOS 下使用独立进程组。停止时先显示“正在停止”，待进程组内后代退出后再显示“已停止”；仅外层 shell 退出不算清理完成。重复停止请求合并处理，清理失败会保留会话进程占用保护并报告“Agent 停止未完成”，后续请求必须先完成清理才能启动新 Agent。Windows 继续使用 `taskkill /T /F`，命令失败或超时不会当作成功。
+
 飞书接收长连接启用 15 秒握手超时和 30 秒心跳应答超时；首次启动最多等待 45 秒真实连接确认后才提示就绪。运行期间连接持续异常 90 秒时，会关闭并重新建立接收连接，保留会话、消息去重和正在执行的任务。没有用户消息不会触发重连。连接状态与恢复记录写入运行日志和 `startup-trace.log`（`FEISHU-CONNECTION` / `feishu-connection`）。卡片更新遇到网络失败或序号冲突时不会当成送达成功，错误通知保留文本兜底；TLS 断线会明确显示为网络连接失败，已中断的 Agent 任务不会因此自动重放。
 
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex、CCC Agent 和 DSH 使用各自的 `model` / `alternativeModel`。

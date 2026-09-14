@@ -1648,6 +1648,7 @@ export async function runAgentSession(
   const FILE_WRITE_INTERVAL_MS = 2000;
   const toolCallMap = new Map<string, { name: string; input: unknown }>();
   let streamErrored = false;
+  let cleanupFailed = false;
   let streamTerminalError: TerminalErrorInfo | undefined;
   let runOutcome: SessionRunOutcome = "error";
   const responseStallDetectionEnabled = adapter.responseStallDetectionEnabled !== false;
@@ -1839,6 +1840,8 @@ export async function runAgentSession(
     }
   } catch (streamErr) {
     streamErrored = true;
+    cleanupFailed = (streamErr as { code?: string })?.code === "PROCESS_CLEANUP_FAILED";
+    if (cleanupFailed) cancelAutoRecoveryReservation(sessionId);
     streamTerminalError = classifyTerminalError(streamErr);
     console.error(`[${ts()}] [STREAM] Error in stream loop for ${sessionId}: ${(streamErr as Error).message}`);
   } finally {
@@ -1880,7 +1883,7 @@ export async function runAgentSession(
       // 读到新状态并终结旧卡片。否则 setImmediate 在 CHECK 阶段先于
       // writeFile I/O（POLL 阶段）执行，display loop 会误以为旧轮仍在
       // 运行中并更新旧卡片，而不是新建卡片。
-      const finalStatus = completedAtTimeoutBoundary
+      const finalStatus = cleanupFailed ? "error" : completedAtTimeoutBoundary
         ? "done"
         : wasAutoEnded
           ? "auto_ended"
@@ -1945,7 +1948,7 @@ export async function runAgentSession(
 
     let autoRecoveryTarget: { chatId: string; platform: PlatformAdapter } | undefined;
 
-    if (wasStopped) {
+    if (wasStopped && !cleanupFailed) {
       for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
         await recordSessionRegistry({
@@ -1965,7 +1968,7 @@ export async function runAgentSession(
       }
       console.log(`[${ts()}] Session ${sessionId} stopped (content chunks: ${state.chunkCount})`);
       if (tid) logTrace(tid, "SESSION_END", { sessionId, outcome: "stopped", chunks: state.chunkCount });
-    } else if (wasAutoEnded) {
+    } else if (wasAutoEnded && !cleanupFailed) {
       for (const cid of finalizationChatIds) {
         const finfo = sessionInfoMap.get(cid);
         await recordSessionRegistry({
@@ -2392,7 +2395,9 @@ export function startUnifiedDisplayLoop(): void {
                 continue;
               }
 
-              const activityHeaderTitle = formatAgentActivityTitle(state.activity, Date.now());
+              const activityHeaderTitle = activePrompts.get(sessionId)?.stopped
+                ? "正在停止 · 等待 Agent 退出"
+                : formatAgentActivityTitle(state.activity, Date.now());
 
               // 卡片轮转
               if (Date.now() - display.cardCreatedAt > CARD_ROTATE_MS) {
@@ -2550,11 +2555,8 @@ export function stopUnifiedDisplayLoop(): void {
 //    收尸；之前用 proc.kill() 在 Windows + shell:true 下只能杀第一层 cmd.exe，
 //    会留下"幽灵 CLI 子进程"继续跑、stream-state 永远停在 running。
 //
-// 2) 立刻 fire-and-forget 把 stream-state 标 stopped，不依赖 runAgentSession
-//    的 finally。原因：generator 自然结束依赖子进程 stdout 关闭，killProcessTree
-//    虽然很快但仍是异步，期间 display loop 可能多读到 1–2 帧 "running"，
-//    用户体验上"按下停止后还要等几秒卡片才变成已停止"。先把状态标好，
-//    finally 后续再写一次也不冲突——status 最终值仍然是 stopped。
+// 2) 保留 running 与会话占用，界面先显示正在停止；只有 adapter finally 确认
+//    进程退出后才由 runAgentSession 写 stopped，清理失败则显示错误。
 export function stopSession(sessionId: string): boolean {
   // /stop 拥有高于内部自动恢复的优先级。旧轮已经完成、恢复轮尚在 200ms
   // 预约窗口时 activePrompts 为空，因此必须单独取消 reservation。
@@ -2588,25 +2590,8 @@ export function stopSession(sessionId: string): boolean {
   prompt.controller.abort();
   console.log(`[${ts()}] [STOP] Session ${sessionId} aborted`);
 
-  // fire-and-forget：立刻把 stream-state.status 改成 stopped，
-  // 让 display loop 下一次扫到立刻渲染"已停止"卡片，不必再等几秒。
-  void (async () => {
-    try {
-      const current = await readStreamState(sessionId);
-      if (!current) return;
-      // 已经是终态就别再覆盖，避免把 done/error 误改成 stopped
-      if (current.status !== "running") return;
-      await writeStreamState({
-        ...current,
-        status: "stopped",
-        updatedAt: Date.now(),
-      });
-    } catch (err) {
-      console.warn(
-        `[${ts()}] [STOP] writeStreamState(stopped) failed for ${sessionId}: ${(err as Error).message}`,
-      );
-    }
-  })();
+  // Keep durable state running until the adapter confirms process cleanup.
+  // The display loop renders the in-memory stop request as "正在停止".
 
   return true;
 }
@@ -2690,7 +2675,7 @@ export async function getSessionStatus(chatId: string): Promise<SessionStatus | 
   if (!info) return null;
 
   const activePrompt = activePrompts.get(info.sessionId);
-  const isActive = !!activePrompt && !activePrompt.stopped && !activePrompt.abnormalExit;
+  const isActive = !!activePrompt;
   const { model, effort } = await resolveModelEffort(info.tool, info.sessionId);
 
   const registry = await loadSessionRegistry();
@@ -2788,9 +2773,7 @@ export async function getAllSessionsStatus(options: SessionsListOptions = {}): P
         displayTitle: info.displayTitle || "",
         pinned: info.pinned ?? false,
         ...(info.archivedAt ? { archivedAt: info.archivedAt } : {}),
-        active: !!activePrompts.get(info.sessionId) &&
-          !activePrompts.get(info.sessionId)?.stopped &&
-          !activePrompts.get(info.sessionId)?.abnormalExit,
+        active: activePrompts.has(info.sessionId),
         turnCount: info.turnCount,
         startTime: info.startTime,
         model,

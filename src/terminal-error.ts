@@ -54,6 +54,9 @@ function formatSeconds(milliseconds: number): string {
 export function classifyTerminalError(error: unknown, occurredAt = Date.now()): TerminalErrorInfo {
   const raw = errorMessage(error);
   const lower = raw.toLowerCase();
+  if ((error as { code?: string })?.code === "PROCESS_CLEANUP_FAILED") {
+    return { kind: "process", title: "Agent 停止未完成", message: sanitizeTerminalErrorDetail(raw), occurredAt };
+  }
   const attempts = parsePositiveInt(raw, /\bafter\s+(\d+)\s+attempts?\b/i);
   const timeoutMs = parsePositiveInt(raw, /\btimeout\s*:\s*(\d+)\s*ms\b/i);
 
