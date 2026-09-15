@@ -411,6 +411,8 @@ Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理�
 
 **CCC Agent 代码搜索：** `search_code` 使用项目自带的跨平台 ripgrep，不要求系统另行安装 `rg`。如果当前平台没有可用的 bundled/system ripgrep，会自动降级为内置 Node 搜索，并继续支持常用正则、glob、结果上限、中止和超时控制。
 
+**项目理解与证据：** CCC 与独立 DeepCCC 共用通用内核。`search_code` 默认按项目范围降噪；明确指定子目录/文件时默认扩大范围，也可使用 `scope: "all"` 搜索 `.venv`、`node_modules`、隐藏和被忽略文件，并非禁止访问依赖。结果显示搜索范围、排除规则、警告与截断情况。`workspace_map` 提供按需的本地文件/词法符号地图；涉及项目实现的对话会获得小预算导航，不把地图重复写进聊天历史。`remember_project_fact` 可保存带原文和文件哈希的项目笔记，源文件改变或删除后不再注入该笔记。缓存位于 `~/.deepccc/workspace-index/`，不修改业务仓库，也不需要新增向量数据库或模型下载。地图和笔记只是查证入口，不能代替阅读当前源码。详见 [DeepCCC 项目理解说明](deepccc-agent/docs/workspace-understanding.md)。
+
 ## 可用指令
 
 | 指令 | 作用 |

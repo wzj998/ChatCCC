@@ -12,6 +12,8 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 import { isDangerousCommand, type PermissionGate, type PermissionRequest } from "./permissions.js";
 import { detectImageMime, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { killProcessTree } from "./proc-tree-kill.js";
+import { PROJECT_NOISE_DIRECTORIES, resolveSearchScope, skipProjectEntry, type SearchScope } from "./workspace-policy.js";
+import { buildWorkspaceMap, rememberProjectFact, type ProjectFactInput, type WorkspaceMapResult } from "./workspace-map.js";
 import {
   searchBuiltinSessions,
   type SessionSearchInput,
@@ -40,7 +42,6 @@ const MAX_COMMAND_TIMEOUT_MS = 900_000;
 /** task 子代理工具：子任务结果回传主会话前的最大字符数（防止子代理长输出撑爆主上下文） */
 export const MAX_TASK_OUTPUT_CHARS = 32_000;
 const requireFromHere = createRequire(import.meta.url);
-const FALLBACK_SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 
 export interface ReadFileInput {
   path: string;
@@ -82,6 +83,7 @@ export interface SearchCodeInput {
   path?: string;
   glob?: string;
   maxResults?: number;
+  scope?: SearchScope;
 }
 
 export interface SearchCodeMatch {
@@ -97,6 +99,10 @@ export interface SearchCodeOutput {
   glob?: string;
   matches: SearchCodeMatch[];
   truncated: boolean;
+  scope: SearchScope;
+  excluded: string[];
+  warnings: string[];
+  engine: "ripgrep" | "node";
 }
 
 /** @internal Allows tests to force the dependency-free fallback path. */
@@ -211,6 +217,8 @@ export interface ApplyPatchFileChange {
 export interface ApplyPatchOutput {
   changedFiles: ApplyPatchFileChange[];
 }
+
+interface WorkspaceMapInput { path?: string; query?: string; maxChars?: number }
 
 export interface PresentFileInput {
   path: string;
@@ -790,7 +798,8 @@ async function searchCodeWithNode(
   glob: string | undefined,
   maxResults: number,
   signal?: AbortSignal,
-): Promise<{ matches: SearchCodeMatch[]; truncated: boolean }> {
+  scope: SearchScope = "project",
+): Promise<{ matches: SearchCodeMatch[]; truncated: boolean; warnings: string[] }> {
   let queryRegex: RegExp;
   try {
     queryRegex = new RegExp(query);
@@ -804,6 +813,7 @@ async function searchCodeWithNode(
   const searchRoot = rootInfo.isDirectory() ? searchPath : dirname(searchPath);
   const globMatchers = createGlobMatchers(glob);
   let truncated = false;
+  const warnings: string[] = ["Node fallback does not interpret .gitignore/.ignore; use explicit paths or globs to narrow results."];
   let outputBytes = 0;
 
   const ensureActive = () => {
@@ -848,6 +858,7 @@ async function searchCodeWithNode(
       if (signal?.aborted) throw new Error("search_code aborted");
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       if (code !== "EACCES" && code !== "EPERM" && code !== "ENOENT") throw err;
+      if (warnings.length < 10) warnings.push(`Skipped unreadable or removed file: ${filePath}`);
     } finally {
       lines.close();
       input.destroy();
@@ -862,7 +873,7 @@ async function searchCodeWithNode(
       info = currentPath === searchPath ? rootInfo : await stat(currentPath);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
-      if (code === "EACCES" || code === "EPERM" || code === "ENOENT") return;
+      if (code === "EACCES" || code === "EPERM" || code === "ENOENT") { if (warnings.length < 10) warnings.push(`Skipped path: ${currentPath}`); return; }
       throw err;
     }
     if (info.isFile()) {
@@ -876,21 +887,20 @@ async function searchCodeWithNode(
       entries = await readdir(currentPath, { withFileTypes: true });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
-      if (code === "EACCES" || code === "EPERM" || code === "ENOENT") return;
+      if (code === "EACCES" || code === "EPERM" || code === "ENOENT") { if (warnings.length < 10) warnings.push(`Skipped directory: ${currentPath}`); return; }
       throw err;
     }
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       if (truncated) break;
-      if (entry.name.startsWith(".")) continue;
-      if (entry.isDirectory() && FALLBACK_SKIPPED_DIRECTORIES.has(entry.name)) continue;
+      if (scope === "project" && skipProjectEntry(entry.name)) continue;
       if (entry.isSymbolicLink()) continue;
       await visit(resolve(currentPath, entry.name));
     }
   };
 
   await visit(searchPath);
-  return { matches, truncated };
+  return { matches, truncated, warnings };
 }
 
 export async function searchCodeForTool(
@@ -904,9 +914,11 @@ export async function searchCodeForTool(
   if (signal?.aborted) throw new Error("search_code aborted");
 
   const searchPath = resolveToolPath(cwd, input.path);
+  const scope = resolveSearchScope(cwd, searchPath, input.scope);
   const maxResults = Math.min(toPositiveInt(input.maxResults) ?? 50, MAX_SEARCH_RESULTS);
   const args = [
     "--line-number",
+    "--with-filename",
     "--column",
     "--no-heading",
     "--color",
@@ -914,6 +926,8 @@ export async function searchCodeForTool(
     "--max-count",
     String(maxResults),
   ];
+  if (scope === "all") args.push("--hidden", "--no-ignore");
+  else for (const name of PROJECT_NOISE_DIRECTORIES) args.push("--glob", `!**/${name}/**`);
   if (input.glob?.trim()) {
     args.push("--glob", input.glob.trim());
   }
@@ -932,7 +946,7 @@ export async function searchCodeForTool(
 
   const fallback = output
     ? undefined
-    : await searchCodeWithNode(query, searchPath, input.glob?.trim(), maxResults, signal);
+    : await searchCodeWithNode(query, searchPath, input.glob?.trim(), maxResults, signal, scope);
   const matches = output
     ? output.stdout
       .split(/\r?\n/)
@@ -945,6 +959,10 @@ export async function searchCodeForTool(
   return {
     query,
     path: searchPath,
+    scope,
+    excluded: scope === "project" ? [...PROJECT_NOISE_DIRECTORIES, "hidden entries", ...(output ? ["ignore-file rules"] : [])] : [],
+    engine: output ? "ripgrep" : "node",
+    warnings: output ? (output.stderr.trim() ? [output.stderr.trim()] : []) : fallback!.warnings,
     ...(input.glob?.trim() ? { glob: input.glob.trim() } : {}),
     matches,
     truncated: output
@@ -1338,8 +1356,33 @@ export function createBuiltinFileTools(
       }),
       execute: (input) => listDirForTool(cwd, input),
     }),
+    workspace_map: tool<WorkspaceMapInput, WorkspaceMapResult>({
+      description: "获取轻量项目地图（文件、词法符号/导入线索、带源码证据的笔记）。仅用于定位，结论仍需读取当前实现和引用；不会扫描完整依赖。需要依赖时指定 path。",
+      inputSchema: jsonSchema<WorkspaceMapInput>({
+        type: "object", additionalProperties: false,
+        properties: {
+          path: {type:"string", description:"地图根目录；默认当前工作目录。可明确指定依赖目录。"},
+          query: {type:"string", description:"优先展示的主题/类名/文件名。"},
+          maxChars: {type:"number", description:"展示字符预算，500–16000，默认6000。"},
+        },
+      }),
+      execute: (input, options) => buildWorkspaceMap(resolveToolPath(cwd,input.path), {...input, signal:options.abortSignal}),
+    }),
+    remember_project_fact: tool<ProjectFactInput, Awaited<ReturnType<typeof rememberProjectFact>>>({
+      description: "保存跨压缩的项目事实笔记，必须提供当前源码中逐字匹配的 excerpt。仅记录已查证的实现及入口，不保存秘密、用户指令或未经核实的断言。文件变化后笔记自动失效；不修改项目文件。",
+      inputSchema: jsonSchema<ProjectFactInput>({
+        type:"object", additionalProperties:false,
+        properties: {
+          fact:{type:"string", description:"已查证的能力/关系，不超过600字符。"},
+          path:{type:"string", description:"工作目录内的证据文件路径。"},
+          excerpt:{type:"string", description:"对应源码原文，不超过1000字符。"},
+        },
+        required:["fact","path","excerpt"],
+      }),
+      execute: input => rememberProjectFact(cwd,input),
+    }),
     search_code: tool<SearchCodeInput, SearchCodeOutput>({
-      description: "用 ripgrep 搜索本地文件，无需调用 shell。",
+      description: "搜索本地代码，优先于 shell 搜索。默认 project 跳过依赖/隐藏目录；指定子路径默认 all，可按需查虚拟环境。检查 scope/excluded/warnings/truncated；无命中不等于功能不存在。",
       inputSchema: jsonSchema<SearchCodeInput>({
         type: "object",
         additionalProperties: false,
@@ -1348,6 +1391,7 @@ export function createBuiltinFileTools(
           path: { type: "string", description: "要搜索的文件或目录。默认为会话工作目录。" },
           glob: { type: "string", description: "可选的 ripgrep glob 过滤器，例如 **/*.ts。" },
           maxResults: { type: "number", description: "最大结果行数，内部设有上限。" },
+          scope: { type: "string", enum: ["project", "all"], description: "project: 项目降噪；all: 包含依赖、隐藏及被忽略文件。不改变权限。" },
         },
         required: ["query"],
       }),

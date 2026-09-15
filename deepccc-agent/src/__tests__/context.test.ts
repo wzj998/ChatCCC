@@ -19,6 +19,12 @@ import {
 } from "../tool-protocol.js";
 
 describe("BuiltinContextManager", () => {
+  it("keeps sourced project facts separate from progress and assumptions in compaction instructions", () => {
+    const prompt = buildSummaryPrompt({previousSummary:"",oldMessages:[],recentMessages:[]});
+    expect(prompt).toContain("项目事实保留能力、实现入口、证据路径/符号");
+    expect(prompt).toContain("后来的纠正覆盖此前错误判断");
+    expect(prompt).toContain("不保留密钥");
+  });
   it("does not mistake ordinary DSML discussion for a malformed tool call", () => {
     expect(hasMalformedToolProtocolText("DSML is an internal protocol.")).toBe(false);
     expect(hasMalformedToolProtocolText("quoted </｜｜DSML｜｜parameter> elsewhere\nmore text")).toBe(false);

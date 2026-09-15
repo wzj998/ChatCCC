@@ -67,6 +67,7 @@ npm run dev
 - 权限审批：危险命令在会话时间线中暂停，支持拒绝、允许一次、会话允许和永久允许
 - 上下文管理：自动压缩、原始流日志和跨会话历史检索
 - 项目约定：自动加载 AGENTS.md、CLAUDE.md、系统提示和目录式 Skills
+- 项目理解：可控搜索范围、按需本地项目地图、源文件变化即失效的证据笔记；不针对特定业务仓库，详见 [项目理解与搜索](docs/workspace-understanding.md)
 - 自动化：`deepccc-cli --stream-json` 提供稳定 JSONL 事件接口
 
 ## 缓存命中率
