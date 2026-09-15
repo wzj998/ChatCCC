@@ -88,6 +88,27 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it("injects refreshed navigation without accumulating maps in conversation history", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-orientation-"));
+    await writeFile(join(dir,"model.py"),"class ExistingPolicy: pass\n");
+    const session = new ChatSession({apiKey:"sk-test"}, {cwd:dir, persist:false});
+    streamTextMock.mockReturnValueOnce({textStream:textStream("ok")});
+    await collect(session.chat("项目实现了吗"));
+    const first = streamTextMock.mock.calls.at(-1)?.[0];
+    expect(JSON.stringify(first.messages)).toContain("ExistingPolicy");
+    expect(first.tools.workspace_map).toBeDefined();
+    expect(first.tools.remember_project_fact).toBeDefined();
+    expect(first.system).toContain("不是访问禁区");
+    await writeFile(join(dir,"model.py"),"class NewPolicy: pass\n");
+    streamTextMock.mockReturnValueOnce({textStream:textStream("ok")});
+    await collect(session.chat("继续"));
+    const second = streamTextMock.mock.calls.at(-1)?.[0];
+    const maps = second.messages.filter((m: {content:unknown}) => typeof m.content === "string" && m.content.includes("[Workspace map:"));
+    expect(maps).toHaveLength(1);
+    expect(maps[0].content).toContain("NewPolicy");
+    expect(maps[0].content).not.toContain("ExistingPolicy");
+  });
   it.each(["missing", "length", "error"])("rejects an incomplete provider finish: %s", async (reason) => {
     const { ChatSession } = await import("../index.js");
     const contextDir = await mkdtemp(join(tmpdir(), "deepccc-incomplete-"));
