@@ -89,6 +89,9 @@ export function appendExecutionTranscriptBlock(
       // Heartbeats carry no content and can occur very frequently. Persisting them
       // would add noise without helping users reconstruct what happened.
       return;
+    case "input_injected":
+      appendEntry(state, { type: "notice", at, text: `已注入新消息：${block.text}` });
+      return;
   }
 }
 

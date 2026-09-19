@@ -90,10 +90,17 @@ export interface UnifiedTextResetBlock {
   type: "text_reset";
 }
 
+/** A user message was injected into the running turn at a step boundary (ccc only). */
+export interface UnifiedInputInjectedBlock {
+  type: "input_injected";
+  text: string;
+}
+
 export type UnifiedBlock =
   | UnifiedAgentStatusBlock
   | UnifiedAgentProgressBlock
   | UnifiedTextResetBlock
+  | UnifiedInputInjectedBlock
   | UnifiedThinkingBlock
   | UnifiedTextBlock
   | UnifiedTextFinalBlock
@@ -159,6 +166,12 @@ export interface ToolPromptOptions {
    *  The callback receives a close function that terminates the underlying
    *  subprocess. Used by stop-stuck-loop to kill the CLI process immediately. */
   onSessionCreated?: (closeSession: () => void) => void;
+  /**
+   * Collaborative-yield input source (ccc/DeepCCC only). Synchronously returns the
+   * next pending user message to inject at a model step boundary, or undefined when
+   * none is available. Non-streaming providers ignore it.
+   */
+  drainInput?: () => string | undefined;
 }
 
 // ---------------------------------------------------------------------------

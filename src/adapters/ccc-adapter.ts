@@ -97,7 +97,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
       );
 
       const completion = createTurnCompletion("CCC Agent");
-      for await (const event of session.chat(userText, signal)) {
+      for await (const event of session.chat(userText, signal, _promptOptions?.drainInput)) {
         if (event.type === "text") completion.observe({ type: "assistant", blocks: [{ type: "text", text: event.text }] });
         if (event.type === "text_reset") completion.observe({ type: "assistant", blocks: [{ type: "text_reset" }] });
         if (event.type === "status") {
@@ -117,6 +117,11 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
           yield {
             type: "assistant",
             blocks: [{ type: "text_reset" }],
+          };
+        } else if (event.type === "input_injected") {
+          yield {
+            type: "assistant",
+            blocks: [{ type: "input_injected", text: event.text }],
           };
         } else if (event.type === "text") {
           yield {

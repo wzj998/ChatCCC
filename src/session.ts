@@ -102,6 +102,9 @@ import {
   dequeueMessage,
   consumeQueuedMessage,
   cancelQueuedMessage,
+  shiftInjection,
+  drainRemainingInjections,
+  clearInjections,
   setQueuePreservedChat,
   consumeQueuePreservedChat,
   markSessionFinalizing,
@@ -1129,6 +1132,10 @@ export function accumulateBlockContent(
     }
     case "agent_status":
       break;
+    case "input_injected":
+      // 协作式让位：显示一条轻量注入标记（仅过程展示，不进入最终回复）。
+      state.accumulatedContent += `\n\n↳ 已注入新消息：${block.text}\n`;
+      break;
   }
 }
 
@@ -1764,6 +1771,15 @@ export async function runAgentSession(
         const prompt = activePrompts.get(sessionId);
         if (prompt) prompt.closeSession = closeSession;
       },
+      // ccc 内核支持协作式让位：同步从注入队列取队首文本，供内核在每个
+      // model step 边界吸收。非 ccc adapter 忽略该字段。
+      drainInput: tool === "ccc" ? () => {
+        const injected = shiftInjection(sessionId);
+        if (!injected) return undefined;
+        // 与首次消息保持一致的结构化包装；imSkillsPrompt 已在首次消息中，
+        // 此处不重复注入，避免多轮注入导致上下文膨胀。
+        return `[User message]\n${injected.text}\n[/User message]`;
+      } : undefined,
     })) {
       if (unifiedMsg.isFinalResponse) {
         const prompt = activePrompts.get(sessionId);
@@ -2124,10 +2140,19 @@ export async function runAgentSession(
       if (discarded) {
         console.log(`[${ts()}] [QUEUE] Discarding queued message for stopped session ${sessionId}`);
       }
+      const discardedInjections = drainRemainingInjections(sessionId);
+      if (discardedInjections.length > 0) {
+        console.log(`[${ts()}] [INJECT] Discarding ${discardedInjections.length} pending injection(s) for stopped session ${sessionId}`);
+      }
     } else if (!shouldScheduleAutoRecovery) {
       // 第一次 response-stall 后保留普通缓存；恢复轮结束后由恢复轮的
       // finally 再消费，顺序固定为“自动恢复 → 用户缓存”。
       queuedForConsumption = dequeueMessage(sessionId);
+      // ccc 注入队列剩余（turn 期间未注入完，如 non-streaming 或收尾窗口到达）
+      // 取第一条转普通消费，其余留待下一轮结束后继续消费。
+      if (!queuedForConsumption) {
+        queuedForConsumption = shiftInjection(sessionId);
+      }
     }
 
     if (queuedForConsumption) {
@@ -2565,6 +2590,7 @@ export function stopSession(sessionId: string): boolean {
   if (!prompt) {
     if (cancelledRecovery) {
       cancelQueuedMessage(sessionId);
+      clearInjections(sessionId);
       console.log(`[${ts()}] [STOP] Reserved automatic recovery for ${sessionId} cancelled`);
       return true;
     }
@@ -2576,6 +2602,7 @@ export function stopSession(sessionId: string): boolean {
   clearPromptAvatarRefreshTimer(sessionId);
   clearPromptFinalResponseCloseTimer(sessionId);
   cancelQueuedMessage(sessionId);
+  clearInjections(sessionId);
 
   // 先发起整棵进程树清理，再触发 close/abort。Windows 上 CLI 由
   // cmd.exe → node → 实际二进制组成；若先 process.kill(cmd.exe)，taskkill

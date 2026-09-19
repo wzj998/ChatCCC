@@ -482,6 +482,46 @@ export function buildQueueFullCard(): string {
   });
 }
 
+// 协作式让位卡片（仅 ccc）：消息进入注入队列，将在 step 边界吸收进本轮。
+// 与上面的整轮队列卡片区分，强调“无需等待整轮结束”。
+export function buildInjectionQueuedCard(text: string): string {
+  const preview = text.length > 100 ? text.slice(0, 100) + "…" : text;
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "blue", title: { content: "消息将注入本轮", tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: `当前会话正在生成中，你的消息会在**当前步骤结束后立即注入本轮**，无需等待整轮结束。\n\n> ${preview}` } },
+      { tag: "hr" },
+      {
+        tag: "action",
+        actions: [
+          { tag: "button", text: { tag: "plain_text", content: "清空注入（/cancel）" }, type: "danger", value: { action: "cancel" } },
+          { tag: "button", text: { tag: "plain_text", content: "停止生成（/stop）" }, type: "default", value: { action: "stop" } },
+        ],
+      },
+    ],
+  });
+}
+
+// 注入队列满卡片（仅 ccc）
+export function buildInjectionQueueFullCard(): string {
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: "yellow", title: { content: "待注入消息过多", tag: "plain_text" } },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: "当前已有较多消息等待注入本轮，请稍候或发送指令：\n- **/stop** — 停止当前生成\n- **/cancel** — 清空待注入消息" } },
+      { tag: "hr" },
+      {
+        tag: "action",
+        actions: [
+          { tag: "button", text: { tag: "plain_text", content: "清空注入（/cancel）" }, type: "danger", value: { action: "cancel" } },
+          { tag: "button", text: { tag: "plain_text", content: "停止生成（/stop）" }, type: "default", value: { action: "stop" } },
+        ],
+      },
+    ],
+  });
+}
+
 // 状态卡片（带关闭按钮）
 export function buildStatusCard(statusText: string, template = "blue"): string {
   return JSON.stringify({
