@@ -24,6 +24,23 @@ describe("BuiltinContextManager", () => {
     expect(prompt).toContain("项目事实保留能力、实现入口、证据路径/符号");
     expect(prompt).toContain("后来的纠正覆盖此前错误判断");
     expect(prompt).toContain("不保留密钥");
+    expect(prompt).toContain("## 当前事实与状态");
+    expect(prompt).toContain("## 已取代的历史");
+    expect(prompt).toContain("重写整份摘要");
+    expect(prompt).toContain("观察结果");
+    expect(prompt).toContain("推断");
+    expect(prompt).toContain("局限");
+  });
+
+  it("rewrites a legacy summary immediately without consuming recent raw messages", () => {
+    const context = new BuiltinContextManager({ compactAtTokens: 100_000, persist: false });
+    context.setSummary("## 用户目标\n- 旧格式摘要中的历史建议");
+    context.appendMessage({ role: "user", content: "recent question" });
+    const plan = context.planCompaction();
+    expect(plan).not.toBeNull();
+    expect(plan?.previousSummary).toContain("旧格式摘要");
+    expect(plan?.oldMessages).toEqual([]);
+    expect(plan?.recentMessages).toEqual([{ role: "user", content: "recent question" }]);
   });
   it("does not mistake ordinary DSML discussion for a malformed tool call", () => {
     expect(hasMalformedToolProtocolText("DSML is an internal protocol.")).toBe(false);
@@ -186,7 +203,14 @@ describe("BuiltinContextManager", () => {
       keepRecentMessages: 2,
       persist: false,
     });
-    context.setSummary("x".repeat(500));
+    context.setSummary([
+      "## 当前事实与状态", `- ${"x".repeat(500)}`,
+      "## 仍待处理", "无",
+      "## 已取代的历史", "无",
+      "## 已核实的项目事实", "无",
+      "## 证据、推断与局限", "无",
+      "## 重要操作记录", "无",
+    ].join("\n"));
     context.appendMessage({ role: "user", content: "旧用户消息" });
     context.appendMessage({ role: "assistant", content: "旧助手回复" });
     context.appendMessage({ role: "user", content: "近期用户消息" });
@@ -223,7 +247,7 @@ describe("BuiltinContextManager", () => {
     expect(context.buildModelMessages()).toEqual([
       {
         role: "user",
-        content: expect.stringContaining("以下是更早的对话摘要"),
+        content: expect.stringContaining("以下是更早对话的历史摘要"),
       },
       { role: "assistant", content: "recent" },
     ]);

@@ -85,7 +85,14 @@ describe("BuiltinContextManager", () => {
       keepRecentMessages: 2,
       persist: false,
     });
-    context.setSummary("x".repeat(500));
+    context.setSummary([
+      "## 当前事实与状态", `- ${"x".repeat(500)}`,
+      "## 仍待处理", "无",
+      "## 已取代的历史", "无",
+      "## 已核实的项目事实", "无",
+      "## 证据、推断与局限", "无",
+      "## 重要操作记录", "无",
+    ].join("\n"));
     context.appendMessage({ role: "user", content: "旧用户消息" });
     context.appendMessage({ role: "assistant", content: "旧助手回复" });
     context.appendMessage({ role: "user", content: "近期用户消息" });
@@ -122,7 +129,7 @@ describe("BuiltinContextManager", () => {
     expect(context.buildModelMessages()).toEqual([
       {
         role: "user",
-        content: expect.stringContaining("以下是更早的对话摘要"),
+        content: expect.stringContaining("以下是更早对话的历史摘要"),
       },
       { role: "assistant", content: "recent" },
     ]);

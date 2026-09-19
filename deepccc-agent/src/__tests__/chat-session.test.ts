@@ -109,6 +109,28 @@ describe("ChatSession response transport", () => {
     expect(maps[0].content).toContain("NewPolicy");
     expect(maps[0].content).not.toContain("ExistingPolicy");
   });
+
+  it("installs an intra-turn tool context budget for later model steps", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" }, { persist: false });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+    await collect(session.chat("检查当前项目实现"));
+    const prepareStep = streamTextMock.mock.calls[0]?.[0].prepareStep as ((input: {
+      messages: Array<Record<string, unknown>>;
+      stepNumber: number;
+    }) => { messages: unknown[] });
+    expect(prepareStep).toBeTypeOf("function");
+    const messages = [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "old", toolName: "read_file", input: {} }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "old", toolName: "read_file", output: { type: "text", value: "x".repeat(150_000) } }] },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "new", toolName: "read_file", input: {} }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "new", toolName: "read_file", output: { type: "text", value: "latest" } }] },
+    ];
+    const prepared = prepareStep({ messages, stepNumber: 2 });
+    expect(JSON.stringify(prepared.messages)).toContain("latest");
+    expect(JSON.stringify(prepared.messages)).toContain("tool result shortened");
+    expect(JSON.stringify(prepared.messages).length).toBeLessThan(JSON.stringify(messages).length);
+  });
   it.each(["missing", "length", "error"])("rejects an incomplete provider finish: %s", async (reason) => {
     const { ChatSession } = await import("../index.js");
     const contextDir = await mkdtemp(join(tmpdir(), "deepccc-incomplete-"));
@@ -545,6 +567,8 @@ describe("ChatSession context management", () => {
     // 交付自检：声明做了什么/如何验证/未验证项
     expect(system).toContain("## 交付前自检");
     expect(system).toContain("未验证或有风险");
+    expect(system).toContain("当前证据不支持");
+    expect(system).toContain("一次合并后的回答");
     // 稳定前缀全部位于项目指令与 runtime 上下文之前
     for (const section of ["## 行动前先调查", "## 授权范围", "## 交付前自检"]) {
       expect(system.indexOf(section)).toBeGreaterThan(0);
