@@ -186,5 +186,7 @@ export async function rememberProjectFact(cwd: string, input: ProjectFactInput, 
 
 export function needsWorkspaceOrientation(message: string): boolean {
   const user = message.split("[User message]").pop() ?? message;
-  return /项目|代码|仓库|实现|架构|功能|修复|编译|测试|模块|继续|挖.*因子|\b(?:repo|project|code|implement|architecture|feature|fix|build|test|module|continue)\b/i.test(user);
+  if (/(?:不涉及|无关|不要读取).{0,12}(?:当前)?(?:工作目录|项目|代码|仓库)/.test(user)) return false;
+  if (/^\s*(?:你好|谢谢|收到|好的|ok|hello|hi)[。！!,.，\s]*$/i.test(user)) return false;
+  return /项目|代码|仓库|实现|架构|功能|修复|编译|测试|模块|继续|现状|当前|范式|因子|策略|实验|消融|回测|指标|数据|模型|进度|提交|推送|挖.*因子|\b(?:repo|project|code|implement|architecture|feature|fix|build|test|module|continue|status|strategy|model|experiment|metric|data)\b/i.test(user);
 }

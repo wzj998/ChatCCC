@@ -75,6 +75,8 @@ it("does not let imports hide definitions and ranks the requested symbol", async
 it("bounds navigation to project-related turns, honours abort and workspace boundaries", async () => {
   expect(needsWorkspaceOrientation("[skill] project code [User message]你好")).toBe(false);
   expect(needsWorkspaceOrientation("继续")).toBe(true);
+  expect(needsWorkspaceOrientation("横截面排名范式是什么？")).toBe(true);
+  expect(needsWorkspaceOrientation("给我讲一个很长的睡前故事，不涉及当前工作目录")).toBe(false);
   const {cwd, cacheDir} = await fixture();
   await writeFile(join(cwd,"../outside.py"),"class Outside: pass");
   await expect(rememberProjectFact(cwd,{fact:"outside",path:"../outside.py",excerpt:"class Outside"},cacheDir)).rejects.toThrow("within workspace");
