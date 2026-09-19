@@ -115,5 +115,12 @@ export function reduceProgress(prev: ProgressView, event: ChatEvent): ProgressVi
     case "compact":
       // 旧上下文压缩不影响当前过程展示
       return prev;
+
+    case "input_injected": {
+      // 协作式让位：在当前 turn 的 step 边界注入了新消息，仅在头部提示，
+      // 不改动正文与工具状态。
+      const preview = event.text.length > 40 ? `${event.text.slice(0, 40)}…` : event.text;
+      return withProgressView(prev, { headerTitle: `已注入新消息：${preview}` });
+    }
   }
 }

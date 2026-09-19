@@ -277,6 +277,47 @@ export function hasQueuedMessage(sessionId: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// pendingInjections: sessionId → 运行中待注入消息（仅 ccc 内核）
+// 与上面的 queuedMessages（整轮队列，深度 1）分离：ccc 运行期的新消息进入
+// 这里，由 drainInput 在每个 model step 边界逐条吸收进当前 turn；其他 agent
+// 继续走整轮队列。turn 结束后剩余未注入的消息转回普通队列消费。
+// ---------------------------------------------------------------------------
+
+export const MAX_PENDING_INJECTIONS = 50;
+
+export const pendingInjections = new Map<string, QueuedMessage[]>();
+
+export function pushInjection(sessionId: string, msg: QueuedMessage): boolean {
+  const list = pendingInjections.get(sessionId) ?? [];
+  if (list.length >= MAX_PENDING_INJECTIONS) return false;
+  list.push(msg);
+  pendingInjections.set(sessionId, list);
+  return true;
+}
+
+export function shiftInjection(sessionId: string): QueuedMessage | undefined {
+  const list = pendingInjections.get(sessionId);
+  if (!list || list.length === 0) return undefined;
+  const msg = list.shift();
+  if (list.length === 0) pendingInjections.delete(sessionId);
+  return msg;
+}
+
+export function drainRemainingInjections(sessionId: string): QueuedMessage[] {
+  const list = pendingInjections.get(sessionId);
+  pendingInjections.delete(sessionId);
+  return list ?? [];
+}
+
+export function hasPendingInjection(sessionId: string): boolean {
+  return (pendingInjections.get(sessionId)?.length ?? 0) > 0;
+}
+
+export function clearInjections(sessionId: string): void {
+  pendingInjections.delete(sessionId);
+}
+
+// ---------------------------------------------------------------------------
 // 队列消费回调（由 index.ts 注入，避免 session.ts → orchestrator.ts 循环依赖）
 // ---------------------------------------------------------------------------
 
@@ -302,6 +343,7 @@ export function resetBindingState(): void {
   finalizingSessions.clear();
   autoRecoveryReservations.clear();
   queuedMessages.clear();
+  pendingInjections.clear();
   displayCards.clear();
   if (unifiedDisplayLoopHandle !== null) {
     clearInterval(unifiedDisplayLoopHandle);

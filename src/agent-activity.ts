@@ -128,6 +128,9 @@ export function updateAgentActivity(
       return setActivity(tracker, { kind: "searching", startedAt: now });
     case "compact_boundary":
       return setActivity(tracker, { kind: "compacting", startedAt: now });
+    case "input_injected":
+      // 协作式让位：注入本身不是 agent 活动，不改变状态标题。
+      return false;
   }
 }
 

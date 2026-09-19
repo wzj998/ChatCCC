@@ -392,8 +392,21 @@ export type ChatEvent =
   | { type: "tool_result"; tool_use_id: string; name?: string; content: unknown; is_error?: boolean }
   | { type: "text"; text: string; accumulated: string }
   | { type: "text_reset" }
+  | { type: "input_injected"; text: string }
   | { type: "done"; text: string }
   | { type: "error"; message: string };
+
+/**
+ * 协作式让位的内部中断信号：在 prepareStep（每个模型 step 前）检测到外部
+ * 注入消息时抛出，触发 chat() 持久化当前中间态 → 注入 user 消息 → 以新
+ * messages 重启 streamText，让 agent 在当前 turn 内吸收新指令而非结束整轮。
+ */
+class InputInjectionInterrupt extends Error {
+  constructor() {
+    super("input injection requested at step boundary");
+    this.name = "InputInjectionInterrupt";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // ChatSession
@@ -575,6 +588,7 @@ export class ChatSession {
   async *chat(
     userMessage: string,
     signal?: AbortSignal,
+    drainInput?: () => string | undefined,
   ): AsyncIterable<ChatEvent> {
     this.context.appendMessage({ role: "user", content: userMessage });
 
@@ -654,6 +668,13 @@ export class ChatSession {
           ? { [OPENAI_COMPATIBLE_PROVIDER_NAME]: { reasoningEffort: this.effort } }
           : { anthropic: { effort: this.effort } };
       }
+      // 协作式让位（仅 streaming 模式）：外部可在每个 model step 边界 drain 一条
+      // 新消息注入当前 turn。non-streaming 下 generateText 是原子请求，无法在 step
+      // 边界取回中间工具结果，因此忽略 drainInput（消息留在上层队列，整轮结束后消费）。
+      const canInject = this.streaming && typeof drainInput === "function";
+      // pendingInjection 是 prepareStep 与 catch 之间的注入信号槽。用标志而非
+      // instanceof 判断，因为 provider SDK 可能包装抛出的错误。
+      let pendingInjection: string | null = null;
       const baseGenerationOptions = {
         model: this.model,
         system,
@@ -668,6 +689,13 @@ export class ChatSession {
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
         prepareStep: ({ messages, stepNumber }: { messages: ModelMessage[]; stepNumber: number }) => {
+          if (canInject) {
+            const injected = drainInput!();
+            if (injected) {
+              pendingInjection = injected;
+              throw new InputInjectionInterrupt();
+            }
+          }
           const compacted = compactToolLoopMessages(messages);
           if (compacted.compactedResults > 0) {
             rawLog?.writeLine(safeRawStreamJson({
@@ -685,143 +713,194 @@ export class ChatSession {
           : {}),
         ...(effortProviderOptions ? { providerOptions: effortProviderOptions } : {}),
       };
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        fullText = "";
-        safeAccumulated = "";
-        toolContext = [];
-        toolCallsById.clear();
-        toolCallOrder.length = 0;
-        timeline.length = 0;
-        let lastReasoningProgressAt: number | undefined;
-        const attemptMessages = attempt === 0
-          ? modelMessages
-          : [...modelMessages, { role: "user" as const, content: TOOL_PROTOCOL_RECOVERY_PROMPT }];
-        const generationOptions = {
-          ...baseGenerationOptions,
-          messages: attemptMessages as any,
-        };
-        let stream: AsyncIterable<TextStreamPart<any>>;
-        let requiresFinish = false;
-        let receivedFinish = false;
-        let finishReason: string | undefined;
-        if (this.streaming) {
-          const result = streamText(generationOptions);
-          requiresFinish = result.fullStream != null;
-          stream = result.fullStream ?? textStreamToFullStream(result.textStream);
-        } else {
-          const result = await generateText(generationOptions);
-          finishReason = result.finishReason;
-          stream = generateResultToFullStream(result);
-        }
+      // 注入重启后 context 已变（中间 assistant + 注入 user），需要重新构建并应用
+      // 与首次一致的 recovery-hint / anthropic 兼容提示。
+      const decorateMessages = (msgs: ModelMessage[]): ModelMessage[] => {
+        const hinted = maybeAppendCompactionRecoveryHint(
+          msgs,
+          this.context.summary,
+          appConfig.rawStreamLogs.enabled,
+          this.context.sessionId,
+        );
+        return this.provider === "anthropic"
+          ? addAnthropicToolJsonCompatibilityNote(hinted)
+          : hinted;
+      };
 
-        for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
-          rawLog?.writeLine(safeRawStreamJson(part));
-          if (part.type === "finish") { receivedFinish = true; finishReason = part.finishReason; }
-          if (part.type === "reasoning-start" || part.type === "reasoning-delta") {
-            // Reasoning content remains private. A throttled heartbeat is enough
-            // for ChatCCC to distinguish active inference from a stalled stream.
-            const now = Date.now();
-            if (lastReasoningProgressAt === undefined || now - lastReasoningProgressAt >= 1_000) {
-              lastReasoningProgressAt = now;
-              yield { type: "progress", phase: "reasoning" };
+      let currentMessages = modelMessages;
+      while (true) {
+        pendingInjection = null;
+        try {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            fullText = "";
+            toolContext = [];
+            toolCallsById.clear();
+            toolCallOrder.length = 0;
+            timeline.length = 0;
+            // safeAccumulated 是整轮展示累积：注入延续时不重置，只有工具协议恢复
+            // （重新生成、已 yield text_reset）才重置。
+            if (attempt === 1) safeAccumulated = "";
+            let lastReasoningProgressAt: number | undefined;
+            const attemptMessages = attempt === 0
+              ? currentMessages
+              : [...currentMessages, { role: "user" as const, content: TOOL_PROTOCOL_RECOVERY_PROMPT }];
+            const generationOptions = {
+              ...baseGenerationOptions,
+              messages: attemptMessages as any,
+            };
+            let stream: AsyncIterable<TextStreamPart<any>>;
+            let requiresFinish = false;
+            let receivedFinish = false;
+            let finishReason: string | undefined;
+            if (this.streaming) {
+              const result = streamText(generationOptions);
+              requiresFinish = result.fullStream != null;
+              stream = result.fullStream ?? textStreamToFullStream(result.textStream);
+            } else {
+              const result = await generateText(generationOptions);
+              finishReason = result.finishReason;
+              stream = generateResultToFullStream(result);
             }
-          } else if (part.type === "text-delta") {
-            fullText += part.text;
-            const previous = timeline[timeline.length - 1];
-            if (previous?.type === "text") previous.text += part.text;
-            else timeline.push({ type: "text", text: part.text });
-            // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
-            // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
-            const safeText = applyPrivacy(part.text);
-            safeAccumulated += safeText;
-            yield { type: "text", text: safeText, accumulated: safeAccumulated };
-          } else if (part.type === "tool-call") {
-            const input = safeJson(part.input);
-            toolContext.push(`tool_call ${part.toolName}: ${input}`);
-            toolCallsById.set(part.toolCallId, { id: part.toolCallId, name: part.toolName, input });
-            toolCallOrder.push(part.toolCallId);
-            timeline.push({ type: "tool_use", id: part.toolCallId, name: part.toolName, input });
-            yield {
-              type: "tool_use",
-              id: part.toolCallId,
-              name: part.toolName,
-              input: applyPrivacyToJson(part.input),
-            };
-          } else if (part.type === "tool-result") {
-            const output = truncateToolContext(safeJson(part.output));
-            toolContext.push(`tool_result ${part.toolName}: ${output}`);
-            const call = toolCallsById.get(part.toolCallId);
-            if (call) call.output = output;
-            timeline.push({ type: "tool_result", tool_use_id: part.toolCallId, name: part.toolName, output });
-            yield {
-              type: "tool_result",
-              tool_use_id: part.toolCallId,
-              name: part.toolName,
-              content: applyPrivacyToJson(part.output),
-              is_error: false,
-            };
-          } else if (part.type === "tool-error") {
-            const message = errorMessage(part.error);
-            toolContext.push(`tool_error ${part.toolName}: ${message}`);
-            const call = toolCallsById.get(part.toolCallId);
-            if (call) {
-              call.output = message;
-              call.is_error = true;
+
+            for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
+              rawLog?.writeLine(safeRawStreamJson(part));
+              if (part.type === "finish") { receivedFinish = true; finishReason = part.finishReason; }
+              if (part.type === "reasoning-start" || part.type === "reasoning-delta") {
+                // Reasoning content remains private. A throttled heartbeat is enough
+                // for ChatCCC to distinguish active inference from a stalled stream.
+                const now = Date.now();
+                if (lastReasoningProgressAt === undefined || now - lastReasoningProgressAt >= 1_000) {
+                  lastReasoningProgressAt = now;
+                  yield { type: "progress", phase: "reasoning" };
+                }
+              } else if (part.type === "text-delta") {
+                fullText += part.text;
+                const previous = timeline[timeline.length - 1];
+                if (previous?.type === "text") previous.text += part.text;
+                else timeline.push({ type: "text", text: part.text });
+                // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
+                // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
+                const safeText = applyPrivacy(part.text);
+                safeAccumulated += safeText;
+                yield { type: "text", text: safeText, accumulated: safeAccumulated };
+              } else if (part.type === "tool-call") {
+                const input = safeJson(part.input);
+                toolContext.push(`tool_call ${part.toolName}: ${input}`);
+                toolCallsById.set(part.toolCallId, { id: part.toolCallId, name: part.toolName, input });
+                toolCallOrder.push(part.toolCallId);
+                timeline.push({ type: "tool_use", id: part.toolCallId, name: part.toolName, input });
+                yield {
+                  type: "tool_use",
+                  id: part.toolCallId,
+                  name: part.toolName,
+                  input: applyPrivacyToJson(part.input),
+                };
+              } else if (part.type === "tool-result") {
+                const output = truncateToolContext(safeJson(part.output));
+                toolContext.push(`tool_result ${part.toolName}: ${output}`);
+                const call = toolCallsById.get(part.toolCallId);
+                if (call) call.output = output;
+                timeline.push({ type: "tool_result", tool_use_id: part.toolCallId, name: part.toolName, output });
+                yield {
+                  type: "tool_result",
+                  tool_use_id: part.toolCallId,
+                  name: part.toolName,
+                  content: applyPrivacyToJson(part.output),
+                  is_error: false,
+                };
+              } else if (part.type === "tool-error") {
+                const message = errorMessage(part.error);
+                toolContext.push(`tool_error ${part.toolName}: ${message}`);
+                const call = toolCallsById.get(part.toolCallId);
+                if (call) {
+                  call.output = message;
+                  call.is_error = true;
+                }
+                timeline.push({ type: "tool_result", tool_use_id: part.toolCallId, name: part.toolName, output: message, is_error: true });
+                yield {
+                  type: "tool_result",
+                  tool_use_id: part.toolCallId,
+                  name: part.toolName,
+                  content: applyPrivacy(message),
+                  is_error: true,
+                };
+              } else if (part.type === "error") {
+                if (pendingInjection !== null) {
+                  // prepareStep 里的注入中断被 provider 转成了 error part。
+                  throw new InputInjectionInterrupt();
+                }
+                const message = errorMessage(part.error);
+                yield { type: "error", message: applyPrivacy(message) };
+                throw new Error(message);
+              }
             }
-            timeline.push({ type: "tool_result", tool_use_id: part.toolCallId, name: part.toolName, output: message, is_error: true });
-            yield {
-              type: "tool_result",
-              tool_use_id: part.toolCallId,
-              name: part.toolName,
-              content: applyPrivacy(message),
-              is_error: true,
-            };
-          } else if (part.type === "error") {
-            const message = errorMessage(part.error);
-            yield { type: "error", message: applyPrivacy(message) };
-            throw new Error(message);
+
+            if (!signal?.aborted) {
+              if (requiresFinish && !receivedFinish) throw new Error("DeepCCC 输出流中断：未收到模型完成事件，回复可能不完整");
+              if (finishReason === "error" || finishReason === "length") throw new Error(`DeepCCC 未正常完成：finishReason=${finishReason}，回复可能不完整`);
+              if (!fullText.trim() && toolCallOrder.length === 0) throw new Error("DeepCCC 本轮未产生有效回复");
+            }
+            if (hasMalformedToolProtocolText(fullText)) {
+              console.warn(
+                `[DeepCCC] malformed tool protocol text detected for ${this.context.sessionId} `
+                + `(attempt ${attempt + 1}/2, structuredToolCalls=${toolCallOrder.length})`,
+              );
+              rawLog?.writeLine(safeRawStreamJson({
+                type: "deepccc_tool_protocol_recovery",
+                attempt: attempt + 1,
+                structuredToolCalls: toolCallOrder.length,
+              }));
+              yield { type: "text_reset" };
+              if (attempt === 0 && toolCallOrder.length === 0) {
+                yield { type: "status", phase: "generating" };
+                continue;
+              }
+              throw new Error(
+                toolCallOrder.length > 0
+                  ? "工具调用协议异常：检测到混合的结构化调用与伪造工具文本，为避免重复执行工具，本轮已安全终止"
+                  : "工具调用协议异常：模型重试后仍输出了无效或伪造的工具调用文本",
+              );
+            }
+
+            completed = true;
+            const collectedToolCalls = toolCallOrder
+              .map((id) => toolCallsById.get(id))
+              .filter((call): call is { id: string; name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
+            this.context.appendMessage(buildPersistedAssistantMessage({
+              fullText,
+              transcriptLines: toolContext,
+              toolCalls: collectedToolCalls,
+              timeline,
+            }));
+            yield { type: "done", text: safeAccumulated };
+            return;
           }
-        }
-
-        if (!signal?.aborted) {
-          if (requiresFinish && !receivedFinish) throw new Error("DeepCCC 输出流中断：未收到模型完成事件，回复可能不完整");
-          if (finishReason === "error" || finishReason === "length") throw new Error(`DeepCCC 未正常完成：finishReason=${finishReason}，回复可能不完整`);
-          if (!fullText.trim() && toolCallOrder.length === 0) throw new Error("DeepCCC 本轮未产生有效回复");
-        }
-        if (hasMalformedToolProtocolText(fullText)) {
-          console.warn(
-            `[DeepCCC] malformed tool protocol text detected for ${this.context.sessionId} `
-            + `(attempt ${attempt + 1}/2, structuredToolCalls=${toolCallOrder.length})`,
-          );
-          rawLog?.writeLine(safeRawStreamJson({
-            type: "deepccc_tool_protocol_recovery",
-            attempt: attempt + 1,
-            structuredToolCalls: toolCallOrder.length,
-          }));
-          yield { type: "text_reset" };
-          if (attempt === 0 && toolCallOrder.length === 0) {
-            yield { type: "status", phase: "generating" };
+        } catch (err) {
+          if (pendingInjection !== null) {
+            // 协作式让位：持久化本段中间态 → 注入 user → 重建 messages → 继续当前 turn。
+            if (fullText.trim() || toolCallOrder.length > 0) {
+              const collectedToolCalls = toolCallOrder
+                .map((id) => toolCallsById.get(id))
+                .filter((call): call is { id: string; name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
+              this.context.appendMessage(buildPersistedAssistantMessage({
+                fullText,
+                transcriptLines: toolContext,
+                toolCalls: collectedToolCalls,
+                timeline: timeline.map((entry) => ({ ...entry })),
+              }));
+            }
+            const injectedText = pendingInjection;
+            this.context.appendMessage({ role: "user", content: injectedText });
+            rawLog?.writeLine(safeRawStreamJson({
+              type: "deepccc_input_injected",
+              text: injectedText,
+            }));
+            yield { type: "input_injected", text: injectedText };
+            currentMessages = decorateMessages(this.context.buildModelMessages());
             continue;
           }
-          throw new Error(
-            toolCallOrder.length > 0
-              ? "工具调用协议异常：检测到混合的结构化调用与伪造工具文本，为避免重复执行工具，本轮已安全终止"
-              : "工具调用协议异常：模型重试后仍输出了无效或伪造的工具调用文本",
-          );
+          throw err;
         }
-
-        completed = true;
-        const collectedToolCalls = toolCallOrder
-          .map((id) => toolCallsById.get(id))
-          .filter((call): call is { id: string; name: string; input?: string; output?: string; is_error?: boolean } => call !== undefined);
-        this.context.appendMessage(buildPersistedAssistantMessage({
-          fullText,
-          transcriptLines: toolContext,
-          toolCalls: collectedToolCalls,
-          timeline,
-        }));
-        yield { type: "done", text: safeAccumulated };
-        return;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

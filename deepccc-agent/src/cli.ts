@@ -485,6 +485,10 @@ async function runRepl(args: ParsedArgs): Promise<void> {
 
   let currentAbort: AbortController | null = null;
   const ctrlCState = createCtrlCState();
+  // 协作式让位：agent 运行期间用户仍可输入，新行进入注入队列，由内核在每个
+  // model step 边界 drain 后吸收到当前 turn（而非等待整轮结束）。
+  let chatRunning = false;
+  const pendingInjections: string[] = [];
 
   rl.prompt();
 
@@ -493,6 +497,18 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     const input = line.trim();
     if (!input && !pendingAttachments.length) {
       rl.prompt();
+      return;
+    }
+
+    if (chatRunning) {
+      // 运行期间不并发启动新 turn：把输入注入当前 turn 的 step 边界。
+      if (input === "exit" || input.startsWith("/")) {
+        process.stdout.write(`${C.dim}[running] 命令将在本轮结束后生效；或按两次 Ctrl+C 中断${C.reset}\n`);
+        return;
+      }
+      pendingInjections.push(buildAttachmentPrompt(input, pendingAttachments));
+      pendingAttachments = [];
+      process.stdout.write(`${C.dim}[queued] 消息将在当前步骤后注入本轮${C.reset}\n`);
       return;
     }
 
@@ -545,10 +561,11 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       const chatInput = buildAttachmentPrompt(input, pendingAttachments);
       pendingAttachments = [];
       let lastAccumulated = "";
-      for await (const event of session.chat(chatInput, signal)) {
+      chatRunning = true;
+      for await (const event of session.chat(chatInput, signal, () => pendingInjections.shift())) {
         if (renderer && view) {
           view = reduceProgress(view, event);
-          if (event.type === "text" || event.type === "compact" || event.type === "status") {
+          if (event.type === "text" || event.type === "compact" || event.type === "status" || event.type === "input_injected") {
             renderer.render(view);
           } else {
             renderer.flush();
@@ -569,6 +586,8 @@ async function runRepl(args: ParsedArgs): Promise<void> {
         } else if (event.type === "tool_result") {
           const status = event.is_error ? "error" : "ok";
           console.log(`${C.dim}[tool result] ${event.name ?? event.tool_use_id} ${status}${C.reset}`);
+        } else if (event.type === "input_injected") {
+          console.log(`\n${C.dim}[injected] ${event.text}${C.reset}`);
         } else if (event.type === "error") {
           console.log(`\n${C.yellow}[error] ${event.message}${C.reset}`);
         }
@@ -585,6 +604,7 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     } finally {
       activeRenderer = null;
       activeView = null;
+      chatRunning = false;
       if (renderer && view && !rendererEnded) {
         // 定型终态区块（完成/已停止/异常结束）留在屏幕上，恢复光标
         renderer.end(view);

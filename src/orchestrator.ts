@@ -50,6 +50,8 @@ import {
   buildSessionsCard,
   buildQueuedCard,
   buildQueueFullCard,
+  buildInjectionQueuedCard,
+  buildInjectionQueueFullCard,
   buildCodexUsageCard,
 } from "./cards.ts";
 import {
@@ -91,6 +93,8 @@ import {
   recordLastActiveChat,
   enqueueMessage,
   cancelQueuedMessage,
+  pushInjection,
+  clearInjections,
   getSessionDrainSnapshot,
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
@@ -2045,9 +2049,11 @@ async function handleCommandInternal(
 
     if (isCommandText && textLower === "/cancel") {
       logTrace(tid, "BRANCH", { cmd: "/cancel" });
-      if (cancelQueuedMessage(sessionId)) {
+      const cancelledQueue = cancelQueuedMessage(sessionId);
+      const cancelledInjections = clearInjections(sessionId);
+      if (cancelledQueue || cancelledInjections) {
         console.log(`[${ts()}] [CANCEL] Queue cancelled for session=${sessionId}`);
-        await platform.sendText(chatId, "已取消缓存队列中的消息。").catch(() => {});
+        await platform.sendText(chatId, "已取消缓存队列与待注入的消息。").catch(() => {});
         logTrace(tid, "DONE", { outcome: "cancelled" });
       } else {
         await platform.sendText(chatId, "当前缓存队列中没有消息。").catch(() => {});
@@ -2724,6 +2730,36 @@ async function handleCommandInternal(
 
     // 并发检查：同一 session 只能有一个活跃 prompt，多余消息进入队列
     if (isSessionRunning(sessionId)) {
+      // ccc 内核支持协作式让位：运行期新消息进入注入队列，由 drainInput 在每个
+      // model step 边界逐条吸收进当前 turn（不新开 turn）。其他 agent 保持整轮队列。
+      if (descriptionTool === "ccc") {
+        const injected = pushInjection(sessionId, {
+          text: promptText, chatId, openId, msgTimestamp, chatType, traceId: tid,
+        });
+        if (injected) {
+          logTrace(tid, "INJECT_QUEUED", { sessionId });
+          console.log(
+            `[${ts()}] [INJECT_QUEUED] Session ${sessionId} (ccc) busy, message from chat ${chatId} queued for step-boundary injection`,
+          );
+          if (platform.kind === "wechat") {
+            await platform.sendText(chatId, "当前会话正在生成中，你的消息会在当前步骤结束后注入本轮处理。").catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildInjectionQueuedCard(text)).catch(() => {});
+          }
+        } else {
+          logTrace(tid, "INJECT_QUEUE_FULL", { sessionId });
+          console.log(
+            `[${ts()}] [INJECT_QUEUE_FULL] Session ${sessionId} (ccc) injection queue full, rejecting message from chat ${chatId}`,
+          );
+          if (platform.kind === "wechat") {
+            await platform.sendText(chatId, "当前待注入消息过多，请等待或发送 /stop（停止生成）或 /cancel（清空注入）。").catch(() => {});
+          } else {
+            await platform.sendRawCard(chatId, buildInjectionQueueFullCard()).catch(() => {});
+          }
+        }
+        return;
+      }
+
       const queued = enqueueMessage(sessionId, {
         text: promptText, chatId, openId, msgTimestamp, chatType, traceId: tid,
       });
