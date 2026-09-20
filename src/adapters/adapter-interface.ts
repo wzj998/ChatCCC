@@ -167,11 +167,18 @@ export interface ToolPromptOptions {
    *  subprocess. Used by stop-stuck-loop to kill the CLI process immediately. */
   onSessionCreated?: (closeSession: () => void) => void;
   /**
-   * Collaborative-yield input source (ccc/DeepCCC only). Synchronously returns the
-   * next pending user message to inject at a model step boundary, or undefined when
-   * none is available. Non-streaming providers ignore it.
+   * Collaborative-yield input source (ccc/DeepCCC 与 codex app-server). Synchronously
+   * returns the next pending user message to inject at a model step boundary, or
+   * undefined when none is available. Non-streaming providers ignore it.
    */
   drainInput?: () => string | undefined;
+  /**
+   * Called when a drained injection could not be absorbed into the running turn
+   * (e.g. turn ended before the inject landed). The message is returned to the
+   * front of the injection queue so the upper layer can re-consume it after the
+   * turn completes instead of silently dropping it.
+   */
+  onInjectionRejected?: () => void;
 }
 
 // ---------------------------------------------------------------------------

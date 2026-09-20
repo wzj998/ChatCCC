@@ -59,6 +59,7 @@ import {
   appendChatLog,
   fileLog,
   reportEnvironmentVariableReadout,
+  reportCodexVersionCheck,
   maskAppId,
   resolveDefaultAgentTool,
   toolDisplayName,
@@ -895,6 +896,7 @@ async function main(): Promise<void> {
 
   console.log(`[启动 2/7] 环境与凭证检查`);
   reportEnvironmentVariableReadout();
+  reportCodexVersionCheck();
   console.log(`  工作目录: ${process.cwd()}`);
   console.log(`  包根目录: ${PROJECT_ROOT}`);
 

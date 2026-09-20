@@ -103,6 +103,7 @@ import {
   consumeQueuedMessage,
   cancelQueuedMessage,
   shiftInjection,
+  unshiftInjection,
   drainRemainingInjections,
   clearInjections,
   setQueuePreservedChat,
@@ -113,6 +114,7 @@ import {
   consumeAutoRecoveryReservation,
   cancelAutoRecoveryReservation,
   hasAutoRecoveryReservation,
+  type QueuedMessage,
 } from "./session-chat-binding.ts";
 
 async function sendFinalReplyTextOnce(
@@ -1758,6 +1760,8 @@ export async function runAgentSession(
   }
 
   try {
+    // 供 onInjectionRejected 退回的“最后一条已取出但未成功注入”的消息
+    let lastShiftedInjection: QueuedMessage | null = null;
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
       onProcessStart: (processInfo) => {
         startPromptProcessMonitor(sessionId, processInfo);
@@ -1771,14 +1775,22 @@ export async function runAgentSession(
         const prompt = activePrompts.get(sessionId);
         if (prompt) prompt.closeSession = closeSession;
       },
-      // ccc 内核支持协作式让位：同步从注入队列取队首文本，供内核在每个
-      // model step 边界吸收。非 ccc adapter 忽略该字段。
-      drainInput: tool === "ccc" ? () => {
+      // ccc 内核与 codex app-server 支持协作式让位：同步从注入队列取队首文本，
+      // 供适配器在每个 model step 边界吸收。其他 adapter 忽略该字段。
+      drainInput: tool === "ccc" || tool === "codex" ? () => {
         const injected = shiftInjection(sessionId);
         if (!injected) return undefined;
+        lastShiftedInjection = injected;
         // 与首次消息保持一致的结构化包装；imSkillsPrompt 已在首次消息中，
         // 此处不重复注入，避免多轮注入导致上下文膨胀。
         return `[User message]\n${injected.text}\n[/User message]`;
+      } : undefined,
+      // 注入未被当前 turn 吸收（如 turn 恰好已结束）时，退回队列头部，避免丢消息。
+      onInjectionRejected: tool === "ccc" || tool === "codex" ? () => {
+        if (lastShiftedInjection) {
+          unshiftInjection(sessionId, lastShiftedInjection);
+          lastShiftedInjection = null;
+        }
       } : undefined,
     })) {
       if (unifiedMsg.isFinalResponse) {
@@ -2148,7 +2160,7 @@ export async function runAgentSession(
       // 第一次 response-stall 后保留普通缓存；恢复轮结束后由恢复轮的
       // finally 再消费，顺序固定为“自动恢复 → 用户缓存”。
       queuedForConsumption = dequeueMessage(sessionId);
-      // ccc 注入队列剩余（turn 期间未注入完，如 non-streaming 或收尾窗口到达）
+      // ccc/codex 注入队列剩余（turn 期间未注入完，如 non-streaming 或收尾窗口到达）
       // 取第一条转普通消费，其余留待下一轮结束后继续消费。
       if (!queuedForConsumption) {
         queuedForConsumption = shiftInjection(sessionId);

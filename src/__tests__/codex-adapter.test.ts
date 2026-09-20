@@ -1,12 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
-  buildCodexInvocationArgs,
-  normalizeCodexMessage,
+  normalizeCodexNotification,
   createCodexAdapter,
-  type CreateCodexAdapterOptions,
 } from "../adapters/codex-adapter.ts";
 import type { UnifiedStreamMessage } from "../adapters/adapter-interface.ts";
 import {
@@ -14,30 +9,6 @@ import {
   type CodexSessionMetaStore,
 } from "../adapters/codex-session-meta-store.ts";
 import { accumulateBlockContent, pickFinalReply, type AccumulatorState } from "../session.ts";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-describe("buildCodexInvocationArgs", () => {
-  it("forces the priority service tier when Fast mode is on", () => {
-    expect(buildCodexInvocationArgs(["exec", "--json"], "", "", true)).toContain(
-      'service_tier="fast"',
-    );
-  });
-
-  it("forces the standard service tier when Fast mode is off", () => {
-    const args = buildCodexInvocationArgs(["exec", "--json"], "", "", false);
-    expect(args).toContain('service_tier="default"');
-    expect(args).not.toContain('service_tier="fast"');
-  });
-});
-
-function readFixture(name: string): unknown[] {
-  const raw = readFileSync(join(__dirname, "fixtures", name), "utf-8");
-  return raw
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-}
 
 // 进程内内存版 meta store
 function createInMemoryMetaStore(
@@ -67,14 +38,13 @@ function createInMemoryMetaStore(
 }
 
 // ---------------------------------------------------------------------------
-// normalizeCodexMessage — 核心映射逻辑测试（纯函数）
+// normalizeCodexNotification — app-server 通知映射（纯函数）
 // ---------------------------------------------------------------------------
 
-describe("normalizeCodexMessage", () => {
-  it("normalizes agent_message into assistant text block", () => {
-    const result = normalizeCodexMessage({
-      type: "item.completed",
-      item: { id: "item_0", type: "agent_message", text: "hello" },
+describe("normalizeCodexNotification", () => {
+  it("normalizes agentMessage into assistant text block", () => {
+    const result = normalizeCodexNotification("item/completed", {
+      item: { id: "item_0", type: "agentMessage", text: "hello" },
     });
     expect(result).not.toBeNull();
     expect(result!.type).toBe("assistant");
@@ -82,12 +52,11 @@ describe("normalizeCodexMessage", () => {
     expect(result!.isFinalResponse).toBeUndefined();
   });
 
-  it("normalizes command_execution start into tool_use block", () => {
-    const result = normalizeCodexMessage({
-      type: "item.started",
+  it("normalizes commandExecution start into tool_use block", () => {
+    const result = normalizeCodexNotification("item/started", {
       item: {
         id: "item_0",
-        type: "command_execution",
+        type: "commandExecution",
         command: "powershell.exe -Command ls",
         status: "in_progress",
       },
@@ -99,15 +68,14 @@ describe("normalizeCodexMessage", () => {
     ]);
   });
 
-  it("normalizes command_execution completion as tool_result (success)", () => {
-    const result = normalizeCodexMessage({
-      type: "item.completed",
+  it("normalizes commandExecution completion as tool_result (success)", () => {
+    const result = normalizeCodexNotification("item/completed", {
       item: {
         id: "item_0",
-        type: "command_execution",
+        type: "commandExecution",
         command: "ls",
-        aggregated_output: "file1\nfile2\n",
-        exit_code: 0,
+        aggregatedOutput: "file1\nfile2\n",
+        exitCode: 0,
         status: "completed",
       },
     });
@@ -122,15 +90,14 @@ describe("normalizeCodexMessage", () => {
     ]);
   });
 
-  it("normalizes command_execution completion as tool_result (error)", () => {
-    const result = normalizeCodexMessage({
-      type: "item.completed",
+  it("normalizes commandExecution completion as tool_result (error)", () => {
+    const result = normalizeCodexNotification("item/completed", {
       item: {
         id: "item_err",
-        type: "command_execution",
+        type: "commandExecution",
         command: "nonexistent",
-        aggregated_output: "command not found",
-        exit_code: 127,
+        aggregatedOutput: "command not found",
+        exitCode: 127,
         status: "completed",
       },
     });
@@ -145,42 +112,50 @@ describe("normalizeCodexMessage", () => {
     ]);
   });
 
-  it("returns null for thread.started events", () => {
+  it("returns null for thread/started notifications", () => {
+    expect(normalizeCodexNotification("thread/started", { thread: { id: "abc-123" } })).toBeNull();
+  });
+
+  it("returns null for turn/started notifications", () => {
+    expect(normalizeCodexNotification("turn/started", { turn: { id: "t1", status: "inProgress" } })).toBeNull();
+  });
+
+  it("returns null for item/agentMessage/delta (streaming text ignored;整段 agentMessage 才是正文)", () => {
     expect(
-      normalizeCodexMessage({
-        type: "thread.started",
-        thread_id: "abc-123",
+      normalizeCodexNotification("item/agentMessage/delta", { itemId: "i1", delta: "partial" }),
+    ).toBeNull();
+  });
+
+  it("surfaces fatal error notifications (willRetry=false)", () => {
+    expect(() =>
+      normalizeCodexNotification("error", {
+        error: { message: "Selected model is at capacity. Please try a different model." },
+        willRetry: false,
+      }),
+    ).toThrow("Selected model is at capacity. Please try a different model.");
+  });
+
+  it("ignores transient error notifications (willRetry=true)", () => {
+    expect(
+      normalizeCodexNotification("error", {
+        error: { message: "transient hiccup" },
+        willRetry: true,
       }),
     ).toBeNull();
   });
 
-  it("returns null for turn.started events", () => {
-    expect(normalizeCodexMessage({ type: "turn.started" })).toBeNull();
+  it("surfaces turn/completed with status=failed", () => {
+    expect(() =>
+      normalizeCodexNotification("turn/completed", {
+        turn: { id: "t1", status: "failed", error: { message: "request failed after partial output" } },
+      }),
+    ).toThrow("request failed after partial output");
   });
 
-  it("surfaces top-level Codex errors instead of treating an empty stream as success", () => {
-    expect(() => normalizeCodexMessage({
-      type: "error",
-      message: "Selected model is at capacity. Please try a different model.",
-    } as Parameters<typeof normalizeCodexMessage>[0])).toThrow(
-      "Selected model is at capacity. Please try a different model.",
-    );
-  });
-
-  it("surfaces turn.failed even when Codex exits with code zero", () => {
-    expect(() => normalizeCodexMessage({
-      type: "turn.failed",
-      error: { message: "request failed after partial output" },
-    } as Parameters<typeof normalizeCodexMessage>[0])).toThrow(
-      "request failed after partial output",
-    );
-  });
-
-  it("marks turn.completed as the authoritative final response", () => {
+  it("marks turn/completed (status=completed) as the authoritative final response", () => {
     expect(
-      normalizeCodexMessage({
-        type: "turn.completed",
-        usage: { input_tokens: 100, output_tokens: 50 },
+      normalizeCodexNotification("turn/completed", {
+        turn: { id: "t1", status: "completed" },
       }),
     ).toEqual({
       type: "assistant",
@@ -189,107 +164,116 @@ describe("normalizeCodexMessage", () => {
     });
   });
 
-  it("returns null for unknown event types", () => {
-    expect(normalizeCodexMessage({ type: "unknown" })).toBeNull();
-    expect(normalizeCodexMessage({} as Parameters<typeof normalizeCodexMessage>[0])).toBeNull();
+  it("marks turn/completed (status=interrupted) as final response too", () => {
+    expect(
+      normalizeCodexNotification("turn/completed", {
+        turn: { id: "t1", status: "interrupted" },
+      }),
+    ).toEqual({
+      type: "assistant",
+      blocks: [],
+      isFinalResponse: true,
+    });
   });
 
-  it("returns null for agent_message with empty text", () => {
-    const result = normalizeCodexMessage({
-      type: "item.completed",
-      item: { id: "item_0", type: "agent_message", text: "" },
+  it("returns null for unknown notification methods", () => {
+    expect(normalizeCodexNotification("unknown", {})).toBeNull();
+  });
+
+  it("returns null for agentMessage with empty text", () => {
+    const result = normalizeCodexNotification("item/completed", {
+      item: { id: "item_0", type: "agentMessage", text: "" },
     });
     expect(result).toBeNull();
   });
 
-  it("returns null for command_execution start without command text", () => {
-    const result = normalizeCodexMessage({
-      type: "item.started",
-      item: { id: "item_0", type: "command_execution", status: "in_progress" },
+  it("returns null for commandExecution start without command text", () => {
+    const result = normalizeCodexNotification("item/started", {
+      item: { id: "item_0", type: "commandExecution", status: "in_progress" },
     });
     expect(result).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Fixture 端到端测试
+// 端到端事件流测试（app-server 通知格式）
 // ---------------------------------------------------------------------------
 
-describe("Codex stream fixtures", () => {
-  it("fails the turn when turn.failed arrives after partial assistant output", () => {
+type AppServerEvent = [method: string, params: Record<string, unknown>];
+
+function runEvents(events: AppServerEvent[], state: AccumulatorState): UnifiedStreamMessage[] {
+  const messages: UnifiedStreamMessage[] = [];
+  for (const [method, params] of events) {
+    const normalized = normalizeCodexNotification(method, params);
+    if (normalized) {
+      messages.push(normalized);
+      for (const block of normalized.blocks) accumulateBlockContent(block, state);
+    }
+  }
+  return messages;
+}
+
+describe("Codex app-server stream", () => {
+  it("fails the turn when turn/completed status=failed arrives after partial output", () => {
     const state: AccumulatorState = {
       accumulatedContent: "",
       finalText: "",
       finalCompleteText: "",
       chunkCount: 0,
     };
-    const events = [
-      { type: "item.completed", item: { type: "agent_message", text: "partial reply" } },
-      { type: "turn.failed", error: { message: "model became unavailable" } },
+    const events: AppServerEvent[] = [
+      ["item/completed", { item: { type: "agentMessage", text: "partial reply" } }],
+      ["turn/completed", { turn: { status: "failed", error: { message: "model became unavailable" } } }],
     ];
 
-    expect(() => {
-      for (const raw of events) {
-        const normalized = normalizeCodexMessage(raw);
-        for (const block of normalized?.blocks ?? []) accumulateBlockContent(block, state);
-      }
-    }).toThrow("model became unavailable");
+    expect(() => runEvents(events, state)).toThrow("model became unavailable");
     expect(pickFinalReply(state)).toBe("partial reply");
   });
 
   it("simple text: 流结束后 pickFinalReply 返回正确文本", () => {
-    const lines = readFixture("codex_simple_text.jsonl");
     const state: AccumulatorState = {
       accumulatedContent: "",
       finalText: "",
       finalCompleteText: "",
       chunkCount: 0,
     };
-    for (const raw of lines) {
-      const normalized = normalizeCodexMessage(
-        raw as Parameters<typeof normalizeCodexMessage>[0],
-      );
-      if (!normalized) continue;
-      for (const block of normalized.blocks) {
-        accumulateBlockContent(block, state);
-      }
-    }
-
+    const events: AppServerEvent[] = [
+      ["item/completed", { item: { type: "agentMessage", text: "hello" } }],
+      ["turn/completed", { turn: { status: "completed" } }],
+    ];
+    runEvents(events, state);
     expect(pickFinalReply(state)).toBe("hello");
   });
 
   it("with tool: 流结束后 pickFinalReply 返回最终文本（不含工具输出在 finalText 中）", () => {
-    const lines = readFixture("codex_with_tool.jsonl");
     const state: AccumulatorState = {
       accumulatedContent: "",
       finalText: "",
       finalCompleteText: "",
       chunkCount: 0,
     };
-    for (const raw of lines) {
-      const normalized = normalizeCodexMessage(
-        raw as Parameters<typeof normalizeCodexMessage>[0],
-      );
-      if (!normalized) continue;
-      for (const block of normalized.blocks) {
-        accumulateBlockContent(block, state);
-      }
-    }
-
-    // finalText 应该只包含最终的 agent_message
+    const events: AppServerEvent[] = [
+      ["item/started", { item: { id: "i1", type: "commandExecution", command: "powershell.exe -Command echo tool_test" } }],
+      ["item/completed", { item: { id: "i1", type: "commandExecution", aggregatedOutput: "tool_test\r\n", exitCode: 0 } }],
+      ["item/completed", { item: { id: "i2", type: "agentMessage", text: "tool_test" } }],
+      ["turn/completed", { turn: { status: "completed" } }],
+    ];
+    runEvents(events, state);
     expect(pickFinalReply(state)).toBe("tool_test");
-    // accumulatedContent 包含工具调用信息
     expect(state.accumulatedContent).toContain("Bash");
     expect(state.accumulatedContent).toContain("tool_test");
   });
 
-  it("with tool: 普通输出不标终态，只有 turn.completed 标记终态", () => {
-    const lines = readFixture("codex_with_tool.jsonl");
+  it("with tool: 普通输出不标终态，只有 turn/completed 标记终态", () => {
+    const events: AppServerEvent[] = [
+      ["item/started", { item: { id: "i1", type: "commandExecution", command: "ls" } }],
+      ["item/completed", { item: { id: "i1", type: "commandExecution", aggregatedOutput: "a", exitCode: 0 } }],
+      ["item/completed", { item: { id: "i2", type: "agentMessage", text: "tool_test" } }],
+      ["turn/completed", { turn: { status: "completed" } }],
+    ];
     const messages: UnifiedStreamMessage[] = [];
-    for (const raw of lines) {
-      const normalized = normalizeCodexMessage(
-        raw as Parameters<typeof normalizeCodexMessage>[0],
-      );
+    for (const [method, params] of events) {
+      const normalized = normalizeCodexNotification(method, params);
       if (normalized) messages.push(normalized);
     }
 
