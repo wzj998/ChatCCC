@@ -209,3 +209,41 @@ export function readToolCliPath(
   }
   return "";
 }
+
+// ---------------------------------------------------------------------------
+// Codex CLI 版本检查（app-server 模式要求的最低版本）
+// ---------------------------------------------------------------------------
+
+/**
+ * app-server 模式（thread/start + turn 注入）官方推荐的最低 Codex CLI 版本。
+ * 版本不足时仅警告、不阻断启动——当前默认仍是 `codex exec` 模式，exec 不依赖
+ * 该最低版本。
+ */
+export const CODEX_MIN_APP_SERVER_VERSION = "0.60.0";
+
+/**
+ * 从 `codex --version` 的输出中解析三段式版本号。
+ * 实际输出形如 `codex-cli 0.153.4`（可能带换行或附加后缀）。
+ * 找不到形如 x.y.z 的版本号时返回 null。
+ */
+export function parseCodexVersion(output: string): string | null {
+  const match = output.match(/\d+\.\d+\.\d+/);
+  return match ? match[0] : null;
+}
+
+/**
+ * 轻量 semver 比较（按数值逐段比较，缺段按 0 补齐，忽略 prerelease/build）。
+ * 返回 -1（a < b）、0（a == b）、1（a > b）。
+ */
+export function compareSemver(a: string, b: string): number {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x < y) return -1;
+    if (x > y) return 1;
+  }
+  return 0;
+}

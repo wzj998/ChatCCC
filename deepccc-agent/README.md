@@ -381,6 +381,8 @@ ChatCCC 是一个把 Claude Code / Codex / Cursor / CCC Agent 聚合到飞书/�
 
 这种方式适合已经在 ChatCCC 里协作的场景：ChatCCC 负责会话入口和消息通道，`deepccc` 负责本地编程 Agent 能力，包括读取项目提示词、运行命令、编辑文件和输出流式结果。
 
+deepccc 内核支持**协作式让位**：任务运行期间用户继续发消息，ChatCCC 会把消息排入注入队列（深度 50），内核在每个模型步骤边界（`prepareStep`）吸收进当前 turn——不打断正在执行的工具步骤、不新开一轮对话，已完成的中间态持久化保留，收到插话后继续调整方向。`/stop` 打断当前 turn，`/cancel` 清空注入队列。该能力通过 `chat()` 的 `drainInput` 回调对外暴露，运行期新消息以 `input_injected` 事件反馈到调用方；仅流式（`streaming: true`）模式生效，non-streaming 下退化为整轮结束后消费。
+
 deepccc 的内核主战场在 ChatCCC 仓库的 `deepccc-agent/` 子目录；本仓库（deepccc-agent）是发布镜像，由 ChatCCC 仓库的 `sync-deepccc.mjs` 目录级同步（多的删、少的补、不同的改），之后 `npm run build && npm publish` 发布独立 `deepccc` 包。
 
 ## 项目提示词自动注入

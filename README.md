@@ -229,6 +229,8 @@ Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
+CCC Agent 支持**协作式让位**：任务运行期间你可以继续在群里发消息，ChatCCC 会在 Agent 的每个模型步骤边界把新消息注入当前任务，不打断正在执行的工具步骤、不新开一轮对话。已完成的中间工作会保留，Agent 收到插话后会调整后续方向。运行中的消息进入独立的注入队列（深度 50），与整轮排队（深度 1）分离。
+
 DeepCCC 同时提供独立端口的本地 Web UI。ChatCCC 管理页顶部点击 **DeepCCC Web** 会复用或按需启动该服务；只全局安装 `deepccc` 的用户直接运行 `deepccc` 即可启动并打开网页版，终端模式改用 `deepccc-cli`。默认地址为 `http://127.0.0.1:28080/`，端口可通过 `~/.deepccc/config.json` 的 `web.port` 修改。网页版支持多会话并发、持久化历史、会话级 model/effort、API 设置和会话内高风险操作审批。
 
 ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL` 和模型显式传给内置 Agent；API Key 为空时 CCC Agent 会自动保持禁用。`ccc.effort` 与 `ccc.maxOutputTokens` 是可选 override：非空时覆盖 DeepCCC，留空时跟随 `~/.deepccc/config.json` / `DEEPCCC_*` 环境变量，DeepCCC 也未配置时使用模型服务端默认值。DeepCCC 的传输层选项 `provider`（默认 `openai`）和 `streaming`（默认 `true`）同样可通过内核配置，无需额外安装独立 CLI。
@@ -287,6 +289,8 @@ codex --version
 ```
 
 Codex 的默认模型和推理强度可继续由 `~/.codex/config.toml` 管理，也可以在 `config.json` 中覆盖。
+
+ChatCCC 通过 Codex 的 **app-server 模式**（一个常驻进程 + WebSocket JSON-RPC）驱动 Codex，而不是一次性 `codex exec` 子进程。因此 Codex 与 CCC Agent 一样支持**协作式让位**：任务运行期间继续发消息，ChatCCC 会在 Codex 的工具步骤边界把消息注入当前 turn（`turn/steer`），不打断正在执行的命令、不丢已完成的工作；`/stop` 通过 `turn/interrupt` 只打断当前 turn，不影响同进程内的其他会话。权限策略与旧 exec 的 `--dangerously-bypass-approvals-and-sandbox` 等价（零审批、完整沙箱权限），`/plan`、`/ask` 退化为只读沙箱。要求 Codex CLI >= 0.60.0（建议保持最新版）。
 
 #### 可选：Chrome CDP
 

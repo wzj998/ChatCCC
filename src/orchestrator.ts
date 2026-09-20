@@ -2730,16 +2730,17 @@ async function handleCommandInternal(
 
     // 并发检查：同一 session 只能有一个活跃 prompt，多余消息进入队列
     if (isSessionRunning(sessionId)) {
-      // ccc 内核支持协作式让位：运行期新消息进入注入队列，由 drainInput 在每个
-      // model step 边界逐条吸收进当前 turn（不新开 turn）。其他 agent 保持整轮队列。
-      if (descriptionTool === "ccc") {
+      // ccc 内核与 codex app-server 支持协作式让位：运行期新消息进入注入队列，
+      // 由 drainInput 在每个 model step 边界逐条吸收进当前 turn（不新开 turn）。
+      // 其他 agent 保持整轮队列。
+      if (descriptionTool === "ccc" || descriptionTool === "codex") {
         const injected = pushInjection(sessionId, {
           text: promptText, chatId, openId, msgTimestamp, chatType, traceId: tid,
         });
         if (injected) {
           logTrace(tid, "INJECT_QUEUED", { sessionId });
           console.log(
-            `[${ts()}] [INJECT_QUEUED] Session ${sessionId} (ccc) busy, message from chat ${chatId} queued for step-boundary injection`,
+            `[${ts()}] [INJECT_QUEUED] Session ${sessionId} (${descriptionTool}) busy, message from chat ${chatId} queued for step-boundary injection`,
           );
           if (platform.kind === "wechat") {
             await platform.sendText(chatId, "当前会话正在生成中，你的消息会在当前步骤结束后注入本轮处理。").catch(() => {});
@@ -2749,7 +2750,7 @@ async function handleCommandInternal(
         } else {
           logTrace(tid, "INJECT_QUEUE_FULL", { sessionId });
           console.log(
-            `[${ts()}] [INJECT_QUEUE_FULL] Session ${sessionId} (ccc) injection queue full, rejecting message from chat ${chatId}`,
+            `[${ts()}] [INJECT_QUEUE_FULL] Session ${sessionId} (${descriptionTool}) injection queue full, rejecting message from chat ${chatId}`,
           );
           if (platform.kind === "wechat") {
             await platform.sendText(chatId, "当前待注入消息过多，请等待或发送 /stop（停止生成）或 /cancel（清空注入）。").catch(() => {});

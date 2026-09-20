@@ -11,11 +11,14 @@ import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
 import { printServiceDidNotStart } from "./exit-banner.ts";
 import { appendStartupTrace, setupFileLogging } from "./shared.ts";
 import {
+  CODEX_MIN_APP_SERVER_VERSION,
   anthropicConfigDisplay,
   autoDetectCodexPath,
   autoDetectCursorPath,
+  compareSemver,
   normalizeCccProviderOverride,
   normalizeOptionalConfigField,
+  parseCodexVersion,
   readToolCliPath,
   resolveCccEnabled,
 } from "./config-utils.ts";
@@ -1118,6 +1121,48 @@ export function reportEnvironmentVariableReadout(): void {
   console.log(`         /git 命令超时: ${GIT_TIMEOUT_SECONDS}s`);
 
   console.log("  ------------------------------------------------------------------");
+}
+
+/**
+ * 启动时检查 Codex CLI 版本是否满足 app-server 模式的最低要求。
+ *
+ * 版本不足 / 无法探测时仅打印 warning，不阻断启动：当前默认仍是 `codex exec`
+ * 模式，exec 并不依赖该最低版本。待未来全面切到 app-server 时，再把这里升级为
+ * spawn 前的硬校验。
+ */
+export function reportCodexVersionCheck(): void {
+  const codexPath = config.codex.path.trim() || "codex";
+  let version: string | null = null;
+  try {
+    const out = execFileSync(codexPath, ["--version"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+      timeout: 5000,
+    }).toString();
+    version = parseCodexVersion(out);
+  } catch {
+    version = null;
+  }
+
+  if (!version) {
+    console.warn(
+      `  [警告] [可选] codex 版本：无法探测 Codex CLI 版本（命令: ${codexPath}）。` +
+        `切换 app-server 模式前需 Codex CLI >= ${CODEX_MIN_APP_SERVER_VERSION}。`,
+    );
+    return;
+  }
+
+  if (compareSemver(version, CODEX_MIN_APP_SERVER_VERSION) < 0) {
+    console.warn(
+      `  [警告] [可选] codex 版本：当前 ${version} 低于 app-server 要求的最低 ${CODEX_MIN_APP_SERVER_VERSION}。` +
+        `现有 exec 模式不受影响；切换 app-server 模式前请升级 Codex CLI。`,
+    );
+    return;
+  }
+
+  console.log(
+    `  [成功] [可选] codex 版本：${version}（满足 app-server 最低 ${CODEX_MIN_APP_SERVER_VERSION}）`,
+  );
 }
 
 /** 飞书凭证缺失时打印可操作的说明并退出 */

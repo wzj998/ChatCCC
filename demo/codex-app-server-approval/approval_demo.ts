@@ -614,18 +614,39 @@ async function runScenario(decision: Decision, options: Options): Promise<Scenar
 
     await writeFile(summaryPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 
-    if (approvalRecords.length === 0) {
-      throw new Error(`No approval request was observed. Inspect ${jsonRpcLogPath}`);
-    }
+    const noApproval = options.approvalPolicy === "never";
 
-    if ((decision === "accept" || decision === "acceptForSession") && resultFileText !== resultFileTextFor(decision)) {
-      throw new Error(
-        `Expected ${RESULT_FILE} to contain ${resultFileTextFor(decision)}, got ${JSON.stringify(resultFileText)}`,
-      );
-    }
+    if (noApproval) {
+      // approvalPolicy=never：期望零审批请求，命令直接执行并生成结果文件。
+      if (approvalRecords.length !== 0) {
+        throw new Error(
+          `approvalPolicy=never 应零审批请求，实际收到 ${approvalRecords.length} 条。Inspect ${jsonRpcLogPath}`,
+        );
+      }
+      if (!resultFileExists) {
+        throw new Error(
+          `approvalPolicy=never 应无需审批直接生成 ${RESULT_FILE}，但文件不存在。Inspect ${jsonRpcLogPath}`,
+        );
+      }
+      if (resultFileText !== resultFileTextFor(decision)) {
+        throw new Error(
+          `Expected ${RESULT_FILE} to contain ${resultFileTextFor(decision)}, got ${JSON.stringify(resultFileText)}`,
+        );
+      }
+    } else {
+      if (approvalRecords.length === 0) {
+        throw new Error(`No approval request was observed. Inspect ${jsonRpcLogPath}`);
+      }
 
-    if ((decision === "decline" || decision === "cancel") && resultFileExists) {
-      throw new Error(`Expected no ${RESULT_FILE} for ${decision}, but it exists with ${JSON.stringify(resultFileText)}`);
+      if ((decision === "accept" || decision === "acceptForSession") && resultFileText !== resultFileTextFor(decision)) {
+        throw new Error(
+          `Expected ${RESULT_FILE} to contain ${resultFileTextFor(decision)}, got ${JSON.stringify(resultFileText)}`,
+        );
+      }
+
+      if ((decision === "decline" || decision === "cancel") && resultFileExists) {
+        throw new Error(`Expected no ${RESULT_FILE} for ${decision}, but it exists with ${JSON.stringify(resultFileText)}`);
+      }
     }
 
     if (!sawTurnDone) {
@@ -649,10 +670,14 @@ async function runScenario(decision: Decision, options: Options): Promise<Scenar
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  // approvalPolicy=never 下没有审批可响应，decline/cancel 场景无意义；
+  // matrix 退化为单次 accept，验证"零审批请求 + 命令直接执行"。
+  const matrixDecisions: Decision[] =
+    options.approvalPolicy === "never"
+      ? ["accept"]
+      : ["accept", "acceptForSession", "decline", "cancel"];
   const decisions: Decision[] =
-    options.decision === "matrix"
-      ? ["accept", "acceptForSession", "decline", "cancel"]
-      : [options.decision];
+    options.decision === "matrix" ? matrixDecisions : [options.decision];
 
   console.error(`[approval-demo] decisions=${decisions.join(", ")}`);
   console.error(`[approval-demo] sandbox=${options.sandbox} approvalPolicy=${options.approvalPolicy}`);

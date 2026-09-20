@@ -277,10 +277,10 @@ export function hasQueuedMessage(sessionId: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// pendingInjections: sessionId → 运行中待注入消息（仅 ccc 内核）
-// 与上面的 queuedMessages（整轮队列，深度 1）分离：ccc 运行期的新消息进入
-// 这里，由 drainInput 在每个 model step 边界逐条吸收进当前 turn；其他 agent
-// 继续走整轮队列。turn 结束后剩余未注入的消息转回普通队列消费。
+// pendingInjections: sessionId → 运行中待注入消息（ccc 内核与 codex app-server）
+// 与上面的 queuedMessages（整轮队列，深度 1）分离：ccc/codex 运行期的新消息
+// 进入这里，由 drainInput 在每个 model step 边界逐条吸收进当前 turn；其他
+// agent 继续走整轮队列。turn 结束后剩余未注入的消息转回普通队列消费。
 // ---------------------------------------------------------------------------
 
 export const MAX_PENDING_INJECTIONS = 50;
@@ -301,6 +301,13 @@ export function shiftInjection(sessionId: string): QueuedMessage | undefined {
   const msg = list.shift();
   if (list.length === 0) pendingInjections.delete(sessionId);
   return msg;
+}
+
+/** 注入未能被运行中 turn 吸收时，把消息退回队列头部。 */
+export function unshiftInjection(sessionId: string, msg: QueuedMessage): void {
+  const list = pendingInjections.get(sessionId) ?? [];
+  list.unshift(msg);
+  pendingInjections.set(sessionId, list);
 }
 
 export function drainRemainingInjections(sessionId: string): QueuedMessage[] {

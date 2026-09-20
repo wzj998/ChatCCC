@@ -8,12 +8,15 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  CODEX_MIN_APP_SERVER_VERSION,
   DEFAULT_GIT_TIMEOUT_SECONDS,
   MAX_GIT_TIMEOUT_SECONDS,
   MIN_GIT_TIMEOUT_SECONDS,
   autoDetectCodexPath,
   autoDetectCursorPath,
+  compareSemver,
   normalizeOptionalConfigField,
+  parseCodexVersion,
   parseGitTimeoutSeconds,
   readToolCliPath,
   resolveCccEnabled,
@@ -358,6 +361,42 @@ describe("readToolCliPath", () => {
         label: "cursor",
       }),
     ).toBe("");
+  });
+});
+
+describe("parseCodexVersion", () => {
+  it("从 `codex-cli 0.153.4` 输出中提取三段式版本号", () => {
+    expect(parseCodexVersion("codex-cli 0.153.4")).toBe("0.153.4");
+  });
+
+  it("带换行/附加后缀时仍提取版本号", () => {
+    expect(parseCodexVersion("codex-cli 0.60.0 (rust)\n")).toBe("0.60.0");
+  });
+
+  it("找不到版本号时返回 null", () => {
+    expect(parseCodexVersion("codex-cli unknown")).toBeNull();
+    expect(parseCodexVersion("")).toBeNull();
+  });
+});
+
+describe("compareSemver", () => {
+  it("相等 → 0", () => {
+    expect(compareSemver("0.60.0", "0.60.0")).toBe(0);
+  });
+
+  it("低于阈值 → -1", () => {
+    expect(compareSemver("0.59.9", CODEX_MIN_APP_SERVER_VERSION)).toBe(-1);
+    expect(compareSemver("0.6.0", "0.60.0")).toBe(-1);
+  });
+
+  it("高于阈值 → 1", () => {
+    expect(compareSemver("0.153.4", CODEX_MIN_APP_SERVER_VERSION)).toBe(1);
+    expect(compareSemver("1.0.0", CODEX_MIN_APP_SERVER_VERSION)).toBe(1);
+  });
+
+  it("缺段按 0 补齐", () => {
+    expect(compareSemver("0.60", "0.60.0")).toBe(0);
+    expect(compareSemver("0.60.0", "0.60")).toBe(0);
   });
 });
 
