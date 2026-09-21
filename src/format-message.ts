@@ -142,7 +142,24 @@ function formatPostTextElement(el: Record<string, unknown>): string {
     return t;
   }
 
-  return "";
+  // 图片元素由 getPostImageKey 单独处理（可能带 image_key/file_key），此处不重复输出。
+  if (el.tag === "img" || getPostImageKey(el)) return "";
+
+  // 兜底：飞书可能新增富文本元素类型，而历史上曾因入口重写而整类元素被静默丢弃
+  // （见 tag="a" 丢失链接）。未知 tag 不再静默丢弃，尽量透传可读内容并留 warn 日志，
+  // 便于发现新增类型后补齐专门处理。
+  const tag = typeof el.tag === "string" ? el.tag : "(no tag)";
+  const href = typeof el.href === "string" ? el.href.trim() : "";
+  const userName = typeof el.user_name === "string" ? el.user_name.trim() : "";
+  const fallback = t && href && t !== href
+    ? `[${t}](${href})`
+    : t || href || (userName ? `@${userName}` : "");
+
+  console.warn(
+    `[${ts()}] [POST] 未知富文本元素 tag=${tag}，` +
+      (fallback ? `已降级透传：${fallback}` : "无可透传内容，已丢弃（请补充分支）"),
+  );
+  return fallback;
 }
 
 function getPostImageKey(el: Record<string, unknown>): string | undefined {
