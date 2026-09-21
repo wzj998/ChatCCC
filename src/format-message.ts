@@ -124,6 +124,15 @@ function getPostParagraphs(content: Record<string, unknown>): unknown[][] {
 function formatPostTextElement(el: Record<string, unknown>): string {
   const t = typeof el.text === "string" ? el.text : "";
 
+  // 超链接元素：必须保留 URL，否则 AI 拿不到链接（飞书 post 里链接是独立元素，
+  // 不与相邻 text 合并）。文本与 URL 相同时只输出 URL，避免 "url (url)" 冗余。
+  if (el.tag === "a") {
+    const href = typeof el.href === "string" ? el.href.trim() : "";
+    if (!href) return t;
+    if (!t || t === href) return href;
+    return `[${t}](${href})`;
+  }
+
   if (el.tag === "code_block") {
     const lang = typeof el.language === "string" ? el.language : "";
     return "```" + lang + "\n" + t + "\n```";

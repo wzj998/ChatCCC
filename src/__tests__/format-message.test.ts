@@ -54,6 +54,30 @@ describe("formatMessageContent mixed post images", () => {
 
     expect(result).toBe("caption\n[图片: img_002]");
   });
+
+  // 回归护栏：链接 + 图片 + 文字同处一条 post 消息时，链接不能被丢弃。
+  // 历史 bug：e44f087 重写 extractText 时删掉了 tag=="a" 分支，d7ad624 补 post
+  // 支持时只补了 code_block/p/text，导致链接元素被静默丢弃（Agent 收不到链接）。
+  it("includes hyperlink (tag=a) alongside image in mixed post messages", async () => {
+    mockGetOrDownloadImage.mockRejectedValue(new Error("download failed"));
+    const url = "https://www.binance.com/zh-CN/copy-trading/lead-details/5231222063705631744?timeRange=30D";
+
+    const result = await formatMessageContent({
+      message_id: "om_post",
+      message_type: "post",
+      content: JSON.stringify({
+        content: [
+          [{ tag: "a", href: url, text: url, style: [] }],
+          [{ tag: "img", image_key: "img_003", width: 1200, height: 2670 }],
+          [{ tag: "text", text: "看一下这个人", style: [] }],
+        ],
+      }),
+    });
+
+    expect(result).toContain(url);
+    expect(result).toContain("[图片: img_003]");
+    expect(result).toContain("看一下这个人");
+  });
 });
 
 describe("formatMessageContent", () => {
@@ -312,5 +336,33 @@ describe("formatPostContent", () => {
   it("跳过非数组元素", () => {
     const result = formatPostContent({ content: [null, undefined, "string"] });
     expect(result).toBe("");
+  });
+
+  it("保留超链接元素（tag=a），文本与 URL 不同时输出 markdown 链接", () => {
+    const result = formatPostContent({
+      content: [[{ tag: "a", href: "https://example.com/x", text: "示例站点", style: [] }]],
+    });
+    expect(result).toBe("[示例站点](https://example.com/x)");
+  });
+
+  it("超链接文本与 URL 相同时只输出 URL（避免冗余）", () => {
+    const result = formatPostContent({
+      content: [[{ tag: "a", href: "https://example.com/x", text: "https://example.com/x", style: [] }]],
+    });
+    expect(result).toBe("https://example.com/x");
+  });
+
+  it("超链接只有 href 没有 text 时输出 URL", () => {
+    const result = formatPostContent({
+      content: [[{ tag: "a", href: "https://example.com/x", style: [] }]],
+    });
+    expect(result).toBe("https://example.com/x");
+  });
+
+  it("超链接没有 href 时退化为显示文本", () => {
+    const result = formatPostContent({
+      content: [[{ tag: "a", text: "纯文本", style: [] }]],
+    });
+    expect(result).toBe("纯文本");
   });
 });
