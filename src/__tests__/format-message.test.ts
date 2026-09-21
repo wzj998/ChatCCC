@@ -366,3 +366,62 @@ describe("formatPostContent", () => {
     expect(result).toBe("纯文本");
   });
 });
+
+describe("formatPostContent 未知元素兜底透传", () => {
+  it("未知 tag 带 text 时兜底透传文本并记 warn 日志", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = formatPostContent({
+      content: [[{ tag: "future_element", text: "未来元素文本", style: [] }]],
+    });
+    expect(result).toBe("未来元素文本");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("future_element"));
+    warn.mockRestore();
+  });
+
+  it("未知 tag 只有 href 时透传链接", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = formatPostContent({
+      content: [[{ tag: "future_link", href: "https://example.com/y", style: [] }]],
+    });
+    expect(result).toBe("https://example.com/y");
+    warn.mockRestore();
+  });
+
+  it("未知 tag 同时有 text 与 href 时输出 markdown 链接", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = formatPostContent({
+      content: [[{ tag: "future_link", href: "https://example.com/y", text: "点这里", style: [] }]],
+    });
+    expect(result).toBe("[点这里](https://example.com/y)");
+    warn.mockRestore();
+  });
+
+  it("at 元素降级为 @用户名", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = formatPostContent({
+      content: [[{ tag: "at", user_id: "ou_001", user_name: "张三", style: [] }]],
+    });
+    expect(result).toBe("@张三");
+    warn.mockRestore();
+  });
+
+  it("未知 tag 无可透传内容时丢弃并记 warn 日志", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = formatPostContent({
+      content: [[{ tag: "empty_future_element", style: [] }]],
+    });
+    expect(result).toBe("");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("empty_future_element"));
+    warn.mockRestore();
+  });
+
+  it("img 元素由图片逻辑处理，不触发未知元素 warn", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = formatPostContent({
+      content: [[{ tag: "img", image_key: "img_001" }]],
+    });
+    expect(result).toBe("");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
