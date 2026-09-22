@@ -16,6 +16,7 @@ import {
   deleteFileForTool,
   editFileForTool,
   expandHomePath,
+  killAllBackgroundTasks,
   killAllBackgroundCommands,
   listDirForTool,
   moveFileForTool,
@@ -63,6 +64,7 @@ function sha256(text: string): string {
 }
 
 afterEach(async () => {
+  killAllBackgroundTasks();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -159,6 +161,55 @@ describe("DeepCCC file tools", () => {
 
     expect(runTask).toHaveBeenCalledWith({ description: "扫描仓库", cwd: "src" }, undefined);
     expect(result).toEqual({ result: "子代理结果" });
+  });
+
+  it("task tool forwards a caller-selected step budget", async () => {
+    const dir = await makeTempDir();
+    const runTask = vi.fn(async () => "完成");
+    const tools = createBuiltinFileTools(dir, { runTask }) as unknown as Record<
+      string,
+      { execute: (input: unknown, options?: { abortSignal?: AbortSignal }) => Promise<unknown> }
+    >;
+
+    await tools.task.execute({ description: "扫描仓库", maxSteps: 48 }, {});
+
+    expect(runTask).toHaveBeenCalledWith({ description: "扫描仓库", maxSteps: 48 }, undefined);
+  });
+
+  it("lets the parent start, inspect, and stop a background child task", async () => {
+    const dir = await makeTempDir();
+    const runTask = vi.fn((_input, signal?: AbortSignal) => new Promise<string>((resolve) => {
+      signal?.addEventListener("abort", () => resolve("已停止；这是当前调查总结"), { once: true });
+    }));
+    const tools = createBuiltinFileTools(dir, { runTask }) as unknown as Record<
+      string,
+      { execute: (input: any, options?: { abortSignal?: AbortSignal }) => Promise<any> }
+    >;
+
+    const started = await tools.task.execute({
+      description: "持续调查",
+      runInBackground: true,
+    });
+    expect(started).toEqual(expect.objectContaining({
+      running: true,
+      taskId: expect.any(String),
+    }));
+
+    await expect(tools.task_output.execute({ taskId: started.taskId })).resolves.toEqual(
+      expect.objectContaining({
+        taskId: started.taskId,
+        running: true,
+      }),
+    );
+
+    await expect(tools.task_stop.execute({ taskId: started.taskId })).resolves.toEqual(
+      expect.objectContaining({
+        taskId: started.taskId,
+        running: false,
+        stopped: true,
+        result: "已停止；这是当前调查总结",
+      }),
+    );
   });
 
   it("task tool rejects with a clear error when no runTask executor is available", async () => {

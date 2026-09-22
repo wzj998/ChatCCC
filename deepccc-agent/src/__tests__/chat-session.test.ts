@@ -707,6 +707,129 @@ describe("ChatSession context management", () => {
     }));
   });
 
+  it("forces a final summary when a bounded child task exhausts its steps", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-child-summary-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("parent ready") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "child-summary-parent",
+      },
+    );
+    await collect(session.chat("prepare"));
+
+    const tools = streamTextMock.mock.calls[0]?.[0].tools as Record<
+      string,
+      { execute: (input: unknown, options?: { abortSignal?: AbortSignal }) => Promise<any> }
+    >;
+    streamTextMock.mockReturnValueOnce({
+      fullStream: fullStream(
+        { type: "text-delta", text: "我先调查。" },
+        {
+          type: "tool-call",
+          toolCallId: "child-call",
+          toolName: "search_code",
+          input: { query: "marker" },
+        },
+        {
+          type: "tool-result",
+          toolCallId: "child-call",
+          toolName: "search_code",
+          output: { matches: ["evidence"] },
+        },
+        { type: "finish", finishReason: "tool-calls" },
+      ),
+    });
+    generateTextMock.mockResolvedValueOnce({ text: "基于已收集证据的最终总结" });
+
+    const result = await tools.task.execute(
+      { description: "完整调查", maxSteps: 37 },
+      {},
+    );
+
+    expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      stopWhen: { count: 37 },
+    }));
+    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool",
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              output: expect.objectContaining({
+                value: expect.objectContaining({
+                  matches: expect.arrayContaining(["evidence"]),
+                }),
+              }),
+            }),
+          ]),
+        }),
+      ]),
+    }));
+    expect(generateTextMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("tools");
+    expect(result).toEqual({ result: "基于已收集证据的最终总结" });
+  });
+
+  it("lets the parent stop a background child and receive its evidence summary", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-child-stop-summary-"));
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("parent ready") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "child-stop-parent",
+      },
+    );
+    await collect(session.chat("prepare"));
+    const tools = streamTextMock.mock.calls[0]?.[0].tools as Record<
+      string,
+      { execute: (input: any, options?: { abortSignal?: AbortSignal }) => Promise<any> }
+    >;
+
+    let markChildStarted!: () => void;
+    const childStarted = new Promise<void>((resolve) => {
+      markChildStarted = resolve;
+    });
+    streamTextMock.mockImplementationOnce((options: { abortSignal: AbortSignal }) => ({
+      fullStream: (async function* () {
+        yield { type: "text-delta", text: "已找到一条证据。" };
+        markChildStarted();
+        await new Promise<void>((resolve) => {
+          options.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        throw error;
+      })(),
+    }));
+    generateTextMock.mockResolvedValueOnce({ text: "停止后的证据总结" });
+
+    const started = await tools.task.execute({
+      description: "持续调查",
+      runInBackground: true,
+      maxSteps: 60,
+    });
+    await childStarted;
+    const stopped = await tools.task_stop.execute({ taskId: started.taskId });
+
+    expect(stopped).toEqual(expect.objectContaining({
+      running: false,
+      stopped: true,
+      result: "停止后的证据总结",
+    }));
+    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({
+      system: expect.stringContaining("最终总结器"),
+      messages: expect.arrayContaining([
+        expect.objectContaining({ content: expect.stringContaining("停止继续调查") }),
+      ]),
+    }));
+  });
+
   it("loads persisted context, compacts older messages, and persists the new assistant reply", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-context-"));
