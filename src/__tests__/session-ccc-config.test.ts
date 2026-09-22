@@ -47,6 +47,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       effort: "high",
       compactionTimeoutMs: 12345,
       contextWindow: config.ccc.contextWindow,
+      hasPendingInjection: expect.any(Function),
     });
   });
 
@@ -72,6 +73,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       effort: "high",
       compactionTimeoutMs: 12345,
       contextWindow: config.ccc.contextWindow,
+      hasPendingInjection: expect.any(Function),
     });
   });
 
@@ -96,6 +98,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       provider: "anthropic",
       compactionTimeoutMs: 12345,
       contextWindow: config.ccc.contextWindow,
+      hasPendingInjection: expect.any(Function),
     });
   });
 

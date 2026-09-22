@@ -39,6 +39,12 @@ const SEARCH_TIMEOUT_MS = 15_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_TIMEOUT_MS = 900_000;
+/** 让位注入的轮询间隔：run_command 执行期以此频率检查是否有待注入的用户消息 */
+const YIELD_POLL_INTERVAL_MS = 250;
+/** command_output 单次等待上限，避免代理用等待把 step 又堵死 */
+const MAX_COMMAND_OUTPUT_WAIT_MS = 30_000;
+/** 后台命令句柄上限；超出时优先回收已结束的句柄 */
+const MAX_BACKGROUND_COMMANDS = 32;
 /** task 子代理工具：子任务结果回传主会话前的最大字符数（防止子代理长输出撑爆主上下文） */
 export const MAX_TASK_OUTPUT_CHARS = 32_000;
 const requireFromHere = createRequire(import.meta.url);
@@ -126,6 +132,43 @@ export interface RunCommandOutput {
   timedOut: boolean;
   truncated: boolean;
   durationMs: number;
+  /**
+   * 为把当前 step 让给用户新消息而转入后台时为 true。此时 exitCode 为 null，
+   * stdout/stderr 是让位瞬间的快照；命令仍在后台运行，用 command_output /
+   * command_kill 继续跟踪。
+   */
+  backgrounded?: boolean;
+  /** 后台命令句柄（backgrounded 为 true 时提供）。 */
+  taskId?: string;
+}
+
+export interface CommandOutputInput {
+  taskId: string;
+  /** 可选等待毫秒数；0（默认）立即返回当前状态。 */
+  waitMs?: number;
+}
+
+export interface CommandOutputResult {
+  taskId: string;
+  command: string;
+  cwd: string;
+  running: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  truncated: boolean;
+  durationMs: number;
+}
+
+export interface CommandKillInput {
+  taskId: string;
+}
+
+export interface CommandKillResult {
+  taskId: string;
+  killed: boolean;
 }
 
 export interface GitCoAuthorOptions {
@@ -971,11 +1014,76 @@ export async function searchCodeForTool(
   };
 }
 
+// ---------------------------------------------------------------------------
+// 后台命令句柄
+//
+// run_command 阻塞期间没有任何注入检查点（注入只在 model step 边界发生）。因此
+// 当会话有待注入的用户消息时，把在途命令转为后台句柄并立即返回，让当前 step
+// 尽快结束，好让下一个 step 边界把消息吸收进当前 turn。命令不杀、不丢。
+// ---------------------------------------------------------------------------
+
+interface LimitedTextBuffer {
+  chunks: string[];
+  bytes: number;
+  truncated: boolean;
+}
+
+interface BackgroundCommandEntry {
+  taskId: string;
+  command: string;
+  cwd: string;
+  startedAt: number;
+  child: ReturnType<typeof spawn>;
+  stdout: LimitedTextBuffer;
+  stderr: LimitedTextBuffer;
+  done: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  /** 等待任务结束（或等待被放弃）的唤醒回调 */
+  waiters: Array<() => void>;
+}
+
+const backgroundCommands = new Map<string, BackgroundCommandEntry>();
+let backgroundCommandSeq = 0;
+
+function normalizeCommandOutputWaitMs(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(Math.trunc(value), MAX_COMMAND_OUTPUT_WAIT_MS);
+}
+
+function snapshotBackgroundCommand(entry: BackgroundCommandEntry): CommandOutputResult {
+  return {
+    taskId: entry.taskId,
+    command: entry.command,
+    cwd: entry.cwd,
+    running: !entry.done,
+    exitCode: entry.exitCode,
+    signal: entry.signal,
+    stdout: entry.stdout.chunks.join(""),
+    stderr: entry.stderr.chunks.join(""),
+    timedOut: entry.timedOut,
+    truncated: entry.stdout.truncated || entry.stderr.truncated,
+    durationMs: Date.now() - entry.startedAt,
+  };
+}
+
+/** 句柄超限时优先回收已结束的条目（运行中的条目保留，避免破坏 agent 的跟踪）。 */
+function pruneBackgroundCommands(): void {
+  if (backgroundCommands.size <= MAX_BACKGROUND_COMMANDS) return;
+  for (const [id, entry] of backgroundCommands) {
+    if (!entry.done) continue;
+    backgroundCommands.delete(id);
+    if (backgroundCommands.size <= MAX_BACKGROUND_COMMANDS) return;
+  }
+}
+
 export async function runCommandForTool(
   cwd: string,
   input: RunCommandInput,
   abortSignal?: AbortSignal,
   coAuthor?: GitCoAuthorOptions,
+  shouldYield?: () => boolean,
 ): Promise<RunCommandOutput> {
   const command = withGitCoAuthor(input.command?.trim(), coAuthor);
   if (!command) throw new Error("command is required");
@@ -996,6 +1104,8 @@ export async function runCommandForTool(
     let timedOut = false;
     let timeout: NodeJS.Timeout;
     let fallbackTimer: NodeJS.Timeout | undefined;
+    let yieldPoll: NodeJS.Timeout | undefined;
+    let backgroundEntry: BackgroundCommandEntry | undefined;
 
     const child = spawn(command, {
       cwd: commandCwd,
@@ -1008,6 +1118,7 @@ export async function runCommandForTool(
     const cleanup = () => {
       clearTimeout(timeout);
       if (fallbackTimer) clearTimeout(fallbackTimer);
+      if (yieldPoll) clearInterval(yieldPoll);
       abortSignal?.removeEventListener("abort", abort);
     };
 
@@ -1028,12 +1139,32 @@ export async function runCommandForTool(
       });
     };
 
+    /**
+     * 统一收敛点：已转入后台则更新句柄并唤醒等待方，否则按前台语义 resolve。
+     * 让位后 timeout 与 abort 的既有定时器/监听继续生效，因此后台任务仍受
+     * timeoutMs 约束，也仍能被 /stop 终止。
+     */
+    const settle = (exitCode: number | null, signal: NodeJS.Signals | string | null) => {
+      if (!backgroundEntry) {
+        finish(exitCode, signal);
+        return;
+      }
+      backgroundEntry.done = true;
+      backgroundEntry.exitCode = exitCode;
+      backgroundEntry.signal = signal;
+      backgroundEntry.timedOut = timedOut;
+      cleanup();
+      const waiters = backgroundEntry.waiters;
+      backgroundEntry.waiters = [];
+      for (const wake of waiters) wake();
+    };
+
     const requestKill = (reason: NodeJS.Signals | "timeout" | "abort") => {
       void killProcessTree(child.pid);
       fallbackTimer = setTimeout(() => {
         child.stdout?.destroy();
         child.stderr?.destroy();
-        finish(null, reason === "timeout" ? "SIGTERM" : reason);
+        settle(null, reason === "timeout" ? "SIGTERM" : reason);
       }, 5_000);
       fallbackTimer.unref?.();
     };
@@ -1048,6 +1179,69 @@ export async function runCommandForTool(
     };
     abortSignal?.addEventListener("abort", abort, { once: true });
 
+    /**
+     * 让位：命令既不杀也不等，转为后台句柄后立即返回。这样当前 step 尽快结束，
+     * 下一个 prepareStep 边界即可调用 drainInput 把用户新消息注入当前 turn。
+     */
+    const detachToBackground = () => {
+      if (settled || backgroundEntry) return;
+      // close/error 重新挂到 settle：settle 会按 backgroundEntry 分流到后台句柄
+      child.removeAllListeners("close");
+      child.removeAllListeners("error");
+      child.once("close", (code, signal) => settle(code, signal));
+      child.once("error", () => settle(null, "error"));
+
+      const taskId = `cmd-${++backgroundCommandSeq}-${Math.random().toString(36).slice(2, 6)}`;
+      backgroundEntry = {
+        taskId,
+        command,
+        cwd: commandCwd,
+        startedAt,
+        child,
+        stdout,
+        stderr,
+        done: false,
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        waiters: [],
+      };
+      backgroundCommands.set(taskId, backgroundEntry);
+      pruneBackgroundCommands();
+
+      if (yieldPoll) clearInterval(yieldPoll);
+      yieldPoll = undefined;
+      // 刻意不调 cleanup：超时定时器与 abort 监听继续为后台任务服务
+      settled = true;
+      resolvePromise({
+        command,
+        cwd: commandCwd,
+        exitCode: null,
+        signal: null,
+        stdout: stdout.chunks.join(""),
+        stderr: stderr.chunks.join(""),
+        timedOut: false,
+        truncated: stdout.truncated || stderr.truncated,
+        durationMs: Date.now() - startedAt,
+        backgrounded: true,
+        taskId,
+      });
+    };
+
+    if (shouldYield) {
+      yieldPoll = setInterval(() => {
+        if (settled || backgroundEntry) return;
+        let yieldNow = false;
+        try {
+          yieldNow = shouldYield() === true;
+        } catch {
+          yieldNow = false;
+        }
+        if (yieldNow) detachToBackground();
+      }, YIELD_POLL_INTERVAL_MS);
+      yieldPoll.unref?.();
+    }
+
     child.stdout?.on("data", (chunk: Buffer) => {
       appendLimitedOutput(stdout, chunk);
     });
@@ -1055,15 +1249,87 @@ export async function runCommandForTool(
       appendLimitedOutput(stderr, chunk);
     });
     child.once("error", (err) => {
+      if (backgroundEntry) {
+        settle(null, "error");
+        return;
+      }
       if (settled) return;
       settled = true;
       cleanup();
       reject(err);
     });
     child.once("close", (code, signal) => {
-      finish(code, signal);
+      settle(code, signal);
     });
   });
+}
+
+/** 读取后台命令的最新输出；waitMs > 0 时最多等待该时长（等待期间仍可让位）。 */
+export async function commandOutputForTool(
+  taskId: string,
+  input?: CommandOutputInput,
+  shouldYield?: () => boolean,
+): Promise<CommandOutputResult> {
+  const entry = backgroundCommands.get(taskId);
+  if (!entry) throw new Error(`未知的后台任务：${taskId}`);
+  const waitMs = normalizeCommandOutputWaitMs(input?.waitMs);
+  if (waitMs > 0 && !entry.done) {
+    await waitForBackgroundCommand(entry, waitMs, shouldYield);
+  }
+  return snapshotBackgroundCommand(entry);
+}
+
+/** 等待后台命令结束（或等待预算耗尽、或让位信号到来）。 */
+function waitForBackgroundCommand(
+  entry: BackgroundCommandEntry,
+  waitMs: number,
+  shouldYield?: () => boolean,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let finished = false;
+    let poll: NodeJS.Timeout | undefined;
+    const wake = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      const index = entry.waiters.indexOf(wake);
+      if (index >= 0) entry.waiters.splice(index, 1);
+      resolve();
+    };
+    const timer = setTimeout(wake, waitMs);
+    timer.unref?.();
+    entry.waiters.push(wake);
+    if (shouldYield) {
+      poll = setInterval(() => {
+        let yieldNow = false;
+        try {
+          yieldNow = shouldYield() === true;
+        } catch {
+          yieldNow = false;
+        }
+        if (yieldNow) wake();
+      }, YIELD_POLL_INTERVAL_MS);
+      poll.unref?.();
+    }
+  });
+}
+
+/** 终止一个仍在运行的后台命令。 */
+export async function commandKillForTool(taskId: string): Promise<CommandKillResult> {
+  const entry = backgroundCommands.get(taskId);
+  if (!entry) throw new Error(`未知的后台任务：${taskId}`);
+  if (entry.done) return { taskId, killed: false };
+  await killProcessTree(entry.child.pid);
+  return { taskId, killed: true };
+}
+
+/** 终止并清空全部后台命令句柄（进程退出与测试收尾），避免留下孤儿进程。 */
+export function killAllBackgroundCommands(): void {
+  for (const entry of backgroundCommands.values()) {
+    if (!entry.done) void killProcessTree(entry.child.pid);
+  }
+  backgroundCommands.clear();
 }
 
 export async function editFileForTool(cwd: string, input: EditFileInput): Promise<EditFileOutput> {
@@ -1283,6 +1549,12 @@ export interface BuiltinFileToolsOptions {
    * 未提供时 task 工具不可用（抛出明确错误），主会话之外的工具集不会意外开启子代理。
    */
   runTask?: TaskRunner;
+  /**
+   * 让位注入判定：返回 true 表示会话有待注入的用户消息，在途 run_command 应立即
+   * 转入后台并返回句柄，让当前 step 尽快结束以便在下一个 step 边界注入。
+   * 未提供时 run_command 保持原有阻塞语义（独立 CLI 等场景不受影响）。
+   */
+  shouldYieldToInjection?: () => boolean;
 }
 
 export interface TaskRunnerInput {
@@ -1411,7 +1683,7 @@ export function createBuiltinFileTools(
       execute: (input) => presentFileForTool(cwd, input),
     }),
     run_command: tool<RunCommandInput, RunCommandOutput>({
-      description: "在本地工作区运行非交互式 shell 命令。用于测试、git 和包脚本。返回 stdout/stderr 和 exitCode；非零退出码不是工具错误。",
+      description: "在本地工作区运行非交互式 shell 命令。用于测试、git 和包脚本。返回 stdout/stderr 和 exitCode；非零退出码不是工具错误。命令运行期间若用户发来新消息，会立即转入后台并返回 taskId（backgrounded:true），命令继续运行，用 command_output 取后续输出。",
       inputSchema: jsonSchema<RunCommandInput>({
         type: "object",
         additionalProperties: false,
@@ -1429,8 +1701,39 @@ export function createBuiltinFileTools(
           reason: isDangerousCommand(input.command) ? "high-risk" : "rule",
           detail: `运行命令: ${input.command}`,
         });
-        return runCommandForTool(cwd, input, execOptions.abortSignal, options.gitCoAuthor);
+        return runCommandForTool(
+          cwd,
+          input,
+          execOptions.abortSignal,
+          options.gitCoAuthor,
+          options.shouldYieldToInjection,
+        );
       },
+    }),
+    command_output: tool<CommandOutputInput, CommandOutputResult>({
+      description: "读取被让位到后台的命令的最新输出。立即返回当前状态；waitMs 可最多等待 30 秒。任务结束后可反复读取完整 stdout/stderr。",
+      inputSchema: jsonSchema<CommandOutputInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          taskId: { type: "string", description: "run_command 返回的 taskId（backgrounded:true 时）。" },
+          waitMs: { type: "number", description: `可选等待毫秒数；0 或省略立即返回，上限 ${MAX_COMMAND_OUTPUT_WAIT_MS}。` },
+        },
+        required: ["taskId"],
+      }),
+      execute: (input) => commandOutputForTool(input.taskId, input, options.shouldYieldToInjection),
+    }),
+    command_kill: tool<CommandKillInput, CommandKillResult>({
+      description: "终止一个仍在后台运行的命令（run_command 让位后转入后台的）。",
+      inputSchema: jsonSchema<CommandKillInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          taskId: { type: "string", description: "run_command 返回的 taskId。" },
+        },
+        required: ["taskId"],
+      }),
+      execute: (input) => commandKillForTool(input.taskId),
     }),
     task: tool<TaskRunnerInput, TaskRunnerOutput>({
       description: "把独立子任务委派给子代理执行：子代理使用子模型、拥有独立上下文，不污染主对话上下文。适合边界清晰、可独立交付的调研/代码生成子任务（如扫描整个仓库、阅读长文档、生成独立模块）。子代理不能再次委派任务（禁止嵌套），结果会截断回传。",

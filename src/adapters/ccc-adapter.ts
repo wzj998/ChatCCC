@@ -24,6 +24,11 @@ export interface CccAdapterOptions extends ChatSessionConfig {
   compactionTimeoutMs?: number;
   maxSteps?: number;
   gitCoAuthor?: boolean;
+  /**
+   * 待注入消息判定（按 ChatCCC 会话 id）：为 true 时内核把在途 run_command 转入后台，
+   * 让当前 step 尽快结束，好让下一个 step 边界注入用户新消息。未提供时行为不变。
+   */
+  hasPendingInjection?: (sessionId: string) => boolean;
 }
 
 function toChatSessionOptions(
@@ -46,6 +51,9 @@ function toChatSessionOptions(
     // 高危命令不询问，全部放行（与独立 deepccc CLI 的 ask 模式不同）
     permissionMode: "bypass",
     ...(options.gitCoAuthor !== undefined ? { gitCoAuthor: options.gitCoAuthor } : {}),
+    ...(options.hasPendingInjection
+      ? { shouldYieldToInjection: () => options.hasPendingInjection!(sessionId) === true }
+      : {}),
   };
 }
 

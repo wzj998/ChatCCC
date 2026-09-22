@@ -114,6 +114,7 @@ import {
   consumeAutoRecoveryReservation,
   cancelAutoRecoveryReservation,
   hasAutoRecoveryReservation,
+  hasPendingInjection,
   type QueuedMessage,
 } from "./session-chat-binding.ts";
 
@@ -760,6 +761,7 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
       ...(config.ccc.provider ? { provider: config.ccc.provider } : {}),
       ...(config.ccc.subModel ? { subModel: config.ccc.subModel } : {}),
       ...(config.ccc.gitCoAuthor !== null ? { gitCoAuthor: config.ccc.gitCoAuthor } : {}),
+      hasPendingInjection,
     });
   } else if (tool === "dsh") {
     adapter = createDshAdapter({
