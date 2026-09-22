@@ -39,8 +39,14 @@ const SEARCH_TIMEOUT_MS = 15_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_TIMEOUT_MS = 900_000;
-/** 让位注入的轮询间隔：run_command 执行期以此频率检查是否有待注入的用户消息 */
-const YIELD_POLL_INTERVAL_MS = 250;
+/**
+ * 让位注入的轮询间隔：run_command 执行期以此频率检查是否有待注入的用户消息。
+ * 取 1s 而非更小值：轮询本身不花 token（只读内存队列，无模型调用），但更密的
+ * 定时器唤醒有可测的 CPU 开销（实测 250ms 档约 0.27ms/s，1s 档低于计时精度）。
+ * 让位延迟从 250ms 放宽到 1s 对用户无感，却把长任务期间的定时器唤醒降低到
+ * 约 1/4，因此取 1s 作为响应速度与空转成本的平衡点。
+ */
+const YIELD_POLL_INTERVAL_MS = 1000;
 /** command_output 单次等待上限，避免代理用等待把 step 又堵死 */
 const MAX_COMMAND_OUTPUT_WAIT_MS = 30_000;
 /** 后台命令句柄上限；超出时优先回收已结束的句柄 */
