@@ -362,6 +362,12 @@ export interface ChatSessionOptions {
   /** Optional tool-step limit. Leave unset for no step limit. */
   maxSteps?: number;
   /**
+   * 让位注入判定：返回 true 表示会话有待注入的用户消息，在途 run_command 应立即
+   * 转入后台并返回句柄，好让当前 step 尽快结束以便在下一个 step 边界注入。
+   * 未提供时 run_command 保持原有阻塞语义（独立 CLI 等场景不受影响）。
+   */
+  shouldYieldToInjection?: () => boolean;
+  /**
    * Custom skill directories (<dir>/<name>/SKILL.md). When set, these are
    * scanned with the highest priority (deepccc source). Defaults to the
    * combined Claude/Codex/Cursor/DeepCCC directories (see buildDefaultSkillDirs).
@@ -434,6 +440,8 @@ export class ChatSession {
   private context: BuiltinContextManager;
   private compactionTimeoutMs: number;
   private maxSteps?: number;
+  /** 透传给 run_command 的让位注入判定（见 ChatSessionOptions.shouldYieldToInjection）。 */
+  private shouldYieldToInjection?: () => boolean;
   private effort: string;
   private maxOutputTokens?: number;
   private streaming: boolean;
@@ -535,6 +543,7 @@ export class ChatSession {
     this.subModel = this.subModelId ? provider(this.subModelId) : this.model;
     this.cwd = options.cwd ?? process.cwd();
     this.maxSteps = normalizeMaxSteps(options.maxSteps);
+    this.shouldYieldToInjection = options.shouldYieldToInjection;
     this.compactionTimeoutMs = Math.max(1, options.compactionTimeoutMs ?? DEFAULT_COMPACTION_TIMEOUT_MS);
     this.customSystemPrompt = options.systemPrompt ?? "";
     this.permissionMode = options.permissionMode ?? "ask";
@@ -681,6 +690,7 @@ export class ChatSession {
         tools: createBuiltinFileTools(this.cwd, {
           permissionGate: this.permissionGate,
           runTask: this.runTask,
+          shouldYieldToInjection: this.shouldYieldToInjection,
           gitCoAuthor: {
             ...appConfig.git.coAuthor,
             enabled: this.gitCoAuthorEnabled,

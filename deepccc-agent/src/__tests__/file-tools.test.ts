@@ -9,11 +9,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyPatchForTool,
+  commandKillForTool,
+  commandOutputForTool,
   createBuiltinFileTools,
   createFileForTool,
   deleteFileForTool,
   editFileForTool,
   expandHomePath,
+  killAllBackgroundCommands,
   listDirForTool,
   moveFileForTool,
   readFileForTool,
@@ -297,5 +300,158 @@ describe("DeepCCC file tools", () => {
       }),
     ]);
     await expect(readFile(join(dir, "patch.txt"), "utf8")).resolves.toBe("one\nTWO\nthree\n");
+  });
+});
+
+describe("run_command 让位注入（yield-to-injection）", () => {
+  // 1.2s 后才写出 DONE：若工具提前返回，命令必然还在跑
+  const SLOW_WRITE = `node -e "setTimeout(()=>process.stdout.write('DONE'),1200)"`;
+  const HANG = `node -e "setTimeout(()=>{},30000)"`;
+
+  async function waitForDone(taskId: string, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = await commandOutputForTool(taskId);
+    while (last.running && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      last = await commandOutputForTool(taskId);
+    }
+    return last;
+  }
+
+  afterEach(() => {
+    killAllBackgroundCommands();
+  });
+
+  it("让位时立即返回后台句柄，命令继续在后台运行", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(
+      dir,
+      { command: SLOW_WRITE, timeoutMs: 30_000 },
+      undefined,
+      undefined,
+      () => true,
+    );
+
+    expect(result.backgrounded).toBe(true);
+    expect(typeof result.taskId).toBe("string");
+    // 命令 1.2s 后才写 DONE；此刻已返回说明没有等它跑完
+    expect(result.exitCode).toBeNull();
+    expect(result.stdout).not.toContain("DONE");
+
+    const done = await waitForDone(result.taskId!);
+    expect(done.running).toBe(false);
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toContain("DONE");
+  });
+
+  it("未提供 shouldYield 时行为不变（回归护栏）", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(dir, {
+      command: `node -e "process.stdout.write('OK')"`,
+      timeoutMs: 10_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("OK");
+    expect(result.backgrounded).toBeUndefined();
+    expect(result.taskId).toBeUndefined();
+  });
+
+  it("shouldYield 恒为 false 时阻塞到完成且不标记 backgrounded", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(
+      dir,
+      { command: `node -e "process.stdout.write('OK')"`, timeoutMs: 10_000 },
+      undefined,
+      undefined,
+      () => false,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("OK");
+    expect(result.backgrounded).toBeUndefined();
+  });
+
+  it("后台任务仍响应 abort（/stop）", async () => {
+    const dir = await makeTempDir();
+    const controller = new AbortController();
+
+    const result = await runCommandForTool(
+      dir,
+      { command: HANG, timeoutMs: 60_000 },
+      controller.signal,
+      undefined,
+      () => true,
+    );
+    expect(result.backgrounded).toBe(true);
+
+    controller.abort();
+
+    const done = await waitForDone(result.taskId!, 15_000);
+    expect(done.running).toBe(false);
+  });
+
+  it("后台任务仍受 timeoutMs 约束", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(
+      dir,
+      { command: HANG, timeoutMs: 500 },
+      undefined,
+      undefined,
+      () => true,
+    );
+    expect(result.backgrounded).toBe(true);
+
+    const done = await waitForDone(result.taskId!, 15_000);
+    expect(done.running).toBe(false);
+    expect(done.timedOut).toBe(true);
+  });
+
+  it("command_kill 终止后台任务", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(
+      dir,
+      { command: HANG, timeoutMs: 60_000 },
+      undefined,
+      undefined,
+      () => true,
+    );
+    const taskId = result.taskId!;
+    expect((await commandOutputForTool(taskId)).running).toBe(true);
+
+    expect(await commandKillForTool(taskId)).toEqual({ taskId, killed: true });
+
+    const done = await waitForDone(taskId, 15_000);
+    expect(done.running).toBe(false);
+  });
+
+  it("command_output 对未知 taskId 抛错", async () => {
+    await expect(commandOutputForTool("cmd-does-not-exist")).rejects.toThrow(/未知的后台任务/);
+  });
+
+  it("run_command 工具通过 shouldYieldToInjection 让位", async () => {
+    const dir = await makeTempDir();
+    const tools = createBuiltinFileTools(dir, {
+      shouldYieldToInjection: () => true,
+    }) as unknown as Record<
+      string,
+      { execute: (input: unknown, options: unknown) => Promise<Record<string, any>> }
+    >;
+
+    const result = await tools.run_command.execute(
+      { command: SLOW_WRITE, timeoutMs: 30_000 },
+      { abortSignal: undefined },
+    );
+
+    expect(result.backgrounded).toBe(true);
+    expect(result.taskId).toBeTruthy();
+
+    const done = await waitForDone(result.taskId as string);
+    expect(done.exitCode).toBe(0);
   });
 });
