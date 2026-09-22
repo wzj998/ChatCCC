@@ -37,7 +37,14 @@ import {
   defaultBuiltinSessionId,
   type BuiltinContextTimelineEntry,
 } from "./context.js";
-import { createBuiltinFileTools, MAX_TASK_OUTPUT_CHARS, type TaskRunnerInput } from "./file-tools.js";
+import {
+  createBuiltinFileTools,
+  MAX_TASK_MAX_STEPS,
+  MAX_TASK_OUTPUT_CHARS,
+  MIN_TASK_MAX_STEPS,
+  TASK_STOP_ABORT_REASON,
+  type TaskRunnerInput,
+} from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
 import {
   hasMalformedToolProtocolText,
@@ -127,8 +134,26 @@ const COMPACTION_RECOVERY_HINT_DISABLED = [
 export const DEFAULT_COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_COMPACTION_OUTPUT_TOKENS = 16_384;
 const OPENAI_COMPATIBLE_PROVIDER_NAME = "deepccc";
-/** task 子代理工具：子代理单轮对话的最大工具步数（防失控循环，结果收敛后即结束） */
-const TASK_MAX_STEPS = 20;
+/** task 子代理工具：未指定 maxSteps 时的默认步骤预算。 */
+const DEFAULT_TASK_MAX_STEPS = 20;
+const MAX_TASK_SUMMARY_OUTPUT_TOKENS = 16_384;
+const TASK_FINAL_SUMMARY_SYSTEM_PROMPT = [
+  "你是 DeepCCC 子代理的最终总结器。",
+  "只能依据消息中已经收集的证据作答，不得调用工具、继续调查或引入新事实。",
+  "直接交付原子任务要求的最终结果；说明关键证据、结论、局限和未完成项。",
+  "不要输出“我将开始”“接下来调查”等过程性开场白。",
+].join("\n");
+
+function normalizeTaskMaxSteps(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_TASK_MAX_STEPS;
+  if (!Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error("task maxSteps 必须是整数");
+  }
+  if (value < MIN_TASK_MAX_STEPS || value > MAX_TASK_MAX_STEPS) {
+    throw new Error(`task maxSteps 必须在 ${MIN_TASK_MAX_STEPS}-${MAX_TASK_MAX_STEPS} 之间`);
+  }
+  return value;
+}
 
 /** 子代理最终输出截断：保留前 MAX_TASK_OUTPUT_CHARS 字符，尾部注明截断信息 */
 function truncateTaskOutput(text: string): string {
@@ -453,6 +478,48 @@ export class ChatSession {
   private customSystemPrompt: string;
   /** 最近一次 chat() 使用的 system prompt（供 history 等读取） */
   private systemPrompt = "";
+  /** 最近一轮底层模型的结束原因；用于识别 step 上限截停在工具调用之后的情况。 */
+  private lastTurnFinishReason: string | undefined;
+
+  private async summarizeTaskResult(
+    child: ChatSession,
+    reason: "step_limit" | "stopped" | "timeout",
+  ): Promise<string> {
+    const summaryController = new AbortController();
+    const timeout = setTimeout(() => summaryController.abort(), this.compactionTimeoutMs);
+    timeout.unref?.();
+    try {
+      const reasonText = reason === "step_limit"
+        ? "子代理已用完步骤预算"
+        : reason === "stopped"
+          ? "主代理已要求子代理停止继续调查"
+          : "子代理已达到执行时限";
+      const result = await generateText({
+        model: child.model,
+        system: TASK_FINAL_SUMMARY_SYSTEM_PROMPT,
+        messages: [
+          ...child.context.buildModelMessages(),
+          {
+            role: "user",
+            content: `${reasonText}。不要再调用工具；请立即根据以上已有证据生成最终总结。`,
+          },
+        ],
+        abortSignal: summaryController.signal,
+        temperature: 0,
+        maxOutputTokens: Math.min(
+          child.maxOutputTokens ?? MAX_TASK_SUMMARY_OUTPUT_TOKENS,
+          MAX_TASK_SUMMARY_OUTPUT_TOKENS,
+        ),
+        providerOptions: child.provider === "openai"
+          ? { [OPENAI_COMPATIBLE_PROVIDER_NAME]: { reasoningEffort: "none" } }
+          : { anthropic: { effort: "low" } },
+      });
+      if (!result.text.trim()) throw new Error("task 子代理最终总结为空");
+      return result.text;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   /**
    * task 子代理工具执行器：用子模型开独立子会话（独立上下文、独立 cwd）执行子任务，
@@ -461,8 +528,9 @@ export class ChatSession {
   private runTask = async (input: TaskRunnerInput, signal?: AbortSignal): Promise<string> => {
     const rawCwd = input.cwd?.trim();
     const taskCwd = rawCwd ? (isAbsolute(rawCwd) ? rawCwd : resolve(this.cwd, rawCwd)) : this.cwd;
+    const maxSteps = normalizeTaskMaxSteps(input.maxSteps);
     const timeoutController = new AbortController();
-    const timeout = setTimeout(() => timeoutController.abort(), this.compactionTimeoutMs);
+    const timeout = setTimeout(() => timeoutController.abort("deepccc_task_timeout"), this.compactionTimeoutMs);
     timeout.unref?.();
     const taskSignal = signal
       ? AbortSignal.any([signal, timeoutController.signal])
@@ -483,7 +551,7 @@ export class ChatSession {
           persist: false,
           permissionMode: this.permissionMode,
           permissionResolver: this.permissionResolver,
-          maxSteps: TASK_MAX_STEPS,
+          maxSteps,
           compactionTimeoutMs: this.compactionTimeoutMs,
           skillsDirs: this.skillDirs.map((s) => s.dir),
         },
@@ -495,6 +563,14 @@ export class ChatSession {
         } else if (event.type === "error") {
           throw new Error(`task 子代理执行失败: ${event.message}`);
         }
+      }
+      const explicitlyStopped = signal?.aborted === true && signal.reason === TASK_STOP_ABORT_REASON;
+      const parentCancelled = signal?.aborted === true && !explicitlyStopped;
+      const timedOut = timeoutController.signal.aborted;
+      const stepLimitReached = child.lastTurnFinishReason === "tool-calls";
+      if (!parentCancelled && (explicitlyStopped || timedOut || stepLimitReached)) {
+        const reason = explicitlyStopped ? "stopped" : timedOut ? "timeout" : "step_limit";
+        full = await this.summarizeTaskResult(child, reason);
       }
       if (!full.trim()) return "(子代理未返回文本内容)";
       return applyPrivacy(truncateTaskOutput(full));
@@ -599,6 +675,7 @@ export class ChatSession {
     signal?: AbortSignal,
     drainInput?: () => string | undefined,
   ): AsyncIterable<ChatEvent> {
+    this.lastTurnFinishReason = undefined;
     this.context.appendMessage({ role: "user", content: userMessage });
 
     let fullText = "";
@@ -850,6 +927,7 @@ export class ChatSession {
               if (finishReason === "error" || finishReason === "length") throw new Error(`DeepCCC 未正常完成：finishReason=${finishReason}，回复可能不完整`);
               if (!fullText.trim() && toolCallOrder.length === 0) throw new Error("DeepCCC 本轮未产生有效回复");
             }
+            this.lastTurnFinishReason = finishReason;
             if (hasMalformedToolProtocolText(fullText)) {
               console.warn(
                 `[DeepCCC] malformed tool protocol text detected for ${this.context.sessionId} `

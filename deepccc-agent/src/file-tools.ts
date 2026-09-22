@@ -53,6 +53,13 @@ const MAX_COMMAND_OUTPUT_WAIT_MS = 30_000;
 const MAX_BACKGROUND_COMMANDS = 32;
 /** task 子代理工具：子任务结果回传主会话前的最大字符数（防止子代理长输出撑爆主上下文） */
 export const MAX_TASK_OUTPUT_CHARS = 32_000;
+/** task 子代理工具：调用方可选 step 预算的安全边界。 */
+export const MIN_TASK_MAX_STEPS = 1;
+export const MAX_TASK_MAX_STEPS = 100;
+/** task_stop 用此 abort reason 区分“主代理要求收尾”和整个父会话被取消。 */
+export const TASK_STOP_ABORT_REASON = "deepccc_task_stop";
+const MAX_BACKGROUND_TASKS = 32;
+const MAX_TASK_OUTPUT_WAIT_MS = 30_000;
 const requireFromHere = createRequire(import.meta.url);
 
 export interface ReadFileInput {
@@ -1568,14 +1575,172 @@ export interface TaskRunnerInput {
   description: string;
   /** 可选子任务工作目录（相对主会话 cwd 或绝对路径），默认继承主会话工作目录。 */
   cwd?: string;
+  /** 子代理可使用的最大模型/工具步骤数；省略时使用内核默认值。 */
+  maxSteps?: number;
+  /**
+   * true 时立即返回 taskId，主代理可用 task_output 查看、用 task_stop 要求子代理
+   * 停止继续调查并基于已有证据生成总结。省略或 false 时保持同步等待结果。
+   */
+  runInBackground?: boolean;
 }
 
-export interface TaskRunnerOutput {
-  /** 子代理最终文本回复（已截断到 MAX_TASK_OUTPUT_CHARS，已过隐私替换）。 */
-  result: string;
+export type TaskRunnerOutput =
+  | {
+      /** 子代理最终文本回复（已截断到 MAX_TASK_OUTPUT_CHARS，已过隐私替换）。 */
+      result: string;
+      running?: false;
+    }
+  | {
+      /** 后台子代理句柄。 */
+      taskId: string;
+      running: true;
+    };
+
+export interface TaskOutputInput {
+  taskId: string;
+  /** 可选等待毫秒数；0（默认）立即返回，最大 30 秒。 */
+  waitMs?: number;
 }
+
+export interface TaskOutputResult {
+  taskId: string;
+  running: boolean;
+  stopped: boolean;
+  result?: string;
+  error?: string;
+  durationMs: number;
+}
+
+export interface TaskStopInput {
+  taskId: string;
+}
+
+export interface TaskStopResult extends TaskOutputResult {}
 
 export type TaskRunner = (input: TaskRunnerInput, signal?: AbortSignal) => Promise<string>;
+
+interface BackgroundTaskEntry {
+  taskId: string;
+  startedAt: number;
+  controller: AbortController;
+  done: boolean;
+  stopped: boolean;
+  result?: string;
+  error?: string;
+  waiters: Array<() => void>;
+  promise: Promise<void>;
+}
+
+const backgroundTasks = new Map<string, BackgroundTaskEntry>();
+let backgroundTaskSeq = 0;
+
+function normalizeTaskOutputWaitMs(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(Math.trunc(value), MAX_TASK_OUTPUT_WAIT_MS);
+}
+
+function snapshotBackgroundTask(entry: BackgroundTaskEntry): TaskOutputResult {
+  return {
+    taskId: entry.taskId,
+    running: !entry.done,
+    stopped: entry.stopped,
+    ...(entry.result !== undefined ? { result: entry.result } : {}),
+    ...(entry.error !== undefined ? { error: entry.error } : {}),
+    durationMs: Date.now() - entry.startedAt,
+  };
+}
+
+function wakeBackgroundTaskWaiters(entry: BackgroundTaskEntry): void {
+  for (const wake of entry.waiters.splice(0)) wake();
+}
+
+function pruneBackgroundTasks(): void {
+  if (backgroundTasks.size <= MAX_BACKGROUND_TASKS) return;
+  for (const [id, entry] of backgroundTasks) {
+    if (!entry.done) continue;
+    backgroundTasks.delete(id);
+    if (backgroundTasks.size <= MAX_BACKGROUND_TASKS) return;
+  }
+}
+
+function waitForBackgroundTask(entry: BackgroundTaskEntry, waitMs: number): Promise<void> {
+  if (entry.done || waitMs <= 0) return Promise.resolve();
+  return new Promise<void>((resolvePromise) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const index = entry.waiters.indexOf(finish);
+      if (index >= 0) entry.waiters.splice(index, 1);
+      resolvePromise();
+    };
+    const timer = setTimeout(finish, waitMs);
+    timer.unref?.();
+    entry.waiters.push(finish);
+  });
+}
+
+function startBackgroundTask(
+  runTask: TaskRunner,
+  input: TaskRunnerInput,
+  parentSignal?: AbortSignal,
+): TaskRunnerOutput {
+  const controller = new AbortController();
+  const taskId = `agent-${Date.now().toString(36)}-${(++backgroundTaskSeq).toString(36)}-${randomBytes(3).toString("hex")}`;
+  const entry: BackgroundTaskEntry = {
+    taskId,
+    startedAt: Date.now(),
+    controller,
+    done: false,
+    stopped: false,
+    waiters: [],
+    promise: Promise.resolve(),
+  };
+  const signal = parentSignal
+    ? AbortSignal.any([parentSignal, controller.signal])
+    : controller.signal;
+  entry.promise = runTask(input, signal)
+    .then((result) => {
+      entry.result = result;
+    })
+    .catch((error) => {
+      entry.error = error instanceof Error ? error.message : String(error);
+    })
+    .finally(() => {
+      entry.done = true;
+      wakeBackgroundTaskWaiters(entry);
+    });
+  backgroundTasks.set(taskId, entry);
+  pruneBackgroundTasks();
+  return { taskId, running: true };
+}
+
+export async function taskOutputForTool(input: TaskOutputInput): Promise<TaskOutputResult> {
+  const entry = backgroundTasks.get(input.taskId);
+  if (!entry) throw new Error(`未知的后台子代理：${input.taskId}`);
+  await waitForBackgroundTask(entry, normalizeTaskOutputWaitMs(input.waitMs));
+  return snapshotBackgroundTask(entry);
+}
+
+export async function taskStopForTool(input: TaskStopInput): Promise<TaskStopResult> {
+  const entry = backgroundTasks.get(input.taskId);
+  if (!entry) throw new Error(`未知的后台子代理：${input.taskId}`);
+  if (!entry.done) {
+    entry.stopped = true;
+    entry.controller.abort(TASK_STOP_ABORT_REASON);
+    await entry.promise;
+  }
+  return snapshotBackgroundTask(entry);
+}
+
+/** 中止并清空全部后台子代理句柄（测试收尾或进程退出）。 */
+export function killAllBackgroundTasks(): void {
+  for (const entry of backgroundTasks.values()) {
+    if (!entry.done) entry.controller.abort();
+  }
+  backgroundTasks.clear();
+}
 
 export function createBuiltinFileTools(
   cwd: string,
@@ -1742,13 +1907,23 @@ export function createBuiltinFileTools(
       execute: (input) => commandKillForTool(input.taskId),
     }),
     task: tool<TaskRunnerInput, TaskRunnerOutput>({
-      description: "把独立子任务委派给子代理执行：子代理使用子模型、拥有独立上下文，不污染主对话上下文。适合边界清晰、可独立交付的调研/代码生成子任务（如扫描整个仓库、阅读长文档、生成独立模块）。子代理不能再次委派任务（禁止嵌套），结果会截断回传。",
+      description: `把独立子任务委派给子代理执行：子代理使用子模型、拥有独立上下文，不污染主对话上下文。可用 maxSteps 指定 ${MIN_TASK_MAX_STEPS}-${MAX_TASK_MAX_STEPS} 步预算。默认同步等待；runInBackground=true 时立即返回 taskId，之后用 task_output 查看或 task_stop 要求其停止调查并总结。子代理不能再次委派任务（禁止嵌套），结果会截断回传。`,
       inputSchema: jsonSchema<TaskRunnerInput>({
         type: "object",
         additionalProperties: false,
         properties: {
           description: { type: "string", description: "子任务描述：目标、约束与交付物。请写清楚子代理需要返回什么。" },
           cwd: { type: "string", description: "可选子任务工作目录（绝对路径或相对主会话 cwd），默认继承主会话工作目录。" },
+          maxSteps: {
+            type: "number",
+            minimum: MIN_TASK_MAX_STEPS,
+            maximum: MAX_TASK_MAX_STEPS,
+            description: `可选的子代理最大步骤数，范围 ${MIN_TASK_MAX_STEPS}-${MAX_TASK_MAX_STEPS}；复杂全仓调查应显式提高。`,
+          },
+          runInBackground: {
+            type: "boolean",
+            description: "设为 true 后立即返回 taskId，使主代理能继续工作、查看进度或主动结束该子代理。",
+          },
         },
         required: ["description"],
       }),
@@ -1756,9 +1931,42 @@ export function createBuiltinFileTools(
         if (!runTask) {
           throw new Error("task 工具不可用：当前环境未启用子代理执行器");
         }
-        const result = await runTask(input, execOptions.abortSignal);
+        if (input.runInBackground === true) {
+          return startBackgroundTask(runTask, input, execOptions?.abortSignal);
+        }
+        const result = await runTask(input, execOptions?.abortSignal);
         return { result };
       },
+    }),
+    task_output: tool<TaskOutputInput, TaskOutputResult>({
+      description: "查看后台子代理的状态和最终总结。waitMs 可最多等待 30 秒；running=true 时稍后再查。",
+      inputSchema: jsonSchema<TaskOutputInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          taskId: { type: "string", description: "task(runInBackground=true) 返回的子代理句柄。" },
+          waitMs: {
+            type: "number",
+            minimum: 0,
+            maximum: MAX_TASK_OUTPUT_WAIT_MS,
+            description: `可选等待毫秒数，最大 ${MAX_TASK_OUTPUT_WAIT_MS}。`,
+          },
+        },
+        required: ["taskId"],
+      }),
+      execute: (input) => taskOutputForTool(input),
+    }),
+    task_stop: tool<TaskStopInput, TaskStopResult>({
+      description: "结束一个后台子代理。子代理会停止继续调查，并基于停止前已收集的证据生成最终总结后返回。",
+      inputSchema: jsonSchema<TaskStopInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          taskId: { type: "string", description: "task(runInBackground=true) 返回的子代理句柄。" },
+        },
+        required: ["taskId"],
+      }),
+      execute: (input) => taskStopForTool(input),
     }),
     edit_file: tool<EditFileInput, EditFileOutput>({
       description: "通过精确的 oldText -> newText 替换编辑现有 UTF-8 文本文件。可行时使用 SHA-256 前置条件以避免覆盖并发编辑。",
