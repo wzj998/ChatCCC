@@ -304,8 +304,9 @@ describe("DeepCCC file tools", () => {
 });
 
 describe("run_command 让位注入（yield-to-injection）", () => {
-  // 1.2s 后才写出 DONE：若工具提前返回，命令必然还在跑
-  const SLOW_WRITE = `node -e "setTimeout(()=>process.stdout.write('DONE'),1200)"`;
+  // 3s 后才写出 DONE：轮询间隔为 1s，留足余量确保让位先于命令结束发生，
+  // 若工具提前返回则命令必然还在跑（避免时序抖动导致用例 flaky）。
+  const SLOW_WRITE = `node -e "setTimeout(()=>process.stdout.write('DONE'),3000)"`;
   const HANG = `node -e "setTimeout(()=>{},30000)"`;
 
   async function waitForDone(taskId: string, timeoutMs = 10_000) {
@@ -335,7 +336,7 @@ describe("run_command 让位注入（yield-to-injection）", () => {
 
     expect(result.backgrounded).toBe(true);
     expect(typeof result.taskId).toBe("string");
-    // 命令 1.2s 后才写 DONE；此刻已返回说明没有等它跑完
+    // 命令 3s 后才写 DONE；此刻已返回说明没有等它跑完
     expect(result.exitCode).toBeNull();
     expect(result.stdout).not.toContain("DONE");
 
@@ -399,7 +400,9 @@ describe("run_command 让位注入（yield-to-injection）", () => {
 
     const result = await runCommandForTool(
       dir,
-      { command: HANG, timeoutMs: 500 },
+      // timeoutMs 必须大于轮询间隔：否则超时会先于让位触发，命令以
+      // 前台语义结束，就测不到“后台任务仍受 timeoutMs 约束”。
+      { command: HANG, timeoutMs: 2000 },
       undefined,
       undefined,
       () => true,
