@@ -265,6 +265,83 @@ describe("handleCommand WeChat processing ack", () => {
     expect(platform.sendText).toHaveBeenCalledWith("wx-chat", "生成中...");
   });
 
+  it("falls back to the group session registry when getChatInfo temporarily fails", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockRejectedValue(
+      new Error(`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`),
+    );
+    const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
+      yield {
+        type: "assistant" as const,
+        blocks: [{ type: "text" as const, text: `收到: ${userText}` }],
+      };
+    });
+    _setAdapterForToolForTest("claude", {
+      ...mockAdapter("sid-feishu-group"),
+      prompt,
+    });
+    await recordSessionRegistry({
+      chatId: "feishu-group",
+      sessionId: "sid-feishu-group",
+      tool: "claude",
+      chatType: "group",
+      chatName: "已有会话",
+      turnCount: 3,
+      running: false,
+    });
+
+    await handleCommand(
+      platform,
+      "继续刚才的问题",
+      "feishu-group",
+      "ou-user",
+      Date.now(),
+      "group",
+    );
+
+    expect(prompt).toHaveBeenCalledWith(
+      "sid-feishu-group",
+      expect.stringContaining("继续刚才的问题"),
+      "F:\\repo",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    );
+    expect(getChatsForSession("sid-feishu-group")).toContain("feishu-group");
+    expect(platform.sendRawCard).not.toHaveBeenCalled();
+  });
+
+  it("reports a temporary routing error instead of sending the help card when getChatInfo fails without a registry record", async () => {
+    const platform = mockPlatform("feishu");
+    vi.mocked(platform.getChatInfo).mockRejectedValue(
+      new Error(`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`),
+    );
+    const adapter = mockAdapter("should-not-be-created");
+    const prompt = vi.fn(adapter.prompt);
+    _setAdapterForToolForTest("claude", {
+      ...adapter,
+      prompt,
+    });
+
+    await handleCommand(
+      platform,
+      "这是一条普通消息",
+      "unknown-feishu-group",
+      "ou-user",
+      Date.now(),
+      "group",
+    );
+
+    expect(adapter.createSession).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(platform.sendRawCard).not.toHaveBeenCalled();
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "unknown-feishu-group",
+      "会话识别失败",
+      expect.stringContaining("本条消息未发送给 Agent"),
+      "yellow",
+    );
+  });
+
   it("treats /abd as a shared prompt prefix in an existing session", async () => {
     const platform = mockPlatform();
     const prompt = vi.fn(async function* (_sessionId: string, userText: string) {
