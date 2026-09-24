@@ -1,3 +1,5 @@
+
+
 # ChatCCC
 
 **用飞书或微信聊天控制 Claude Code / Cursor / Codex / CCC Agent / DeepSeek Harness。**
@@ -196,7 +198,7 @@ npm run dev
   <img src="images/img_readme_permission.png" alt="飞书应用权限配置" width="280" />
 </p>
 
-4. 在「事件与回调」里订阅 `im.message.receive_v1` 和 `card.action.trigger`。
+4. 在「事件与回调」里分别使用长连接接收事件和回调，并订阅 `im.message.receive_v1` 和 `card.action.trigger`。
 
 <p align="center">
   <img src="images/img_readme_event.png" alt="飞书事件订阅" width="280" />
