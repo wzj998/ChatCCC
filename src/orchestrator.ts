@@ -1852,6 +1852,49 @@ async function handleCommandInternal(
       console.log(
         `[${ts()}] [INFO] Cannot get chat info for ${chatId}: ${(err as Error).message}`,
       );
+
+      // 群信息接口偶尔会返回 HTML 错误页，不能因此把已有会话误判为新群并
+      // 发送欢迎卡片。群描述仍是正常路径的权威来源；仅在读取失败时，使用
+      // 本地 registry 中最后一次成功确认的群绑定作为降级路由。
+      const registry = await loadSessionRegistryForBinding();
+      const record = registry[chatId];
+      if (record?.sessionId && record.tool && record.chatType !== "p2p") {
+        sessionId = record.sessionId;
+        descriptionTool = record.tool;
+        toolLabel = toolDisplayName(descriptionTool);
+        bindChatToSession(sessionId, chatId);
+
+        const memoryInfo = sessionInfoMap.get(chatId);
+        if (!memoryInfo || memoryInfo.sessionId !== sessionId) {
+          sessionInfoMap.set(chatId, {
+            sessionId,
+            tool: descriptionTool,
+            turnCount: record.turnCount ?? 0,
+            lastContextTokens: record.lastContextTokens ?? 0,
+            startTime: record.startTime ?? Date.now(),
+          });
+        }
+        logTrace(tid, "BRANCH", {
+          reason: "group_registry_fallback",
+          sessionId,
+          tool: descriptionTool,
+        });
+      } else {
+        logTrace(tid, "SEND", {
+          method: "group_route_error",
+          chatId,
+        });
+        await platform.sendCard(
+          chatId,
+          "会话识别失败",
+          "暂时无法读取群信息，请稍后重试。本条消息未发送给 Agent。",
+          "yellow",
+        ).catch(() => {});
+        logTrace(tid, "DONE", {
+          outcome: "group_route_error",
+        });
+        return;
+      }
     }
   } else if (platform.kind === "wechat" || platform.kind === "feishu") {
     // 私聊没有可写的群描述，因此会话绑定只持久化在 session-registry.json。
@@ -1935,7 +1978,8 @@ async function handleCommandInternal(
 
     if (
       chatType !== "p2p" &&
-      isUntitledSessionChatName(chatInfo!.name) &&
+      chatInfo &&
+      isUntitledSessionChatName(chatInfo.name) &&
       (await fixedSessionChatName(chatId)) === null &&
       !isCommandText
     ) {
