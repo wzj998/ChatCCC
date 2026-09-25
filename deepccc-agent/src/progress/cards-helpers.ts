@@ -54,6 +54,8 @@ const TOOL_EMOJI_MAP: Record<string, string> = {
   read_file: "\u{1F4D6}",          // 📖
   list_dir: "\u{1F4C2}",          // 📂
   search_code: "\u{1F50E}",       // 🔎
+  run_process: "\u{1F5A5}\u{FE0F}", // 🖥️
+  run_script: "\u{1F5A5}\u{FE0F}", // 🖥️
   run_command: "\u{1F5A5}\u{FE0F}", // 🖥️
   edit_file: "\u{270F}\u{FE0F}",  // ✏️
   create_file: "\u{270D}\u{FE0F}", // ✍️

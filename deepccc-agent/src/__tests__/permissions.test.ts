@@ -161,6 +161,17 @@ describe("builtin file-tools permission integration", () => {
     await expect(tool.execute({ command: "rm -rf node_modules" }, { abortSignal: undefined })).rejects.toThrow(/权限拒绝/);
   });
 
+  it("run_process preserves high-risk command gating", async () => {
+    const tools = createBuiltinFileTools(testHome.dir, { permissionGate: new PermissionGate("ask") });
+    const tool = tools.run_process as unknown as {
+      execute: (input: { executable: string; args: string[] }, opts?: unknown) => Promise<unknown>;
+    };
+    await expect(tool.execute(
+      { executable: "npm", args: ["publish", "--access", "public"] },
+      { abortSignal: undefined },
+    )).rejects.toThrow(/权限拒绝/);
+  });
+
   it("no gate keeps original behavior", async () => {
     const tools = createBuiltinFileTools(testHome.dir);
     const tool = tools.run_command as unknown as {

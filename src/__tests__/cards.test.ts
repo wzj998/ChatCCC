@@ -89,6 +89,8 @@ describe("getToolEmoji", () => {
     expect(getToolEmoji("read_file")).toBe("\u{1F4D6}");
     expect(getToolEmoji("list_dir")).toBe("\u{1F4C2}");
     expect(getToolEmoji("search_code")).toBe("\u{1F50E}");
+    expect(getToolEmoji("run_process")).toBe("\u{1F5A5}\u{FE0F}");
+    expect(getToolEmoji("run_script")).toBe("\u{1F5A5}\u{FE0F}");
     expect(getToolEmoji("run_command")).toBe("\u{1F5A5}\u{FE0F}");
     expect(getToolEmoji("edit_file")).toBe("\u{270F}\u{FE0F}");
     expect(getToolEmoji("create_file")).toBe("\u{270D}\u{FE0F}");

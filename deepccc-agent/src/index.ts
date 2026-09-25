@@ -204,8 +204,8 @@ function readProjectInstructionFiles(cwd: string): string {
 function buildRuntimeWorkspacePrompt(cwd: string): string {
   return [
     `当前工作目录：${cwd}`,
-    "需要理解代码、配置、项目结构、测试或 git 状态时，主动使用 read_file、list_dir、search_code 和 run_command。",
-    "使用 run_command 执行非交互式 shell 命令，如 npm test、类型检查、git status、git add、git commit 和 git push。先检查 exitCode、stdout 和 stderr 再决定下一步。",
+    "需要理解代码、配置、项目结构、测试或 git 状态时，主动使用 read_file、list_dir、search_code 和命令执行工具。",
+    "单个程序优先使用 run_process 的结构化 executable/args；多行 Python/Node 使用 run_script；只有 &&、管道、重定向等 shell 场景才使用 run_command。用 cwd 参数切换目录，不要前置 cd。先检查 exitCode、stdout 和 stderr 再决定下一步。",
     "编辑前先阅读相关文件范围。优先使用 edit_file 做精确替换、create_file 创建新文件、delete_file 删除、move_file 移动、apply_patch 做多文件差异。",
     "文件工具通过 DeepCCC 在本地执行。可行时优先使用带 SHA-256 前置条件的受保护编辑，避免覆盖并发用户修改。",
   ].join("\n");
@@ -387,9 +387,9 @@ export interface ChatSessionOptions {
   /** Optional tool-step limit. Leave unset for no step limit. */
   maxSteps?: number;
   /**
-   * 让位注入判定：返回 true 表示会话有待注入的用户消息，在途 run_command 应立即
+   * 让位注入判定：返回 true 表示会话有待注入的用户消息，在途命令进程应立即
    * 转入后台并返回句柄，好让当前 step 尽快结束以便在下一个 step 边界注入。
-   * 未提供时 run_command 保持原有阻塞语义（独立 CLI 等场景不受影响）。
+   * 未提供时命令工具保持原有阻塞语义（独立 CLI 等场景不受影响）。
    */
   shouldYieldToInjection?: () => boolean;
   /**
@@ -465,7 +465,7 @@ export class ChatSession {
   private context: BuiltinContextManager;
   private compactionTimeoutMs: number;
   private maxSteps?: number;
-  /** 透传给 run_command 的让位注入判定（见 ChatSessionOptions.shouldYieldToInjection）。 */
+  /** 透传给命令工具的让位注入判定（见 ChatSessionOptions.shouldYieldToInjection）。 */
   private shouldYieldToInjection?: () => boolean;
   private effort: string;
   private maxOutputTokens?: number;

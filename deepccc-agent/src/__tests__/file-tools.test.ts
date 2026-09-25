@@ -21,9 +21,13 @@ import {
   listDirForTool,
   moveFileForTool,
   readFileForTool,
+  isUnsafeWindowsInlineScript,
   runCommandForTool,
+  runProcessForTool,
+  runScriptForTool,
   searchCodeForTool,
   withGitCoAuthor,
+  withGitCoAuthorArgs,
 } from "../file-tools.js";
 
 const execFileAsync = promisify(execFile);
@@ -103,6 +107,18 @@ describe("DeepCCC file tools", () => {
     expect(withGitCoAuthor("git commit -m x", { ...enabled, enabled: false })).toBe("git commit -m x");
     const existing = 'git commit -m "x\\n\\nCo-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>"';
     expect(withGitCoAuthor(existing, enabled)).toBe(existing);
+  });
+
+  it("adds the DeepCCC trailer to structured git commit arguments", () => {
+    const identity = { enabled: true, name: "DeepCCC", email: "20184052+wzj998@users.noreply.github.com" };
+    expect(withGitCoAuthorArgs("git.exe", ["commit", "-m", "feat: x"], identity)).toEqual([
+      "commit",
+      "--trailer",
+      "Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>",
+      "-m",
+      "feat: x",
+    ]);
+    expect(withGitCoAuthorArgs("npm.cmd", ["test"], identity)).toEqual(["test"]);
   });
   it("reads a text file with line ranges", async () => {
     const dir = await makeTempDir();
@@ -247,6 +263,116 @@ describe("DeepCCC file tools", () => {
     expect(result.exitCode).toBe(7);
     expect(result.stderr).toBe("failed");
     expect(result.timedOut).toBe(false);
+  });
+
+  it("passes structured argv literally without shell expansion", async () => {
+    const dir = await makeTempDir();
+    const args = ["space value", "double\"quote", "single'quote", "a&b", "%PATH%", "中文"];
+
+    const result = await runProcessForTool(dir, {
+      executable: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", ...args],
+      cwd: ".",
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+    expect(result.cwd.toLowerCase()).toBe(dir.toLowerCase());
+  });
+
+  it.runIf(process.platform === "win32")("runs npm without routing arguments through cmd.exe", async () => {
+    const dir = await makeTempDir();
+    const result = await runProcessForTool(dir, {
+      executable: "npm",
+      args: ["--version"],
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(result.stderr).toBe("");
+  });
+
+  it("runs multiline Node scripts through stdin without command-line quoting", async () => {
+    const dir = await makeTempDir();
+    const result = await runScriptForTool(dir, {
+      language: "node",
+      code: [
+        "const value = `双引号: \" / 单引号: ' / 反斜杠: \\\\`;",
+        "process.stdout.write(`${value}\\n${process.cwd()}`);",
+      ].join("\n"),
+      cwd: ".",
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(`双引号: " / 单引号: ' / 反斜杠: \\\n${dir}`);
+    expect(result.stderr).toBe("");
+  });
+
+  it("runs quote-heavy multiline Python scripts when Python is available", async () => {
+    try {
+      await execFileAsync(process.platform === "win32" ? "python" : "python3", ["--version"]);
+    } catch {
+      return;
+    }
+    const dir = await makeTempDir();
+    const result = await runScriptForTool(dir, {
+      language: "python",
+      code: [
+        "from pathlib import Path",
+        "hits = ['alpha', 'beta']",
+        "print(f'{Path(\"folder/file\").as_posix():20} {\", \".join(hits)}')",
+      ].join("\n"),
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("folder/file          alpha, beta");
+    expect(result.stderr).toBe("");
+  });
+
+  it("keeps shell composition available in run_command", async () => {
+    const dir = await makeTempDir();
+
+    const result = await runCommandForTool(dir, {
+      command: "node -e \"process.stdout.write('A')\" && node -e \"process.stdout.write('B')\"",
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("AB");
+  });
+
+  it("detects only complex inline Python/Node scripts as unsafe on Windows", () => {
+    expect(isUnsafeWindowsInlineScript("node -e \"process.stdout.write('ok')\"")).toBe(false);
+    expect(isUnsafeWindowsInlineScript("python -c \"print('ok')\"")).toBe(false);
+    expect(isUnsafeWindowsInlineScript("node script.js")).toBe(false);
+    expect(isUnsafeWindowsInlineScript("echo node -e")).toBe(false);
+    expect(isUnsafeWindowsInlineScript("python -c 'print(\"not quoted by cmd\")'")).toBe(true);
+    expect(isUnsafeWindowsInlineScript("python -c \"print(\\\"nested\\\")\"")).toBe(true);
+    expect(isUnsafeWindowsInlineScript("node -e \"\nconsole.log('multiline')\n\"")).toBe(true);
+  });
+
+  it.runIf(process.platform === "win32")("rejects complex inline scripts before spawning cmd.exe", async () => {
+    const dir = await makeTempDir();
+
+    await expect(runCommandForTool(dir, {
+      command: "python -c \"\nprint(\\\"nested\\\")\n\"",
+    })).rejects.toThrow(/run_script/);
+  });
+
+  it("describes structured tools as preferred and run_command as shell-only", async () => {
+    const dir = await makeTempDir();
+    const tools = createBuiltinFileTools(dir) as unknown as Record<string, { description?: string }>;
+
+    expect(tools.run_process.description).toMatch(/优先/);
+    expect(tools.run_process.description).toMatch(/shell/);
+    expect(tools.run_script.description).toMatch(/多行/);
+    expect(tools.run_command.description).toMatch(/&&/);
+    expect(tools.run_command.description).toMatch(/cwd/);
   });
 
   it("edits a file with exact replacements and a SHA-256 precondition", async () => {
