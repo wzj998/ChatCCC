@@ -18,6 +18,16 @@ describe("DeepCCC Web tool presentation", () => {
       pending: true,
     })).toBe("🖥️ run_command … npm test");
     expect(buildWebToolSummary({
+      name: "run_process",
+      input: { executable: "node", args: ["--version"], cwd: "packages/app" },
+      pending: true,
+    })).toBe('🖥️ run_process … node · ["--version"] · packages/app');
+    expect(buildWebToolSummary({
+      name: "run_script",
+      input: { language: "python", cwd: "packages/app" },
+      pending: true,
+    })).toBe("🖥️ run_script … python · packages/app");
+    expect(buildWebToolSummary({
       name: "search_code",
       input: { query: "EventSource", path: "src" },
       output: { matches: [{}, {}] },

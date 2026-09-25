@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { DEEPCCC_HOME } from "./config.js";
 
 // ---------------------------------------------------------------------------
-// 权限机制：仅拦截有副作用的工具（run_command / edit_file / create_file /
-// delete_file / move_file / apply_patch）。只读工具永不拦截。
+// 权限机制：仅拦截有副作用的工具（run_process / run_script / run_command /
+// edit_file / create_file / delete_file / move_file / apply_patch）。只读工具永不拦截。
 //
 // 三种信任粒度：
 //   - 允许一次（y）：本次操作放行
@@ -17,7 +17,7 @@ import { DEEPCCC_HOME } from "./config.js";
 //   2. 本会话已"允许所有" → 放行
 //   3. deny 规则命中 → 拒绝
 //   4. allow 规则命中 → 放行（覆盖高危判定）
-//   5. 仅 run_command 命中内置危险命令库时才进入询问流程；
+//   5. 命令执行工具命中内置危险命令库时才进入询问流程；
 //      无交互 resolver（非 TTY / JSONL / 程序化调用）时高危自动拒绝。
 //      文件编辑等常规操作默认放行（不打断工作流）。
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ export type PermissionAnswer = "allow" | "allow-always" | "allow-session" | "den
 export type PermissionDecision = "allow" | "deny";
 
 export interface PermissionRequest {
-  /** 工具名：run_command / edit_file / create_file / delete_file / move_file / apply_patch */
+  /** 工具名：run_process / run_script / run_command / 文件写工具 */
   tool: string;
   /** 具体操作：命令全文或文件路径 */
   action: string;
@@ -202,7 +202,7 @@ export class PermissionGate {
     if (rules.deny.some((r) => keys.some((k) => matchRule(r, k)))) return "deny";
     if (rules.allow.some((r) => keys.some((k) => matchRule(r, k)))) return "allow";
 
-    // 只有命中内置危险命令库的 run_command 才询问；文件编辑等常规操作默认放行
+    // 只有命令执行工具标记为 high-risk 才询问；文件编辑等常规操作默认放行
     if (request.reason !== "high-risk") return "allow";
 
     // 高危且无交互能力（非 TTY / JSONL / 程序化调用）→ 安全默认拒绝

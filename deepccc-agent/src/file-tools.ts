@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
@@ -39,6 +39,7 @@ const SEARCH_TIMEOUT_MS = 15_000;
 const MAX_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_TIMEOUT_MS = 900_000;
+const MAX_SCRIPT_BYTES = 2 * 1024 * 1024;
 /**
  * 让位注入的轮询间隔：run_command 执行期以此频率检查是否有待注入的用户消息。
  * 取 1s 而非更小值：轮询本身不花 token（只读内存队列，无模型调用），但更密的
@@ -135,6 +136,23 @@ export interface RunCommandInput {
   timeoutMs?: number;
 }
 
+export interface RunProcessInput {
+  executable: string;
+  args?: string[];
+  cwd?: string;
+  timeoutMs?: number;
+}
+
+export interface RunScriptInput {
+  language: "node" | "python";
+  code: string;
+  args?: string[];
+  /** 可指定虚拟环境解释器；省略时 Node 使用当前运行时，Python 优先项目 .venv。 */
+  executable?: string;
+  cwd?: string;
+  timeoutMs?: number;
+}
+
 export interface RunCommandOutput {
   command: string;
   cwd: string;
@@ -197,6 +215,29 @@ export function withGitCoAuthor(command: string, coAuthor?: GitCoAuthorOptions):
   return command.replace(/(^|(?:&&|\|\||;|\|)\s*)(git\s+commit)\b/g, (_match, prefix, gitCommit) =>
     `${prefix}${gitCommit}${trailer}`,
   );
+}
+
+/** Structured equivalent of withGitCoAuthor for run_process({ executable: "git", args: [...] }). */
+export function withGitCoAuthorArgs(
+  executable: string,
+  args: readonly string[],
+  coAuthor?: GitCoAuthorOptions,
+): string[] {
+  const executableName = basename(executable).replace(/\.(?:exe|cmd|bat)$/i, "").toLowerCase();
+  if (
+    !coAuthor?.enabled
+    || executableName !== "git"
+    || args[0]?.toLowerCase() !== "commit"
+    || args.some((arg) => arg.includes(coAuthor.email))
+  ) {
+    return [...args];
+  }
+  return [
+    args[0],
+    "--trailer",
+    `Co-authored-by: ${coAuthor.name} <${coAuthor.email}>`,
+    ...args.slice(1),
+  ];
 }
 
 export interface FileEdit {
@@ -1091,16 +1132,109 @@ function pruneBackgroundCommands(): void {
   }
 }
 
-export async function runCommandForTool(
+const WINDOWS_INLINE_SCRIPT = /\b(?:python(?:\d+(?:\.\d+)?)?|py|node)(?:\.exe)?\s+(?:-c|-e|--eval)\s+/gi;
+
+/**
+ * cmd.exe cannot reliably preserve nested quotes/backslashes in complex inline
+ * Python/Node programs. Keep simple one-line snippets working, but reject the
+ * cases for which a zero exit code can still mean that different code ran.
+ */
+export function isUnsafeWindowsInlineScript(command: string): boolean {
+  WINDOWS_INLINE_SCRIPT.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = WINDOWS_INLINE_SCRIPT.exec(command)) !== null) {
+    const tail = command.slice(WINDOWS_INLINE_SCRIPT.lastIndex);
+    if (/[\r\n]/.test(tail)) return true;
+
+    const shellBoundary = tail.search(/\s(?:&&|\|\||[|>])/);
+    const argument = (shellBoundary >= 0 ? tail.slice(0, shellBoundary) : tail).trim();
+    const quote = argument[0];
+    if (quote !== "\"" && quote !== "'") continue;
+    // cmd.exe does not treat single quotes as argument delimiters.
+    if (quote === "'") return true;
+    const closingQuote = argument.lastIndexOf(quote);
+    if (closingQuote <= 0) return true;
+    const body = argument.slice(1, closingQuote);
+    if (body.includes(quote)) return true;
+  }
+  return false;
+}
+
+function assertStringArgs(args: string[] | undefined): string[] {
+  if (args === undefined) return [];
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+    throw new Error("args must be an array of strings");
+  }
+  return [...args];
+}
+
+function resolveProcessExecutable(commandCwd: string, value: string): string {
+  const executable = value.trim();
+  if (!executable) throw new Error("executable is required");
+  const expanded = expandHomePath(executable);
+  if (isAbsolute(expanded)) return resolve(expanded);
+  if (expanded.includes("/") || expanded.includes("\\") || expanded.startsWith(".")) {
+    return resolve(commandCwd, expanded);
+  }
+  return executable;
+}
+
+function formatProcessCommand(executable: string, args: readonly string[]): string {
+  return [executable, ...args].map((part) => JSON.stringify(part)).join(" ");
+}
+
+async function resolveWindowsNodeShim(
+  executable: string,
+  args: string[],
+): Promise<{ executable: string; args: string[] }> {
+  if (process.platform !== "win32" || extname(executable).toLowerCase() === ".exe") {
+    return { executable, args };
+  }
+  const toolName = basename(executable).replace(/\.(?:cmd|bat)$/i, "").toLowerCase();
+  if (toolName !== "npm" && toolName !== "npx") return { executable, args };
+
+  const cliName = toolName === "npm" ? "npm-cli.js" : "npx-cli.js";
+  const candidates = new Set<string>();
+  const npmExecPath = process.env.npm_execpath?.trim();
+  if (npmExecPath) {
+    candidates.add(toolName === "npm" ? npmExecPath : join(dirname(npmExecPath), cliName));
+  }
+  const addInstallRoot = (root: string) => {
+    if (root) candidates.add(join(root, "node_modules", "npm", "bin", cliName));
+  };
+  addInstallRoot(dirname(process.execPath));
+  if (executable.includes("/") || executable.includes("\\")) addInstallRoot(dirname(executable));
+  for (const pathEntry of (process.env.PATH ?? "").split(delimiter)) {
+    addInstallRoot(pathEntry.replace(/^"(.*)"$/, "$1"));
+  }
+
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return { executable: process.execPath, args: [candidate, ...args] };
+    }
+  }
+  throw new Error(
+    `无法在 shell:false 下定位 Windows ${toolName} CLI；请用 run_command 执行 ${toolName}，`
+    + "或用 run_process 显式调用 node 并把 npm CLI JS 路径放入 args。",
+  );
+}
+
+interface SpawnForToolInput {
+  executable: string;
+  args: string[];
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  shell: boolean;
+  stdin?: string;
+}
+
+async function spawnForTool(
   cwd: string,
-  input: RunCommandInput,
+  input: SpawnForToolInput,
   abortSignal?: AbortSignal,
-  coAuthor?: GitCoAuthorOptions,
   shouldYield?: () => boolean,
 ): Promise<RunCommandOutput> {
-  const command = withGitCoAuthor(input.command?.trim(), coAuthor);
-  if (!command) throw new Error("command is required");
-
   const commandCwd = resolveToolPath(cwd, input.cwd);
   const cwdInfo = await stat(commandCwd);
   if (!cwdInfo.isDirectory()) {
@@ -1111,6 +1245,7 @@ export async function runCommandForTool(
   const startedAt = Date.now();
   const stdout = { chunks: [] as string[], bytes: 0, truncated: false };
   const stderr = { chunks: [] as string[], bytes: 0, truncated: false };
+  const command = input.command;
 
   return new Promise<RunCommandOutput>((resolvePromise, reject) => {
     let settled = false;
@@ -1120,11 +1255,11 @@ export async function runCommandForTool(
     let yieldPoll: NodeJS.Timeout | undefined;
     let backgroundEntry: BackgroundCommandEntry | undefined;
 
-    const child = spawn(command, {
+    const child = spawn(input.executable, input.args, {
       cwd: commandCwd,
-      shell: true,
+      shell: input.shell,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
 
@@ -1261,6 +1396,10 @@ export async function runCommandForTool(
     child.stderr?.on("data", (chunk: Buffer) => {
       appendLimitedOutput(stderr, chunk);
     });
+    child.stdin?.on("error", () => {
+      // The child error/close event is authoritative; ignore a secondary EPIPE
+      // when an interpreter exits before consuming all script input.
+    });
     child.once("error", (err) => {
       if (backgroundEntry) {
         settle(null, "error");
@@ -1274,7 +1413,116 @@ export async function runCommandForTool(
     child.once("close", (code, signal) => {
       settle(code, signal);
     });
+    if (input.stdin !== undefined) {
+      child.stdin?.end(input.stdin, "utf8");
+    }
   });
+}
+
+export async function runCommandForTool(
+  cwd: string,
+  input: RunCommandInput,
+  abortSignal?: AbortSignal,
+  coAuthor?: GitCoAuthorOptions,
+  shouldYield?: () => boolean,
+): Promise<RunCommandOutput> {
+  const command = withGitCoAuthor(input.command?.trim(), coAuthor);
+  if (!command) throw new Error("command is required");
+  if (process.platform === "win32" && isUnsafeWindowsInlineScript(command)) {
+    throw new Error(
+      "Windows CMD 无法可靠传递复杂的 python -c/node -e 内联代码；请改用 run_script，"
+      + "单程序参数请用 run_process。run_command 仅保留给 &&、管道和重定向等 shell 操作。",
+    );
+  }
+  return spawnForTool(
+    cwd,
+    {
+      executable: command,
+      args: [],
+      command,
+      cwd: input.cwd,
+      timeoutMs: input.timeoutMs,
+      shell: true,
+    },
+    abortSignal,
+    shouldYield,
+  );
+}
+
+export async function runProcessForTool(
+  cwd: string,
+  input: RunProcessInput,
+  abortSignal?: AbortSignal,
+  coAuthor?: GitCoAuthorOptions,
+  shouldYield?: () => boolean,
+): Promise<RunCommandOutput> {
+  const commandCwd = resolveToolPath(cwd, input.cwd);
+  const requestedExecutable = resolveProcessExecutable(commandCwd, input.executable ?? "");
+  const requestedArgs = withGitCoAuthorArgs(requestedExecutable, assertStringArgs(input.args), coAuthor);
+  const invocation = await resolveWindowsNodeShim(requestedExecutable, requestedArgs);
+  return spawnForTool(
+    cwd,
+    {
+      executable: invocation.executable,
+      args: invocation.args,
+      command: formatProcessCommand(requestedExecutable, requestedArgs),
+      cwd: commandCwd,
+      timeoutMs: input.timeoutMs,
+      shell: false,
+    },
+    abortSignal,
+    shouldYield,
+  );
+}
+
+async function defaultScriptExecutable(
+  commandCwd: string,
+  language: RunScriptInput["language"],
+): Promise<string> {
+  if (language === "node") return process.execPath;
+  const venvPython = process.platform === "win32"
+    ? join(commandCwd, ".venv", "Scripts", "python.exe")
+    : join(commandCwd, ".venv", "bin", "python");
+  if (await pathExists(venvPython)) return venvPython;
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+export async function runScriptForTool(
+  cwd: string,
+  input: RunScriptInput,
+  abortSignal?: AbortSignal,
+  shouldYield?: () => boolean,
+): Promise<RunCommandOutput> {
+  if (input.language !== "node" && input.language !== "python") {
+    throw new Error("language must be node or python");
+  }
+  if (typeof input.code !== "string" || !input.code.trim()) {
+    throw new Error("code is required");
+  }
+  if (Buffer.byteLength(input.code, "utf8") > MAX_SCRIPT_BYTES) {
+    throw new Error(`script exceeds ${MAX_SCRIPT_BYTES} bytes`);
+  }
+  const commandCwd = resolveToolPath(cwd, input.cwd);
+  const configuredExecutable = input.executable?.trim();
+  const executable = resolveProcessExecutable(
+    commandCwd,
+    configuredExecutable || await defaultScriptExecutable(commandCwd, input.language),
+  );
+  const args = ["-", ...assertStringArgs(input.args)];
+  return spawnForTool(
+    cwd,
+    {
+      executable,
+      args,
+      command: `${formatProcessCommand(executable, args)} <${input.language} script via stdin>`,
+      cwd: commandCwd,
+      timeoutMs: input.timeoutMs,
+      shell: false,
+      stdin: input.code,
+    },
+    abortSignal,
+    shouldYield,
+  );
 }
 
 /** 读取后台命令的最新输出；waitMs > 0 时最多等待该时长（等待期间仍可让位）。 */
@@ -1548,7 +1796,7 @@ export async function applyPatchForTool(cwd: string, input: ApplyPatchInput): Pr
 }
 
 export interface BuiltinFileToolsOptions {
-  /** 权限门控：副作用工具（run_command/文件写操作）执行前会先经过 gate.check */
+  /** 权限门控：副作用工具（进程/脚本/命令执行与文件写操作）执行前会先经过 gate.check */
   permissionGate?: PermissionGate;
   /** Git commits created by DeepCCC receive this Co-authored-by trailer when enabled. */
   gitCoAuthor?: GitCoAuthorOptions;
@@ -1563,9 +1811,9 @@ export interface BuiltinFileToolsOptions {
    */
   runTask?: TaskRunner;
   /**
-   * 让位注入判定：返回 true 表示会话有待注入的用户消息，在途 run_command 应立即
+   * 让位注入判定：返回 true 表示会话有待注入的用户消息，在途进程应立即
    * 转入后台并返回句柄，让当前 step 尽快结束以便在下一个 step 边界注入。
-   * 未提供时 run_command 保持原有阻塞语义（独立 CLI 等场景不受影响）。
+   * 未提供时命令工具保持阻塞语义（独立 CLI 等场景不受影响）。
    */
   shouldYieldToInjection?: () => boolean;
 }
@@ -1853,14 +2101,83 @@ export function createBuiltinFileTools(
       }),
       execute: (input) => presentFileForTool(cwd, input),
     }),
+    run_process: tool<RunProcessInput, RunCommandOutput>({
+      description: "优先使用：以结构化 executable + args 直接运行单个非交互式程序（shell:false），参数不会经过平台 shell 展开，适合测试、git、npm 和含空格/引号的参数。需要 &&、管道或重定向时才用 run_command。",
+      inputSchema: jsonSchema<RunProcessInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          executable: { type: "string", description: "可执行文件名或路径，例如 git、npm、node、.venv/Scripts/python.exe。" },
+          args: {
+            type: "array",
+            items: { type: "string" },
+            description: "逐项传递给程序的参数；不要自行拼接或 shell 转义。",
+          },
+          cwd: { type: "string", description: "可选工作目录。请用此字段切换目录，不要在命令前拼接 cd /d。" },
+          timeoutMs: { type: "number", description: `可选超时（毫秒），上限为 ${MAX_COMMAND_TIMEOUT_MS}。` },
+        },
+        required: ["executable"],
+      }),
+      execute: async (input, execOptions) => {
+        const action = [input.executable, ...(input.args ?? [])].join(" ");
+        await guard({
+          tool: "run_process",
+          action,
+          reason: isDangerousCommand(action) ? "high-risk" : "rule",
+          detail: `运行程序: ${action}`,
+        });
+        return runProcessForTool(
+          cwd,
+          input,
+          execOptions.abortSignal,
+          options.gitCoAuthor,
+          options.shouldYieldToInjection,
+        );
+      },
+    }),
+    run_script: tool<RunScriptInput, RunCommandOutput>({
+      description: "运行多行 Node.js 或 Python 脚本，代码通过 stdin 传入解释器（shell:false），避免 python -c/node -e 的多层引号问题。Python 默认优先使用 cwd 下的 .venv，也可显式指定 executable。",
+      inputSchema: jsonSchema<RunScriptInput>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          language: { type: "string", enum: ["node", "python"], description: "脚本语言。" },
+          code: { type: "string", description: "要执行的完整多行代码，不需要 shell 引号。" },
+          args: {
+            type: "array",
+            items: { type: "string" },
+            description: "可选脚本参数，逐项原样传递。",
+          },
+          executable: { type: "string", description: "可选解释器路径，例如 .venv/Scripts/python.exe。" },
+          cwd: { type: "string", description: "可选工作目录。请用此字段切换目录，不要在命令前拼接 cd /d。" },
+          timeoutMs: { type: "number", description: `可选超时（毫秒），上限为 ${MAX_COMMAND_TIMEOUT_MS}。` },
+        },
+        required: ["language", "code"],
+      }),
+      execute: async (input, execOptions) => {
+        const runtime = input.executable?.trim() || input.language;
+        await guard({
+          tool: "run_script",
+          action: `${runtime} script`,
+          reason: "rule",
+          detail: `运行 ${input.language} 脚本`,
+        });
+        return runScriptForTool(
+          cwd,
+          input,
+          execOptions.abortSignal,
+          options.shouldYieldToInjection,
+        );
+      },
+    }),
     run_command: tool<RunCommandInput, RunCommandOutput>({
-      description: "在本地工作区运行非交互式 shell 命令。用于测试、git 和包脚本。返回 stdout/stderr 和 exitCode；非零退出码不是工具错误。命令运行期间若用户发来新消息，会立即转入后台并返回 taskId（backgrounded:true），命令继续运行，用 command_output 取后续输出。",
+      description: "仅在需要 &&、管道、重定向或其他 shell 运算符时运行非交互式 shell 命令；单程序优先用 run_process，多行 Python/Node 优先用 run_script。请用 cwd 字段切换目录，不要前置 cd /d。返回 stdout/stderr 和 exitCode；非零退出码不是工具错误。运行期间若有新消息会转入后台并返回 taskId。",
       inputSchema: jsonSchema<RunCommandInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          command: { type: "string", description: "要在平台 shell 中运行的命令行。" },
-          cwd: { type: "string", description: "可选的工作目录。默认为会话工作目录。" },
+          command: { type: "string", description: "确实需要 shell 解析的命令行。Windows 下复杂 python -c/node -e 会被拒绝。" },
+          cwd: { type: "string", description: "可选工作目录。请用此字段切换目录，不要在命令前拼接 cd /d。" },
           timeoutMs: { type: "number", description: `可选超时（毫秒），上限为 ${MAX_COMMAND_TIMEOUT_MS}。` },
         },
         required: ["command"],
@@ -1882,12 +2199,12 @@ export function createBuiltinFileTools(
       },
     }),
     command_output: tool<CommandOutputInput, CommandOutputResult>({
-      description: "读取被让位到后台的命令的最新输出。立即返回当前状态；waitMs 可最多等待 30 秒。任务结束后可反复读取完整 stdout/stderr。",
+      description: "读取 run_process、run_script 或 run_command 让位到后台后的最新输出。立即返回当前状态；waitMs 可最多等待 30 秒。",
       inputSchema: jsonSchema<CommandOutputInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          taskId: { type: "string", description: "run_command 返回的 taskId（backgrounded:true 时）。" },
+          taskId: { type: "string", description: "命令工具返回的 taskId（backgrounded:true 时）。" },
           waitMs: { type: "number", description: `可选等待毫秒数；0 或省略立即返回，上限 ${MAX_COMMAND_OUTPUT_WAIT_MS}。` },
         },
         required: ["taskId"],
@@ -1895,12 +2212,12 @@ export function createBuiltinFileTools(
       execute: (input) => commandOutputForTool(input.taskId, input, options.shouldYieldToInjection),
     }),
     command_kill: tool<CommandKillInput, CommandKillResult>({
-      description: "终止一个仍在后台运行的命令（run_command 让位后转入后台的）。",
+      description: "终止一个由 run_process、run_script 或 run_command 转入后台的进程。",
       inputSchema: jsonSchema<CommandKillInput>({
         type: "object",
         additionalProperties: false,
         properties: {
-          taskId: { type: "string", description: "run_command 返回的 taskId。" },
+          taskId: { type: "string", description: "命令工具返回的 taskId。" },
         },
         required: ["taskId"],
       }),

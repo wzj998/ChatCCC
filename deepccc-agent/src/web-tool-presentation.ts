@@ -7,6 +7,8 @@ export const WEB_TOOL_SUMMARY_RULES: Record<string, WebToolSummaryRule> = {
   read_file: { emoji: "📖", inputFields: ["path"] },
   list_dir: { emoji: "📂", inputFields: ["path"] },
   search_code: { emoji: "🔎", inputFields: ["query", "path"] },
+  run_process: { emoji: "🖥️", inputFields: ["executable", "args", "cwd"] },
+  run_script: { emoji: "🖥️", inputFields: ["language", "cwd"] },
   run_command: { emoji: "🖥️", inputFields: ["command"] },
   edit_file: { emoji: "✏️", inputFields: ["path"] },
   create_file: { emoji: "✍️", inputFields: ["path"] },

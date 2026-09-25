@@ -165,7 +165,7 @@ Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以�
 
 API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic Messages。完整 API Key 只保存在本机 `~/.deepccc/config.json`，浏览器读取设置时仅返回掩码。危险命令会在会话中暂停并请求“拒绝、允许一次、本会话允许、永久允许”，浏览器断开或审批超时默认拒绝。
 
-`git.coAuthor.enabled` 默认开启。DeepCCC 通过 `run_command` 创建 Git 提交时会保留用户为
+`git.coAuthor.enabled` 默认开启。DeepCCC 通过 `run_process` 或 `run_command` 创建 Git 提交时会保留用户为
 主 Author，并追加 `Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>`。
 可设为 `false` 或用 `DEEPCCC_GIT_COAUTHOR=false` 全局关闭。ChatCCC 的
 `ccc.gitCoAuthor` 是三态 override：`null`/缺失跟随这里，`true` 强制开启，`false` 强制关闭。
@@ -276,7 +276,7 @@ deepccc-cli --max-output-tokens 8192
 
 ## 权限机制
 
-`deepccc` 内置轻量权限机制，对标主流 agent 的审批体验：**只拦截有副作用的操作**（`run_command` 与文件写操作），只读工具（`read_file` / `list_dir` / `search_code`）永不拦截，常规文件编辑默认放行不打断工作流。
+`deepccc` 内置轻量权限机制，对标主流 agent 的审批体验：**只拦截有副作用的操作**（`run_process` / `run_script` / `run_command` 与文件写操作），只读工具（`read_file` / `list_dir` / `search_code`）永不拦截，常规文件编辑默认放行不打断工作流。
 
 默认模式（`ask`）下，只有**命中内置危险命令库**的高危命令才会询问，例如：
 
@@ -307,11 +307,13 @@ deepccc-cli --max-output-tokens 8192
 ```json
 {
   "allow": [
+    "run_process:git status*",
     "run_command:git status*",
     "run_command:git push --force origin release*"
   ],
   "deny": [
     "edit_file:node_modules/**",
+    "run_process:npm publish*",
     "run_command:npm publish*"
   ]
 }
@@ -433,11 +435,13 @@ deepccc 的内核主战场在 ChatCCC 仓库的 `deepccc-agent/` 子目录；本
 - 用 ripgrep 搜索代码
 - 编辑、创建、删除、移动文件
 - 应用 unified diff patch
-- 运行非交互式 shell 命令，并返回 stdout、stderr、exitCode 和超时状态
+- 用 `run_process` 以结构化 argv、`shell:false` 运行单个程序，避免参数被 shell 二次解析
+- 用 `run_script` 通过 stdin 运行多行 Python/Node 代码，避免复杂 `python -c` / `node -e` 引号
+- 仅在需要 `&&`、管道或重定向时用 `run_command` 运行非交互式 shell 命令
 - 联网搜索（`websearch`：DuckDuckGo，免 API key，返回标题 + URL + 摘要）
 - 抓取网页并转纯文本（`webfetch`：仅 http/https，自动去 HTML 标签、控制长度与超时）
 
-命令返回非零退出码时不会直接被当成工具异常；模型可以读取结构化结果，继续判断下一步。
+三个命令工具都支持独立 `cwd`、超时、取消、输出限长和运行中消息让位；返回非零退出码时不会直接被当成工具异常，模型可以读取结构化结果继续判断。Windows 下 `run_command` 会拒绝多行或嵌套同类引号的复杂 Python/Node 内联代码，并提示改用 `run_script`。
 
 ## License
 

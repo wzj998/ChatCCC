@@ -1285,6 +1285,11 @@ describe("platform-specific system prompt injection", () => {
     expect(system).toContain("cmd.exe");
     expect(system).toMatch(/双引号/);
     expect(system).toMatch(/单引号/);
+    expect(system).toContain("run_process");
+    expect(system).toContain("run_script");
+    expect(system).toMatch(/cwd 参数/);
+    expect(system).not.toContain("双引号不会被剥离");
+    expect(system).not.toContain("预期引号会原样到达程序");
     // 平台指引属于固定规则区，位于 runtime workspace 上下文之前
     expect(system.indexOf("## Windows 命令行提示")).toBeGreaterThan(
       system.indexOf("## 固定规则"),
@@ -1350,6 +1355,11 @@ describe("loadPlatformCommandPrompt", () => {
     expect(text).toContain("cmd.exe");
     expect(text).toMatch(/双引号/);
     expect(text).toMatch(/单引号/);
+    expect(text).toContain("run_process");
+    expect(text).toContain("run_script");
+    expect(text).toMatch(/`cwd` 参数/);
+    expect(text).not.toContain("双引号不会被剥离");
+    expect(text).not.toContain("预期引号会原样到达程序");
   });
 
   it("prefers the user override at ~/.deepccc/prompts/<platform>.md", async () => {
