@@ -6,6 +6,7 @@ import {
   clipToWidth,
   TerminalProgressRenderer,
 } from "../progress/terminal-renderer.js";
+import { getToolEmoji } from "../progress/cards-helpers.js";
 import { progressView } from "../progress/view.js";
 
 class FakeOut {
@@ -30,6 +31,12 @@ afterEach(() => {
 });
 
 describe("buildBlockLines", () => {
+  it("renders subagent tools with the robot emoji", () => {
+    expect(getToolEmoji("task")).toBe("🤖");
+    expect(getToolEmoji("task_output")).toBe("🤖");
+    expect(getToolEmoji("task_stop")).toBe("🤖");
+  });
+
   it("renders generating status line with header title and stop hint", () => {
     const lines = buildBlockLines(
       progressView({ headerTitle: "正在启动 Agent · 0秒", text: "" }),
