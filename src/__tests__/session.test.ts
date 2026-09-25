@@ -161,6 +161,7 @@ import {
   getChatsForSession,
   displayCards,
   enqueueMessage,
+  pushInjection,
   setQueueConsumer,
   isSessionRunning,
 } from "../session-chat-binding.ts";
@@ -435,6 +436,144 @@ describe("runAgentSession previous final delivery guard", () => {
     await runAgentSession("sid-unsent", "next prompt", platform, "chat-unsent", Date.now(), "claude");
 
     expect(platform.sendText).toHaveBeenCalledWith("chat-unsent", "old final");
+  });
+});
+
+describe("runAgentSession applied injection card boundary", () => {
+  let registryFile = "";
+  let toolsFile = "";
+
+  beforeEach(async () => {
+    resetState();
+    resetBindingState();
+    mockStreamStates.clear();
+    const dir = await mkdtemp(join(tmpdir(), "chatccc-injection-card-"));
+    registryFile = join(dir, "session-registry.json");
+    toolsFile = join(dir, "session-tools.json");
+    _setSessionRegistryFileForTest(registryFile);
+    _setSessionToolsFileForTest(toolsFile);
+  });
+
+  afterEach(() => {
+    _resetSessionRegistryFileForTest();
+    _resetSessionToolsFileForTest();
+    _clearAdapterCacheForTest();
+    resetBindingState();
+  });
+
+  it.each(["codex", "ccc"])(
+    "acknowledges every applied %s injection and starts a fresh Feishu progress card",
+    async (tool) => {
+      const sessionId = `sid-injection-${tool}`;
+      const chatId = `chat-injection-${tool}`;
+      const firstMessage = "甲".repeat(205);
+      const secondMessage = "第二条补充";
+      const platform = mockPlatform("feishu");
+      platform.kind = "feishu";
+      platform.cardCreate = vi.fn()
+        .mockResolvedValueOnce(`${tool}-card-1`)
+        .mockResolvedValueOnce(`${tool}-card-2`)
+        .mockResolvedValueOnce(`${tool}-card-3`);
+      setSessionPlatform(platform);
+      bindChatToSession(sessionId, chatId);
+      recordLastActiveChat(sessionId, chatId);
+      pushInjection(sessionId, {
+        text: firstMessage,
+        chatId,
+        openId: "ou-test",
+        msgTimestamp: Date.now(),
+        chatType: "group",
+      });
+      pushInjection(sessionId, {
+        text: secondMessage,
+        chatId,
+        openId: "ou-test",
+        msgTimestamp: Date.now() + 1,
+        chatType: "group",
+      });
+
+      const adapter: ToolAdapter = {
+        displayName: tool === "codex" ? "Codex" : "CCC Agent",
+        sessionDescPrefix: tool === "codex" ? "Codex Session:" : "CCC Session:",
+        createSession: async () => ({ sessionId }),
+        getSessionInfo: async () => ({ sessionId, cwd: "F:\\repo" }),
+        closeSession: async () => {},
+        prompt: async function* (_sid, _text, _cwd, _signal, options) {
+          yield { type: "assistant", blocks: [{ type: "text", text: "注入前输出" }] };
+          const first = options?.drainInput?.();
+          expect(first).toContain(firstMessage);
+          yield { type: "assistant", blocks: [{ type: "input_injected", text: first! }] };
+          yield { type: "assistant", blocks: [{ type: "text", text: "两次注入之间" }] };
+          const second = options?.drainInput?.();
+          expect(second).toContain(secondMessage);
+          yield { type: "assistant", blocks: [{ type: "input_injected", text: second! }] };
+          yield {
+            type: "assistant",
+            blocks: [{ type: "text", text: "注入后输出" }],
+            isFinalResponse: true,
+          };
+        },
+      };
+      _setAdapterForToolForTest(tool, adapter);
+
+      await runAgentSession(sessionId, "原始任务", platform, chatId, Date.now(), tool);
+
+      expect(platform.sendText).toHaveBeenCalledWith(
+        chatId,
+        `已收到注入信息：${"甲".repeat(200)}…`,
+      );
+      expect(platform.sendText).toHaveBeenCalledWith(
+        chatId,
+        "已收到注入信息：第二条补充",
+      );
+      expect(platform.sendText).not.toHaveBeenCalledWith(
+        chatId,
+        expect.stringContaining("[User message]"),
+      );
+      expect(platform.cardCreate).toHaveBeenCalledTimes(3);
+      expect(platform.cardSend).toHaveBeenCalledTimes(3);
+      expect(platform.cardUpdate).toHaveBeenCalledTimes(2);
+      for (const [, cardJson] of vi.mocked(platform.cardUpdate).mock.calls) {
+        const card = JSON.parse(cardJson);
+        expect(card.header.title.content).toBe("已收到注入，后续转入新卡片");
+      }
+      expect(displayCards.get(chatId)).toEqual(expect.objectContaining({
+        cardId: `${tool}-card-3`,
+        turnCount: 1,
+        rotationAccLen: expect.any(Number),
+        rotationFinalReply: expect.any(String),
+      }));
+    },
+  );
+
+  it("does not rotate cards or send receipts outside Feishu", async () => {
+    const sessionId = "sid-injection-wechat";
+    const chatId = "chat-injection-wechat";
+    const platform = mockPlatform("wechat");
+    platform.kind = "wechat";
+    setSessionPlatform(platform);
+    bindChatToSession(sessionId, chatId);
+    recordLastActiveChat(sessionId, chatId);
+
+    const adapter: ToolAdapter = {
+      displayName: "Codex",
+      sessionDescPrefix: "Codex Session:",
+      createSession: async () => ({ sessionId }),
+      getSessionInfo: async () => ({ sessionId, cwd: "F:\\repo" }),
+      closeSession: async () => {},
+      prompt: async function* () {
+        yield { type: "assistant", blocks: [{ type: "input_injected", text: "补充" }] };
+      },
+    };
+    _setAdapterForToolForTest("codex", adapter);
+
+    await runAgentSession(sessionId, "原始任务", platform, chatId, Date.now(), "codex");
+
+    expect(platform.sendText).not.toHaveBeenCalledWith(
+      chatId,
+      expect.stringContaining("已收到注入信息"),
+    );
+    expect(platform.cardCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -1809,6 +1948,55 @@ describe("unified display loop terminal card update", () => {
     stopUnifiedDisplayLoop();
     resetBindingState();
     vi.useRealTimers();
+  });
+
+  it("keeps a rotated injection card limited to post-injection output at completion", async () => {
+    const platform = mockPlatform("feishu");
+    platform.kind = "feishu";
+    setSessionPlatform(platform);
+
+    bindChatToSession("sid-injection-terminal", "chat-injection-terminal");
+    recordLastActiveChat("sid-injection-terminal", "chat-injection-terminal");
+    sessionInfoMap.set("chat-injection-terminal", {
+      sessionId: "sid-injection-terminal",
+      turnCount: 1,
+      lastContextTokens: 0,
+      startTime: 0,
+      tool: "codex",
+    });
+    const beforeAccumulated = "注入前过程\n↳ 已注入新消息：补充\n";
+    const beforeFinalReply = "注入前回复";
+    displayCards.set("chat-injection-terminal", {
+      cardId: "card-injection-terminal",
+      sequence: 1,
+      cardBusy: false,
+      cardCreatedAt: Date.now(),
+      lastSentContent: "",
+      streamErrorNotified: false,
+      sessionId: "sid-injection-terminal",
+      turnCount: 1,
+      rotationAccLen: beforeAccumulated.length,
+      rotationFinalReply: beforeFinalReply,
+      dotCount: 0,
+    });
+    mockStreamStates.set("sid-injection-terminal", {
+      accumulatedContent: `${beforeAccumulated}注入后过程`,
+      finalReply: `${beforeFinalReply}注入后回复`,
+      status: "done",
+      turnCount: 1,
+    });
+
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const payload = vi.mocked(platform.cardUpdate).mock.calls[0]?.[1];
+    const card = JSON.parse(payload as string) as {
+      body: { elements: Array<{ content?: string }> };
+    };
+    expect(card.body.elements[0]?.content).toContain("注入后过程");
+    expect(card.body.elements[0]?.content).toContain("注入后回复");
+    expect(card.body.elements[0]?.content).not.toContain("注入前过程");
+    expect(card.body.elements[0]?.content).not.toContain("注入前回复");
   });
 
   it("shows a distinct auto-ended state and sends a warning even with an empty reply", async () => {
