@@ -81,6 +81,9 @@ const TOOL_EMOJI_MAP: Record<string, string> = {
   delete_file: "\u{1F5D1}\u{FE0F}", // 🗑️
   move_file: "\u{1F4E6}",         // 📦
   apply_patch: "\u{1F4CB}",       // 📋
+  task: "\u{1F916}",              // 🤖
+  task_output: "\u{1F916}",       // 🤖
+  task_stop: "\u{1F916}",         // 🤖
 };
 
 export function getToolEmoji(name: string): string {

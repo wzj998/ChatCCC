@@ -14,6 +14,8 @@ export const WEB_TOOL_SUMMARY_RULES: Record<string, WebToolSummaryRule> = {
   move_file: { emoji: "📦", inputFields: ["sourcePath", "destinationPath"] },
   apply_patch: { emoji: "📋", inputFields: [] },
   task: { emoji: "🤖", inputFields: ["description", "cwd"] },
+  task_output: { emoji: "🤖", inputFields: ["taskId"] },
+  task_stop: { emoji: "🤖", inputFields: ["taskId"] },
   websearch: { emoji: "🌐", inputFields: ["query"] },
   webfetch: { emoji: "📥", inputFields: ["url"] },
   session_search: { emoji: "🗂️", inputFields: ["query", "session_id"] },

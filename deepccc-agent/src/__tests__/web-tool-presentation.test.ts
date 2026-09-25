@@ -22,6 +22,16 @@ describe("DeepCCC Web tool presentation", () => {
       input: { query: "EventSource", path: "src" },
       output: { matches: [{}, {}] },
     })).toBe("🔎 search_code ✓ EventSource · src · 2 条匹配");
+    expect(buildWebToolSummary({
+      name: "task_output",
+      input: { taskId: "task-1" },
+      pending: true,
+    })).toBe("🤖 task_output … task-1");
+    expect(buildWebToolSummary({
+      name: "task_stop",
+      input: { taskId: "task-1" },
+      output: { stopped: true },
+    })).toBe("🤖 task_stop ✓ task-1 · 完成");
   });
 
   it("keeps the head and tail, reports omitted lines, and expands to the exact full payload", () => {

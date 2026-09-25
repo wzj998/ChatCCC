@@ -95,6 +95,9 @@ describe("getToolEmoji", () => {
     expect(getToolEmoji("delete_file")).toBe("\u{1F5D1}\u{FE0F}");
     expect(getToolEmoji("move_file")).toBe("\u{1F4E6}");
     expect(getToolEmoji("apply_patch")).toBe("\u{1F4CB}");
+    expect(getToolEmoji("task")).toBe("\u{1F916}");
+    expect(getToolEmoji("task_output")).toBe("\u{1F916}");
+    expect(getToolEmoji("task_stop")).toBe("\u{1F916}");
   });
 
   it("normalizeToolName converts snake_case to PascalCase", () => {
