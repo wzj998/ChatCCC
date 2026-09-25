@@ -90,7 +90,7 @@ export interface UnifiedTextResetBlock {
   type: "text_reset";
 }
 
-/** A user message was injected into the running turn at a step boundary (ccc only). */
+/** A user message was injected into the running turn at a step/item boundary (ccc/codex). */
 export interface UnifiedInputInjectedBlock {
   type: "input_injected";
   text: string;

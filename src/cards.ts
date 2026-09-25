@@ -487,7 +487,7 @@ export function buildQueueFullCard(): string {
   });
 }
 
-// 协作式让位卡片（仅 ccc）：消息进入注入队列，将在 step 边界吸收进本轮。
+// 协作式让位卡片（ccc/codex）：消息进入注入队列，将在 step/item 边界吸收进本轮。
 // 与上面的整轮队列卡片区分，强调“无需等待整轮结束”。
 export function buildInjectionQueuedCard(text: string): string {
   const preview = text.length > 100 ? text.slice(0, 100) + "…" : text;
@@ -508,7 +508,7 @@ export function buildInjectionQueuedCard(text: string): string {
   });
 }
 
-// 注入队列满卡片（仅 ccc）
+// 注入队列满卡片（ccc/codex）
 export function buildInjectionQueueFullCard(): string {
   return JSON.stringify({
     config: { wide_screen_mode: true },

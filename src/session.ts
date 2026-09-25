@@ -421,6 +421,40 @@ function formatTerminalCardContent(state: {
     : reason;
 }
 
+function formatTerminalCardContentForDisplay(
+  state: {
+    status: "running" | "done" | "stopped" | "error" | "auto_ended";
+    accumulatedContent: string;
+    finalReply: string;
+    terminalError?: TerminalErrorInfo;
+  },
+  display: {
+    rotationAccLen?: number;
+    rotationFinalReply?: string;
+  },
+): string {
+  if (display.rotationAccLen === undefined) return formatTerminalCardContent(state);
+
+  const accumulatedDelta = state.accumulatedContent.slice(display.rotationAccLen);
+  const previousFinalReply = display.rotationFinalReply ?? "";
+  const finalReplyDelta = previousFinalReply && state.finalReply.startsWith(previousFinalReply)
+    ? state.finalReply.slice(previousFinalReply.length)
+    : state.finalReply;
+  const content = accumulatedDelta + finalReplyDelta;
+  if (state.status !== "error") return content;
+
+  const error = state.terminalError ?? {
+    kind: "unknown" as const,
+    title: "原因未记录",
+    message: "当前状态中没有可用的错误详情，请查看运行日志。",
+    occurredAt: Date.now(),
+  };
+  const reason = formatTerminalErrorReason(error);
+  return content.trim()
+    ? `${content}\n\n${reason}\n以上内容可能不完整。`
+    : reason;
+}
+
 function isCardKitSequenceConflict(err: unknown): boolean {
   return err instanceof Error && err.message.includes("300317");
 }
@@ -1034,6 +1068,104 @@ export function pickFinalReply(state: AccumulatorState): string {
   return state.finalCompleteText || state.finalText;
 }
 
+const APPLIED_INJECTION_PREVIEW_CHARS = 200;
+
+export function unwrapInjectedUserMessage(text: string): string {
+  const match = text.match(/^\[User message\]\r?\n([\s\S]*)\r?\n\[\/User message\]$/);
+  return match?.[1] ?? text;
+}
+
+export function formatAppliedInjectionReceipt(text: string): string {
+  const normalized = text.trim() || "（空消息）";
+  const chars = Array.from(normalized);
+  const preview = chars.length > APPLIED_INJECTION_PREVIEW_CHARS
+    ? `${chars.slice(0, APPLIED_INJECTION_PREVIEW_CHARS).join("")}…`
+    : normalized;
+  return `已收到注入信息：${preview}`;
+}
+
+async function rotateFeishuCardForAppliedInjection(
+  sessionId: string,
+  turnCount: number,
+  tool: string,
+  injectedText: string,
+  state: AccumulatorState,
+  nextHeaderTitle: string,
+): Promise<void> {
+  if (tool !== "codex" && tool !== "ccc") return;
+  const chatId = pickDisplayChat(sessionId);
+  if (!chatId) return;
+  const platform = platformForChat(chatId);
+  if (platform?.kind !== "feishu") return;
+
+  let previousDisplay = displayCards.get(chatId);
+  if (
+    previousDisplay
+    && (previousDisplay.sessionId !== sessionId || previousDisplay.turnCount !== turnCount)
+  ) {
+    previousDisplay = undefined;
+  }
+
+  if (previousDisplay) {
+    while (previousDisplay.cardBusy) await new Promise((resolve) => setTimeout(resolve, 20));
+    if (displayCards.get(chatId) !== previousDisplay) previousDisplay = undefined;
+  }
+
+  if (previousDisplay) {
+    previousDisplay.cardBusy = true;
+    const nextSequence = previousDisplay.sequence + 1;
+    const oldContent = state.accumulatedContent + pickFinalReply(state);
+    const oldCard = buildProgressCard(progressView({
+      text: truncateContent(oldContent) || "等待 Agent 输出...",
+      status: "done",
+      showStop: false,
+      headerTitle: "已收到注入，后续转入新卡片",
+      headerTemplate: "blue",
+    }));
+    await platform.cardUpdate(previousDisplay.cardId, oldCard, nextSequence).then(() => {
+      previousDisplay!.sequence = nextSequence;
+    }).catch((err) => {
+      console.error(`[${ts()}] [INJECT] freeze old card failed: ${(err as Error).message}`);
+      if (isCardKitSequenceConflict(err)) previousDisplay!.sequence = nextSequence;
+    });
+  }
+
+  await platform.sendText(chatId, formatAppliedInjectionReceipt(injectedText)).catch((err) => {
+    console.error(`[${ts()}] [INJECT] receipt send failed: ${(err as Error).message}`);
+  });
+
+  const newCardId = await createVisibleProgressCard(
+    platform,
+    chatId,
+    sessionId,
+    turnCount,
+    "新生成卡片发送失败，结果将继续更新在上一张卡片中。",
+    nextHeaderTitle,
+  );
+  if (!newCardId) {
+    if (previousDisplay) previousDisplay.cardBusy = false;
+    return;
+  }
+
+  if (previousDisplay) {
+    await markCardDone(sessionId, turnCount, previousDisplay.cardId);
+  }
+  displayCards.set(chatId, {
+    cardId: newCardId,
+    sequence: 1,
+    cardBusy: false,
+    cardCreatedAt: Date.now(),
+    lastSentContent: "",
+    lastSentHeaderTitle: nextHeaderTitle,
+    streamErrorNotified: false,
+    sessionId,
+    turnCount,
+    rotationAccLen: state.accumulatedContent.length,
+    rotationFinalReply: pickFinalReply(state),
+    dotCount: 0,
+  });
+}
+
 export function accumulateBlockContent(
   block: UnifiedBlock,
   state: AccumulatorState,
@@ -1566,7 +1698,9 @@ export async function runAgentSession(
         } else {
           const nextSeq = display.sequence + 1;
           const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(prevState.status, prevState.terminalError);
-          const cardContent = truncateContent(formatTerminalCardContent(prevState)) || " ";
+          const cardContent = truncateContent(
+            formatTerminalCardContentForDisplay(prevState, display),
+          ) || " ";
           const doneCard = buildProgressCard(progressView({ text: cardContent, status: "done", showStop: false, headerTitle, headerTemplate }));
           await pp.cardUpdate(display.cardId, doneCard, nextSeq).catch(err => {
             console.error(`[${ts()}] [DISPLAY] prevState final cardUpdate failed: ${(err as Error).message}`);
@@ -1763,7 +1897,7 @@ export async function runAgentSession(
 
   try {
     // 供 onInjectionRejected 退回的“最后一条已取出但未成功注入”的消息
-    let lastShiftedInjection: QueuedMessage | null = null;
+    const injectionState: { lastShifted: QueuedMessage | null } = { lastShifted: null };
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
       onProcessStart: (processInfo) => {
         startPromptProcessMonitor(sessionId, processInfo);
@@ -1782,16 +1916,16 @@ export async function runAgentSession(
       drainInput: tool === "ccc" || tool === "codex" ? () => {
         const injected = shiftInjection(sessionId);
         if (!injected) return undefined;
-        lastShiftedInjection = injected;
+        injectionState.lastShifted = injected;
         // 与首次消息保持一致的结构化包装；imSkillsPrompt 已在首次消息中，
         // 此处不重复注入，避免多轮注入导致上下文膨胀。
         return `[User message]\n${injected.text}\n[/User message]`;
       } : undefined,
       // 注入未被当前 turn 吸收（如 turn 恰好已结束）时，退回队列头部，避免丢消息。
       onInjectionRejected: tool === "ccc" || tool === "codex" ? () => {
-        if (lastShiftedInjection) {
-          unshiftInjection(sessionId, lastShiftedInjection);
-          lastShiftedInjection = null;
+        if (injectionState.lastShifted) {
+          unshiftInjection(sessionId, injectionState.lastShifted);
+          injectionState.lastShifted = null;
         }
       } : undefined,
     })) {
@@ -1810,7 +1944,15 @@ export async function runAgentSession(
       let activityChanged = false;
       let progressHeartbeat = false;
       let outputReset = false;
-      for (const block of unifiedMsg.blocks) {
+      let injectionBoundaryObserved = false;
+      for (const originalBlock of unifiedMsg.blocks) {
+        let block = originalBlock;
+        if (originalBlock.type === "input_injected") {
+          const injectedText = injectionState.lastShifted?.text
+            ?? unwrapInjectedUserMessage(originalBlock.text);
+          injectionState.lastShifted = null;
+          block = { ...originalBlock, text: injectedText };
+        }
         if (block.type === "agent_progress") progressHeartbeat = true;
         if (block.type === "text_reset") {
           outputReset = true;
@@ -1818,6 +1960,17 @@ export async function runAgentSession(
         }
         if (updateAgentActivity(activityTracker, block)) activityChanged = true;
         accumulateBlockContent(block, state, toolCallMap);
+        if (block.type === "input_injected") {
+          injectionBoundaryObserved = true;
+          await rotateFeishuCardForAppliedInjection(
+            sessionId,
+            nextTurnCount,
+            tool,
+            block.text,
+            state,
+            formatAgentActivityTitle(activityTracker.activity),
+          );
+        }
 
         if (block.type === "compact_boundary" && block.post_tokens) {
           for (const cid of getChatsForSession(sessionId)) {
@@ -1850,7 +2003,12 @@ export async function runAgentSession(
 
       // 定时写入文件
       const now2 = Date.now();
-      if (activityChanged || outputReset || now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS) {
+      if (
+        activityChanged
+        || outputReset
+        || injectionBoundaryObserved
+        || now2 - lastFileWrite >= FILE_WRITE_INTERVAL_MS
+      ) {
         lastFileWrite = now2;
         await writeStreamState({
           sessionId,
@@ -2337,7 +2495,9 @@ export function startUnifiedDisplayLoop(): void {
               if (!terminalCardAlreadyUpdated) {
                 const nextSeq = display.sequence + 1;
                 const { title: headerTitle, template: headerTemplate } = formatTerminalHeader(state.status, state.terminalError);
-                const cardContent = truncateContent(formatTerminalCardContent(state)) || " ";
+                const cardContent = truncateContent(
+                  formatTerminalCardContentForDisplay(state, display),
+                ) || " ";
                 const doneCard = buildProgressCard(progressView({ text: cardContent, status: "done", showStop: false, headerTitle, headerTemplate }));
                 await p.cardUpdate(display.cardId, doneCard, nextSeq).then(() => {
                   display.sequence = nextSeq;
