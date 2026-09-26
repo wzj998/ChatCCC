@@ -21,6 +21,8 @@ describe("npm package files", () => {
 
     expect(packageJson.main).toBe("./dist/src/index.js");
     expect(packageJson.files).toContain("dist/");
+    expect(packageJson.files).toContain("scripts/self-update-helper.mjs");
+    expect(existsSync(join(root, "scripts", "self-update-helper.mjs"))).toBe(true);
     expect(packageJson.dependencies).not.toHaveProperty("tsx");
     expect(packageJson.dependencies).not.toHaveProperty("esbuild");
     expect(packageJson.dependencies).not.toHaveProperty("electron");

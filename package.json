@@ -1,6 +1,6 @@
 {
   "name": "chatccc",
-  "version": "0.2.298",
+  "version": "0.2.299",
   "description": "Feishu bot bridge for Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -14,6 +14,7 @@
     "deepccc-agent/os-prompts/",
     "bin/",
     "scripts/postinstall-sharp-check.mjs",
+    "scripts/self-update-helper.mjs",
     "demo/ilink_echo_probe.ts",
     "agent-prompts/",
     "im-skills/",

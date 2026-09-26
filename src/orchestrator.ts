@@ -7,7 +7,7 @@
 
 import { execSync, spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { config as deepCccConfig } from "../deepccc-agent/src/config.ts";
@@ -115,6 +115,12 @@ import {
   INTERNAL_RESTART_READY_MESSAGE,
 } from "./startup-lifecycle.ts";
 import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
+import {
+  SELF_UPDATE_ERROR_ENV_VAR,
+  SELF_UPDATE_RESULT_ENV_VAR,
+  spawnSelfUpdateHelper,
+  waitForSelfUpdateHelperReady,
+} from "./self-update.ts";
 import { engineManager } from "./engines/engine-specs.ts";
 import {
   beginSafeMaintenanceTrackedWork,
@@ -793,81 +799,26 @@ function isRunningFromGlobalNpm(): boolean {
   }
 }
 
-const UPDATE_LOG = join(homedir(), ".chatccc", "logs", "update-watcher.log");
-
-function updLog(msg: string): void {
-  const ts = new Date().toISOString();
-  try { appendFileSync(UPDATE_LOG, `${ts} [UPDATE-SYNC] ${msg}\n`, "utf-8"); } catch {}
-}
-
-/** 同步更新 npm 全局包并 spawn 新进程重启。不依赖 systemd 或任何服务管理器。 */
-function syncUpdateAndRestart(options: { spawnOnUpdateFailure?: boolean } = {}): ChildProcess | undefined {
-  updLog(`sync update start, pid=${process.pid}`);
-  appendStartupTrace("update: sync update start", { pid: process.pid });
-
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  let updateSucceeded = false;
-
-  // 1. npm update
-  updLog(`running: ${npmCmd} update -g chatccc`);
-  appendStartupTrace("update: npm update begin", { npmCmd });
-  const t0 = Date.now();
+/**
+ * 将真正的 npm 更新交给安装目录外的独立进程。父进程只在更新器确认读入任务后
+ * 退出；更新器随后等待本进程和 npm bin 包装器释放目录，再安装并启动新版。
+ */
+async function exitForExternalSelfUpdate(): Promise<boolean> {
+  let child: ChildProcess;
   try {
-    const out = execSync(`${npmCmd} update -g chatccc 2>&1`, { encoding: "utf8", timeout: 120000, windowsHide: true });
-    const elapsed = Date.now() - t0;
-    updLog(`npm update OK (${elapsed}ms): ${out.slice(0, 500)}`);
-    appendStartupTrace("update: npm update OK", { elapsedMs: elapsed, outputLen: out.length });
-    updateSucceeded = true;
-  } catch (e) {
-    const elapsed = Date.now() - t0;
-    const err = e as Error & { stderr?: string; stdout?: string; status?: number };
-    updLog(`npm update failed (${elapsed}ms): message=${err.message}, stderr=${(err.stderr || "").slice(0, 500)}, stdout=${(err.stdout || "").slice(0, 200)}`);
-    appendStartupTrace("update: npm update failed", { elapsedMs: elapsed, message: err.message, stderrLen: (err.stderr || "").length });
-
-    // fallback
-    updLog(`fallback: ${npmCmd} install -g chatccc@latest`);
-    appendStartupTrace("update: npm install fallback begin", { npmCmd });
-    const t1 = Date.now();
-    try {
-      const out2 = execSync(`${npmCmd} install -g chatccc@latest 2>&1`, { encoding: "utf8", timeout: 120000, windowsHide: true });
-      const elapsed2 = Date.now() - t1;
-      updLog(`npm install fallback OK (${elapsed2}ms): ${out2.slice(0, 500)}`);
-      appendStartupTrace("update: npm install fallback OK", { elapsedMs: elapsed2, outputLen: out2.length });
-      updateSucceeded = true;
-    } catch (e2) {
-      const elapsed2 = Date.now() - t1;
-      const err2 = e2 as Error & { stderr?: string; stdout?: string };
-      updLog(`npm install fallback also failed (${elapsed2}ms): message=${err2.message}, stderr=${(err2.stderr || "").slice(0, 500)}`);
-      appendStartupTrace("update: npm install fallback failed", { elapsedMs: elapsed2, message: err2.message });
-    }
-  }
-
-  if (!updateSucceeded && options.spawnOnUpdateFailure === false) {
-    updLog("safe update aborted: both npm update and fallback install failed");
-    appendStartupTrace("update: safe update aborted before restart", {});
-    return undefined;
-  }
-
-  // 2. Spawn the updated runtime directly through Node. Reusing the restart
-  // launcher guarantees an IPC handoff channel and avoids shell/PATH variance.
-  const spawnSpec = buildRestartSpawnSpec(PROJECT_ROOT);
-  updLog(`runtime path: ${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
-  appendStartupTrace("update: spawn begin", { runtimeEntry: spawnSpec.args[0] });
-  try {
-    const child = spawnRestartChild({ projectRoot: PROJECT_ROOT });
-    child.unref();
-    updLog(`spawn new chatccc OK, childPid=${child.pid}, bin=${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
-    appendStartupTrace("update: spawn OK", {
-      childPid: child.pid,
-      binPath: spawnSpec.args[0],
+    child = spawnSelfUpdateHelper();
+  } catch (error) {
+    appendStartupTrace("update: external helper spawn failed", {
+      error: (error as Error).message,
     });
-    return child;
-  } catch (e) {
-    const errMsg = (e as Error).message;
-    updLog(`spawn new chatccc failed: ${errMsg}`);
-    appendStartupTrace("update: spawn failed", { error: errMsg });
-    return undefined;
+    return false;
   }
+  const ready = await waitForSelfUpdateHelperReady(child);
+  if (!ready) return false;
+  child.unref();
+  fileLog.flush();
+  appendStartupTrace("update: parent exit for external helper", { childPid: child.pid });
+  process.exit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,8 +1080,16 @@ export function configureSafeMaintenanceRuntime(platforms: PlatformAdapter[]): v
 }
 
 export function recoverSafeMaintenanceAfterStartup(): Promise<void> {
+  const updateResult = process.env[SELF_UPDATE_RESULT_ENV_VAR];
   return safeMaintenanceCoordinator.recoverAfterStartup(
     process.env[INTERNAL_RESTART_ENV_VAR] === "1",
+    updateResult === "failed"
+      ? {
+          succeeded: false,
+          error: process.env[SELF_UPDATE_ERROR_ENV_VAR]
+            || "ChatCCC 更新失败，已恢复更新前版本。",
+        }
+      : undefined,
   );
 }
 
@@ -1148,13 +1107,7 @@ async function executeSafeRestart(): Promise<boolean> {
 async function executeSafeUpdate(): Promise<boolean> {
   fileLog.flush();
   appendStartupTrace("safe-maintenance: update begin", { fromPid: process.pid });
-  const child = syncUpdateAndRestart({ spawnOnUpdateFailure: false });
-  if (!child) return false;
-  child.unref();
-  const shouldExit = await decideRestartParentExit(child, RESTART_CHILD_READY_MS);
-  if (!shouldExit) return false;
-  appendStartupTrace("safe-maintenance: update parent exit", { childPid: child.pid });
-  process.exit(0);
+  return exitForExternalSelfUpdate();
 }
 
 function safeMaintenanceRequester(platform: PlatformAdapter, chatId: string, openId: string): SafeMaintenanceRequester {
@@ -1431,17 +1384,14 @@ async function handleCommandInternal(
 
     await platform.sendText(chatId, "正在更新并重启，请稍候...").catch(() => {});
     logTrace(tid, "DONE", { outcome: "update" });
-    appendStartupTrace("update: sync update begin", { fromPid: process.pid });
-    const child = syncUpdateAndRestart({ spawnOnUpdateFailure: false });
-    if (child) {
-      // 只有替代进程通过 IPC 明确完成预检才退出父进程；否则父进程继续服务。
-      void decideRestartParentExit(child, RESTART_CHILD_READY_MS).then((shouldExit) => {
-        if (!shouldExit) return;
-        appendStartupTrace("update: parent exit", { childPid: child.pid });
-        process.exit(0);
-      });
-    } else {
-      appendStartupTrace("update: replacement unavailable, parent stays alive", {});
+    appendStartupTrace("update: external helper begin", { fromPid: process.pid });
+    const started = await exitForExternalSelfUpdate();
+    if (!started) {
+      appendStartupTrace("update: external helper unavailable, parent stays alive", {});
+      await platform.sendText(
+        chatId,
+        "更新器启动失败，ChatCCC 将继续运行。请查看 ~/.chatccc/logs/update-watcher.log。",
+      ).catch(() => {});
     }
     return;
   }

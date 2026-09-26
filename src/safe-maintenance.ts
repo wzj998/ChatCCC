@@ -185,15 +185,43 @@ export class SafeMaintenanceCoordinator {
     }
   }
 
-  async recoverAfterStartup(internalRestart: boolean): Promise<void> {
+  async recoverAfterStartup(
+    internalRestart: boolean,
+    maintenanceResult?: { succeeded: boolean; error?: string },
+  ): Promise<void> {
     if (!this.job || !this.runtime) return;
     if (this.job.phase === "draining") {
       this.startPolling();
       await this.notifyAll(this.job.requesters, "ChatCCC 已恢复未完成的安全维护预约，继续等待现有任务结束。");
       return;
     }
+    if (
+      this.job.phase === "failed"
+      && this.job.kind === "update"
+      && internalRestart
+      && maintenanceResult?.succeeded === false
+    ) {
+      await this.notifyAll(
+        this.job.requesters,
+        this.job.lastError || maintenanceResult.error || "ChatCCC 更新失败，已恢复更新前版本。",
+      );
+      return;
+    }
     if (this.job.phase !== "executing") return;
     if (internalRestart) {
+      if (this.job.kind === "update" && maintenanceResult?.succeeded === false) {
+        const message = maintenanceResult.error || "ChatCCC 更新失败，已恢复更新前版本。";
+        const failed: SafeMaintenanceJob = {
+          ...this.job,
+          phase: "failed",
+          updatedAt: this.now().toISOString(),
+          lastError: message,
+        };
+        writeJob(this.filePath, failed);
+        this.job = failed;
+        await this.notifyAll(this.job.requesters, message);
+        return;
+      }
       const completed: SafeMaintenanceJob = { ...this.job, phase: "completed", updatedAt: this.now().toISOString() };
       writeJob(this.filePath, completed);
       this.job = completed;

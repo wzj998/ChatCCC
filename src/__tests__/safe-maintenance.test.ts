@@ -105,4 +105,55 @@ describe("safe maintenance coordinator", () => {
     expect(replacement.isAdmissionClosed()).toBe(false);
     expect(f.notify).toHaveBeenCalledWith(expect.objectContaining({ chatId: "oc_1" }), "ChatCCC 已安全更新并重新启动。");
   });
+
+  it("marks a rolled-back self update failed after the old version restarts", async () => {
+    const f = await fixture();
+    await f.coordinator.schedule("update", { platform: "feishu", chatId: "oc_1", openId: "ou_1" });
+    await f.coordinator.tick();
+    f.advance(1_000);
+    await f.coordinator.tick();
+
+    const replacement = new SafeMaintenanceCoordinator({ filePath: f.filePath, autoPoll: false });
+    replacement.configure({ getSnapshot: async () => idle(), execute: async () => true, notify: f.notify });
+    await replacement.recoverAfterStartup(true, {
+      succeeded: false,
+      error: "npm install latest failed",
+    });
+
+    expect((await replacement.status()).job).toEqual(expect.objectContaining({
+      phase: "failed",
+      lastError: "npm install latest failed",
+    }));
+    expect(replacement.isAdmissionClosed()).toBe(false);
+    expect(f.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_1" }),
+      "npm install latest failed",
+    );
+  });
+
+  it("notifies a failure already persisted by the external updater", async () => {
+    const f = await fixture();
+    await f.coordinator.schedule("update", { platform: "feishu", chatId: "oc_1", openId: "ou_1" });
+    await f.coordinator.tick();
+    f.advance(1_000);
+    await f.coordinator.tick();
+    const executing = JSON.parse(await readFile(f.filePath, "utf8")) as Record<string, unknown>;
+    await writeFile(f.filePath, JSON.stringify({
+      ...executing,
+      phase: "failed",
+      lastError: "更新失败，已经恢复旧版本",
+    }), "utf8");
+
+    const replacement = new SafeMaintenanceCoordinator({ filePath: f.filePath, autoPoll: false });
+    replacement.configure({ getSnapshot: async () => idle(), execute: async () => true, notify: f.notify });
+    await replacement.recoverAfterStartup(true, {
+      succeeded: false,
+      error: "fallback error",
+    });
+
+    expect(f.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_1" }),
+      "更新失败，已经恢复旧版本",
+    );
+  });
 });
