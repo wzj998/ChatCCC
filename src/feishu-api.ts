@@ -579,7 +579,9 @@ export async function getCodexUsageSummary(
   const resetCreditsPromise = includeResetCredits ? fetchCodexRateLimitResetCredits(auth) : null;
 
   const resp = await fetch(CODEX_USAGE_URL, {
-    headers: { Authorization: `Bearer ${auth.accessToken}` },
+    // An unscoped request can return a different workspace's quota for the
+    // same login. Match the account headers used by Codex and reset-credit reads.
+    headers: codexAuthHeaders(auth),
   });
   const text = await resp.text();
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text.slice(0, 160)}`);

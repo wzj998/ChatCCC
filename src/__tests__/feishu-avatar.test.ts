@@ -449,6 +449,41 @@ describe("Codex avatar usage battery", () => {
     }
   });
 
+  it("uses the Codex account ID when querying usage so the returned quota matches that account", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    await writeCodexAuth(homeDir);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) !== "https://chatgpt.com/backend-api/wham/usage") throw new Error(`unexpected fetch: ${url}`);
+      const scoped = new Headers(init?.headers).get("ChatGPT-Account-ID") === "codex-account-id";
+      return new Response(JSON.stringify({
+        rate_limit: {
+          primary_window: { used_percent: scoped ? 53 : 100, limit_window_seconds: 604800 },
+          secondary_window: null,
+        },
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { getCodexUsageSummary } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      const usage = await getCodexUsageSummary({ includeResetCredits: false });
+      expect(usage.fiveHour).toBeNull();
+      expect(usage.weekly?.remainingPercent).toBe(47);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://chatgpt.com/backend-api/wham/usage",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "ChatGPT-Account-ID": "codex-account-id",
+            Authorization: "Bearer codex-access-token",
+          }),
+        }),
+      );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports an unavailable reset-credit lookup when no successful snapshot exists", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
     const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
