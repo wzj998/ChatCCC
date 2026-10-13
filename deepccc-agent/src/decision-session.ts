@@ -48,14 +48,34 @@ export interface DecisionMetrics {
   contextChars: number;
 }
 export type DecisionFailureStatus = "timed_out" | "cancelled" | "invalid_output" | "step_limit" | "tool_error" | "context_limit" | "error";
+export interface DecisionDiagnostic {
+  /** Fixed categories only: no provider messages, input values or credentials. */
+  code: "provider_error" | "tool_input_invalid" | "unknown_tool" | "schema_validation_failed" | "protocol_error" | "output_truncated" | "incomplete_response" | "deadline_exceeded" | "cancelled" | "budget_exceeded" | "tool_execution_failed" | "internal_error";
+  stage: "provider" | "validation" | "protocol" | "runtime" | "tool";
+  httpStatus?: number;
+}
 export type DecisionResult<T> = {
   requestId: string;
   stateVersion: string | number;
   metrics: DecisionMetrics;
-} & ({ status: "success"; value: T } | { status: DecisionFailureStatus; message: string });
+} & ({ status: "success"; value: T } | { status: DecisionFailureStatus; message: string; diagnostic: DecisionDiagnostic });
 
 class DecisionFailure extends Error {
-  constructor(readonly status: DecisionFailureStatus, message: string) { super(message); }
+  constructor(readonly status: DecisionFailureStatus, message: string, readonly diagnostic?: DecisionDiagnostic) { super(message); }
+}
+
+function failureDiagnostic(status: DecisionFailureStatus, error: unknown): DecisionDiagnostic {
+  if (status === "timed_out") return {code: "deadline_exceeded", stage: "runtime"};
+  if (status === "cancelled") return {code: "cancelled", stage: "runtime"};
+  if (error instanceof DecisionFailure && error.diagnostic) return error.diagnostic;
+  if (status === "context_limit" || status === "step_limit") return {code: "budget_exceeded", stage: "runtime"};
+  if (status === "tool_error") return {code: "tool_execution_failed", stage: "tool"};
+  return {code: status === "invalid_output" ? "protocol_error" : "internal_error", stage: "runtime"};
+}
+
+function providerDiagnostic(error: unknown): DecisionDiagnostic {
+  const status = error && typeof error === "object" && "statusCode" in error ? error.statusCode : undefined;
+  return {code: "provider_error", stage: "provider", ...(typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? {httpStatus: status} : {})};
 }
 const SUBMIT = "submit_result";
 const DEADLINE = Symbol("decision deadline");
@@ -152,7 +172,7 @@ export class DecisionSession<T> {
       if (signal.aborted) throw new DecisionFailure(signal.reason === DEADLINE ? "timed_out" : "cancelled", "Decision interrupted");
       if (performance.now() >= deadline) { controller.abort(DEADLINE); throw new DecisionFailure("timed_out", "Decision deadline exceeded"); }
     };
-    let outcome: { status: "success"; value: T } | { status: DecisionFailureStatus; message: string };
+    let outcome: { status: "success"; value: T } | { status: DecisionFailureStatus; message: string; diagnostic: DecisionDiagnostic };
     try {
       check();
       const context = boundedJson(request.context, this.limits.context);
@@ -164,7 +184,7 @@ export class DecisionSession<T> {
       const status = signal.aborted ? signal.reason === DEADLINE ? "timed_out" : "cancelled"
         : performance.now() >= deadline ? "timed_out" : error instanceof DecisionFailure ? error.status : "error";
       // Never echo provider errors, credentials, tool payloads or partially generated output.
-      outcome = { status, message: error instanceof DecisionFailure ? error.message : "Decision did not complete successfully" };
+      outcome = { status, message: error instanceof DecisionFailure ? error.message : "Decision did not complete successfully", diagnostic: failureDiagnostic(status, error) };
     } finally {
       clearTimeout(timer);
       externalSignal?.removeEventListener("abort", cancel);
@@ -184,13 +204,13 @@ export class DecisionSession<T> {
       const ids = new Set(calls.map(c => c.toolCallId));
       if (!calls.length || ids.size !== calls.length) throw new DecisionFailure("invalid_output", "Expected unique structured tool calls");
       if (calls.some(c => c.toolName !== SUBMIT && !Object.hasOwn(this.tools, c.toolName))) {
-        throw new DecisionFailure("invalid_output", "Tool is not allowed");
+        throw new DecisionFailure("invalid_output", "Tool is not allowed", {code: "unknown_tool", stage: "protocol"});
       }
       if (calls.some(c => c.toolName === SUBMIT)) {
         if (calls.length !== 1) throw new DecisionFailure("invalid_output", "Submission cannot be mixed with other calls");
         const validated = await abortable(Promise.resolve().then(() => this.output.validate!(calls[0].input)), signal);
         check();
-        if (!validated.success) throw new DecisionFailure("invalid_output", "Result validation failed");
+        if (!validated.success) throw new DecisionFailure("invalid_output", "Result validation failed", {code: "schema_validation_failed", stage: "validation"});
         return validated.value;
       }
       if (step + 1 >= this.limits.steps) throw new DecisionFailure("step_limit", "No remaining step for a final result");
@@ -201,7 +221,7 @@ export class DecisionSession<T> {
         if (!definition) throw new DecisionFailure("invalid_output", "Tool is not allowed");
         const validated = await abortable(Promise.resolve().then(() => asSchema(definition.inputSchema).validate!(call.input)), signal);
         check();
-        if (!validated.success) throw new DecisionFailure("invalid_output", "Tool input validation failed");
+        if (!validated.success) throw new DecisionFailure("invalid_output", "Tool input validation failed", {code: "tool_input_invalid", stage: "validation"});
         inputs.push(validated.value);
       }
       messages.push({ role: "assistant", content: calls.map(c => ({ type: "tool-call", ...c })) });
@@ -230,10 +250,13 @@ export class DecisionSession<T> {
     metrics.modelCalls++;
     const result = streamText({ model: this.model, system: this.system, messages: [...messages], tools: this.modelTools,
       toolChoice: "required", maxRetries: 0, abortSignal: signal, maxOutputTokens: this.maxOutputTokens,
+      // The SDK default logs raw errors. Return allowlisted diagnostics instead.
+      onError: () => {},
       ...(this.providerOptions ? { providerOptions: this.providerOptions } : {}) });
     const iterator = result.fullStream[Symbol.asyncIterator]();
     const calls: Call[] = [];
     let finish: string | undefined;
+    let invalidCall: DecisionDiagnostic | undefined;
     let chars = 0;
     try {
       while (true) {
@@ -241,18 +264,24 @@ export class DecisionSession<T> {
         check();
         if (next.done) break;
         const part = next.value;
-        if (part.type === "error" || part.type === "tool-error") throw new DecisionFailure("invalid_output", "Provider returned an invalid response");
+        if (part.type === "error") throw new DecisionFailure("invalid_output", "Provider request failed", providerDiagnostic(part.error));
+        if (part.type === "tool-error") invalidCall ??= {code: "tool_input_invalid", stage: "validation"};
         if (part.type === "finish") finish = part.finishReason;
         if (part.type === "text-delta" || part.type === "reasoning-delta" || part.type === "tool-input-delta") {
           chars += part.type === "tool-input-delta" ? part.delta.length : part.text.length;
         }
         if (part.type === "tool-call") {
+          if ("invalid" in part && part.invalid) {
+            invalidCall = {code: Object.hasOwn(this.modelTools, part.toolName) ? "tool_input_invalid" : "unknown_tool", stage: "validation"};
+            continue;
+          }
           chars += boundedJson(part.input, this.limits.response).length;
           calls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
         }
         if (chars > this.limits.response || calls.length > this.limits.tools + 1) throw new DecisionFailure("invalid_output", "Response budget exceeded");
       }
-      if (finish !== "stop" && finish !== "tool-calls") throw new DecisionFailure("invalid_output", "Provider did not finish normally");
+      if (finish !== "stop" && finish !== "tool-calls") throw new DecisionFailure("invalid_output", "Provider did not finish normally", {code: finish === "length" ? "output_truncated" : "incomplete_response", stage: "protocol"});
+      if (invalidCall) throw new DecisionFailure("invalid_output", "Invalid structured tool call", invalidCall);
       return calls;
     } finally {
       metrics.modelMs += performance.now() - began;

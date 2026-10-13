@@ -150,6 +150,16 @@ and tool call counts, and the last assembled context size. Provider/tool error
 payloads and partial generated content are not copied into result messages.
 Invalid configuration/request budgets throw before contacting the provider.
 
+Since 0.2.23, failures also include a safe `diagnostic` object with a fixed `code`
+and `stage`. Categories distinguish provider errors, invalid tool input, result
+schema failures, truncated output, interrupted output, deadlines and cancellation.
+Provider HTTP status is included when available, but error messages, raw tool
+arguments, prompts, headers and response bodies are never copied into diagnostics.
+The SDK's default raw error logging is disabled for this API. Integrations can
+record their own schema issue paths inside their validators; keep values and raw
+payloads out of those records. The original `status` remains the control-flow
+contract. Diagnostics do not relax validation or trigger automatic retries.
+
 Pass an optional `AbortSignal` as the second argument to `decide()`. Provider SDK
 automatic retries are disabled; any future application retry needs a fresh,
 explicit budget. Non-cooperative asynchronous tools/streams are raced against

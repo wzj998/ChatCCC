@@ -16,7 +16,8 @@ describe("DecisionSession wire contract", () => {
       bodies.push(JSON.parse(body));
       res.writeHead(200, { "content-type": "text/event-stream" });
       const frame = (delta: unknown, finish: string | null) => `data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "example-model", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-      res.write(frame({ role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "submit_result", arguments: '{"action":"wait"}' } }] }, null));
+      const invalid = body.includes('invalid-example');
+      res.write(frame({ role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "submit_result", arguments: invalid ? '{"action":42}' : '{"action":"wait"}' } }] }, null));
       res.end(frame({}, "tool_calls") + "data: [DONE]\n\n");
     });
     servers.push(server);
@@ -37,5 +38,7 @@ describe("DecisionSession wire contract", () => {
     expect(bodies[0]).toMatchObject({ model: "example-model", stream: true, tool_choice: "required", reasoning_effort: "low" });
     expect(bodies[0].tools.map((t: any) => t.function.name)).toEqual(["submit_result"]);
     expect(bodies[1].messages.filter((m: any) => m.role === "user")).toEqual([{ role: "user", content: '{"position":2}' }]);
+    const invalid = await session.decide({requestId:'invalid-example',stateVersion:3,context:{position:'invalid-example'},timeoutMs:2000});
+    expect(invalid).toMatchObject({status:'invalid_output',diagnostic:{code:'tool_input_invalid',stage:'validation'}});
   });
 });

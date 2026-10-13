@@ -25,6 +25,32 @@ async function create(options: Record<string, unknown> = {}) {
 afterEach(() => { streamMock.mockReset(); vi.useRealTimers(); });
 
 describe("DecisionSession", () => {
+  it("reports provider category and HTTP status without raw error data", async () => {
+    streamMock.mockReturnValue(response([{type: "error", error: {name: "APIError", statusCode: 429, message: "private-marker", responseBody: "private-marker", requestHeaders: {authorization: "private-marker"}}}]));
+    const result = await (await create()).decide(request());
+    expect(result).toMatchObject({status: "invalid_output", diagnostic: {code: "provider_error", stage: "provider", httpStatus: 429}});
+    expect(JSON.stringify(result)).not.toContain("private-marker");
+    expect(streamMock.mock.calls[0][0].onError).toBeTypeOf("function");
+  });
+  it("distinguishes invalid tool input from transport failures", async () => {
+    streamMock.mockReturnValue(response([{...call(), invalid: true, error: {name: "AI_InvalidToolInputError", message: "private-marker"}}]));
+    const result = await (await create()).decide(request());
+    expect(result).toMatchObject({status: "invalid_output", diagnostic: {code: "tool_input_invalid", stage: "validation"}});
+    expect(JSON.stringify(result)).not.toContain("private-marker");
+  });
+  it("distinguishes truncated and interrupted output", async () => {
+    const session = await create();
+    streamMock.mockReturnValueOnce(response([call()], "length"));
+    expect(await session.decide(request())).toMatchObject({diagnostic: {code: "output_truncated"}});
+    streamMock.mockReturnValueOnce({fullStream: (async function* () { yield call(); })()});
+    expect(await session.decide(request())).toMatchObject({diagnostic: {code: "incomplete_response"}});
+  });
+  it("recognizes truncation even when partial arguments fail validation first", async () => {
+    streamMock.mockReturnValue(response([{...call(), invalid: true, input: '{', error: {message: 'private-marker'}}], 'length'));
+    const result = await (await create()).decide(request());
+    expect(result).toMatchObject({status: 'invalid_output', diagnostic: {code: 'output_truncated'}});
+    expect(JSON.stringify(result)).not.toContain('private-marker');
+  });
   it("returns validated data, identity and metrics without coding prompts or builtin tools", async () => {
     streamMock.mockReturnValue(response());
     const session = await create();
