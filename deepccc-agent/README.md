@@ -59,6 +59,8 @@ npm run dev
 
 ## 核心能力
 
+- 有界结构化决策：程序化 `DecisionSession` 支持外部管理上下文、显式工具白名单、运行时结果校验和整轮截止时间；不改变默认聊天行为。详见 [接入文档](docs/decision-session.md)。
+
 - Web-first：多会话、持久化历史、实时流式过程、停止和恢复
 - 工具时间线：ChatCCC 风格 emoji 摘要、参数/结果折叠、省略行展开和状态记忆
 - 会话配置：每个会话独立选择 model、subModel 和 effort
