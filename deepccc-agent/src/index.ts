@@ -62,7 +62,7 @@ import { buildWorkspaceMap, needsWorkspaceOrientation } from "./workspace-map.js
 import { compactToolLoopMessages } from "./turn-context.js";
 
 export { DecisionSession } from "./decision-session.js";
-export type { DecisionModelConfig, DecisionSessionOptions, DecisionRequest, DecisionResult, DecisionMetrics, DecisionFailureStatus, DecisionTool, DecisionToolContext } from "./decision-session.js";
+export type { DecisionModelConfig, DecisionSessionOptions, DecisionRequest, DecisionResult, DecisionMetrics, DecisionFailureStatus, DecisionDiagnostic, DecisionTool, DecisionToolContext } from "./decision-session.js";
 
 // ---------------------------------------------------------------------------
 // 系统提示词 — 编译期冻结常量（DeepCCC 英文品牌）
