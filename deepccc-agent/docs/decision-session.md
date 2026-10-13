@@ -76,8 +76,19 @@ Use a Standard Schema supported by the AI SDK, or `jsonSchema(schema, {validate}
 A JSON schema alone describes the model contract but is not a runtime safety
 check, so the constructor rejects schemas without validators. Validators may be
 asynchronous and share the request deadline. The provider must support tool calls.
-The reserved `submit_result` tool delivers the final value; free-form JSON text
-is not accepted as an alternative.
+The default `outputMode: 'tools'` uses the reserved `submit_result` tool; free-form
+JSON text is not accepted as an alternative in that mode.
+
+Since 0.2.24, `outputMode: 'json'` is available for OpenAI-compatible endpoints.
+It sends `response_format: {type: 'json_object'}` with no tools or tool choice;
+the schema is included in the system prompt and runtime validation is still
+mandatory. Nonempty `allowedTools` and other provider protocols are rejected in
+this mode. JSON syntax constraints do not guarantee semantic correctness.
+One local fallback removes trailing commas outside quoted strings, preserving
+values and escapes. Missing values, truncated streams, prose and invalid schemas
+are rejected; no extra model request is made for syntax recovery. Optional
+`metrics.jsonRepairs` counts repaired responses. Deadlines, cancellation, size
+limits, freshness checks and caller-owned context remain unchanged.
 
 ## Explicit capabilities
 
