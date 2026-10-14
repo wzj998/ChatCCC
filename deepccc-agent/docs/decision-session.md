@@ -90,6 +90,10 @@ are rejected; no extra model request is made for syntax recovery. Optional
 `metrics.jsonRepairs` counts repaired responses. Deadlines, cancellation, size
 limits, freshness checks and caller-owned context remain unchanged.
 
+JSON mode collects streamed text and parses the completed response once, rather
+than constructing intermediate partial objects. Final syntax recovery and schema
+validation remain mandatory. Tools mode and ordinary ChatSession are unchanged.
+
 ## Explicit capabilities
 
 Supply a `tools` record with `description`, `inputSchema` and `execute`, and list

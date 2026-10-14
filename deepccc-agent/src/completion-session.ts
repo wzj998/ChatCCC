@@ -1,6 +1,7 @@
 /** Opt-in stateless completion transport for integrations owning their complete prompts. */
 import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
-import {Output,streamText,type ModelMessage} from 'ai';
+import {streamText,type ModelMessage} from 'ai';
+import {jsonObjectFetch} from './json-mode-fetch.js';
 
 export interface CompletionConfig {baseURL:string;apiKey:string;model:string}
 export interface CompletionRequest {
@@ -40,11 +41,12 @@ export class CompletionSession {
     const metrics=()=>({durationMs:performance.now()-started,modelCalls:calls});
     try{
       if(controller.signal.aborted)throw new Error('Interrupted');
+      const transport=request.json?jsonObjectFetch():globalThis.fetch;
       const client=createOpenAICompatible({name:'completion',...this.config,includeUsage:true,
-        fetch:async(url,init)=>fetch(url,{...init,body:JSON.stringify({...JSON.parse(String(init?.body)),...extensions})})});
+        fetch:async(url,init)=>transport(url,{...init,body:JSON.stringify({...JSON.parse(String(init?.body)),...extensions})})});
       calls++;
       const result=streamText({model:client(this.config.model),messages,allowSystemInMessages:true,temperature:request.temperature,maxOutputTokens:request.maxOutputTokens,
-        ...(request.json?{output:Output.json()}:{}),maxRetries:0,abortSignal:controller.signal,onError:()=>{}});
+        maxRetries:0,abortSignal:controller.signal,onError:()=>{}});
       const iterator=result.fullStream[Symbol.asyncIterator]();
       let content='',reasoning='',finish:string|undefined;
       try{
