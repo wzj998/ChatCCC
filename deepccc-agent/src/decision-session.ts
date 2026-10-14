@@ -1,7 +1,8 @@
 /** Bounded, text-only decisions with caller-owned context and explicit capabilities. */
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { asSchema, Output, streamText, tool, type FlexibleSchema, type ModelMessage, type ToolSet } from "ai";
+import { asSchema, streamText, tool, type FlexibleSchema, type ModelMessage, type ToolSet } from "ai";
+import { jsonObjectFetch } from "./json-mode-fetch.js";
 import { parseJsonResponse } from "./json-response.js";
 import { performance } from "node:perf_hooks";
 import { config, normalizeDeepCccProvider } from "./config.js";
@@ -135,7 +136,8 @@ export class DecisionSession<T> {
     const baseURL = overrides.baseURL ?? config.baseURL;
     const client = provider === "anthropic"
       ? createAnthropic({ apiKey, baseURL: baseURL.trim().replace(/\/+$/, "") })
-      : createOpenAICompatible({ name: "deepccc", apiKey, baseURL, includeUsage: true });
+      : createOpenAICompatible({ name: "deepccc", apiKey, baseURL, includeUsage: true,
+        ...(this.outputMode === "json" ? {fetch: jsonObjectFetch()} : {}) });
     this.model = client(overrides.model ?? config.model);
     const effort = (overrides.effort ?? config.effort ?? "").trim();
     this.providerOptions = effort ? provider === "anthropic"
@@ -262,7 +264,7 @@ export class DecisionSession<T> {
     const began = performance.now();
     metrics.modelCalls++;
     const result = streamText({ model: this.model, system: this.system, messages: [...messages],
-      ...(this.outputMode === "json" ? {output: Output.json()} : {tools: this.modelTools, toolChoice: "required" as const}),
+      ...(this.outputMode === "json" ? {} : {tools: this.modelTools, toolChoice: "required" as const}),
       maxRetries: 0, abortSignal: signal, maxOutputTokens: this.maxOutputTokens,
       // The SDK default logs raw errors. Return allowlisted diagnostics instead.
       onError: () => {},

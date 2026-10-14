@@ -19,7 +19,7 @@ it('requests JSON output without tools and validates repaired data locally',asyn
   const result=await create().decide(request);
   expect(result).toMatchObject({status:'success',value:{action:'literal ,} and ,]'},metrics:{modelCalls:1,jsonRepairs:1}});
   const options=streamMock.mock.calls[0][0];
-  expect(await options.output.responseFormat).toMatchObject({type:'json'});
+  expect(options.output).toBeUndefined();
   expect(options.tools).toBeUndefined();
   expect(options.toolChoice).toBeUndefined();
   expect(options.system).toContain('JSON');

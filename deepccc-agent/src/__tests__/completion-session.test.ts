@@ -1,9 +1,28 @@
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {afterEach,expect,it} from 'vitest';
+import {afterEach,expect,it,vi} from 'vitest';
+const {structuredJson}=vi.hoisted(()=>({structuredJson:vi.fn()}));
+vi.mock('ai',async original=>{
+  const actual=await original<typeof import('ai')>();
+  return {...actual,Output:{...actual.Output,json:(...args:Parameters<typeof actual.Output.json>)=>{structuredJson();return actual.Output.json(...args);}}};
+});
 import {CompletionSession} from '../completion-session.js';
 const servers:ReturnType<typeof createServer>[]=[];
-afterEach(async()=>{for(const s of servers.splice(0)){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()));}});
+afterEach(async()=>{structuredJson.mockClear();for(const s of servers.splice(0)){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()));}});
+it('collects fragmented JSON without constructing incremental structured output',async()=>{
+  const content = JSON.stringify({items:Array.from({length:2000},(_,id)=>({id,value:'example'}))});
+  const server=createServer(async(req,res)=>{
+    let body='';for await(const chunk of req)body+=chunk;
+    expect(JSON.parse(body).response_format).toEqual({type:'json_object'});
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({id:'test',object:'chat.completion.chunk',created:1,model:'example',choices:[{index:0,delta,finish_reason:finish}]})}\n\n`;
+    for(let offset=0;offset<content.length;offset+=64)res.write(frame({content:content.slice(offset,offset+64)},null));
+    res.end(frame({},'stop')+'data: [DONE]\n\n');
+  });servers.push(server);server.listen(0,'127.0.0.1');await once(server,'listening');
+  const session=new CompletionSession({baseURL:`http://127.0.0.1:${(server.address() as {port:number}).port}/v1`,apiKey:'test-key',model:'example'});
+  expect(await session.complete({messages:[{role:'user',content:'Return JSON.'}],json:true,timeoutMs:10000})).toMatchObject({status:'success',content});
+  expect(structuredJson).not.toHaveBeenCalled();
+});
 it('preserves supplied messages and controls without tools or extra prompts',async()=>{
   const bodies:any[]=[];
   const server=createServer(async(req,res)=>{

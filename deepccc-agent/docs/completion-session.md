@@ -29,6 +29,10 @@ optional cancellation is the second argument. Context/response character limits
 default to one million each. Oversize input and invalid options throw before
 network activity; runtime failures return fixed diagnostics without raw errors.
 
+JSON responses are collected as text without constructing partial objects for
+each streamed fragment. This avoids unnecessary parsing and allocation for large
+responses. Ordinary ChatSession, CLI and Web streaming behavior is unchanged.
+
 Optional `extensions` passes caller-supplied provider-specific JSON options.
 It cannot override messages, model, streaming, tool settings, response format,
 temperature or token limits. Keep credentials in config, not extensions. No
