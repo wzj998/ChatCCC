@@ -62,6 +62,8 @@ import { buildWorkspaceMap, needsWorkspaceOrientation } from "./workspace-map.js
 import { compactToolLoopMessages } from "./turn-context.js";
 
 export { DecisionSession } from "./decision-session.js";
+export { CompletionSession } from "./completion-session.js";
+export type { CompletionConfig, CompletionRequest, CompletionResult } from "./completion-session.js";
 export type { DecisionModelConfig, DecisionSessionOptions, DecisionRequest, DecisionResult, DecisionMetrics, DecisionFailureStatus, DecisionDiagnostic, DecisionTool, DecisionToolContext } from "./decision-session.js";
 
 // ---------------------------------------------------------------------------
