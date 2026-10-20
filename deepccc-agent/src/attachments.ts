@@ -13,7 +13,7 @@ export const ATTACHMENT_PROMPT_END = "</deepccc-attachments>";
 export interface AttachmentMeta {
   attachmentId: string;
   originalName: string;
-  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   size: number;
   absolutePath: string;
 }
@@ -46,7 +46,7 @@ export class AttachmentStore {
     if (!bytes.length) throw new Error("Image attachment must not be empty");
     if (bytes.length > MAX_ATTACHMENT_BYTES) throw new Error("Image attachment exceeds the 20 MB limit");
     const mimeType = detectImageMime(bytes);
-    if (!mimeType) throw new Error("Only PNG, JPEG, or WebP image attachments are supported");
+    if (!mimeType) throw new Error("Only PNG, JPEG, or WebP image attachments (also GIF) are supported");
 
     const normalizedSessionId = normalizeBuiltinSessionId(sessionId);
     const attachmentId = normalizeAttachmentId(this.idFactory());
@@ -121,7 +121,7 @@ export class AttachmentStore {
       const value = JSON.parse(await readFile(this.metaPath(sessionId, normalizedId), "utf8")) as Partial<StoredAttachment>;
       if (value.attachmentId !== normalizedId || typeof value.fileName !== "string") return null;
       if (typeof value.originalName !== "string" || typeof value.size !== "number") return null;
-      if (value.mimeType !== "image/png" && value.mimeType !== "image/jpeg" && value.mimeType !== "image/webp") return null;
+      if (value.mimeType !== "image/png" && value.mimeType !== "image/jpeg" && value.mimeType !== "image/webp" && value.mimeType !== "image/gif") return null;
       if (value.fileName !== `${normalizedId}${extensionForMime(value.mimeType)}`) return null;
       const absolutePath = join(this.sessionDir(sessionId), value.fileName);
       return { ...value, absolutePath } as StoredAttachment;
@@ -155,7 +155,7 @@ export function buildAttachmentPrompt(text: string, attachments: AttachmentMeta[
     ATTACHMENT_PROMPT_START,
     JSON.stringify(manifest),
     ATTACHMENT_PROMPT_END,
-    "以上图片以本地附件文件提供。不要假设模型原生支持图片；请使用可用工具读取这些绝对路径并自行处理。",
+    "图片由内核转换为视觉输入；历史中只保存附件引用，需要重新查看时使用 read_image。",
   ].join("\n");
 }
 
@@ -176,6 +176,7 @@ export function parseAttachmentPrompt(content: string): { text: string; attachme
 
 export function detectImageMime(bytes: Uint8Array): AttachmentMeta["mimeType"] | null {
   const buffer = Buffer.from(bytes);
+  if (buffer.length >= 10 && /GIF8[79]a/.test(buffer.subarray(0,6).toString("ascii"))) return "image/gif";
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
   if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
@@ -183,7 +184,7 @@ export function detectImageMime(bytes: Uint8Array): AttachmentMeta["mimeType"] |
 }
 
 function extensionForMime(mimeType: AttachmentMeta["mimeType"]): string {
-  return mimeType === "image/png" ? ".png" : mimeType === "image/jpeg" ? ".jpg" : ".webp";
+  return mimeType === "image/png" ? ".png" : mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/gif" ? ".gif" : ".webp";
 }
 
 function cleanOriginalName(value: string, extension: string): string {
@@ -209,5 +210,5 @@ function isAttachmentMeta(value: unknown): value is AttachmentMeta {
     && typeof attachment.originalName === "string"
     && typeof attachment.absolutePath === "string"
     && typeof attachment.size === "number"
-    && (attachment.mimeType === "image/png" || attachment.mimeType === "image/jpeg" || attachment.mimeType === "image/webp");
+    && (attachment.mimeType === "image/png" || attachment.mimeType === "image/jpeg" || attachment.mimeType === "image/webp" || attachment.mimeType === "image/gif");
 }

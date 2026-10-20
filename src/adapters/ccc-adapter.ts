@@ -68,6 +68,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.subModel !== undefined ? { subModel: options.subModel } : {}),
+    ...(options.visionModel !== undefined ? { visionModel: options.visionModel } : {}),
     ...(options.effort?.trim() ? { effort: options.effort.trim() } : {}),
     ...(options.maxOutputTokens !== undefined
       ? { maxOutputTokens: options.maxOutputTokens }
@@ -116,6 +117,8 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
               status: event.phase === "compacting" ? "compacting" : "responding",
             }],
           };
+        } else if (event.type === "image_input") {
+          yield {type:"assistant",blocks:[{type:"text",text:`\n[图片理解：${event.model}，${event.count} 张，${event.mode === "native" ? "原生视觉" : "图片模型分析"}]\n`}]};
         } else if (event.type === "progress") {
           yield {
             type: "assistant",

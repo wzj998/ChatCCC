@@ -229,6 +229,10 @@ Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
+CCC Agent 支持图片理解：飞书/微信发送的图片与独立 DeepCCC 的 Web/CLI 附件共用内核，可看多张截图、图表及本地 `read_image` 工具产物。支持 PNG/JPEG/WebP/GIF，每条最多 10 张、单图 20 MiB、图片合计 24 MiB。主模型支持视觉时直接传图；主模型不支持时，可在设置页填写“图片模型”（`ccc.visionModel`，如 `deepseek-flash`），先由它观察图片，再由主模型继续任务。留空跟随独立 DeepCCC 的 `visionModel`；两边都未配置则使用主模型原生视觉。图片模型复用当前 API Key/Base URL/协议，界面显示实际使用的模型；错误不会静默降级。历史保存附件引用，日志过滤图片编码。详见 [DeepCCC 图片与 CLI 用法](deepccc-agent/README.md)。
+
+纯 CLI 用户可以运行 `cccagent --image "C:\截图\报错.png"` 后输入问题，或在运行中的交互终端等待回复结束后输入 `/image "图片路径"`，再发下一条问题。多图重复添加；一次性运行可用 `cccagent --stream-json --prompt "解释截图" --image "图片路径"`。`cccagent` 读取 `~/.deepccc/config.json` 或 `DEEPCCC_*` 环境变量。
+
 CCC Agent 支持**协作式让位**：任务运行期间你可以继续在群里发消息，ChatCCC 会在 Agent 的每个模型步骤边界把新消息注入当前任务，不打断正在执行的工具步骤、不新开一轮对话。已完成的中间工作会保留，Agent 收到插话后会调整后续方向。运行中的消息进入独立的注入队列（深度 50），与整轮排队（深度 1）分离。飞书中每条消息实际注入后，机器人会发送一条最多 200 字的回执，冻结注入前的过程卡片，并用新的“生成中”卡片展示后续过程。
 
 DeepCCC 同时提供独立端口的本地 Web UI。ChatCCC 管理页顶部点击 **DeepCCC Web** 会复用或按需启动该服务；只全局安装 `deepccc` 的用户直接运行 `deepccc` 即可启动并打开网页版，终端模式改用 `deepccc-cli`。默认地址为 `http://127.0.0.1:28080/`，端口可通过 `~/.deepccc/config.json` 的 `web.port` 修改。网页版支持多会话并发、持久化历史、会话级 model/effort、API 设置和会话内高风险操作审批。

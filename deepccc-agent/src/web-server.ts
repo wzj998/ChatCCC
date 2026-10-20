@@ -28,6 +28,7 @@ export interface PublicDeepCccConfig {
   baseURL: string;
   model: string;
   subModel: string;
+  visionModel?: string;
   effort: string;
   maxOutputTokens?: number;
   streaming: boolean;
@@ -85,6 +86,7 @@ function runtimeConfig(): WebRuntimeConfig {
     baseURL: config.baseURL,
     model: config.model,
     subModel: config.subModel,
+    visionModel: config.visionModel,
     effort: config.effort,
     maxOutputTokens: config.maxOutputTokens,
     contextWindow: config.contextWindow,
@@ -98,6 +100,7 @@ export function toPublicConfig(config: DeepCccConfig, defaultCwd = process.cwd()
     baseURL: config.baseURL,
     model: config.model,
     subModel: config.subModel,
+    visionModel: config.visionModel,
     effort: config.effort,
     ...(config.maxOutputTokens ? { maxOutputTokens: config.maxOutputTokens } : {}),
     streaming: config.streaming,

@@ -163,7 +163,11 @@ Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以�
 
 模型文本、reasoning 心跳和工具事件通过 SSE 实时更新。每轮消息按真实发生顺序持久化和回放，因此刷新后仍会保持“阶段说明 → 工具调用 → 后续结论”的交错时间线；旧版会话没有顺序数据时，会兼容显示为“工具调用 → 最终回答”。每次工具调用与对应结果合并成一张卡片，折叠态显示 emoji、工具名、状态和关键参数；展开后调用参数默认保留前 8/后 4 行，工具结果保留前 12/后 6 行，省略内容可继续展开。工具卡及省略行的展开状态保存在当前浏览器标签页的 `sessionStorage`，持续生成、切换会话和刷新页面均不会自动收起。消息正文支持标题、表格、列表、引用、链接和代码块等常用 Markdown。
 
-图片始终按本地附件处理，不转换为 Provider 原生多模态消息。Web 支持文件选择、剪贴板粘贴和拖拽，每条消息最多 10 张 PNG/JPEG/WebP、单张最大 20 MB；附件复制到 `~/.deepccc/attachments/<session-id>/`，Agent 收到本地绝对路径后使用可用工具自行处理。Agent 可调用 `present_file` 把当前工作目录或会话附件目录中的图片直接展示在会话中；删除会话时对应附件一并清理。
+图片会转换成模型可见的原生视觉输入。Web 支持选择、粘贴和拖拽 PNG/JPEG/WebP/GIF；CLI 可用 `--image` 或交互命令 `/image`。每条消息最多 10 张、单图最大 20 MiB、图片合计最大 24 MiB，单边最多 8192 像素；超限时提示分图或缩小，保留原图细节。附件复制到 `~/.deepccc/attachments/<session-id>/`，聊天历史只保存引用，raw 日志过滤图片编码。删除 Web 会话时附件一并清理。
+
+默认由当前模型直接看图。若主模型不支持视觉，可在 API 设置中指定 `visionModel`（如 `deepseek-flash`），或设置 `DEEPCCC_VISION_MODEL` / CLI `--vision-model`；该模型使用同一 API 协议、Base URL 和 Key，先分析图片，再由主模型结合观察继续任务。界面及 JSONL 会显示实际图片模型和模式。未配置图片模型的 `deepseek-v4-pro` 收图会明确报错；其他兼容模型需服务端支持图像，接口错误不会降级成“假装看过”。官方 DeepSeek 端点的旧 Flash 名称仅在视觉请求中映射到当前 `deepseek-flash`，自定义网关保留用户配置的名称。
+
+Agent 可用 `read_image` 查看本地截图、图表或工具产物，并通过 `question` 指定需要观察的细节；`present_file` 用于把图片展示给用户。后续追问会按预算重新加载近期图片；较早图片保留路径供 `read_image` 重新查看。独立图片模型的观察按原文问题、模型、端点与图片内容哈希缓存；细节追问可重新调用 `read_image`。压缩后的摘要应保留重要图片引用，缺失或损坏图片会明确报错。本版本支持图片输入，不包含音频、视频或 PDF 原生输入。
 
 API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic Messages。完整 API Key 只保存在本机 `~/.deepccc/config.json`，浏览器读取设置时仅返回掩码。危险命令会在会话中暂停并请求“拒绝、允许一次、本会话允许、永久允许”，浏览器断开或审批超时默认拒绝。
 
@@ -240,11 +244,22 @@ deepccc-cli --provider anthropic --base-url https://api.example.com --api-key "$
 deepccc-cli --cwd /path/to/project
 ```
 
-附加一张或多张本地图片（可重复传入 `--image`，仍采用本地附件路径，不发送原生多模态内容）：
+附加一张或多张本地图片（重复传入 `--image`；路径含空格时加引号）：
 
 ```bash
 deepccc-cli --image ./error.png --image ./expected.webp
 ```
+
+启动后再加图：输入 `/image "C:\截图\报错截图.png"`，看到“图片已加入下一条消息”后输入问题并回车。多图重复 `/image`；相对路径按会话工作目录（`--cwd`）解析。该命令在当前回复结束后使用。启动时的 `--image` 也只加入队列，随后输入问题发送。
+
+脚本或纯命令模式可直接发送图片并获取 JSONL：
+
+```bash
+deepccc-cli --model deepseek-flash --stream-json --prompt "解释截图里的错误" --image "./error screenshot.png"
+deepccc-cli --model deepseek-v4-pro --vision-model deepseek-flash --stream-json --prompt "对比两张图" --image ./before.png --image ./after.png
+```
+
+安装 ChatCCC 后提供的 `cccagent` 使用同一 CLI：将上述 `deepccc-cli` 换成 `cccagent` 即可。它读取 `~/.deepccc/config.json`、`DEEPCCC_*` 环境变量或命令行参数；ChatCCC 机器人里的 API 配置不会自动改写独立 CLI 配置。聊天窗口的图片粘贴/拖拽属于 Web 功能，纯终端请使用文件路径。
 
 恢复当前工作目录最近一次会话：
 

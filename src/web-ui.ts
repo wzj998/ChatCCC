@@ -60,6 +60,7 @@ interface AppConfig {
   };
   codex?: { enabled?: boolean; defaultAgent?: boolean; path?: string; command?: string; model?: string; alternativeModel?: string; effort?: string; fastMode?: boolean };
   ccc?: {
+    visionModel?: string;
     enabled?: boolean;
     defaultAgent?: boolean;
     DEEPSEEK_API_KEY?: string;
@@ -536,6 +537,9 @@ export function unflattenConfig(flat: Record<string, unknown>): Record<string, u
     } else if (key === "CHATCCC_CCC_MODEL") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).model = val;
+    } else if (key === "CHATCCC_CCC_VISION_MODEL") {
+      if (!result.ccc) result.ccc = {};
+      (result.ccc as Record<string, unknown>).visionModel = val;
     } else if (key === "CHATCCC_CCC_SUB_MODEL") {
       result.ccc = result.ccc || {};
       (result.ccc as Record<string, unknown>).subModel = val;
@@ -959,6 +963,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <input type="text" id="field-CHATCCC_CCC_SUB_MODEL" placeholder="留空跟随主模型；用于压缩摘要、子代理任务等轻量环节">
             </div>
             <div class="form-group">
+              <label>图片模型（选填）</label>
+              <input type="text" id="field-CHATCCC_CCC_VISION_MODEL" placeholder="例如 deepseek-flash；留空跟随 DeepCCC 设置，未配置则由主模型直接看图">
+            </div>
+            <div class="form-group">
               <label>备选模型（选填）</label>
               <input type="text" id="field-CHATCCC_CCC_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
             </div>
@@ -1333,6 +1341,7 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">API 协议</span><span class="val" id="cfg-CCC_PROVIDER">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CCC_MODEL">-</span></div>
         <div class="config-row"><span class="key">子模型</span><span class="val" id="cfg-CCC_SUB_MODEL">-</span></div>
+        <div class="config-row"><span class="key">图片模型</span><span class="val" id="cfg-CCC_VISION_MODEL">-</span></div>
         <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CCC_ALTERNATIVE_MODEL">-</span></div>
         <div class="config-row"><span class="key">Effort</span><span class="val" id="cfg-CCC_EFFORT">-</span></div>
         <div class="config-row"><span class="key">最大输出 Token</span><span class="val" id="cfg-CCC_MAX_OUTPUT_TOKENS">-</span></div>
@@ -1387,7 +1396,7 @@ const AGENT_FIELDS = {
   claude: ['CHATCCC_ANTHROPIC_MODEL','CHATCCC_ANTHROPIC_SUBAGENT_MODEL','CHATCCC_ANTHROPIC_EFFORT','CHATCCC_ANTHROPIC_API_KEY','CHATCCC_ANTHROPIC_BASE_URL','CHATCCC_ANTHROPIC_MAX_TURN'],
   cursor: ['CHATCCC_CURSOR_PATH','CHATCCC_CURSOR_MODEL','CHATCCC_CURSOR_ALTERNATIVE_MODEL','CHATCCC_CURSOR_AVATAR_BATTERY_MODE','CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'],
   codex: ['CHATCCC_CODEX_PATH','CHATCCC_CODEX_MODEL','CHATCCC_CODEX_ALTERNATIVE_MODEL','CHATCCC_CODEX_EFFORT','CHATCCC_CODEX_FAST_MODE'],
-  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_MAX_OUTPUT_TOKENS','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_GIT_COAUTHOR','CHATCCC_CCC_CONTEXT_WINDOW'],
+  ccc: ['CHATCCC_CCC_API_KEY','CHATCCC_CCC_BASE_URL','CHATCCC_CCC_MODEL','CHATCCC_CCC_SUB_MODEL','CHATCCC_CCC_VISION_MODEL','CHATCCC_CCC_ALTERNATIVE_MODEL','CHATCCC_CCC_EFFORT','CHATCCC_CCC_MAX_OUTPUT_TOKENS','CHATCCC_CCC_PROVIDER','CHATCCC_CCC_GIT_COAUTHOR','CHATCCC_CCC_CONTEXT_WINDOW'],
   dsh: ['CHATCCC_DSH_API_KEY','CHATCCC_DSH_BASE_URL','CHATCCC_DSH_MODEL','CHATCCC_DSH_SUB_MODEL','CHATCCC_DSH_ALTERNATIVE_MODEL','CHATCCC_DSH_PROVIDER','CHATCCC_DSH_MAX_TOKENS']
 };
 const FEISHU_FIELDS = ['CHATCCC_APP_ID','CHATCCC_APP_SECRET'];
@@ -1783,6 +1792,7 @@ function renderStep2() {
     if (coAuthorField) coAuthorField.value = c.ccc.gitCoAuthor == null ? 'inherit' : (c.ccc.gitCoAuthor ? 'enabled' : 'disabled');
     prefillNested('field-CHATCCC_CCC_MODEL', c.ccc.model);
     prefillNested('field-CHATCCC_CCC_SUB_MODEL', c.ccc.subModel);
+    prefillNested('field-CHATCCC_CCC_VISION_MODEL', c.ccc.visionModel);
     prefillNested('field-CHATCCC_CCC_ALTERNATIVE_MODEL', c.ccc.alternativeModel);
     prefillNested('field-CHATCCC_CCC_EFFORT', c.ccc.effort);
     prefillNested('field-CHATCCC_CCC_MAX_OUTPUT_TOKENS', c.ccc.maxOutputTokens);
@@ -1992,6 +2002,7 @@ function renderStep3() {
       lines.push('<div class="config-row"><span class="key">Base URL</span><span class="val">' + (vars.CHATCCC_CCC_BASE_URL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CCC_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">子模型</span><span class="val">' + (vars.CHATCCC_CCC_SUB_MODEL || '(留空，跟随主模型)') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">图片模型</span><span class="val">' + (vars.CHATCCC_CCC_VISION_MODEL || '(跟随 DeepCCC)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CCC_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">Effort</span><span class="val">' + (vars.CHATCCC_CCC_EFFORT || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">最大输出 Token</span><span class="val">' + (vars.CHATCCC_CCC_MAX_OUTPUT_TOKENS || '(跟随 DeepCCC)') + '</span></div>');
@@ -2225,6 +2236,7 @@ function updateDashboardUI() {
   document.getElementById('cfg-CCC_PROVIDER').textContent = (c.ccc && c.ccc.provider) ? c.ccc.provider : '(跟随 DeepCCC 内核配置)';
   document.getElementById('cfg-CCC_MODEL').textContent = (c.ccc && c.ccc.model) || '(留空)';
   document.getElementById('cfg-CCC_SUB_MODEL').textContent = (c.ccc && c.ccc.subModel) || '(留空，跟随主模型)';
+  document.getElementById('cfg-CCC_VISION_MODEL').textContent = (c.ccc && c.ccc.visionModel) || '(跟随 DeepCCC)';
   document.getElementById('cfg-CCC_ALTERNATIVE_MODEL').textContent = (c.ccc && c.ccc.alternativeModel) || '(留空)';
   document.getElementById('cfg-CCC_EFFORT').textContent = (c.ccc && c.ccc.effort) || '(跟随 DeepCCC 内核配置)';
   document.getElementById('cfg-CCC_MAX_OUTPUT_TOKENS').textContent = c.ccc && c.ccc.maxOutputTokens
@@ -2318,7 +2330,7 @@ function editSection(section) {
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
     'CHATCCC_CCC_PROVIDER': 'API 协议（选填）',
     'CHATCCC_CCC_GIT_COAUTHOR': 'Git 提交共同作者',
-    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_MAX_OUTPUT_TOKENS': '最大输出 Token', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口',
+    'CHATCCC_CCC_MODEL': '模型', 'CHATCCC_CCC_SUB_MODEL': '子模型', 'CHATCCC_CCC_VISION_MODEL': '图片模型', 'CHATCCC_CCC_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CCC_EFFORT': 'Effort', 'CHATCCC_CCC_MAX_OUTPUT_TOKENS': '最大输出 Token', 'CHATCCC_CCC_CONTEXT_WINDOW': '上下文窗口',
     'CHATCCC_DSH_API_KEY': 'API Key', 'CHATCCC_DSH_BASE_URL': 'Base URL', 'CHATCCC_DSH_MODEL': '模型', 'CHATCCC_DSH_SUB_MODEL': '子模型', 'CHATCCC_DSH_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_DSH_PROVIDER': 'Provider 路由', 'CHATCCC_DSH_MAX_TOKENS': '单次最大输出 Tokens'
   };
   var hintMap = {
@@ -2377,6 +2389,7 @@ function editSection(section) {
         else if (key === 'CHATCCC_CCC_GIT_COAUTHOR') val = state.config.ccc.gitCoAuthor == null ? 'inherit' : (state.config.ccc.gitCoAuthor ? 'enabled' : 'disabled');
         else if (key === 'CHATCCC_CCC_MODEL') val = state.config.ccc.model || '';
         else if (key === 'CHATCCC_CCC_SUB_MODEL') val = state.config.ccc.subModel || '';
+        else if (key === 'CHATCCC_CCC_VISION_MODEL') val = state.config.ccc.visionModel || '';
         else if (key === 'CHATCCC_CCC_ALTERNATIVE_MODEL') val = state.config.ccc.alternativeModel || '';
         else if (key === 'CHATCCC_CCC_EFFORT') val = state.config.ccc.effort || '';
         else if (key === 'CHATCCC_CCC_MAX_OUTPUT_TOKENS') val = state.config.ccc.maxOutputTokens || '';

@@ -116,6 +116,8 @@ export interface CodexConfig {
 }
 
 export interface CccConfig {
+  /** Empty follows the DeepCCC global visionModel setting. */
+  visionModel: string;
   /** Whether the built-in CCC Agent is available for new sessions. */
   enabled: boolean;
   /** Whether /new without an explicit tool should use CCC Agent. */
@@ -536,6 +538,7 @@ function loadConfig(): AppConfig {
       DEEPSEEK_API_KEY: "",
       DEEPSEEK_BASE_URL: DEFAULT_CCC_DEEPSEEK_BASE_URL,
       model: DEFAULT_CCC_MODEL,
+      visionModel: "",
       subModel: "",
       alternativeModel: "",
       effort: "",
@@ -609,6 +612,7 @@ function loadConfig(): AppConfig {
     };
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown; fastMode?: unknown };
     ccc?: {
+      visionModel?: unknown;
       enabled?: unknown;
       defaultAgent?: unknown;
       DEEPSEEK_API_KEY?: unknown;
@@ -808,6 +812,7 @@ function loadConfig(): AppConfig {
       }),
       model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
       subModel: normalizeOptionalConfigField(cccRaw.subModel, { label: "ccc.subModel" }),
+      visionModel: normalizeOptionalConfigField(cccRaw.visionModel, { label: "ccc.visionModel" }),
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),
       maxOutputTokens: normalizeNullablePositiveInteger(
