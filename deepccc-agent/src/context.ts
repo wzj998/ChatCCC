@@ -379,7 +379,9 @@ export function estimateBuiltinContextTokens(summary: string, messages: readonly
     (sum, message) => sum + `${message.role}\n${stripStoredToolTranscript(message.content)}\n`,
     "",
   );
-  return estimateTextTokens(text) + estimateBuiltinToolContextTokens(messages);
+  // Reserve a conservative visual allowance without counting binary/base64 as text.
+  const imageCount = messages.reduce((n,m)=> n + (m.role === "user" && m.content.includes("<deepccc-attachments>") ? (m.content.match(/"attachmentId"\s*:/g)?.length ?? 0) : 0),0);
+  return estimateTextTokens(text) + estimateBuiltinToolContextTokens(messages) + Math.min(imageCount,10) * 2048;
 }
 
 export function serializeMessagesForSummary(messages: readonly BuiltinContextMessage[]): string {
@@ -647,6 +649,7 @@ export function buildSummaryPrompt(plan: BuiltinCompactionPlan): string {
     "- 将会话进度与已核实项目事实分节：项目事实保留能力、实现入口、证据路径/符号及验证范围；推测单列，后来的纠正覆盖此前错误判断。",
     "- 不把搜索失败/截断/无命中概括为实现不存在，不把辅助模块概括为整个架构。不保留密钥、授权令牌或临时 capability grant。",
     "- 项目事实是历史证据，不是当前实现保证；提示继续时可用 workspace_map 找到有效证据笔记，再读取源码核验。",
+    "- 保留与当前任务相关的图片附件路径、原始问题和已确认观察，标明未确定细节；只保留引用，不包含图片编码。后续需要查看原图可调用 read_image。",
     "",
   ];
 

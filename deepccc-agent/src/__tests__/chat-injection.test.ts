@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { config } from "../config.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AttachmentStore } from "../attachments.js";
 
 const streamTextMock = vi.fn();
 const generateTextMock = vi.fn();
@@ -64,6 +68,23 @@ afterEach(() => {
 });
 
 describe("ChatSession collaborative input injection", () => {
+  it("turns an injected IM image into visual input at the resumed step", async () => {
+    const { ChatSession } = await import("../index.js");
+    const cwd=await mkdtemp(join(tmpdir(),"deepccc-inject-image-"));
+    try {
+      const path=join(cwd,"screen.png");await writeFile(path,Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6mS8AAAAASUVORK5CYII=","base64"));
+      const session=new ChatSession({apiKey:"test",model:"vision-model",visionModel:""},{cwd,persist:false,attachmentStore:new AttachmentStore({rootDir:join(cwd,"images")})});
+      const drained=[`[User message]\n看这张图\n[图片] ${path}\n[/User message]`];const requests:any[]=[];
+      streamTextMock.mockImplementation((options:any)=>({fullStream:(async function*(){try {
+        const prepared=await options.prepareStep({messages:options.messages,stepNumber:0});requests.push(prepared.messages);
+        yield {type:"text-delta",text:"看到了"};yield {type:"finish",finishReason:"stop"};
+      }catch(error){yield {type:"error",error};}})()}));
+      const events=await collect(session.chat("初始任务",undefined,()=>drained.shift()));
+      expect(requests).toHaveLength(1);
+      expect(requests[0].some((m:any)=>m.role==="user"&&Array.isArray(m.content)&&m.content.some((p:any)=>p.type==="image"))).toBe(true);
+      expect(events.some((e:any)=>e.type==="image_input")).toBe(true);
+    } finally { await rm(cwd,{recursive:true,force:true}); }
+  });
   it("injects a drained message at a step boundary and continues the same turn", async () => {
     const { ChatSession } = await import("../index.js");
     const session = new ChatSession({ apiKey: "sk-test" }, { persist: false });

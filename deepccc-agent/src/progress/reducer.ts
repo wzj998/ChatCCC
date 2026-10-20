@@ -54,6 +54,8 @@ export function summarizeToolResult(content: unknown, maxChars = 120): string {
  */
 export function reduceProgress(prev: ProgressView, event: ChatEvent): ProgressView {
   switch (event.type) {
+    case "image_input":
+      return withProgressView(prev, {headerTitle:`图片理解：${event.model}（${event.count} 张，${event.mode === "native" ? "原生视觉" : "图片模型"}）`});
     case "status":
       return withProgressView(prev, {
         headerTitle: event.phase === "compacting" ? "压缩上下文中..." : "生成回复中...",

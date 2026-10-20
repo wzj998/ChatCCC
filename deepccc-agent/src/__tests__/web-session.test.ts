@@ -333,7 +333,7 @@ describe("DeepCCC web sessions", () => {
     const parsed = parseAttachmentPrompt(receivedPrompt);
     expect(parsed.text).toBe("请分析这些图片。");
     expect(parsed.attachments).toEqual([attachment]);
-    expect(receivedPrompt).toContain("不要假设模型原生支持图片");
+    expect(receivedPrompt).toContain("图片由内核转换为视觉输入");
 
     await runtime.deleteSession(session.sessionId);
     expect(await runtime.attachmentStore.get(session.sessionId, attachment.attachmentId)).toBeNull();

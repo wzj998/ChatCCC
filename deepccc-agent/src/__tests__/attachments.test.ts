@@ -42,7 +42,7 @@ describe("DeepCCC attachments", () => {
 
     const prompt = buildAttachmentPrompt("检查这个界面", [attachment]);
     expect(prompt).toContain(JSON.stringify(attachment.absolutePath));
-    expect(prompt).toContain("不要假设模型原生支持图片");
+    expect(prompt).toContain("图片由内核转换为视觉输入");
     expect(parseAttachmentPrompt(prompt)).toEqual({
       text: "检查这个界面",
       attachments: [attachment],

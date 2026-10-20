@@ -118,7 +118,7 @@ describe("ChatSession response transport", () => {
     const prepareStep = streamTextMock.mock.calls[0]?.[0].prepareStep as ((input: {
       messages: Array<Record<string, unknown>>;
       stepNumber: number;
-    }) => { messages: unknown[] });
+    }) => Promise<{ messages: unknown[] }>);
     expect(prepareStep).toBeTypeOf("function");
     const messages = [
       { role: "assistant", content: [{ type: "tool-call", toolCallId: "old", toolName: "read_file", input: {} }] },
@@ -126,7 +126,7 @@ describe("ChatSession response transport", () => {
       { role: "assistant", content: [{ type: "tool-call", toolCallId: "new", toolName: "read_file", input: {} }] },
       { role: "tool", content: [{ type: "tool-result", toolCallId: "new", toolName: "read_file", output: { type: "text", value: "latest" } }] },
     ];
-    const prepared = prepareStep({ messages, stepNumber: 2 });
+    const prepared = await prepareStep({ messages, stepNumber: 2 });
     expect(JSON.stringify(prepared.messages)).toContain("latest");
     expect(JSON.stringify(prepared.messages)).toContain("tool result shortened");
     expect(JSON.stringify(prepared.messages).length).toBeLessThan(JSON.stringify(messages).length);
@@ -1252,6 +1252,16 @@ describe("ChatSession context management", () => {
     expect(rawLogWriteLineMock).toHaveBeenNthCalledWith(1, JSON.stringify(textPart));
     expect(rawLogWriteLineMock).toHaveBeenNthCalledWith(2, JSON.stringify(toolPart));
     expect(rawLogCloseMock).toHaveBeenCalledWith({ keep: true });
+  });
+
+  it("omits OpenAI and Anthropic image encodings from the actual raw logger",async()=>{
+    const {ChatSession}=await import("../index.js");
+    config.rawStreamLogs={enabled:true,maxBytesPerTurn:4096,retentionDays:1,keepCompleted:true};
+    createRawStreamLogMock.mockResolvedValueOnce({filePath:"raw.gz",writeLine:rawLogWriteLineMock,close:rawLogCloseMock});
+    const request={type:"start-step",request:{body:JSON.stringify({messages:[{role:"user",content:[{type:"image_url",image_url:{url:"data:image/png;base64,AAAAFFFF"}},{type:"image",source:{type:"base64",media_type:"image/png",data:"BBBBGGGG"}}]}]})}};
+    streamTextMock.mockReturnValueOnce({fullStream:fullStream(request,{type:"text-delta",text:"ok"})});
+    await collect(new ChatSession({apiKey:"test"},{persist:false}).chat("hi"));
+    const logs=rawLogWriteLineMock.mock.calls.map(c=>c[0]).join("\n");expect(logs).not.toContain("AAAAFFFF");expect(logs).not.toContain("BBBBGGGG");expect(logs).toContain("image data redacted");
   });
 });
 

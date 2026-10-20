@@ -87,6 +87,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--model" && next !== undefined) {
       config.model = next;
       i++;
+    } else if (arg === "--vision-model" && next !== undefined) {
+      config.visionModel = next;
+      i++;
     } else if (arg === "--sub-model" && next !== undefined) {
       config.subModel = next;
       i++;
@@ -156,6 +159,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     `  --provider <name>    API protocol: openai or anthropic (current default ${appConfig.provider})`,
     `  --model <name>       Model name (current default ${appConfig.model})`,
     `  --sub-model <name>   Sub-model for lightweight steps (compaction/task; empty = follow main model)`,
+    "  --vision-model <name> Optional image analysis model; empty uses native images in the main model",
     `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.effort)`,
     `  --max-output-tokens <n>  Maximum output tokens (unset = Provider default)`,
     `  --base-url <url>     Provider API base URL (current default ${appConfig.baseURL})`,
@@ -166,7 +170,8 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --list-sessions      List saved sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
-    "  --image <path>      Attach a PNG/JPEG/WebP file (repeatable; copied to the session attachment store)",
+    "  --image <path>      Attach a PNG/JPEG/WebP/GIF file (repeatable; quote paths with spaces)",
+    "  Interactive: /image <path> queues one image for your next message; repeat for multiple images",
     "  --plain              Force plain streaming output (no progress block renderer)",
     "  --dangerously-bypass-permissions  Skip all permission prompts (aligns with chatccc's bypass mode)",
     "  --help, -h           Show help",
@@ -241,7 +246,9 @@ function writeJsonLine(event: JsonLine): void {
 }
 
 function streamJsonEvent(event: ChatEvent): void {
-  if (event.type === "status") {
+  if (event.type === "image_input") {
+    writeJsonLine({...event});
+  } else if (event.type === "status") {
     writeJsonLine({
       type: "status",
       phase: event.phase,
@@ -339,7 +346,7 @@ async function runStreamJson(args: ParsedArgs): Promise<number> {
 
   let attachments: AttachmentMeta[];
   try {
-    attachments = await importCliAttachments(resolvedSession.sessionId, args.images);
+    attachments = await importCliAttachments(resolvedSession.sessionId, args.images, cwd);
   } catch (err) {
     writeJsonLine({ type: "error", message: (err as Error).message });
     return 1;
@@ -474,7 +481,7 @@ async function runRepl(args: ParsedArgs): Promise<void> {
 
   let pendingAttachments: AttachmentMeta[];
   try {
-    pendingAttachments = await importCliAttachments(resolvedSession.sessionId, args.images);
+    pendingAttachments = await importCliAttachments(resolvedSession.sessionId, args.images, cwd);
   } catch (err) {
     console.error(`${C.yellow}${(err as Error).message}${C.reset}`);
     process.exit(1);
@@ -489,12 +496,29 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   // model step 边界 drain 后吸收到当前 turn（而非等待整轮结束）。
   let chatRunning = false;
   const pendingInjections: string[] = [];
+  let attachmentImport: Promise<void> = Promise.resolve();
 
   rl.prompt();
 
   rl.on("line", async (line: string) => {
     ctrlCState.reset();
     const input = line.trim();
+    if (/^\/image(?:\s|$)/.test(input)) {
+      if (chatRunning) { console.log("请等待当前回复结束后用 /image 添加图片。"); return; }
+      let path = input.slice(6).trim();
+      if ((path.startsWith('"') && path.endsWith('"')) || (path.startsWith("'") && path.endsWith("'"))) path = path.slice(1,-1);
+      if (!path) { console.log('用法：/image "C:\\path with spaces\\image.png"'); rl.prompt(); return; }
+      attachmentImport = attachmentImport.then(async()=>{
+        try {
+          if(pendingAttachments.length >= 10) throw new Error("每条消息最多 10 张图片");
+          const added = await importCliAttachments(resolvedSession.sessionId,[path],cwd);
+          pendingAttachments.push(...added);
+          console.log(`图片已加入下一条消息：${added.map(a=>a.originalName).join(", ")}。输入问题后回车发送。`);
+        } catch(error) { console.log(`添加图片失败：${(error as Error).message}`); }
+      });
+      await attachmentImport; rl.prompt(); return;
+    }
+    await attachmentImport;
     if (!input && !pendingAttachments.length) {
       rl.prompt();
       return;
@@ -565,11 +589,13 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       for await (const event of session.chat(chatInput, signal, () => pendingInjections.shift())) {
         if (renderer && view) {
           view = reduceProgress(view, event);
-          if (event.type === "text" || event.type === "compact" || event.type === "status" || event.type === "input_injected") {
+          if (event.type === "text" || event.type === "compact" || event.type === "status" || event.type === "input_injected" || event.type === "image_input") {
             renderer.render(view);
           } else {
             renderer.flush();
           }
+        } else if (event.type === "image_input") {
+          console.log(`[图片理解：${event.model}，${event.count} 张，${event.mode}]`);
         } else if (event.type === "status") {
           console.log(`${C.dim}[${event.phase === "compacting" ? "compacting context" : "generating reply"}]${C.reset}`);
         } else if (event.type === "text") {
@@ -650,10 +676,11 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   });
 }
 
-async function importCliAttachments(sessionId: string, paths: string[]): Promise<AttachmentMeta[]> {
+async function importCliAttachments(sessionId: string, paths: string[], cwd = process.cwd()): Promise<AttachmentMeta[]> {
+  if(paths.length > 10) throw new Error("每条消息最多 10 张图片");
   const store = new AttachmentStore();
   const attachments: AttachmentMeta[] = [];
-  for (const path of paths) attachments.push(await store.importFile(sessionId, path));
+  for (const path of paths) attachments.push(await store.importFile(sessionId, resolvePath(cwd,path)));
   return attachments;
 }
 

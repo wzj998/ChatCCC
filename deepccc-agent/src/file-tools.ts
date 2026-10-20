@@ -12,6 +12,7 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 import { isDangerousCommand, type PermissionGate, type PermissionRequest } from "./permissions.js";
 import { detectImageMime, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { killProcessTree } from "./proc-tree-kill.js";
+import type { ImageReference, ReadImageInput } from "./multimodal.js";
 import { PROJECT_NOISE_DIRECTORIES, resolveSearchScope, skipProjectEntry, type SearchScope } from "./workspace-policy.js";
 import { buildWorkspaceMap, rememberProjectFact, type ProjectFactInput, type WorkspaceMapResult } from "./workspace-map.js";
 import {
@@ -325,7 +326,7 @@ export interface PresentFileInput {
 export interface PresentFileOutput {
   path: string;
   name: string;
-  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   size: number;
   caption?: string;
 }
@@ -1796,6 +1797,7 @@ export async function applyPatchForTool(cwd: string, input: ApplyPatchInput): Pr
 }
 
 export interface BuiltinFileToolsOptions {
+  readImage?: (input: ReadImageInput) => Promise<ImageReference>;
   /** 权限门控：副作用工具（进程/脚本/命令执行与文件写操作）执行前会先经过 gate.check */
   permissionGate?: PermissionGate;
   /** Git commits created by DeepCCC receive this Co-authored-by trailer when enabled. */
@@ -2036,6 +2038,11 @@ export function createBuiltinFileTools(
       }),
       execute: (input) => readFileForTool(cwd, input),
     }),
+    ...(options.readImage ? {read_image:tool<ReadImageInput, ImageReference>({
+      description:"查看本地 PNG/JPEG/WebP/GIF 图片。图片作为视觉输入提供给模型，返回的是附件引用而非图片文字。可指定 question 聚焦细节；用于历史图片、报错截图、图表和工具生成的图片。",
+      inputSchema:jsonSchema<ReadImageInput>({type:"object",additionalProperties:false,properties:{path:{type:"string",description:"图片绝对路径或相对于工作目录的路径"},question:{type:"string",description:"希望观察的细节或问题"}},required:["path"]}),
+      execute:input=>options.readImage!(input),
+    })}:{}),
     list_dir: tool<ListDirInput, ListDirOutput>({
       description: "列出本地目录中的文件。",
       inputSchema: jsonSchema<ListDirInput>({

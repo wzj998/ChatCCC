@@ -15,6 +15,8 @@ export interface DeepCccConfig {
    * 留空（""）时跟随主模型，行为与旧版完全一致。
    */
   subModel: string;
+  /** Optional dedicated image analysis model, using the same provider credentials. */
+  visionModel: string;
   /** Reasoning effort（none/minimal/low/medium/high/xhigh/max），留空不传 reasoning_effort */
   effort: string;
   /** 主对话最大输出 token；未配置时不传，使用 Provider 默认值。 */
@@ -58,6 +60,7 @@ export const DEFAULT_CONFIG: DeepCccConfig = {
   baseURL: "https://api.deepseek.com/v1",
   model: "deepseek-v4-pro",
   subModel: "",
+  visionModel: "",
   effort: "",
   streaming: true,
   contextWindow: 1_048_576,
@@ -134,6 +137,7 @@ export function loadConfig(): DeepCccConfig {
     baseURL: env("DEEPCCC_BASE_URL") ?? env("DEEPSEEK_BASE_URL") ?? file.baseURL ?? DEFAULT_CONFIG.baseURL,
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,
     subModel: env("DEEPCCC_SUB_MODEL") ?? file.subModel ?? DEFAULT_CONFIG.subModel,
+    visionModel: env("DEEPCCC_VISION_MODEL") ?? file.visionModel ?? DEFAULT_CONFIG.visionModel,
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
     maxOutputTokens: optionalPositiveInteger(env("DEEPCCC_MAX_OUTPUT_TOKENS"))
       ?? optionalPositiveInteger(file.maxOutputTokens),
@@ -165,7 +169,7 @@ export function ensureConfigDir(): void {
 
 export type DeepCccConfigPatch = Partial<Pick<
   DeepCccConfig,
-  "provider" | "apiKey" | "baseURL" | "model" | "subModel" | "effort" | "maxOutputTokens" | "streaming" | "contextWindow"
+  "provider" | "apiKey" | "baseURL" | "model" | "subModel" | "visionModel" | "effort" | "maxOutputTokens" | "streaming" | "contextWindow"
 >> & { web?: Partial<DeepCccConfig["web"]> };
 
 /** Persist only user-editable Web fields while preserving advanced configuration. */
@@ -180,6 +184,7 @@ export function saveConfigPatch(patch: DeepCccConfigPatch): DeepCccConfig {
   if (patch.provider !== undefined) next.provider = normalizeDeepCccProvider(patch.provider);
   if (patch.baseURL !== undefined && !patch.baseURL.trim()) throw new Error("baseURL must not be empty");
   if (patch.model !== undefined && !patch.model.trim()) throw new Error("model must not be empty");
+  if (patch.visionModel !== undefined && typeof patch.visionModel !== "string") throw new Error("visionModel must be a string");
   if (patch.effort !== undefined && !["", "none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(patch.effort)) {
     throw new Error(`Unsupported effort: ${patch.effort}`);
   }
