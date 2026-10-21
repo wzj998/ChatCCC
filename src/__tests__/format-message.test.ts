@@ -13,6 +13,122 @@ vi.mock("../feishu-platform.ts", () => ({
 
 import { formatMessageContent, formatPostContent, formatMergeForward } from "../format-message.ts";
 
+describe("mixed post attachments", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetTenantAccessToken.mockResolvedValue("mock_token");
+    mockGetOrDownloadImage.mockResolvedValue("C:\\tmp\\picture.png");
+  });
+
+  it("preserves video, file, caption and image order without downloading video covers", async () => {
+    const result = await formatMessageContent({
+      message_id: "om_post",
+      message_type: "post",
+      content: JSON.stringify({ content: [
+        [{ tag: "media", file_key: "video_key", image_key: "cover_key", file_name: "crash.mp4" }],
+        [{ tag: "text", text: "caption" }],
+        [{ tag: "file", file_key: "document_key", file_name: "notes.pdf" }],
+        [{ tag: "img", image_key: "picture_key" }],
+        [{ tag: "a", href: "https://example.com", text: "source" }],
+      ] }),
+    });
+    expect(result).toBe([
+      "[视频] message_id=om_post file_key=video_key file_name=crash.mp4 cover_image_key=cover_key",
+      "caption",
+      "[文件] message_id=om_post file_key=document_key file_name=notes.pdf",
+      "[图片] C:\\tmp\\picture.png",
+      "[source](https://example.com)",
+    ].join("\n"));
+    expect(mockGetOrDownloadImage).toHaveBeenCalledTimes(1);
+    expect(mockGetOrDownloadImage).toHaveBeenCalledWith("mock_token", "om_post", "picture_key");
+  });
+
+  it("handles localized video posts without a cover or filename", async () => {
+    const result = await formatMessageContent({
+      message_id: "om_localized", message_type: "post",
+      content: JSON.stringify({ zh_cn: { content: [[{ tag: "media", file_key: "video_key" }]] } }),
+    });
+    expect(result).toBe("[视频] message_id=om_localized file_key=video_key file_name=video.mp4");
+    expect(mockGetOrDownloadImage).not.toHaveBeenCalled();
+  });
+
+  it("retains typed attachment metadata when message_id is unavailable", () => {
+    const result = formatPostContent({ content: [[
+      { tag: "media", file_key: "video_key" },
+      { tag: "file", file_key: "document_key", file_name: "notes.pdf" },
+    ]] });
+    expect(result).toContain("[视频] file_key=video_key file_name=video.mp4");
+    expect(result).toContain("[文件] file_key=document_key file_name=notes.pdf");
+    expect(result).toContain("缺少 message_id");
+    expect(result).not.toContain("undefined");
+  });
+
+  it("reports incomplete video metadata instead of treating its cover as an image", async () => {
+    const result = await formatMessageContent({
+      message_id: "om_post", message_type: "post",
+      content: JSON.stringify({ content: [[{ tag: "media", image_key: "cover_key", file_key: 123 }]] }),
+    });
+    expect(result).toContain("[视频]");
+    expect(result).toContain("缺少 file_key");
+    expect(result).toContain("cover_image_key=cover_key");
+    expect(result).not.toContain("[图片");
+    expect(mockGetOrDownloadImage).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy img file_key support", async () => {
+    const result = await formatMessageContent({
+      message_id: "om_post", message_type: "post",
+      content: JSON.stringify({ content: [[{ tag: "img", file_key: "picture_key" }]] }),
+    });
+    expect(result).toBe("[图片] C:\\tmp\\picture.png");
+  });
+
+  it("preserves unknown attachment metadata without downloading it as an image", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await formatMessageContent({
+        message_id: "om_post", message_type: "post",
+        content: JSON.stringify({ content: [[{
+          tag: "future_attachment", file_key: "resource_key", image_key: "cover_key", text: "caption",
+        }]] }),
+      });
+      expect(result).toContain("caption\n[未知附件]");
+      expect(result).toContain('"file_key":"resource_key"');
+      expect(result).not.toContain("[图片");
+      expect(mockGetOrDownloadImage).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(["media", "file"])("uses the same typed metadata for standalone %s messages", async (type) => {
+    const content = { file_key: "resource_key", file_name: "name with spaces.mp4" };
+    const standalone = await formatMessageContent({
+      message_id: "om_post", message_type: type, content: JSON.stringify(content),
+    });
+    const post = await formatMessageContent({
+      message_id: "om_post", message_type: "post",
+      content: JSON.stringify({ content: [[{ tag: type, ...content }]] }),
+    });
+    expect(post).toBe(standalone);
+    expect(post).toContain("file_name=name with spaces.mp4");
+    const incomplete = await formatMessageContent({ message_type: type, content: "{}" });
+    expect(incomplete).toContain("缺少 message_id、file_key");
+  });
+
+  it("uses the child message id for attachments in merged forwards", async () => {
+    mockGetMergeForwardMessages.mockResolvedValue([{
+      message_id: "om_child", upper_message_id: "om_parent", msg_type: "post",
+      body: { content: JSON.stringify({ content: [[{ tag: "media", file_key: "video_key" }]] }) },
+      sender: { id: "ou_sender" },
+    }]);
+    const result = await formatMergeForward("om_parent", {});
+    expect(result).toContain("[视频] message_id=om_child file_key=video_key");
+    expect(result).not.toContain("message_id=om_parent");
+  });
+});
+
 describe("formatMessageContent mixed post images", () => {
   beforeEach(() => {
     vi.clearAllMocks();

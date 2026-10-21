@@ -40,7 +40,7 @@ export async function formatMessageContent(message: {
   }
 
   if (message.message_type === "post") {
-    return formatPostContentWithImages(content, message.message_id);
+    return formatPostContentWithAttachments(content, message.message_id);
   }
 
   if (message.message_type === "image") {
@@ -60,19 +60,11 @@ export async function formatMessageContent(message: {
   }
 
   if (message.message_type === "media") {
-    const fileKey = content.file_key as string | undefined;
-    const fileName = (content.file_name as string) || "video.mp4";
-    const messageId = message.message_id;
-    if (!fileKey || !messageId) return contentStr;
-    return `[视频] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
+    return formatFileAttachment("media", content, message.message_id);
   }
 
   if (message.message_type === "file") {
-    const fileKey = content.file_key as string | undefined;
-    const fileName = (content.file_name as string) || "download.bin";
-    const messageId = message.message_id;
-    if (!fileKey || !messageId) return contentStr;
-    return `[文件] message_id=${messageId} file_key=${fileKey} file_name=${fileName}`;
+    return formatFileAttachment("file", content, message.message_id);
   }
 
   if (message.message_type === "interactive") {
@@ -121,8 +113,35 @@ function getPostParagraphs(content: Record<string, unknown>): unknown[][] {
   return [];
 }
 
-function formatPostTextElement(el: Record<string, unknown>): string {
+function attachmentString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Preserve downloadable resource metadata; a media image_key is only its cover. */
+function formatFileAttachment(
+  type: "media" | "file",
+  content: Record<string, unknown>,
+  messageId?: string,
+): string {
+  const fileKey = attachmentString(content.file_key);
+  const fileName = attachmentString(content.file_name) || (type === "media" ? "video.mp4" : "download.bin");
+  const coverKey = type === "media" ? attachmentString(content.image_key) : "";
+  const parts = [type === "media" ? "[视频]" : "[文件]"];
+  if (messageId) parts.push(`message_id=${messageId}`);
+  if (fileKey) parts.push(`file_key=${fileKey}`);
+  parts.push(`file_name=${fileName}`);
+  if (coverKey) parts.push(`cover_image_key=${coverKey}`);
+  const missing = [!messageId ? "message_id" : "", !fileKey ? "file_key" : ""].filter(Boolean);
+  if (missing.length) parts.push(`（附件元数据不完整：缺少 ${missing.join("、")}，无法下载原附件）`);
+  return parts.join(" ");
+}
+
+function formatPostTextElement(el: Record<string, unknown>, messageId?: string): string {
   const t = typeof el.text === "string" ? el.text : "";
+
+  if (el.tag === "media" || el.tag === "file") {
+    return formatFileAttachment(el.tag, el, messageId);
+  }
 
   // 超链接元素：必须保留 URL，否则 AI 拿不到链接（飞书 post 里链接是独立元素，
   // 不与相邻 text 合并）。文本与 URL 相同时只输出 URL，避免 "url (url)" 冗余。
@@ -143,7 +162,7 @@ function formatPostTextElement(el: Record<string, unknown>): string {
   }
 
   // 图片元素由 getPostImageKey 单独处理（可能带 image_key/file_key），此处不重复输出。
-  if (el.tag === "img" || getPostImageKey(el)) return "";
+  if (el.tag === "img") return "";
 
   // 兜底：飞书可能新增富文本元素类型，而历史上曾因入口重写而整类元素被静默丢弃
   // （见 tag="a" 丢失链接）。未知 tag 不再静默丢弃，尽量透传可读内容并留 warn 日志，
@@ -154,15 +173,19 @@ function formatPostTextElement(el: Record<string, unknown>): string {
   const fallback = t && href && t !== href
     ? `[${t}](${href})`
     : t || href || (userName ? `@${userName}` : "");
+  // Unknown attachment types must not be mistaken for images or silently lost.
+  const attachment = el.file_key || el.image_key ? `[未知附件] ${JSON.stringify(el)}` : "";
+  const readable = [fallback, attachment].filter(Boolean).join("\n");
 
   console.warn(
     `[${ts()}] [POST] 未知富文本元素 tag=${tag}，` +
-      (fallback ? `已降级透传：${fallback}` : "无可透传内容，已丢弃（请补充分支）"),
+      (readable ? `已降级透传：${readable}` : "无可透传内容，已丢弃（请补充分支）"),
   );
-  return fallback;
+  return readable;
 }
 
 function getPostImageKey(el: Record<string, unknown>): string | undefined {
+  if (el.tag !== "img") return undefined;
   const imageKey = el.image_key;
   if (typeof imageKey === "string" && imageKey.trim()) return imageKey;
 
@@ -174,7 +197,7 @@ function getPostImageKey(el: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-async function formatPostContentWithImages(
+async function formatPostContentWithAttachments(
   content: Record<string, unknown>,
   messageId?: string,
 ): Promise<string> {
@@ -188,7 +211,7 @@ async function formatPostContentWithImages(
       const el = elem as Record<string, unknown>;
       if (!el || typeof el !== "object") continue;
 
-      const text = formatPostTextElement(el);
+      const text = formatPostTextElement(el, messageId);
       if (text) parts.push(text);
 
       const imageKey = getPostImageKey(el);
