@@ -210,6 +210,14 @@ npm run dev
 
 如果你同时使用公司飞书和个人飞书，建议把个人账号放在另一个客户端里：安卓可用系统「应用双开」，iOS 可用 Lark。
 
+#### 最终回复的表格汇总
+
+飞书中的 Agent 最终回复包含 Markdown 表格时，ChatCCC 会保留完整原回复，并额外合并发送一张原生「表格汇总」卡片。适用于 Claude、Codex、Cursor、CCC 和 DSH；生成过程、工具输出和代码块中的示例表格不会单独发卡，也不会调用模型重新概括数据。数字、单位、链接和空单元格按原内容保留。
+
+默认开启；如需关闭，在 `~/.chatccc/config.json` 中设置 `platforms.feishu.tableSummary: false` 并重新加载配置或重启。微信不发送这类补充卡片。
+
+受[飞书表格组件限制](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/table)，超过每卡 5 个表格、每表 50 列或消息大小预算时，会按行/列分段并标注编号，全部数据保留。单个单元格或表头过长时，改用标明位置的完整文本续页；客户端可能折叠较长单元格，可点击查看。补充卡片发送失败会记录日志，原回复仍可使用；为避免重连或结果不确定时重复发送，不自动重发补充卡片。若进程恰好在原回复成功后退出，补充卡片可能未发完。
+
 #### 微信 iLink（可选）
 
 微信模式不需要创建飞书应用。保持 `config.json` 里的 `platforms.ilink.enabled` 为 `true`（默认开启），启动 `chatccc` 后，终端会打印微信扫码登录二维码。

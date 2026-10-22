@@ -186,6 +186,8 @@ export interface FeishuConfig {
 
 export interface PlatformConfig {
   enabled: boolean;
+  /** 飞书最终回复额外发送完整表格汇总；缺省开启。 */
+  tableSummary?: boolean;
   reuseTokenOnStart?: boolean;
   /** 飞书平台类型：feishu（国内飞书）或 lark（国际版）；缺省按 feishu */
   platformType?: "feishu" | "lark";
@@ -741,6 +743,7 @@ function loadConfig(): AppConfig {
             ? String(((parsed.platforms as unknown as Record<string, unknown>).feishu as Record<string, unknown>).platformType ?? "feishu")
             : "feishu",
         ),
+        tableSummary: parsed.platforms?.feishu?.tableSummary !== false,
       },
       ilink: {
         enabled: typeof (parsed.platforms as unknown as Record<string, unknown> | undefined)?.ilink === "object"

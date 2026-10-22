@@ -4,7 +4,7 @@
     "appSecret": ""
   },
   "platforms": {
-    "feishu": { "enabled": true, "platformType": "feishu" },
+    "feishu": { "enabled": true, "platformType": "feishu", "tableSummary": true },
     "ilink": { "enabled": true, "reuseTokenOnStart": true }
   },
   "webUi": {

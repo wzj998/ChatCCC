@@ -30,7 +30,7 @@ export interface PlatformAdapter {
   ): Promise<boolean>;
 
   /** 发送原始卡片 JSON */
-  sendRawCard(chatId: string, cardJson: string): Promise<boolean>;
+  sendRawCard(chatId: string, cardJson: string, options?: { privacyApplied?: boolean }): Promise<boolean>;
 
   /** 创建群聊，返回新群 ID */
   createGroup(name: string, userIds: string[]): Promise<string>;

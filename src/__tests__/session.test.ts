@@ -1950,6 +1950,30 @@ describe("unified display loop terminal card update", () => {
     vi.useRealTimers();
   });
 
+  it.each(["claude", "codex", "ccc", "cursor", "dsh"])("adds table summaries only after the %s turn ends and only once", async tool => {
+    const platform = mockPlatform("feishu");
+    platform.kind = "feishu";
+    setSessionPlatform(platform);
+    const sid = `sid-tables-${tool}`;
+    const chat = `chat-tables-${tool}`;
+    bindChatToSession(sid, chat);
+    recordLastActiveChat(sid, chat);
+    sessionInfoMap.set(chat, { sessionId: sid, turnCount: 1, lastContextTokens: 0, startTime: 0, tool });
+    displayCards.set(chat, { cardId: "table-progress", sequence: 1, cardBusy: false, cardCreatedAt: Date.now(), lastSentContent: "", streamErrorNotified: false, sessionId: sid, turnCount: 1, dotCount: 0 });
+    const table = "|名称|值|\n|---|---|\n|A|001|";
+    mockStreamStates.set(sid, { accumulatedContent: "过程\n" + table, finalReply: table, status: "running", turnCount: 1 });
+    startUnifiedDisplayLoop();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(platform.sendRawCard).not.toHaveBeenCalled();
+    mockStreamStates.get(sid)!.status = "done";
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(platform.sendRawCard).toHaveBeenCalledTimes(1);
+    const card = JSON.parse(vi.mocked(platform.sendRawCard).mock.calls[0][1]);
+    expect(card.body.elements.filter((e: any) => e.tag === "table")).toHaveLength(1);
+    expect(platform.sendText).toHaveBeenCalledTimes(1);
+    expect(mockStreamStates.get(sid)?.finalReplySentTurn).toBe(1);
+  });
+
   it("keeps a rotated injection card limited to post-injection output at completion", async () => {
     const platform = mockPlatform("feishu");
     platform.kind = "feishu";
