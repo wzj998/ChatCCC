@@ -33,6 +33,24 @@ describe("final reply table extraction", () => {
 });
 
 describe("Feishu table summary cards", () => {
+  it("keeps a wrapped mobile header and long labels in one unfrozen table without changing row associations", () => {
+    // Synthetic values: regression for the phone screenshot's one-line first
+    // header, wrapped second header, multi-line labels and bold totals.
+    const rows = [
+      ["策略甲", "1,234.50"],
+      ["较长的策略名称需要换行", "2,345.60"],
+      ["策略丙（模拟账户）", "3,456.70"],
+      ["**三项合计**", "**7,036.80**"],
+    ];
+    const cards = buildTableSummaryCards("| 子策略 | 净资产（USDT） |\n| :--- | ---: |\n" + rows.map(r => `| ${r.join(" | ")} |`).join("\n"));
+    expect(cards).toHaveLength(1);
+    const [table] = tablesIn(cards);
+    expect(table.freeze_first_column).toBe(false);
+    expect(table.columns.map((c: any) => c.display_name)).toEqual(["子策略", "净资产（USDT）"]);
+    expect(table.columns.map((c: any) => c.horizontal_align)).toEqual(["left", "right"]);
+    expect(table.row_height).toBe("auto");
+    expect(table.rows.map((r: any) => [r.c0, r.c1])).toEqual(rows);
+  });
   it("merges tables into one native card without changing numbers", () => {
     const cards = buildTableSummaryCards(sample + "\n\n" + sample);
     expect(cards).toHaveLength(1);
@@ -60,6 +78,7 @@ describe("Feishu table summary cards", () => {
     const cards = buildTableSummaryCards(headers.join(" | ") + "\n" + headers.map(() => "---").join(" | ") + "\n" + headers.map((_, i) => `值${i}`).join(" | "));
     const tables = tablesIn(cards);
     expect(tables.every(t => t.columns.length <= 50)).toBe(true);
+    expect(tables.every(t => t.freeze_first_column === false)).toBe(true);
     expect(tables.flatMap(t => Object.values(t.rows[0]))).toEqual(headers.map((_, i) => `值${i}`));
   });
 
@@ -67,6 +86,7 @@ describe("Feishu table summary cards", () => {
     const rows = Array.from({ length: 240 }, (_, i) => [`行${i}`, "中文🙂".repeat(80)]);
     const cards = buildTableSummaryCards("a | b\n--- | ---\n" + rows.map(r => r.join(" | ")).join("\n"));
     expect(cards.length).toBeGreaterThan(1);
+    expect(tablesIn(cards).every(t => t.freeze_first_column === false)).toBe(true);
     expect(tablesIn(cards).flatMap(t => t.rows.map((r: any) => [r.c0, r.c1]))).toEqual(rows);
     for (const card of cards) expect(Buffer.byteLength(JSON.stringify({ content: card }))).toBeLessThanOrEqual(TABLE_CARD_BYTE_LIMIT);
   });

@@ -112,7 +112,9 @@ function* tableParts(table: ReplyTable, number: number, r0 = 0, r1 = table.rows.
   }
   const label = `表格 ${number}${table.title ? ` · ${table.title.slice(0, 160)}` : ""}（行 ${r1 ? r0 + 1 : 0}–${r1}/${table.rows.length}，列 ${c0 + 1}–${c1}/${table.headers.length}）`;
   const elements = [labelElement(label), {
-    tag: "table", page_size: 10, row_height: "auto", row_max_height: "200px", freeze_first_column: true,
+    // Keep every column in the same scrolling region. Frozen first columns can
+    // drift vertically on mobile when a neighbouring header wraps to two lines.
+    tag: "table", page_size: 10, row_height: "auto", row_max_height: "200px", freeze_first_column: false,
     header_style: { bold: true, background_style: "grey", lines: 2 },
     columns: table.headers.slice(c0, c1).map((h, i) => ({ name: `c${i + c0}`, display_name: h, data_type: "markdown", width: "auto", vertical_align: "top", horizontal_align: table.align[i + c0] })),
     rows: table.rows.slice(r0, r1).map(row => Object.fromEntries(row.slice(c0, c1).map((v, i) => [`c${i + c0}`, v]))),
