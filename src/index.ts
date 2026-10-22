@@ -146,8 +146,8 @@ function createFeishuAdapter(): PlatformAdapter {
     async sendCard(chatId, title, content, template) {
       return sendCardReply(await auth(), chatId, title, content, template);
     },
-    async sendRawCard(chatId, cardJson) {
-      return sendRawCard(await auth(), chatId, cardJson);
+    async sendRawCard(chatId, cardJson, options) {
+      return sendRawCard(await auth(), chatId, cardJson, options);
     },
 
     // ---- 群聊管理 ----

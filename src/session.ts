@@ -56,6 +56,8 @@ import {
   issueAgentCapabilityGrant,
 } from "./agent-capability-grants.ts";
 import type { PlatformAdapter } from "./platform-adapter.ts";
+import { createFinalReplyDelivery } from "./final-reply-delivery.ts";
+import { applyPrivacy } from "./privacy.ts";
 import { hasResponseStalled, observeResponseProgress } from "./response-stall.ts";
 import {
   classifyTerminalError,
@@ -118,17 +120,16 @@ import {
   type QueuedMessage,
 } from "./session-chat-binding.ts";
 
-async function sendFinalReplyTextOnce(
-  platform: PlatformAdapter,
-  chatId: string,
-  sessionId: string,
-  turnCount: number,
-  text: string,
-): Promise<boolean> {
-  const sent = await platform.sendText(chatId, text).then((ok) => ok !== false).catch(() => false);
-  if (sent) await markFinalReplySent(sessionId, turnCount);
-  return sent;
-}
+const sendFinalReplyTextOnce = createFinalReplyDelivery({
+  isSent: async (sessionId, turnCount) => {
+    const state = await readStreamState(sessionId);
+    return state?.turnCount === turnCount && isFinalReplySentForTurn(state);
+  },
+  markSent: (sessionId, turnCount) => markFinalReplySent(sessionId, turnCount),
+  enabled: () => config.platforms.feishu.tableSummary !== false,
+  sanitize: applyPrivacy,
+  warn: message => console.warn(`[${ts()}] [FINAL-TABLE] ${message}`),
+});
 
 async function createVisibleProgressCard(
   platform: PlatformAdapter,

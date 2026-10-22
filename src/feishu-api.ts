@@ -1526,9 +1526,14 @@ export async function sendCardReply(
 export async function sendRawCard(
   token: string,
   chatId: string,
-  cardJson: string
+  cardJson: string,
+  options?: { privacyApplied?: boolean },
 ): Promise<boolean> {
-  const safeJson = applyPrivacy(cardJson);
+  // Table summaries sanitize before JSON encoding and size splitting. Do not
+  // apply replacement rules twice (or inject unescaped quotes into their JSON).
+  const safeJson = options?.privacyApplied ? cardJson : applyPrivacy(cardJson);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
   try {
     const resp = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=chat_id`, {
       method: "POST",
@@ -1537,6 +1542,7 @@ export async function sendRawCard(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content: safeJson }),
+      signal: controller.signal,
     });
     const data = (await resp.json().catch(() => ({}))) as { code: number; msg?: string; data?: { message_id?: string } };
     if (data.code !== 0) {
@@ -1548,6 +1554,8 @@ export async function sendRawCard(
   } catch (err) {
     console.error(`[${ts()}] [SEND] raw_card FAIL: chatId=${chatId} ${(err as Error).message}`);
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

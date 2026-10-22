@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("config.sample.json", () => {
+  it("enables complete Feishu final table summaries by default", () => {
+    const sample = JSON.parse(readFileSync(join(process.cwd(), "config.sample.json"), "utf8"));
+    expect(sample.platforms.feishu.tableSummary).toBe(true);
+  });
   it("enables Feishu and WeChat iLink by default", () => {
     const configSamplePath = join(process.cwd(), "config.sample.json");
     const sample = JSON.parse(readFileSync(configSamplePath, "utf8")) as {

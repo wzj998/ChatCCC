@@ -73,7 +73,7 @@ const baseAppConfig: AppConfig = {
     onDemandMonthlyBudget: 1000,
   },
   codex: { enabled: true, defaultAgent: false, path: "/initial/codex", model: "initial-codex-model", alternativeModel: "initial-codex-alt-model", effort: "initial-codex-effort", fastMode: false },
-  ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", subModel: "", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", maxOutputTokens: null, provider: "", gitCoAuthor: null, compactionTimeoutMs: 300000, contextWindow: 1048576 },
+  ccc: { enabled: true, defaultAgent: false, DEEPSEEK_API_KEY: "initial-ccc-key", DEEPSEEK_BASE_URL: "https://initial.deepseek.test/v1", model: "initial-ccc-model", subModel: "", visionModel: "", alternativeModel: "initial-ccc-alt-model", effort: "initial-ccc-effort", maxOutputTokens: null, provider: "", gitCoAuthor: null, compactionTimeoutMs: 300000, contextWindow: 1048576 },
   dsh: { enabled: false, defaultAgent: false, apiKey: "", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", subModel: "", alternativeModel: "", provider: "deepseek-official", maxTokens: 49152 },
 };
 
@@ -100,6 +100,13 @@ describe("applyLoadedConfig — 刷新 export let 常量", () => {
     // ES module live binding：测试模块顶层 import 的 APP_ID 会自动看到新值
     expect(APP_ID).toBe("NEW_APP_ID");
     expect(APP_SECRET).toBe("NEW_APP_SECRET");
+  });
+
+  it("preserves the Feishu table summary opt-out on config reload", () => {
+    const next = structuredClone(baseAppConfig);
+    next.platforms.feishu.tableSummary = false;
+    applyLoadedConfig(next);
+    expect(config.platforms.feishu.tableSummary).toBe(false);
   });
 
   it("更新 Claude 配置（model / subagentModel / effort / maxTurn / apiKey / baseUrl）", () => {
