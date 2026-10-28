@@ -12,7 +12,7 @@ export interface CompletionRequest {
 }
 export type CompletionResult = {metrics:{durationMs:number;modelCalls:number}} & (
   {status:'success';content:string;reasoning:string} |
-  {status:'timed_out'|'cancelled'|'invalid_output'|'error';diagnostic:{code:string;httpStatus?:number}});
+  {status:'timed_out'|'cancelled'|'invalid_output'|'context_limit'|'error';diagnostic:{code:string;httpStatus?:number}});
 const protectedKeys=new Set(['messages','model','stream','tools','tool_choice','response_format','temperature','max_tokens','max_completion_tokens']);
 function positive(n:number):number{if(!Number.isSafeInteger(n)||n<1)throw new Error('Positive integer budget required');return n;}
 function raceAbort<T>(work:PromiseLike<T>,signal:AbortSignal):Promise<T>{
@@ -28,11 +28,14 @@ export class CompletionSession {
     const started=performance.now(),timeout=positive(request.timeoutMs);
     if(timeout>2147483647)throw new Error('Deadline exceeds timer capacity');
     const messages=JSON.parse(JSON.stringify(request.messages)) as ModelMessage[];
-    if(JSON.stringify(messages).length>positive(request.maxContextChars??1_000_000))throw new Error('Context budget exceeded');
+    const contextLimit=positive(request.maxContextChars??1_000_000);
     const extensions=JSON.parse(JSON.stringify(request.extensions??{}));
     if(Object.keys(extensions).some(key=>protectedKeys.has(key))||JSON.stringify(extensions).length>8192)throw new Error('Invalid request extension');
     const responseLimit=positive(request.maxResponseChars??1_000_000);
     if(request.maxOutputTokens!==undefined)positive(request.maxOutputTokens);
+    // Size is a runtime outcome, not invalid configuration. Never echo input
+    // or contact the provider when the caller-owned context exceeds its budget.
+    if(JSON.stringify(messages).length>contextLimit)return {status:'context_limit',diagnostic:{code:'context_budget_exceeded'},metrics:{durationMs:performance.now()-started,modelCalls:0}};
     const controller=new AbortController();let expired=false;
     const cancel=()=>controller.abort();externalSignal?.addEventListener('abort',cancel,{once:true});
     if(externalSignal?.aborted)cancel();

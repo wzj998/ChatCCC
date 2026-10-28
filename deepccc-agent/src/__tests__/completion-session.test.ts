@@ -43,6 +43,20 @@ it('rejects extension overrides before sending requests',async()=>{
   const session=new CompletionSession({baseURL:'https://example.invalid/v1',apiKey:'test-key',model:'example'});
   await expect(session.complete({messages:[],timeoutMs:100,extensions:{messages:[]}})).rejects.toThrow(/extension/i);
 });
+it('returns a safe context budget diagnostic before any provider request',async()=>{
+  const fetchSpy=vi.spyOn(globalThis,'fetch');
+  try{
+    const session=new CompletionSession({baseURL:'https://example.invalid/v1',apiKey:'test-key',model:'example'});
+    const result=await session.complete({messages:[{role:'user',content:'sensitive-input-marker'}],timeoutMs:100,maxContextChars:8});
+    expect(result).toMatchObject({status:'context_limit',diagnostic:{code:'context_budget_exceeded'},metrics:{modelCalls:0}});
+    expect(JSON.stringify(result)).not.toContain('sensitive-input-marker');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  }finally{fetchSpy.mockRestore();}
+});
+it('still throws for invalid configuration budgets rather than classifying them as context overflow',async()=>{
+  const session=new CompletionSession({baseURL:'https://example.invalid/v1',apiKey:'test-key',model:'example'});
+  await expect(session.complete({messages:[],timeoutMs:100,maxContextChars:0})).rejects.toThrow(/budget/i);
+});
 it('bounds a stalled response',async()=>{
   const server=createServer(()=>{});servers.push(server);server.listen(0,'127.0.0.1');await once(server,'listening');
   const session=new CompletionSession({baseURL:`http://127.0.0.1:${(server.address() as {port:number}).port}/v1`,apiKey:'test-key',model:'example'});
