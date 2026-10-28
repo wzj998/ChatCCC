@@ -26,8 +26,12 @@ performed here. Completion is accepted only after a normal stop, never a length
 limit or interrupted stream. Text mode preserves plain-text output. Parallel
 calls do not share mutable history. `timeoutMs` covers stream consumption;
 optional cancellation is the second argument. Context/response character limits
-default to one million each. Oversize input and invalid options throw before
-network activity; runtime failures return fixed diagnostics without raw errors.
+default to one million each. Since 0.2.28, oversized input returns
+`status: 'context_limit'`, `diagnostic.code: 'context_budget_exceeded'` and zero
+model calls before network activity. It does not return the input or partial
+content. Invalid configuration budgets still throw. Other runtime failures return
+fixed diagnostics without raw errors. Character limits are not token estimates;
+callers must assemble bounded evidence rather than merely increase the limit.
 
 JSON responses are collected as text without constructing partial objects for
 each streamed fragment. This avoids unnecessary parsing and allocation for large
