@@ -1,3 +1,13 @@
+/** ChatCCC's streamed-response watchdog; not a provider or tool-execution timeout. */
+export function getDefaultResponseStallTimeoutMs(tool: string): number {
+  return (tool === "ccc" ? 10 : 3) * 60 * 1000;
+}
+
+export function formatResponseStallRecoveryExhaustedNotice(tool: string): string {
+  const minutes = getDefaultResponseStallTimeoutMs(tool) / 60_000;
+  return `⚠️ 自动续跑仍连续 ${minutes} 分钟没有生成新回复，本次不再自动继续。`;
+}
+
 /** A snapshot of visible output progress while the Agent is starting or replying. */
 export interface ResponseProgressObservation {
   totalChars: number;

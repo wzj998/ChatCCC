@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatResponseStallRecoveryExhaustedNotice,
+  getDefaultResponseStallTimeoutMs,
   hasResponseStalled,
   observeResponseProgress,
 } from "../response-stall.ts";
 
 describe("response stall detection", () => {
+  it("uses ten minutes only for CCC and leaves other agents at three minutes", () => {
+    expect(getDefaultResponseStallTimeoutMs("ccc")).toBe(600_000);
+    for (const tool of ["claude", "codex", "cursor", "dsh", "unknown"]) {
+      expect(getDefaultResponseStallTimeoutMs(tool)).toBe(180_000);
+      expect(formatResponseStallRecoveryExhaustedNotice(tool)).toContain("3 分钟");
+    }
+    expect(formatResponseStallRecoveryExhaustedNotice("ccc")).toContain("10 分钟");
+  });
+
   it("starts tracking while responding even when the total character count is zero", () => {
     const observation = observeResponseProgress(undefined, true, 0, 1_000);
 

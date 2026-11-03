@@ -1082,7 +1082,7 @@ describe("runAgentSession response stall watchdog", () => {
 
   it("auto-ends adapters with stall detection after three minutes of unchanged reply characters, including zero", async () => {
     vi.setSystemTime(0);
-    _setResponseStallTimeoutForTest(180_000);
+    _resetResponseStallTimeoutForTest();
     _setResponseStallCheckIntervalForTest(1_000);
     _setProcessAliveForTest(() => true);
 
@@ -1151,6 +1151,64 @@ describe("runAgentSession response stall watchdog", () => {
       finalReply: "",
       autoEndedAt: expect.any(Number),
     });
+  });
+
+  it.each([
+    ["ccc", 600_000, false],
+    ["ccc", 600_000, true],
+    ["claude", 180_000, false],
+    ["codex", 180_000, false],
+    ["cursor", 180_000, false],
+    ["dsh", 180_000, false],
+  ] as const)("uses the isolated default stall deadline for %s (%i ms, recovery=%s)", async (tool, timeoutMs, autoRecovery) => {
+    vi.setSystemTime(0);
+    _resetResponseStallTimeoutForTest();
+    _setResponseStallCheckIntervalForTest(1_000);
+    _setProcessAliveForTest(() => true);
+    const platform = mockPlatform("feishu");
+    setSessionPlatform(platform);
+    const sessionId = `sid-default-stall-${tool}`;
+    const chatId = `chat-default-stall-${tool}`;
+    bindChatToSession(sessionId, chatId);
+    recordLastActiveChat(sessionId, chatId);
+    const closeSession = vi.fn();
+    const adapter: ToolAdapter = {
+      displayName: "Test Agent",
+      sessionDescPrefix: "Test Session:",
+      createSession: async () => ({ sessionId }),
+      getSessionInfo: async sid => ({ sessionId: sid, cwd: "F:/repo" }),
+      closeSession: async () => {},
+      prompt: async function* (_sid, _text, _cwd, signal, options) {
+        options?.onSessionCreated?.(closeSession);
+        yield { type: "assistant", blocks: [{ type: "agent_status", status: "responding" }] };
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) resolve();
+          else signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    _setAdapterForToolForTest(tool, adapter);
+    const run = runAgentSession(sessionId, "prompt", platform, chatId, 0, tool, undefined, { autoRecovery });
+    await vi.waitFor(() => expect(activePrompts.get(sessionId)?.responseProgress).toBeDefined());
+    const progress = activePrompts.get(sessionId)!.responseProgress!;
+    await vi.advanceTimersByTimeAsync(progress.unchangedSince + 180_001 - Date.now());
+    if (tool === "ccc") {
+      // A new DeepCCC session must not inherit the other adapters' three-minute deadline.
+      expect(closeSession).not.toHaveBeenCalled();
+      expect(mockStreamStates.get(sessionId)?.status).toBe("running");
+    }
+    await vi.advanceTimersByTimeAsync(Math.max(0, progress.unchangedSince + timeoutMs - 1 - Date.now()));
+    if (tool === "ccc") expect(closeSession).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_001);
+    await run;
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(mockStreamStates.get(sessionId)?.status).toBe("auto_ended");
+    if (autoRecovery) {
+      expect(platform.sendText).toHaveBeenCalledWith(chatId,
+        "⚠️ 自动续跑仍连续 10 分钟没有生成新回复，本次不再自动继续。");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(isSessionRunning(sessionId)).toBe(false);
+    }
   });
 
   it("does not detect response stalls when the adapter disables streamed-output monitoring", async () => {
