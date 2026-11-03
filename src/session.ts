@@ -58,7 +58,12 @@ import {
 import type { PlatformAdapter } from "./platform-adapter.ts";
 import { createFinalReplyDelivery } from "./final-reply-delivery.ts";
 import { applyPrivacy } from "./privacy.ts";
-import { hasResponseStalled, observeResponseProgress } from "./response-stall.ts";
+import {
+  formatResponseStallRecoveryExhaustedNotice,
+  getDefaultResponseStallTimeoutMs,
+  hasResponseStalled,
+  observeResponseProgress,
+} from "./response-stall.ts";
 import {
   classifyTerminalError,
   formatTerminalErrorNotice,
@@ -204,11 +209,12 @@ export const RESPONSE_STALL_RECOVERY_PROMPT = "完成了吗？如果没完成继
 export const RESPONSE_STALL_RECOVERY_NOTICE =
   `检测到会话停滞，正在自动确认并继续。\n\n${RESPONSE_STALL_RECOVERY_PROMPT}`;
 export const RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE =
-  "⚠️ 自动续跑仍连续 3 分钟没有生成新回复，本次不再自动继续。";
+  formatResponseStallRecoveryExhaustedNotice("claude");
 const RESPONSE_STALL_RECOVERY_DELAY_MS = 200;
 let processMonitorIntervalMs = DEFAULT_PROCESS_MONITOR_INTERVAL_MS;
 let avatarRefreshIntervalMs = DEFAULT_AVATAR_REFRESH_INTERVAL_MS;
-let responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
+// Test override only; normal turns resolve their own adapter-specific default.
+let responseStallTimeoutMs: number | undefined;
 let responseStallCheckIntervalMs = DEFAULT_RESPONSE_STALL_CHECK_INTERVAL_MS;
 let finalResponseCloseTimeoutMs = DEFAULT_FINAL_RESPONSE_CLOSE_TIMEOUT_MS;
 let isProcessAliveImpl = (pid: number): boolean => {
@@ -256,7 +262,7 @@ export function _setResponseStallTimeoutForTest(ms: number): void {
 }
 
 export function _resetResponseStallTimeoutForTest(): void {
-  responseStallTimeoutMs = DEFAULT_RESPONSE_STALL_TIMEOUT_MS;
+  responseStallTimeoutMs = undefined;
 }
 
 export function _setResponseStallCheckIntervalForTest(ms: number): void {
@@ -1457,7 +1463,7 @@ export async function initClaudeSession(tool: string, overrideCwd?: string, chat
       // 先固定对外错误，再 abort 适配器，避免适配器自己的 abort 错误赢得竞态。
       reject(timeoutError);
       createController.abort();
-    }, responseStallTimeoutMs);
+    }, responseStallTimeoutMs ?? DEFAULT_RESPONSE_STALL_TIMEOUT_MS);
     createTimeout.unref?.();
   });
 
@@ -1799,13 +1805,14 @@ export async function runAgentSession(
   let streamTerminalError: TerminalErrorInfo | undefined;
   let runOutcome: SessionRunOutcome = "error";
   const responseStallDetectionEnabled = adapter.responseStallDetectionEnabled !== false;
+  const stallTimeoutMs = responseStallTimeoutMs ?? getDefaultResponseStallTimeoutMs(tool);
 
   const runningPrompt = activePrompts.get(sessionId);
   if (runningPrompt) {
     startPromptAvatarRefresh(sessionId, tool, platform, runningPrompt);
 
     // 在消费第一个事件前建立阶段感知的零字符基线；启动阶段不计时，只有后续
-    // 收到明确的 responding 状态后才会启动三分钟回复停滞保护。
+    // 收到明确的 responding 状态后才会启动回复停滞保护（CCC 10 分钟，其他 3 分钟）。
     runningPrompt.responseProgress = observeResponseProgress(
       undefined,
       monitorsOutputProgress(activityTracker.activity.kind),
@@ -1826,7 +1833,7 @@ export async function runAgentSession(
         || current.autoEnded
         || current.finalResponseObserved
         || !monitorsOutputProgress(activityTracker.activity.kind)
-        || !hasResponseStalled(current.responseProgress, Date.now(), responseStallTimeoutMs)
+        || !hasResponseStalled(current.responseProgress, Date.now(), stallTimeoutMs)
       ) {
         return;
       }
@@ -1882,7 +1889,7 @@ export async function runAgentSession(
       current.controller.abort();
       await killProcessTree(current.processPid);
       console.warn(
-        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after 3 minutes without reply progress`,
+        `[${ts()}] [RESPONSE-STALL] Session ${sessionId} auto-ended after ${stallTimeoutMs / 60_000} minutes without reply progress`,
       );
     };
 
@@ -2191,7 +2198,7 @@ export async function runAgentSession(
           // 自动链，避免第三轮及之后的无限续跑。
           await pp.sendText(
             activeAutoEnded,
-            RESPONSE_STALL_RECOVERY_EXHAUSTED_NOTICE,
+            formatResponseStallRecoveryExhaustedNotice(tool),
           ).catch(() => {});
         } else if (hasAutoRecoveryReservation(sessionId)) {
           // 用户可见提示与内部恢复 prompt 分离：提示发送失败不影响恢复，
