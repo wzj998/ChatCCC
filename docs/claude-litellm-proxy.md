@@ -10,16 +10,31 @@ default, but they are still forwarded unchanged to the upstream server.
 ## Start
 
 ```powershell
-npm run claude-proxy -- --port 18081 --upstream https://litellm.hypergryph.net
+npm run claude-proxy -- --port 18081 --upstream https://api.example.com
 ```
 
 Defaults:
 
 ```text
 listen:   http://127.0.0.1:18081
-upstream: https://litellm.hypergryph.net
+upstream: required via --upstream or CHATCCC_LITELLM_PROXY_UPSTREAM
 logs:     %USERPROFILE%\.chatccc\logs\litellm-proxy
 ```
+
+Replace the example URL with your own HTTP(S) endpoint. The proxy has no built-in
+upstream address and exits before listening or creating logs if no address is
+configured. Command-line `--upstream` takes precedence over the environment.
+
+Alternatively, set the upstream only in your local environment:
+
+```powershell
+$env:CHATCCC_LITELLM_PROXY_UPSTREAM = "https://api.example.com"
+npm run claude-proxy -- --port 18081
+```
+
+Do not commit real internal endpoints or credentials. This standalone debugging
+proxy does not read its upstream from ChatCCC's `config.json`; the configuration
+below only points Claude Code at the local proxy.
 
 ## Point Claude Code at the proxy
 
@@ -67,7 +82,7 @@ paths, byte counts, and duration.
 To log sensitive headers in metadata for a short controlled debugging session:
 
 ```powershell
-npm run claude-proxy -- --log-secrets
+npm run claude-proxy -- --upstream https://api.example.com --log-secrets
 ```
 
 Do not share logs created with `--log-secrets`.

@@ -32,6 +32,14 @@ describe("BuiltinContextManager", () => {
     expect(prompt).toContain("局限");
   });
 
+  it("requires the compaction summary to keep source attribution per setting", () => {
+    const prompt = buildSummaryPrompt({previousSummary:"",oldMessages:[],recentMessages:[]});
+    expect(prompt).toContain("关键设定要标明来源");
+    expect(prompt).toContain("用户原话/确认");
+    expect(prompt).toContain("助手写入文档");
+    expect(prompt).toContain("不把助手写入或推断的内容记成“用户已确认”");
+  });
+
   it("rewrites a legacy summary immediately without consuming recent raw messages", () => {
     const context = new BuiltinContextManager({ compactAtTokens: 100_000, persist: false });
     context.setSummary("## 用户目标\n- 旧格式摘要中的历史建议");

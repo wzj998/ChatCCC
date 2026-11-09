@@ -539,6 +539,36 @@ describe("ChatSession context management", () => {
     );
   });
 
+  it("keeps source-attribution discipline in the stable system prompt prefix", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-attribution-"));
+    await writeFile(join(dir, "AGENTS.md"), "PROJECT GUIDANCE MARKER", "utf-8");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "source-attribution",
+        systemPrompt: "CUSTOM PROMPT MARKER",
+      },
+    );
+    await collect(session.chat("check where a project setting came from"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    // 归因纪律：文档里有不等于用户说过，不能把助手写入当成用户设定
+    expect(system).toContain("区分来源归属");
+    expect(system).toContain("不等于用户说过");
+    expect(system).toContain("必须能指向用户消息原文");
+    expect(system).toContain("标注来源或“待定”");
+    expect(system.indexOf("区分来源归属")).toBeLessThan(
+      system.indexOf("PROJECT GUIDANCE MARKER"),
+    );
+    expect(system.indexOf("区分来源归属")).toBeLessThan(
+      system.indexOf("CUSTOM PROMPT MARKER"),
+    );
+  });
+
   it("keeps execution discipline sections in the stable system prompt prefix", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-session-discipline-"));

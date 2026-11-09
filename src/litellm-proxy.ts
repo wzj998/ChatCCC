@@ -92,8 +92,14 @@ function parseArgs(argv: string[]): Partial<ProxyConfig> {
 function readConfig(): ProxyConfig {
   const args = parseArgs(process.argv.slice(2));
   const upstreamRaw = args.upstream?.toString() ??
-    process.env.CHATCCC_LITELLM_PROXY_UPSTREAM ??
-    "https://litellm.hypergryph.net";
+    process.env.CHATCCC_LITELLM_PROXY_UPSTREAM;
+  if (!upstreamRaw?.trim()) {
+    throw new Error("Missing proxy upstream: set --upstream or CHATCCC_LITELLM_PROXY_UPSTREAM");
+  }
+  const upstream = new URL(upstreamRaw.trim());
+  if (upstream.protocol !== "http:" && upstream.protocol !== "https:") {
+    throw new Error("Upstream must use http:// or https://");
+  }
 
   const portRaw = args.port ?? Number(process.env.CHATCCC_LITELLM_PROXY_PORT ?? "18081");
   if (!Number.isInteger(portRaw) || portRaw <= 0 || portRaw > 65535) {
@@ -103,7 +109,7 @@ function readConfig(): ProxyConfig {
   return {
     host: args.host ?? process.env.CHATCCC_LITELLM_PROXY_HOST ?? "127.0.0.1",
     port: portRaw,
-    upstream: new URL(upstreamRaw),
+    upstream,
     logDir: args.logDir ?? process.env.CHATCCC_LITELLM_PROXY_LOG_DIR ??
       join(homedir(), ".chatccc", "logs", "litellm-proxy"),
     logSecrets: args.logSecrets ?? process.env.CHATCCC_LITELLM_PROXY_LOG_SECRETS === "1",
@@ -116,7 +122,7 @@ function printHelp(): void {
 Options:
   --host <host>          Listen host, default 127.0.0.1
   --port <port>          Listen port, default 18081
-  --upstream <url>       Upstream LiteLLM base URL, default https://litellm.hypergryph.net
+  --upstream <url>       Upstream LiteLLM base URL; required unless set via environment
   --log-dir <path>       Log directory, default %USERPROFILE%/.chatccc/logs/litellm-proxy
   --log-secrets          Log sensitive headers instead of redacting them
 
