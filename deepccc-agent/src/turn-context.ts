@@ -81,7 +81,9 @@ export function compactToolLoopMessages(
   for (let index = prepared.length - keepRecent - 1; index >= 0; index -= 1) {
     const item = prepared[index];
     const delta = item.cappedSize - omittedSize;
-    if (delta <= 0 || retainedToolChars + delta > maximum) continue;
+    // A short status/error can cost less than the omission marker. Always
+    // restore such results: this retains evidence and reduces replay size.
+    if (delta > 0 && retainedToolChars + delta > maximum) continue;
     item.message.content[item.partIndex] = { ...item.part, output: item.capped };
     retainedToolChars += delta;
     if (serialized(item.part.output) !== serialized(omittedOutput)) compactedResults -= 1;

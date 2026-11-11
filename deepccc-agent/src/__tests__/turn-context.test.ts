@@ -37,6 +37,30 @@ describe("compactToolLoopMessages", () => {
     expect(result.compactedResults).toBe(0);
   });
 
+  it("retains short older results even when the context budget is full", () => {
+    const messages: ModelMessage[] = [
+      ...toolPair("status", "exitCode=0; wrote result.json"),
+      ...toolPair("large", "x".repeat(30_000)),
+      ...toolPair("latest", "current evidence"),
+    ];
+    const result = compactToolLoopMessages(messages, { maxToolChars: 1_000, keepRecentResults: 1 });
+    expect(result.messages[1]).toEqual(messages[1]);
+    expect(result.retainedToolChars).toBeLessThanOrEqual(1_000);
+    expect(result.compactedResults).toBe(1);
+  });
+
+  it("preserves short json and error results when no recent results are protected", () => {
+    const messages: ModelMessage[] = [
+      { role: "tool", content: [
+        { type: "tool-result", toolCallId: "json", toolName: "x", output: { type: "json", value: { exitCode: 0 } } },
+        { type: "tool-result", toolCallId: "error", toolName: "x", output: { type: "error-text", value: "file exists" } },
+      ] },
+    ];
+    const result = compactToolLoopMessages(messages, { keepRecentResults: 0 });
+    expect(result.messages).toEqual(messages);
+    expect(result.compactedResults).toBe(0);
+  });
+
   it("handles json and error outputs without discarding the latest result", () => {
     const messages: ModelMessage[] = [
       { role: "assistant", content: [{ type: "tool-call", toolCallId: "a", toolName: "x", input: {} }] },
