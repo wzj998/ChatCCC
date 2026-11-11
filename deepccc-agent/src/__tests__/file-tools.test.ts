@@ -73,6 +73,46 @@ afterEach(async () => {
 });
 
 describe("DeepCCC file tools", () => {
+  it("rejects raw-wrapped command arguments before permission handling", async () => {
+    const dir = await makeTempDir();
+    const check = vi.fn().mockResolvedValue("allow");
+    const tools = createBuiltinFileTools(dir, { permissionGate: { check } as never }) as unknown as Record<
+      string, { execute: (input: unknown, options: unknown) => Promise<unknown> }
+    >;
+    for (const [name, input] of [
+      ["run_script", { raw: JSON.stringify({ language: "node", code: "process.stdout.write('unused')" }) }],
+      ["run_process", { raw: JSON.stringify({ executable: process.execPath }) }],
+      ["run_command", { raw: JSON.stringify({ command: "unused" }) }],
+      ["command_output", { raw: JSON.stringify({ taskId: "cmd-example", waitMs: 0 }) }],
+      ["command_kill", { raw: JSON.stringify({ taskId: "cmd-example" }) }],
+    ] as const) {
+      await expect(Promise.resolve().then(() => tools[name].execute(input, {})))
+        .rejects.toThrow(new RegExp(`Invalid ${name} arguments:.*structured object`));
+    }
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-object and missing named command inputs with an actionable error", async () => {
+    const dir = await makeTempDir();
+    const tools = createBuiltinFileTools(dir) as unknown as Record<
+      string, { execute: (input: unknown, options: unknown) => Promise<unknown> }
+    >;
+    for (const input of [null, [], "{}", { language: "node" }, { language: "node", code: 42 }]) {
+      await expect(Promise.resolve().then(() => tools.run_script.execute(input, {})))
+        .rejects.toThrow(/Invalid run_script arguments:.*language.*code/);
+    }
+  });
+
+  it("keeps raw-looking JSON inside a valid script unchanged", async () => {
+    const dir = await makeTempDir();
+    const tools = createBuiltinFileTools(dir) as unknown as Record<
+      string, { execute: (input: unknown, options: unknown) => Promise<Record<string, unknown>> }
+    >;
+    const output = await tools.run_script.execute({ language: "node", code: 'process.stdout.write(JSON.stringify({raw:"kept"}))' }, {});
+    expect(output.exitCode).toBe(0);
+    expect(output.stdout).toBe('{"raw":"kept"}');
+  });
+
   it("presents a supported local image as a structured artifact", async () => {
     const dir = await makeTempDir();
     const imagePath = join(dir, "result.png");

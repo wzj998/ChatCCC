@@ -1992,6 +1992,23 @@ export function killAllBackgroundTasks(): void {
   backgroundTasks.clear();
 }
 
+function requireCommandArguments(
+  name: string,
+  input: unknown,
+  requiredStrings: readonly string[],
+  allowEmpty: readonly string[] = [],
+): void {
+  const value = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown> : undefined;
+  if (!value || requiredStrings.some((key) => typeof value[key] !== "string"
+    || (!allowEmpty.includes(key) && !(value[key] as string).trim()))) {
+    throw new Error(
+      `Invalid ${name} arguments: expected a structured object with string fields ${requiredStrings.join(", ")}. `
+      + "Pass these named fields directly; do not wrap the arguments in raw or a JSON string.",
+    );
+  }
+}
+
 export function createBuiltinFileTools(
   cwd: string,
   options: BuiltinFileToolsOptions = {},
@@ -2126,6 +2143,7 @@ export function createBuiltinFileTools(
         required: ["executable"],
       }),
       execute: async (input, execOptions) => {
+        requireCommandArguments("run_process", input, ["executable"]);
         const action = [input.executable, ...(input.args ?? [])].join(" ");
         await guard({
           tool: "run_process",
@@ -2162,6 +2180,10 @@ export function createBuiltinFileTools(
         required: ["language", "code"],
       }),
       execute: async (input, execOptions) => {
+        requireCommandArguments("run_script", input, ["language", "code"], ["code"]);
+        if (input.language !== "node" && input.language !== "python") {
+          throw new Error("Invalid run_script arguments: language must be node or python.");
+        }
         const runtime = input.executable?.trim() || input.language;
         await guard({
           tool: "run_script",
@@ -2190,6 +2212,7 @@ export function createBuiltinFileTools(
         required: ["command"],
       }),
       execute: async (input, execOptions) => {
+        requireCommandArguments("run_command", input, ["command"]);
         await guard({
           tool: "run_command",
           action: input.command,
@@ -2216,7 +2239,10 @@ export function createBuiltinFileTools(
         },
         required: ["taskId"],
       }),
-      execute: (input) => commandOutputForTool(input.taskId, input, options.shouldYieldToInjection),
+      execute: async (input) => {
+        requireCommandArguments("command_output", input, ["taskId"]);
+        return commandOutputForTool(input.taskId, input, options.shouldYieldToInjection);
+      },
     }),
     command_kill: tool<CommandKillInput, CommandKillResult>({
       description: "终止一个由 run_process、run_script 或 run_command 转入后台的进程。",
@@ -2228,7 +2254,10 @@ export function createBuiltinFileTools(
         },
         required: ["taskId"],
       }),
-      execute: (input) => commandKillForTool(input.taskId),
+      execute: async (input) => {
+        requireCommandArguments("command_kill", input, ["taskId"]);
+        return commandKillForTool(input.taskId);
+      },
     }),
     task: tool<TaskRunnerInput, TaskRunnerOutput>({
       description: `把独立子任务委派给子代理执行：子代理使用子模型、拥有独立上下文，不污染主对话上下文。可用 maxSteps 指定 ${MIN_TASK_MAX_STEPS}-${MAX_TASK_MAX_STEPS} 步预算。默认同步等待；runInBackground=true 时立即返回 taskId，之后用 task_output 查看或 task_stop 要求其停止调查并总结。子代理不能再次委派任务（禁止嵌套），结果会截断回传。`,
