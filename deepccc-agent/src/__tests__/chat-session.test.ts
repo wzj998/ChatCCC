@@ -88,6 +88,42 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it("restricts actual tools and skips automatic workspace maps outside the allowlist", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-selected-tools-"));
+    await writeFile(join(dir, "model.py"), "class PrivateNavigationFixture: pass\n");
+    const session = new ChatSession({ apiKey: "sk-test" }, {
+      cwd: dir, persist: false, allowedTools: ["read_file", "run_script"],
+    });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+    await collect(session.chat("项目实现了吗"));
+    const request = streamTextMock.mock.calls.at(-1)?.[0];
+    expect(Object.keys(request.tools)).toEqual(["read_file", "run_script"]);
+    expect(request.tools.run_process).toBeUndefined();
+    expect(request.tools.task).toBeUndefined();
+    expect(JSON.stringify(request.messages)).not.toContain("PrivateNavigationFixture");
+  });
+
+  it("rejects an unknown allowed tool before either generation transport is used", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" }, { allowedTools: ["missing_tool"] });
+    await expect(collect(session.chat("hello"))).rejects.toThrow(/Unknown allowed tool/);
+    expect(streamTextMock).not.toHaveBeenCalled();
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the full builtin tool surface when no allowlist is configured", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-default-tools-"));
+    const session = new ChatSession({ apiKey: "sk-test" }, { cwd: dir, persist: false });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+    await collect(session.chat("hello"));
+    const request = streamTextMock.mock.calls.at(-1)?.[0];
+    for (const name of ["read_file", "create_file", "run_script", "run_process", "search_code", "workspace_map", "task"]) {
+      expect(request.tools[name]).toBeDefined();
+    }
+  });
+
   it("injects refreshed navigation without accumulating maps in conversation history", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-orientation-"));

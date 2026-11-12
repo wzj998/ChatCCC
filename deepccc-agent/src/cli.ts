@@ -29,6 +29,7 @@ import { defaultLogDir, setupFileLogging } from "./file-log.js";
 import { AttachmentStore, buildAttachmentPrompt, type AttachmentMeta } from "./attachments.js";
 import type { ChatEvent, ChatSessionConfig, ChatSessionOptions } from "./index.js";
 import type { PermissionRequest, PermissionResolver } from "./permissions.js";
+import { normalizeAllowedTools } from "./tool-selection.js";
 
 interface ParsedArgs {
   config: ChatSessionConfig;
@@ -111,6 +112,12 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--max-steps" && next !== undefined) {
       options.maxSteps = parsePositiveIntegerOption("--max-steps", next);
       i++;
+    } else if (arg === "--allowed-tools") {
+      if (next === undefined || next.startsWith("--")) {
+        throw new Error("--allowed-tools requires a comma-separated list of tool names");
+      }
+      options.allowedTools = normalizeAllowedTools(next.split(","));
+      i++;
     } else if (arg === "--resume") {
       if (next !== undefined && !next.startsWith("--")) {
         resume = next;
@@ -166,6 +173,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --api-key <key>      API key",
     "  --cwd <path>         Working directory",
     "  --max-steps <n>      Optional tool-step limit. Omit for no step limit",
+    "  --allowed-tools <names>  Comma-separated builtin tool allowlist for this invocation",
     "  --resume [id]        Resume latest cwd session, or the explicit session id",
     "  --list-sessions      List saved sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",

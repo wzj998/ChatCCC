@@ -46,6 +46,7 @@ import {
   type TaskRunnerInput,
 } from "./file-tools.js";
 import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
+import { normalizeAllowedTools, selectAllowedTools } from "./tool-selection.js";
 import {
   hasMalformedToolProtocolText,
   TOOL_PROTOCOL_RECOVERY_PROMPT,
@@ -375,6 +376,9 @@ export interface ChatSessionConfig {
 }
 
 export interface ChatSessionOptions {
+  /** Per-invocation builtin tool allowlist. Undefined keeps all tools; [] exposes none.
+   * Does not bypass permissions or sandbox code run through an allowed tool. */
+  allowedTools?: readonly string[];
   attachmentStore?: AttachmentStore;
   /** Session working directory. */
   cwd?: string;
@@ -469,6 +473,7 @@ interface ChatMessage {
 }
 
 export class ChatSession {
+  private allowedTools?: string[];
   private model: any;
   /** 子模型实例；未配置 subModel 时与主模型同一实例 */
   private subModel: any;
@@ -575,6 +580,7 @@ export class ChatSession {
           maxSteps,
           compactionTimeoutMs: this.compactionTimeoutMs,
           skillsDirs: this.skillDirs.map((s) => s.dir),
+          allowedTools: this.allowedTools,
         },
       );
       let full = "";
@@ -641,6 +647,7 @@ export class ChatSession {
     // 子模型：留空时与主模型共用同一实例（行为与旧版完全一致，零开销）
     this.subModel = this.subModelId ? provider(this.subModelId) : this.model;
     this.cwd = options.cwd ?? process.cwd();
+    this.allowedTools = normalizeAllowedTools(options.allowedTools);
     this.maxSteps = normalizeMaxSteps(options.maxSteps);
     this.shouldYieldToInjection = options.shouldYieldToInjection;
     this.compactionTimeoutMs = Math.max(1, options.compactionTimeoutMs ?? DEFAULT_COMPACTION_TIMEOUT_MS);
@@ -731,6 +738,15 @@ export class ChatSession {
     let toolContext: string[] = [];
 
     try {
+      // Validate/filter before compaction can contact a Provider. The same map
+      // controls both advertised definitions and SDK tool execution.
+      const tools = selectAllowedTools(createBuiltinFileTools(this.cwd, {
+        permissionGate: this.permissionGate,
+        runTask: this.runTask,
+        readImage: input => this.imageRuntime.readImage(input),
+        shouldYieldToInjection: this.shouldYieldToInjection,
+        gitCoAuthor: { ...appConfig.git.coAuthor, enabled: this.gitCoAuthorEnabled },
+      }), this.allowedTools);
       if (this.context.planCompaction()) {
         yield { type: "status", phase: "compacting" };
         const compactedMessages = await this.compactIfNeeded(signal);
@@ -764,7 +780,8 @@ export class ChatSession {
       const contextMessages = this.context.buildModelMessages();
       // Ephemeral navigation is refreshed from disk, not appended to persisted chat history.
       // A small budget keeps routine turns cheap; the tool remains available for any topic.
-      if (needsWorkspaceOrientation(userMessage)) {
+      if ((this.allowedTools === undefined || this.allowedTools.includes("workspace_map"))
+          && needsWorkspaceOrientation(userMessage)) {
         try {
           const map = await buildWorkspaceMap(this.cwd, {query:userMessage.split("[User message]").pop(), maxChars:3000, signal});
           contextMessages.splice(Math.max(0,contextMessages.length - 1), 0, {
@@ -805,16 +822,7 @@ export class ChatSession {
       const baseGenerationOptions = {
         model: this.model,
         system,
-        tools: createBuiltinFileTools(this.cwd, {
-          permissionGate: this.permissionGate,
-          runTask: this.runTask,
-          readImage: input => this.imageRuntime.readImage(input),
-          shouldYieldToInjection: this.shouldYieldToInjection,
-          gitCoAuthor: {
-            ...appConfig.git.coAuthor,
-            enabled: this.gitCoAuthorEnabled,
-          },
-        }),
+        tools,
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
         prepareStep: async ({ messages, stepNumber }: { messages: ModelMessage[]; stepNumber: number }) => {
