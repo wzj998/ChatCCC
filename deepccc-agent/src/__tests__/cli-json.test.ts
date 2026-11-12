@@ -16,6 +16,18 @@ const tsxCli = requireFromHere.resolve("tsx/cli");
 const cliArgs = (...args: string[]) => [tsxCli, cliSource, ...args];
 
 describe("deepccc cli --stream-json", () => {
+  it("documents a per-invocation allowlist and rejects missing or empty names", async () => {
+    const help = await execFileAsync(process.execPath, cliArgs("--help"), {
+      cwd: dirname(cliSource), timeout: 10_000, windowsHide: true,
+    });
+    expect(help.stdout).toContain("--allowed-tools <names>");
+    for (const args of [["--allowed-tools", "--help"], ["--allowed-tools", "read_file,,run_script", "--help"]]) {
+      await expect(execFileAsync(process.execPath, cliArgs(...args), {
+        cwd: dirname(cliSource), timeout: 10_000, windowsHide: true,
+      })).rejects.toMatchObject({ code: 1 });
+    }
+  }, 15_000);
+
   it("documents max output tokens and rejects non-positive values", async () => {
     const help = await execFileAsync(process.execPath, cliArgs("--help"), {
       cwd: dirname(cliSource),

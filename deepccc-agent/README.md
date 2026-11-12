@@ -468,3 +468,18 @@ deepccc 的内核主战场在 ChatCCC 仓库的 `deepccc-agent/` 子目录；本
 ## License
 
 Apache-2.0
+### Per-invocation tool allowlist
+
+For a bounded task, expose only the builtin tools it needs:
+
+```sh
+deepccc-cli --stream-json --allowed-tools read_file,create_file,run_script --prompt "Read the specified files and save the result."
+```
+
+The SDK equivalent is `new ChatSession(config, { allowedTools: ["read_file", "run_script"] })`.
+Omitting the option keeps the existing full tool set; the SDK also accepts `[]` for no tools.
+Unknown tool names are rejected before model generation. Automatic workspace navigation is skipped
+when `workspace_map` is outside the allowlist, and child tasks inherit the same tool restriction.
+The option applies to that invocation, so pass it again when resuming. Existing permission checks
+still apply. This limits tool exposure and execution, not filesystem/network access inside an allowed
+script or process tool; it is not a sandbox.
