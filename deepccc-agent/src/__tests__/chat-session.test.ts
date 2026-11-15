@@ -18,6 +18,7 @@ const originalStreaming = config.streaming;
 const originalProvider = config.provider;
 const originalEffort = config.effort;
 const originalMaxOutputTokens = config.maxOutputTokens;
+const originalVisionModel = config.visionModel;
 const createOpenAICompatibleMock = vi.fn(() => (modelId: string) => ({ modelId }));
 const createAnthropicMock = vi.fn(() => (modelId: string) => ({ modelId, provider: "anthropic" }));
 
@@ -69,6 +70,7 @@ beforeEach(() => {
   config.streaming = true;
   config.effort = "";
   config.maxOutputTokens = undefined;
+  config.visionModel = "";
 });
 
 afterEach(() => {
@@ -82,6 +84,7 @@ afterEach(() => {
   config.streaming = originalStreaming;
   config.effort = originalEffort;
   config.maxOutputTokens = originalMaxOutputTokens;
+  config.visionModel = originalVisionModel;
   createOpenAICompatibleMock.mockClear();
   createAnthropicMock.mockClear();
   vi.useRealTimers();
@@ -122,6 +125,38 @@ describe("ChatSession response transport", () => {
     for (const name of ["read_file", "create_file", "run_script", "run_process", "search_code", "workspace_map", "task"]) {
       expect(request.tools[name]).toBeDefined();
     }
+  });
+
+  it.each([undefined, "", "   "])("uses the actual main model for images when visionModel is %s", async (visionModel) => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-default-vision-"));
+    const image = join(dir, "pixel.png");
+    await writeFile(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6mS8AAAAASUVORK5CYII=", "base64"));
+    const session = new ChatSession({ apiKey: "sk-test", model: "actual-main-vision", visionModel }, { cwd: dir, persist: false });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+    await collect(session.chat(`[图片] ${image}`));
+    const request = streamTextMock.mock.calls[0]?.[0];
+    const prepared = await request.prepareStep({ messages: request.messages, stepNumber: 0 });
+    expect(request.model.modelId).toBe("actual-main-vision");
+    expect(JSON.stringify(prepared.messages)).toContain('"type":"image"');
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
+  it("uses an explicitly configured image model before the actual main model", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-explicit-vision-"));
+    const image = join(dir, "pixel.png");
+    await writeFile(image, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6mS8AAAAASUVORK5CYII=", "base64"));
+    config.visionModel = "dedicated-vision";
+    generateTextMock.mockResolvedValueOnce({ text: "one pixel" });
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+    const session = new ChatSession({ apiKey: "sk-test", model: "actual-main" }, { cwd: dir, persist: false });
+    await collect(session.chat(`[图片] ${image}`));
+    const request = streamTextMock.mock.calls[0]?.[0];
+    const prepared = await request.prepareStep({ messages: request.messages, stepNumber: 0 });
+    expect(generateTextMock.mock.calls[0]?.[0].model.modelId).toBe("dedicated-vision");
+    expect(streamTextMock.mock.calls[0]?.[0].model.modelId).toBe("actual-main");
+    expect(JSON.stringify(prepared.messages)).not.toContain('"type":"image"');
   });
 
   it("injects refreshed navigation without accumulating maps in conversation history", async () => {

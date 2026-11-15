@@ -392,6 +392,7 @@ export function serializeMessagesForSummary(messages: readonly BuiltinContextMes
 
 function truncateMiddle(value: string, maxChars: number, marker: string): string {
   if (value.length <= maxChars) return value;
+  if (maxChars <= marker.length + 2) return value.slice(0, Math.max(0, maxChars));
   const available = Math.max(0, maxChars - marker.length - 2);
   const headChars = Math.ceil(available / 2);
   const tailChars = Math.floor(available / 2);
@@ -403,6 +404,21 @@ export const DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS = 24_000;
 const ASSISTANT_TRUNCATED_MARKER = "...[助手回复已在上下文中截断]...";
 const TOOL_TRANSCRIPT_TRUNCATED_MARKER = "...[工具记录已截断]...";
 
+/** Reserve short control records before sharing the remaining space with large payloads. */
+function toolPayloadBudgets(lengths: readonly number[], maximum: number): number[] {
+  const budgets = Array<number>(lengths.length).fill(0);
+  const ordered = lengths.map((length, index) => ({ length, index }))
+    .sort((a, b) => a.length - b.length);
+  let remaining = Math.max(0, Math.floor(maximum));
+  for (let index = 0; index < ordered.length; index += 1) {
+    const entry = ordered[index]!;
+    const budget = Math.min(entry.length, Math.floor(remaining / (ordered.length - index)));
+    budgets[entry.index] = budget;
+    remaining -= budget;
+  }
+  return budgets;
+}
+
 function truncateStructuredToolCalls(
   calls: BuiltinContextToolCall[],
   maxChars: number,
@@ -410,10 +426,11 @@ function truncateStructuredToolCalls(
   const payloads = calls.flatMap((call) => [call.input ?? "", call.output ?? ""]).filter(Boolean);
   const total = payloads.reduce((sum, value) => sum + value.length, 0);
   if (total <= maxChars) return calls;
-  const sharedBudget = Math.max(0, maxChars - payloads.length);
+  const budgets = toolPayloadBudgets(payloads.map(value => value.length), maxChars);
+  let payloadIndex = 0;
   const truncatePayload = (value: string | undefined): string | undefined => {
     if (value === undefined || value.length === 0) return value;
-    const budget = 1 + Math.floor(sharedBudget * value.length / Math.max(1, total));
+    const budget = budgets[payloadIndex++]!;
     return truncateMiddle(value, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER);
   };
   return calls.map((call) => ({
@@ -459,15 +476,10 @@ function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): Buil
   const maxToolChars = DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS;
   const totalText = entries.reduce((sum, entry) => sum + (entry.type === "text" ? entry.text.length : 0), 0);
   const textPayloads = entries.filter((entry) => entry.type === "text" && entry.text.length > 0).length;
-  const totalTool = entries.reduce((sum, entry) => {
-    if (entry.type === "tool_use") return sum + (entry.input?.length ?? 0);
-    if (entry.type === "tool_result") return sum + (entry.output?.length ?? 0);
-    return sum;
-  }, 0);
-  const toolPayloads = entries.filter((entry) =>
-    (entry.type === "tool_use" && (entry.input?.length ?? 0) > 0)
-    || (entry.type === "tool_result" && (entry.output?.length ?? 0) > 0)
-  ).length;
+  const toolPayloads = entries.flatMap(entry => entry.type === "tool_use" && entry.input
+    ? [entry.input] : entry.type === "tool_result" && entry.output ? [entry.output] : []);
+  const toolBudgets = toolPayloadBudgets(toolPayloads.map(value => value.length), maxToolChars);
+  let toolPayloadIndex = 0;
   const payloadBudget = (length: number, total: number, count: number, maximum: number): number => {
     if (total <= maximum) return length;
     const sharedBudget = Math.max(0, maximum - count);
@@ -484,11 +496,11 @@ function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): Buil
       return { ...entry, text: truncatePayload(entry.text, budget, ASSISTANT_TRUNCATED_MARKER) };
     }
     if (entry.type === "tool_use" && entry.input !== undefined) {
-      const budget = payloadBudget(entry.input.length, totalTool, toolPayloads, maxToolChars);
+      const budget = entry.input.length ? toolBudgets[toolPayloadIndex++]! : 0;
       return { ...entry, input: truncatePayload(entry.input, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
     }
     if (entry.type === "tool_result" && entry.output !== undefined) {
-      const budget = payloadBudget(entry.output.length, totalTool, toolPayloads, maxToolChars);
+      const budget = entry.output.length ? toolBudgets[toolPayloadIndex++]! : 0;
       return { ...entry, output: truncatePayload(entry.output, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
     }
     return entry;

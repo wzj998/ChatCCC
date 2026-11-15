@@ -15,7 +15,7 @@ export interface DeepCccConfig {
    * 留空（""）时跟随主模型，行为与旧版完全一致。
    */
   subModel: string;
-  /** Optional dedicated image analysis model, using the same provider credentials. */
+  /** Optional image model; unset/blank follows the actual session main model, including CLI overrides. */
   visionModel: string;
   /** Reasoning effort（none/minimal/low/medium/high/xhigh/max），留空不传 reasoning_effort */
   effort: string;
