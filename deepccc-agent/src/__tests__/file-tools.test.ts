@@ -219,6 +219,20 @@ describe("DeepCCC file tools", () => {
     expect(result).toEqual({ result: "子代理结果" });
   });
 
+  it("rejects malformed task arguments before starting or looking up a child", async () => {
+    const dir = await makeTempDir();
+    const runTask = vi.fn(async () => "done");
+    const tools = createBuiltinFileTools(dir, { runTask }) as unknown as Record<
+      string, { execute: (input: unknown) => Promise<unknown> }
+    >;
+    for (const name of ["task", "task_output", "task_stop"]) {
+      for (const input of [{ raw: '{"taskId":"example"}' }, {}, null, "example"]) {
+        await expect(tools[name]!.execute(input)).rejects.toThrow(`Invalid ${name} arguments`);
+      }
+    }
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
   it("task tool forwards a caller-selected step budget", async () => {
     const dir = await makeTempDir();
     const runTask = vi.fn(async () => "完成");

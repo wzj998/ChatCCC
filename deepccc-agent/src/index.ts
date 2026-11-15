@@ -483,6 +483,8 @@ export class ChatSession {
   private modelId: string;
   private subModelId: string;
   private visionModelId: string;
+  /** Keep the optional override separate so each child can fall back to its own main model. */
+  private configuredVisionModelId: string;
   private imageRuntime: ImageInputRuntime;
   private providerFactory: (modelId: string) => any;
   private imageNotices: ImageUseNotice[] = [];
@@ -568,7 +570,7 @@ export class ChatSession {
           apiKey: this.apiKey,
           baseURL: this.baseURL,
           model: this.subModelId || this.modelId,
-          visionModel: this.visionModelId,
+          visionModel: this.configuredVisionModelId,
           effort: this.effort,
           maxOutputTokens: this.maxOutputTokens,
         },
@@ -621,7 +623,8 @@ export class ChatSession {
     const modelId = overrides.model ?? appConfig.model;
     this.modelId = modelId;
     this.subModelId = (overrides.subModel ?? appConfig.subModel ?? "").trim();
-    this.visionModelId = (overrides.visionModel ?? appConfig.visionModel ?? "").trim();
+    this.configuredVisionModelId = (overrides.visionModel ?? appConfig.visionModel ?? "").trim();
+    this.visionModelId = this.configuredVisionModelId || modelId;
     this.provider = normalizeDeepCccProvider(overrides.provider ?? appConfig.provider);
     this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();
     this.maxOutputTokens = normalizeMaxOutputTokens(

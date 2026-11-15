@@ -533,6 +533,52 @@ describe("BuiltinContextManager", () => {
     expect(JSON.stringify(message.toolCalls)).toContain("工具记录已截断");
   });
 
+  it("retains short task handles beside a large persisted tool result", () => {
+    const input = JSON.stringify({ taskId: "agent-example", waitMs: 15000 });
+    const output = JSON.stringify({ taskId: "agent-example", running: true });
+    const message = buildPersistedAssistantMessage({
+      fullText: "", transcriptLines: [], maxTranscriptChars: 1200,
+      toolCalls: [
+        { id: "large", name: "read_file", input: '{"path":"large.txt"}', output: "x".repeat(400_000) },
+        { id: "poll", name: "task_output", input, output },
+      ],
+    });
+    expect(message.toolCalls?.[1]?.input).toBe(input);
+    expect(message.toolCalls?.[1]?.output).toBe(output);
+    const size = message.toolCalls!.reduce((n, c) => n + (c.input?.length ?? 0) + (c.output?.length ?? 0), 0);
+    expect(size).toBeLessThanOrEqual(1200);
+  });
+
+  it("replays complete short task handles from a timeline containing a large result", () => {
+    const input = JSON.stringify({ taskId: "agent-example", waitMs: 15000 });
+    const output = JSON.stringify({ taskId: "agent-example", running: true });
+    const message = buildPersistedAssistantMessage({
+      fullText: "", transcriptLines: [],
+      timeline: [
+        { type: "tool_use", id: "large", name: "read_file", input: '{"path":"large.txt"}' },
+        { type: "tool_result", tool_use_id: "large", name: "read_file", output: "x".repeat(2_000_000) },
+        { type: "tool_use", id: "poll", name: "task_output", input },
+        { type: "tool_result", tool_use_id: "poll", name: "task_output", output },
+      ],
+    });
+    const context = new BuiltinContextManager({ persist: false });
+    context.appendMessage(message);
+    const replay = JSON.stringify(context.buildModelMessages());
+    expect(replay).toContain('"taskId":"agent-example"');
+    expect(replay).not.toContain('"raw":');
+    expect(message.timeline?.[2]).toEqual({ type: "tool_use", id: "poll", name: "task_output", input });
+    expect(message.timeline?.[3]).toEqual({ type: "tool_result", tool_use_id: "poll", name: "task_output", output });
+  });
+
+  it("honors a zero persisted tool payload budget without retaining the original tail", () => {
+    const message = buildPersistedAssistantMessage({
+      fullText: "", transcriptLines: [], maxTranscriptChars: 0,
+      toolCalls: [{ name: "read_file", input: "abc", output: "x".repeat(1000) }],
+    });
+    expect(message.toolCalls?.[0]?.input).toBe("");
+    expect(message.toolCalls?.[0]?.output).toBe("");
+  });
+
   it("reset clears memory and the persisted context file", async () => {
     const dir = await mkdtemp(join(tmpdir(), "chatccc-builtin-context-reset-"));
     const context = new BuiltinContextManager({

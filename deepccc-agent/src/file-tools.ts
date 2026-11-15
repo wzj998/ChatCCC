@@ -1967,6 +1967,7 @@ function startBackgroundTask(
 }
 
 export async function taskOutputForTool(input: TaskOutputInput): Promise<TaskOutputResult> {
+  requireCommandArguments("task_output", input, ["taskId"]);
   const entry = backgroundTasks.get(input.taskId);
   if (!entry) throw new Error(`未知的后台子代理：${input.taskId}`);
   await waitForBackgroundTask(entry, normalizeTaskOutputWaitMs(input.waitMs));
@@ -1974,6 +1975,7 @@ export async function taskOutputForTool(input: TaskOutputInput): Promise<TaskOut
 }
 
 export async function taskStopForTool(input: TaskStopInput): Promise<TaskStopResult> {
+  requireCommandArguments("task_stop", input, ["taskId"]);
   const entry = backgroundTasks.get(input.taskId);
   if (!entry) throw new Error(`未知的后台子代理：${input.taskId}`);
   if (!entry.done) {
@@ -2281,6 +2283,7 @@ export function createBuiltinFileTools(
         required: ["description"],
       }),
       execute: async (input, execOptions) => {
+        requireCommandArguments("task", input, ["description"]);
         if (!runTask) {
           throw new Error("task 工具不可用：当前环境未启用子代理执行器");
         }
