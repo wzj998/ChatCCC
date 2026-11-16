@@ -22,7 +22,10 @@ export async function formatMessageContent(message: {
 }): Promise<string> {
   const contentStr = message.content ?? "{}";
   let content: Record<string, unknown>;
-  try { content = JSON.parse(contentStr); } catch {
+  try {
+    const parsed: unknown = JSON.parse(contentStr);
+    content = isPostRecord(parsed) ? parsed : {};
+  } catch {
     // merge_forward 消息的 content 可能为空字符串，但可通过 message_id 调 API 获取子消息
     if (message.message_type === "merge_forward") {
       content = {};
@@ -40,7 +43,11 @@ export async function formatMessageContent(message: {
   }
 
   if (message.message_type === "post") {
-    return formatPostContentWithAttachments(content, message.message_id);
+    const text = await formatPostContentWithAttachments(content, message.message_id);
+    if (text) return text;
+    // Keep unsupported/empty rich posts visible instead of triggering the ingress empty-text drop.
+    console.warn(`[${ts()}] [POST] No readable content in rich-text message`);
+    return "[富文本消息暂无法解析，请将文字和附件分开发送]";
   }
 
   if (message.message_type === "image") {
@@ -83,34 +90,67 @@ export async function formatMessageContent(message: {
 }
 
 export function formatPostContent(content: Record<string, unknown>): string {
-  const paragraphs = getPostParagraphs(content);
-  if (!Array.isArray(paragraphs)) return "";
-
   const parts: string[] = [];
-  for (const line of paragraphs) {
-    if (!Array.isArray(line)) continue;
-    for (const elem of line) {
-      const el = elem as Record<string, unknown>;
-      if (!el || typeof el !== "object") continue;
-      const text = formatPostTextElement(el);
-      if (text) parts.push(text);
-    }
+  for (const el of getPostElements(content)) {
+    const text = formatPostTextElement(el);
+    if (text) parts.push(text);
   }
   return parts.join("\n").trim();
 }
 
-function getPostParagraphs(content: Record<string, unknown>): unknown[][] {
-  const direct = content.content;
-  if (Array.isArray(direct)) return direct as unknown[][];
+function isPostRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
+function getPostPayload(content: Record<string, unknown>): Record<string, unknown> {
+  const hasFields = (value: Record<string, unknown>) => Array.isArray(value.content)
+    || Array.isArray(value.content_v2) || Array.isArray(value.files) || Boolean(attachmentString(value.title));
+  if (hasFields(content)) return content;
   for (const locale of ["zh_cn", "en_us", "ja_jp"]) {
-    const localized = content[locale] as Record<string, unknown> | undefined;
-    if (localized && Array.isArray(localized.content)) {
-      return localized.content as unknown[][];
-    }
+    const localized = content[locale];
+    if (isPostRecord(localized) && hasFields(localized)) return localized;
   }
+  return content;
+}
 
-  return [];
+/** Both formatters must preserve title-only/file-list posts as well as inline attachments. */
+function getPostElements(content: Record<string, unknown>): Record<string, unknown>[] {
+  const post = getPostPayload(content);
+  const flatten = (value: unknown): Record<string, unknown>[] => Array.isArray(value)
+    ? value.flatMap(line => Array.isArray(line) ? line.filter(isPostRecord) : [])
+    : [];
+  const legacy = flatten(post.content);
+  // The API can return both versions; replaying both duplicates text and attachments.
+  const elements = legacy.length > 0 ? legacy : flatten(post.content_v2);
+  const files = Array.isArray(post.files) ? post.files.filter(isPostRecord) : [];
+  const filesByKey = new Map<string, Record<string, unknown>>();
+  for (const file of files) {
+    const key = attachmentString(file.file_key);
+    if (key && !filesByKey.has(key)) filesByKey.set(key, file);
+  }
+  const seenFileKeys = new Set<string>();
+  const result = elements.map(el => {
+    if (el.tag !== "file" && el.tag !== "media") return el;
+    const key = attachmentString(el.file_key);
+    if (key) seenFileKeys.add(key);
+    const metadata = filesByKey.get(key);
+    return metadata
+      ? { ...el, file_name: attachmentString(el.file_name) || attachmentString(metadata.file_name) }
+      : el;
+  });
+  const title = attachmentString(post.title);
+  const first = result[0];
+  const titleAlreadyInBody = first && (first.tag === "text" || first.tag === "p")
+    && attachmentString(first.text) === title;
+  if (title && !titleAlreadyInBody) result.unshift({ tag: "text", text: title });
+  // Top-level files have no inline position; append in their original order.
+  for (const file of files) {
+    const key = attachmentString(file.file_key);
+    if (key && seenFileKeys.has(key)) continue;
+    if (key) seenFileKeys.add(key);
+    result.push({ ...file, tag: "file" });
+  }
+  return result;
 }
 
 function attachmentString(value: unknown): string {
@@ -201,23 +241,14 @@ async function formatPostContentWithAttachments(
   content: Record<string, unknown>,
   messageId?: string,
 ): Promise<string> {
-  const paragraphs = getPostParagraphs(content);
-  if (!Array.isArray(paragraphs)) return "";
-
   const parts: string[] = [];
-  for (const line of paragraphs) {
-    if (!Array.isArray(line)) continue;
-    for (const elem of line) {
-      const el = elem as Record<string, unknown>;
-      if (!el || typeof el !== "object") continue;
+  for (const el of getPostElements(content)) {
+    const text = formatPostTextElement(el, messageId);
+    if (text) parts.push(text);
 
-      const text = formatPostTextElement(el, messageId);
-      if (text) parts.push(text);
-
-      const imageKey = getPostImageKey(el);
-      if (imageKey) {
-        parts.push(await formatPostImageElement(messageId, imageKey));
-      }
+    const imageKey = getPostImageKey(el);
+    if (imageKey) {
+      parts.push(await formatPostImageElement(messageId, imageKey));
     }
   }
   return parts.join("\n").trim();

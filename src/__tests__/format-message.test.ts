@@ -43,6 +43,99 @@ describe("mixed post attachments", () => {
     expect(mockGetOrDownloadImage).toHaveBeenCalledWith("mock_token", "om_post", "picture_key");
   });
 
+  it("preserves a title and top-level files when both content arrays have empty paragraphs", async () => {
+    const content = {
+      title: "Please inspect the attached archive",
+      content: [[]], content_v2: [[]],
+      files: [{ file_key: "archive_key", file_name: "sample archive.zip", is_folder: false }],
+    };
+    const result = await formatMessageContent({ message_id: "om_archive", message_type: "post", content: JSON.stringify(content) });
+    expect(result).toBe("Please inspect the attached archive\n[文件] message_id=om_archive file_key=archive_key file_name=sample archive.zip");
+    const sync = formatPostContent(content);
+    expect(sync).toContain("Please inspect the attached archive");
+    expect(sync).toContain("file_key=archive_key file_name=sample archive.zip");
+    expect(sync).toContain("缺少 message_id");
+    expect(mockGetOrDownloadImage).not.toHaveBeenCalled();
+  });
+
+  it("keeps title-only posts and localized title/file posts", async () => {
+    expect(await formatMessageContent({ message_type: "post", content: JSON.stringify({ title: "A standalone title", content: [[]] }) }))
+      .toBe("A standalone title");
+    const result = await formatMessageContent({ message_id: "om_local_file", message_type: "post", content: JSON.stringify({
+      zh_cn: { title: "Localized caption", content: [[]], files: [{ file_key: "localized_file", file_name: "sample.txt" }] },
+    }) });
+    expect(result).toBe("Localized caption\n[文件] message_id=om_local_file file_key=localized_file file_name=sample.txt");
+  });
+
+  it("uses content_v2 when the legacy body has no elements, without replaying both versions", async () => {
+    const content = { title: "Heading", content: [[]], content_v2: [[{ tag: "text", text: "Version two body" }]] };
+    expect(await formatMessageContent({ message_type: "post", content: JSON.stringify(content) })).toBe("Heading\nVersion two body");
+    expect(formatPostContent(content)).toBe("Heading\nVersion two body");
+    expect(formatPostContent({ ...content, content: [[{ tag: "text", text: "Legacy body" }]] })).toBe("Heading\nLegacy body");
+  });
+
+  it("does not repeat a title already present as the first body element", () => {
+    expect(formatPostContent({ title: "Heading", content: [[{ tag: "text", text: "Heading" }, { tag: "text", text: "Body" }]] }))
+      .toBe("Heading\nBody");
+  });
+
+  it("keeps attachment metadata once and fills an inline filename from the top-level file list", async () => {
+    const result = await formatMessageContent({ message_id: "om_duplicates", message_type: "post", content: JSON.stringify({
+      title: "Files", content: [[{ tag: "file", file_key: "same_key" }]],
+      files: [
+        { file_key: "same_key", file_name: "first.zip" },
+        { file_key: "same_key", file_name: "first.zip" },
+        { file_key: "second_key", file_name: "second.pdf" },
+      ],
+    }) });
+    expect(result).toBe("Files\n[文件] message_id=om_duplicates file_key=same_key file_name=first.zip\n[文件] message_id=om_duplicates file_key=second_key file_name=second.pdf");
+    expect(mockGetOrDownloadImage).not.toHaveBeenCalled();
+  });
+
+  it("reports incomplete top-level file metadata and ignores malformed entries safely", async () => {
+    const result = await formatMessageContent({ message_id: "om_partial", message_type: "post", content: JSON.stringify({
+      title: "Attachments", files: [null, "invalid", [], { file_name: "sample.zip" }],
+    }) });
+    expect(result).toContain("Attachments\n[文件] message_id=om_partial file_name=sample.zip");
+    expect(result).toContain("缺少 file_key");
+    expect(result).not.toContain("undefined");
+  });
+
+  it("passes title/file posts through merged forwards with the child's message id", async () => {
+    mockGetMergeForwardMessages.mockResolvedValue([{
+      message_id: "om_child_files", upper_message_id: "om_parent", msg_type: "post",
+      body: { content: JSON.stringify({ title: "Forwarded caption", content: [[]], files: [{ file_key: "forwarded_file", file_name: "sample.zip" }] }) },
+      sender: { id: "ou_sender" },
+    }]);
+    const result = await formatMergeForward("om_parent", {});
+    expect(result).toContain("Forwarded caption\n[文件] message_id=om_child_files file_key=forwarded_file file_name=sample.zip");
+  });
+
+  it("does not silently discard a post with no readable elements", async () => {
+    const result = await formatMessageContent({ message_type: "post", content: JSON.stringify({ content: [[]] }) });
+    expect(result).toContain("富文本消息暂无法解析");
+    expect(result).toContain("文字和附件分开发送");
+  });
+
+  it("skips empty locale wrappers and preserves another supported locale", () => {
+    expect(formatPostContent({ zh_cn: {}, en_us: { title: "English title", content: [[{ tag: "text", text: "English body" }]] } }))
+      .toBe("English title\nEnglish body");
+  });
+
+  it.each(["null", "[]"])("handles a malformed post container without crashing (%s)", async content => {
+    expect(await formatMessageContent({ message_type: "post", content })).toContain("富文本消息暂无法解析");
+  });
+
+  it("preserves heading, inline images and body order before appending top-level files", async () => {
+    const result = await formatMessageContent({ message_id: "om_order", message_type: "post", content: JSON.stringify({
+      title: "Heading", content: [[{ tag: "text", text: "Caption" }, { tag: "img", image_key: "actual_image" }]],
+      files: [{ file_key: "archive_key", file_name: "sample.zip", image_key: "not_an_image_attachment" }],
+    }) });
+    expect(result).toBe("Heading\nCaption\n[图片] C:\\tmp\\picture.png\n[文件] message_id=om_order file_key=archive_key file_name=sample.zip");
+    expect(mockGetOrDownloadImage).toHaveBeenCalledTimes(1);
+    expect(mockGetOrDownloadImage).toHaveBeenCalledWith("mock_token", "om_order", "actual_image");
+  });
+
   it("handles localized video posts without a cover or filename", async () => {
     const result = await formatMessageContent({
       message_id: "om_localized", message_type: "post",
