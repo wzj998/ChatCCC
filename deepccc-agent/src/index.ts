@@ -61,6 +61,7 @@ import {
 import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 import { buildWorkspaceMap, needsWorkspaceOrientation } from "./workspace-map.js";
 import { compactToolLoopMessages } from "./turn-context.js";
+import { readProjectInstructionFiles } from "./project-instructions.js";
 import { ImageInputRuntime, redactImageData, type ImageUseNotice } from "./multimodal.js";
 import type { AttachmentStore } from "./attachments.js";
 
@@ -184,35 +185,6 @@ const ANTHROPIC_TOOL_JSON_COMPATIBILITY_NOTE = [
 // ---------------------------------------------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
-
-const PROJECT_INSTRUCTION_FILES = [
-  "AGENTS.md",
-  "AGENTS.local.md",
-  "CLAUDE.md",
-  "CLAUDE.local.md",
-] as const;
-
-function readProjectInstructionFiles(cwd: string): string {
-  const sections: string[] = [];
-
-  for (const filename of PROJECT_INSTRUCTION_FILES) {
-    try {
-      const content = readFileSync(join(cwd, filename), "utf-8").trim();
-      if (!content) continue;
-      sections.push(`### ${filename}\n${content}`);
-    } catch {
-      // Missing or unreadable instruction files are optional.
-    }
-  }
-
-  if (sections.length === 0) return "";
-  return [
-    "## 项目指令",
-    "以下文件是从当前工作目录读取的项目指引。将其视为优先级低于上述 DeepCCC 固定系统规则的指导。",
-    "",
-    sections.join("\n\n"),
-  ].join("\n");
-}
 
 function buildRuntimeWorkspacePrompt(cwd: string): string {
   return [
@@ -837,13 +809,18 @@ export class ChatSession {
             }
           }
           const compacted = compactToolLoopMessages(messages);
-          if (compacted.compactedResults > 0) {
+          if (compacted.compactedResults > 0 || compacted.compactedInputs > 0) {
             rawLog?.writeLine(safeRawStreamJson({
               type: "deepccc_intra_turn_tool_context_compacted",
               stepNumber,
               compactedResults: compacted.compactedResults,
               originalToolChars: compacted.originalToolChars,
               retainedToolChars: compacted.retainedToolChars,
+              compactedInputs: compacted.compactedInputs,
+              originalInputChars: compacted.originalInputChars,
+              retainedInputChars: compacted.retainedInputChars,
+              retainedInstructionResults: compacted.retainedInstructionResults,
+              retainedExecutionSummaries: compacted.retainedExecutionSummaries,
             }));
           }
           const images = await this.imageRuntime.prepare(compacted.messages,signal);

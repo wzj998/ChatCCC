@@ -10,6 +10,82 @@ function toolPair(id: string, value: string): ModelMessage[] {
 }
 
 describe("compactToolLoopMessages", () => {
+  it("counts serialized escaping when enforcing the result budget", () => {
+    const result = compactToolLoopMessages(toolPair("escaped", '\\"\n'.repeat(40_000)), {
+      maxToolChars: 1_000, maxResultChars: 1_000,
+    });
+    const actual = result.messages.filter(m => m.role === "tool").reduce((sum, m) =>
+      sum + (Array.isArray(m.content) ? m.content.reduce((n, p) =>
+        n + (p.type === "tool-result" ? JSON.stringify(p.output).length : 0), 0) : 0), 0);
+    expect(actual).toBe(result.retainedToolChars);
+    expect(actual).toBeLessThanOrEqual(1_000);
+  });
+
+  it("does not resurrect an old skill after the newest read fails", () => {
+    const messages: ModelMessage[] = ["old", "new"].flatMap((id, index): ModelMessage[] => [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "read_file", input: { path: "/work/.agents/skills/audit/SKILL.md" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "read_file", output: index === 0
+        ? { type: "text", value: "OBSOLETE_INSTRUCTION" }
+        : { type: "error-text", value: "file unavailable" } }] },
+    ]);
+    const rendered = JSON.stringify(compactToolLoopMessages(messages).messages);
+    expect(rendered).not.toContain("OBSOLETE_INSTRUCTION");
+    expect(rendered).toContain("file unavailable");
+  });
+
+  it("retains a loaded skill when newer ordinary results consume the budget", () => {
+    const instruction = "MANDATORY: unread evidence cannot be signed.\n" + "rule ".repeat(600);
+    const messages: ModelMessage[] = [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "skill", toolName: "read_file", input: { path: "/work/.agents/skills/audit/SKILL.md" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "skill", toolName: "read_file", output: { type: "text", value: instruction } }] },
+      ...toolPair("newer-a", "a".repeat(5_200)),
+      ...toolPair("newer-b", "b".repeat(5_200)),
+      ...toolPair("status", "continue"),
+    ];
+    const result = compactToolLoopMessages(messages, { maxToolChars: 12_000, keepRecentResults: 1 });
+    expect(JSON.stringify(result.messages)).toContain("unread evidence cannot be signed");
+    expect(result.retainedToolChars).toBeLessThanOrEqual(12_000);
+  });
+
+  it("does not replay superseded reads of the same skill as current guidance", () => {
+    const read = (id: string, value: string): ModelMessage[] => [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "read_file", input: { path: "C:\\repo\\.agents\\skills\\audit\\SKILL.md" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "read_file", output: { type: "text", value } }] },
+    ];
+    const result = compactToolLoopMessages([
+      ...read("v1", "OBSOLETE_SKILL_RULE"), ...read("v2", "CURRENT_SKILL_RULE"),
+    ]);
+    const rendered = JSON.stringify(result.messages);
+    expect(rendered).toContain("CURRENT_SKILL_RULE");
+    expect(rendered).not.toContain("OBSOLETE_SKILL_RULE");
+  });
+
+  it("retains an execution failure summary after its large output is omitted", () => {
+    const messages: ModelMessage[] = [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "failed", toolName: "run_process", input: { executable: "validator", args: [] } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "failed", toolName: "run_process", output: { type: "json", value: { stdout: "x".repeat(80_000), exitCode: 1, stderr: "mandatory validation failed" } } }] },
+      ...toolPair("latest", "current evidence"),
+    ];
+    const result = compactToolLoopMessages(messages, { maxToolChars: 2_000, keepRecentResults: 1 });
+    expect(JSON.stringify(result.messages)).toContain("mandatory validation failed");
+    expect(JSON.stringify(result.messages)).toContain('"exitCode":1');
+    expect(result.retainedToolChars).toBeLessThanOrEqual(2_000);
+  });
+
+  it("bounds old script arguments without changing the persisted input or tool protocol", () => {
+    const messages: ModelMessage[] = [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "old-script", toolName: "run_script", input: { language: "python", code: "old_code = 1\n".repeat(30_000) } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "old-script", toolName: "run_script", output: { type: "text", value: "exitCode=0" } }] },
+      ...toolPair("a", "a"), ...toolPair("b", "b"), ...toolPair("c", "c"), ...toolPair("d", "d"),
+    ];
+    const before = JSON.stringify(messages);
+    const result = compactToolLoopMessages(messages);
+    expect(JSON.stringify(result.messages).length).toBeLessThan(50_000);
+    expect(JSON.stringify(messages)).toBe(before);
+    expect(result.messages.filter(message => message.role === "tool")).toHaveLength(5);
+    expect(JSON.stringify(result.messages)).toContain('"language":"python"');
+  });
+
   it("bounds older tool results while preserving message/tool protocol and recent evidence", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "investigate" },
