@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { omittedToolArgument } from "../tool-argument-replay.js";
 
 import {
   applyPatchForTool,
@@ -32,6 +33,26 @@ import {
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
+
+describe("omitted historical arguments", () => {
+  it("rejects a whole omitted content marker before changing an existing file", async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, "script.py"), "original", "utf8");
+    await expect(createFileForTool(dir, { path: "script.py", content: omittedToolArgument(90000), overwrite: true }))
+      .rejects.toThrow(/historical argument/i);
+    expect(await readFile(join(dir, "script.py"), "utf8")).toBe("original");
+  });
+
+  it("rejects a whole omitted script before spawning, while allowing literal markers inside source", async () => {
+    const dir = await makeTempDir();
+    await expect(runScriptForTool(dir, { language: "node", code: omittedToolArgument(90000) }))
+      .rejects.toThrow(/historical argument/i);
+    const code = `console.log(${JSON.stringify(omittedToolArgument(123))});`;
+    const result = await runScriptForTool(dir, { language: "node", code });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("OMITTED_TOOL_ARGUMENT");
+  });
+});
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "deepccc-tools-"));

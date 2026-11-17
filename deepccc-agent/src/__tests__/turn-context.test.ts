@@ -10,6 +10,19 @@ function toolPair(id: string, value: string): ModelMessage[] {
 }
 
 describe("compactToolLoopMessages", () => {
+  it("omits an oversized historical script as a whole value instead of a code-shaped excerpt", () => {
+    const input: ModelMessage[] = [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "script", toolName: "run_script",
+        input: { language: "python", code: "HEAD_CODE\n" + "x".repeat(100_000) + "\nTAIL_CODE" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "script", toolName: "run_script", output: { type: "text", value: "done" } }] },
+    ];
+    const result = compactToolLoopMessages(input);
+    const replay = JSON.stringify(result.messages);
+    expect(replay).not.toContain("HEAD_CODE");
+    expect(replay).not.toContain("TAIL_CODE");
+    expect(replay).toContain("OMITTED_TOOL_ARGUMENT");
+    expect(JSON.stringify(input)).toContain("HEAD_CODE");
+  });
   it("counts serialized escaping when enforcing the result budget", () => {
     const result = compactToolLoopMessages(toolPair("escaped", '\\"\n'.repeat(40_000)), {
       maxToolChars: 1_000, maxResultChars: 1_000,

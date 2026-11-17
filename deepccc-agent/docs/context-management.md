@@ -1,8 +1,10 @@
 # Context retention and recovery
 
 DeepCCC keeps a persisted conversation separately from the messages replayed to
-the model. Version 0.2.34 improves the latter without rewriting executed tool
-arguments, saved files or the persisted tool history.
+the model. Version 0.2.34 introduced bounded replay. Version 0.2.35 also keeps
+persisted structured payloads valid JSON and prevents code-shaped argument
+excerpts from being replayed as if they were complete programs. Executed original
+arguments, raw execution logs and saved source files are not rewritten.
 
 ## Project instructions
 
@@ -29,11 +31,28 @@ body is explicitly unavailable, so a successful exit alone never proves that
 evidence was inspected. Newer evidence is retained next, followed by other old
 results where space permits. Serialized escaping counts toward the budget.
 
-When historical tool arguments exceed 64,000 characters, long string values
-such as scripts are shortened in the replay clone. Keys, types and short values
-remain intact. This is a best-effort payload reduction, not a hard total limit
-for arbitrary large arrays or object keys. Executed calls are not changed. Read
-the saved script before reusing a shortened argument.
+When historical tool arguments exceed 64,000 characters, oversized string values
+such as scripts are replaced as whole values with a reserved omission marker.
+Short values, including paths and language names, remain where space permits.
+Large collections that cannot fit use an explicit unavailable-payload object.
+Code-shaped head/tail argument excerpts are no longer produced. The reserved
+whole-value marker is rejected by script execution and file creation tools before
+execution or writes; literal marker text inside ordinary source is allowed.
+
+Persisted arguments and JSON outputs are shortened inside parsed values, never
+by slicing the JSON document. Structured execution status is retained where the
+budget permits; body excerpts identify omitted text. Invalid legacy argument
+fragments replay as unavailable arguments, never as a `raw` executable wrapper.
+These representations are historical evidence, not reusable execution inputs.
+Read the actual saved script before reusing or editing it.
+
+Within a ChatSession, up to 32 latest skill/reference read results are cached
+from actual tool evidence, including failed-read tombstones. When bounded history
+still contains their matching calls, their original inputs/results are restored
+in the model-facing clone before the normal replay budget is applied. This keeps
+a user-message injection from permanently replacing a loaded skill with a clipped
+transcript. A failed newer read supersedes the old content. Ordinary documents
+are not cached by this mechanism, and instruction authority remains unchanged.
 
 Raw stream diagnostics record `deepccc_intra_turn_tool_context_compacted`,
 including both input/output size counts and retained instruction/status counts.
@@ -58,6 +77,7 @@ large advertised context window preserves all useful instructions:
 These changes do not replace model-specific token budgeting, durable task
 checkpoints, or domain validation. Skill retention is limited by the replay
 budget and available history; a whole-conversation summary can still remove
-earlier reads. After a checkpoint/resume or summary, reload the active skill and
+earlier calls. The instruction cache is in memory, not a durable cross-process
+registry. After a checkpoint/resume or summary, reload the active skill and
 validate the saved task state before continuing. Framework fixes cannot certify
 that the model read every relevant source or made a correct domain decision.

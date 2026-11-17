@@ -217,6 +217,29 @@ describe("ChatSession response transport", () => {
     expect(JSON.stringify(prepared.messages)).toContain("tool result shortened");
     expect(JSON.stringify(prepared.messages).length).toBeLessThan(JSON.stringify(messages).length);
   });
+
+  it("restores an actually read skill after bounded history replaces its output", async () => {
+    const { ChatSession } = await import("../index.js");
+    const session = new ChatSession({ apiKey: "sk-test" }, { persist: false });
+    const path = "/work/.agents/skills/audit/SKILL.md";
+    const content = "begin\n" + "rule ".repeat(900) + "MIDDLE_MANDATORY_INSTRUCTION" + "rule ".repeat(900);
+    streamTextMock.mockReturnValueOnce({ fullStream: fullStream(
+      { type: "tool-call", toolCallId: "loaded-skill", toolName: "read_file", input: { path } },
+      { type: "tool-result", toolCallId: "loaded-skill", toolName: "read_file", output: { path, content, truncated: false } },
+      { type: "text-delta", text: "ok" },
+    ) });
+    await collect(session.chat("load the current skill"));
+    const request = streamTextMock.mock.calls[0]?.[0];
+    const replay = [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "loaded-skill", toolName: "read_file", input: { path } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "loaded-skill", toolName: "read_file",
+        output: { type: "json", value: { path, content: "[[historical output unavailable]]" } } }] },
+    ];
+    const before = JSON.stringify(replay);
+    const result = await request.prepareStep({ messages: replay, stepNumber: 2 });
+    expect(JSON.stringify(result.messages)).toContain("MIDDLE_MANDATORY_INSTRUCTION");
+    expect(JSON.stringify(replay)).toBe(before);
+  });
   it.each(["missing", "length", "error"])("rejects an incomplete provider finish: %s", async (reason) => {
     const { ChatSession } = await import("../index.js");
     const contextDir = await mkdtemp(join(tmpdir(), "deepccc-incomplete-"));
@@ -1255,9 +1278,15 @@ describe("ChatSession context management", () => {
     await collect(session.chat("read many files"));
 
     const raw = await readFile(join(dir, "tool-cap", "context.json"), "utf8");
-    const state = JSON.parse(raw) as { messages: Array<{ content: string; timeline?: unknown }> };
+    const state = JSON.parse(raw) as { messages: Array<{ content: string; timeline?: Array<{ type: string; output?: string }> }> };
     expect(state.messages[1]?.content).toBe("done");
-    expect(JSON.stringify(state.messages[1]?.timeline)).toContain("工具记录已截断");
+    const outputs = state.messages[1]!.timeline!.filter(part => part.type === "tool_result").map(part => part.output!);
+    expect(outputs).toHaveLength(12);
+    expect(outputs.reduce((sum, output) => sum + output.length, 0)).toBeLessThanOrEqual(24_000);
+    for (const output of outputs) {
+      expect(() => JSON.parse(output)).not.toThrow();
+      expect(JSON.parse(output).content.length).toBeLessThan(8_000);
+    }
   });
 
   it("persists structured tool calls without duplicating a text transcript", async () => {

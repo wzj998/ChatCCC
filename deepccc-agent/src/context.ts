@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { compactJsonText } from "./tool-argument-replay.js";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -428,15 +429,16 @@ function truncateStructuredToolCalls(
   if (total <= maxChars) return calls;
   const budgets = toolPayloadBudgets(payloads.map(value => value.length), maxChars);
   let payloadIndex = 0;
-  const truncatePayload = (value: string | undefined): string | undefined => {
+  const truncatePayload = (value: string | undefined, output: boolean): string | undefined => {
     if (value === undefined || value.length === 0) return value;
     const budget = budgets[payloadIndex++]!;
-    return truncateMiddle(value, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER);
+    return compactJsonText(value, budget, output)
+      ?? truncateMiddle(value, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER);
   };
   return calls.map((call) => ({
     ...call,
-    ...(call.input !== undefined ? { input: truncatePayload(call.input) } : {}),
-    ...(call.output !== undefined ? { output: truncatePayload(call.output) } : {}),
+    ...(call.input !== undefined ? { input: truncatePayload(call.input, false) } : {}),
+    ...(call.output !== undefined ? { output: truncatePayload(call.output, true) } : {}),
   }));
 }
 
@@ -497,11 +499,13 @@ function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): Buil
     }
     if (entry.type === "tool_use" && entry.input !== undefined) {
       const budget = entry.input.length ? toolBudgets[toolPayloadIndex++]! : 0;
-      return { ...entry, input: truncatePayload(entry.input, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
+      return { ...entry, input: compactJsonText(entry.input, budget)
+        ?? truncatePayload(entry.input, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
     }
     if (entry.type === "tool_result" && entry.output !== undefined) {
       const budget = entry.output.length ? toolBudgets[toolPayloadIndex++]! : 0;
-      return { ...entry, output: truncatePayload(entry.output, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
+      return { ...entry, output: compactJsonText(entry.output, budget, true)
+        ?? truncatePayload(entry.output, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
     }
     return entry;
   });
@@ -512,7 +516,7 @@ function parseToolInput(value: string | undefined): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    return { raw: value };
+    return { __deepccc_input_unavailable: true, originalChars: value.length };
   }
 }
 
