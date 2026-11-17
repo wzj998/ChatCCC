@@ -118,7 +118,7 @@ describe("DeepCCC file tools", () => {
     const tools = createBuiltinFileTools(dir) as unknown as Record<
       string, { execute: (input: unknown, options: unknown) => Promise<unknown> }
     >;
-    for (const input of [null, [], "{}", { language: "node" }, { language: "node", code: 42 }]) {
+    for (const input of [null, [], "{}", { code: "print('unused')" }, { language: "node" }, { language: "node", code: 42 }]) {
       await expect(Promise.resolve().then(() => tools.run_script.execute(input, {})))
         .rejects.toThrow(/Invalid run_script arguments:.*language.*code/);
     }

@@ -2009,10 +2009,16 @@ function requireCommandArguments(
 ): void {
   const value = input && typeof input === "object" && !Array.isArray(input)
     ? input as Record<string, unknown> : undefined;
-  if (!value || requiredStrings.some((key) => typeof value[key] !== "string"
-    || (!allowEmpty.includes(key) && !(value[key] as string).trim()))) {
+  const invalidFields = requiredStrings.filter((key) => !value || typeof value[key] !== "string"
+    || (!allowEmpty.includes(key) && !(value[key] as string).trim()));
+  if (!value || invalidFields.length > 0) {
+    const detail = value
+      ? `Missing or invalid string fields: ${invalidFields.join(", ")}. `
+      : "The supplied arguments are not a JSON object. ";
     throw new Error(
       `Invalid ${name} arguments: expected a structured object with string fields ${requiredStrings.join(", ")}. `
+      + detail
+      + (name === "run_script" ? "Always pass language explicitly as python or node; there is no default language. " : "")
       + "Pass these named fields directly; do not wrap the arguments in raw or a JSON string.",
     );
   }
@@ -2170,7 +2176,7 @@ export function createBuiltinFileTools(
       },
     }),
     run_script: tool<RunScriptInput, RunCommandOutput>({
-      description: "运行多行 Node.js 或 Python 脚本，代码通过 stdin 传入解释器（shell:false），避免 python -c/node -e 的多层引号问题。Python 默认优先使用 cwd 下的 .venv，也可显式指定 executable。",
+      description: "运行多行 Node.js 或 Python 脚本。必须显式提供 language（python 或 node）和完整 code，不能只传 code；无默认语言。代码通过 stdin 传入解释器（shell:false），避免 python -c/node -e 的多层引号问题。Python 默认优先使用 cwd 下的 .venv，也可显式指定 executable。",
       inputSchema: jsonSchema<RunScriptInput>({
         type: "object",
         additionalProperties: false,
