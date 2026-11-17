@@ -3,91 +3,232 @@ import type { ModelMessage, ToolResultPart } from "ai";
 export const DEFAULT_STEP_TOOL_CONTEXT_CHARS = 96_000;
 export const DEFAULT_STEP_TOOL_RESULT_CHARS = 24_000;
 export const DEFAULT_STEP_RECENT_RESULTS = 4;
+export const DEFAULT_STEP_TOOL_INPUT_CHARS = 64_000;
+export const DEFAULT_STEP_INSTRUCTION_CHARS = 32_000;
 const OMITTED = "[earlier tool result omitted from subsequent model steps to keep this turn within its context budget; rerun a focused read/search if still needed]";
 const TRUNCATED = "...[tool result shortened for subsequent model steps]...";
+const INPUT_TRUNCATED = "...[historical tool input shortened; original execution/history unchanged; reread saved files before reuse]...";
 
 export interface CompactToolLoopOptions {
   maxToolChars?: number;
   maxResultChars?: number;
   keepRecentResults?: number;
+  maxToolInputChars?: number;
+  maxInstructionChars?: number;
 }
 export interface CompactToolLoopResult {
   messages: ModelMessage[];
   originalToolChars: number;
   retainedToolChars: number;
   compactedResults: number;
+  originalInputChars: number;
+  retainedInputChars: number;
+  compactedInputs: number;
+  retainedInstructionResults: number;
+  retainedExecutionSummaries: number;
 }
 
-function serialized(output: ToolResultPart["output"]): string {
-  try { return JSON.stringify(output); } catch { return String(output); }
+function serialized(value: unknown): string {
+  try { return JSON.stringify(value) ?? String(value); } catch { return String(value); }
+}
+
+function excerpt(value: string, maximum: number, marker: string): string {
+  if (value.length <= maximum) return value;
+  const available = Math.max(0, maximum - marker.length);
+  const head = Math.ceil(available * 0.6);
+  const tail = Math.max(0, available - head);
+  return value.slice(0, head) + marker + (tail ? value.slice(-tail) : "");
 }
 
 function shortened(output: ToolResultPart["output"], maximum: number): ToolResultPart["output"] {
   const raw = serialized(output);
   if (raw.length <= maximum) return output;
-  const available = Math.max(0, maximum - TRUNCATED.length - 2);
-  const head = Math.ceil(available * 0.6);
-  const tail = Math.max(0, available - head);
-  return { type: "text", value: `${raw.slice(0, head)}${TRUNCATED}${tail ? raw.slice(-tail) : ""}` };
+  let allowance = Math.max(0, maximum - 40);
+  // Escaping happens again when the excerpt is serialized into a model message.
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const result: ToolResultPart["output"] = { type: "text", value: excerpt(raw, allowance, TRUNCATED) };
+    const size = serialized(result).length;
+    if (size <= maximum) return result;
+    allowance = Math.max(0, allowance - Math.max(1, size - maximum));
+  }
+  return { type: "text", value: "[output omitted; reread evidence]" };
 }
 
-/** Bound tool payload replayed by the AI SDK between steps of one turn. */
+function instructionPath(input: unknown): { key: string; primary: boolean } | undefined {
+  if (!input || typeof input !== "object") return;
+  const path = (input as { path?: unknown }).path;
+  if (typeof path !== "string") return;
+  const normalized = path.replace(/\\/g, "/").replace(/\/\.\//g, "/");
+  if (!/(?:^|\/)skills\/.+\/(?:SKILL\.md|references\/.+\.md)$/i.test(normalized)) return;
+  return { key: /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized,
+    primary: /\/SKILL\.md$/i.test(normalized) };
+}
+
+function recordValue(output: ToolResultPart["output"]): Record<string, unknown> | undefined {
+  let value: unknown = "value" in output ? output.value : undefined;
+  if (typeof value === "string" && value.trim().startsWith("{")) {
+    try { value = JSON.parse(value); } catch { return; }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+function executionSummary(output: ToolResultPart["output"]): { output: ToolResultPart["output"]; failed: boolean } | undefined {
+  const value = recordValue(output);
+  const failed = output.type === "error-text" || output.type === "error-json"
+    || value?.timedOut === true || value?.is_error === true
+    || (typeof value?.exitCode === "number" && value.exitCode !== 0);
+  if (!failed && (!value || !("exitCode" in value || "taskId" in value || "running" in value))) return;
+  const summary: Record<string, string | number | boolean | null> = {
+    contextSummary: true, executionFailed: failed, originalOutputChars: serialized(output).length,
+    outputOmitted: true,
+    notice: "Output body is not retained here; inspect saved artifacts before claiming it was read.",
+  };
+  if (value) {
+    for (const key of ["exitCode", "signal", "timedOut", "running", "backgrounded", "taskId", "cwd", "command"]) {
+      const item = value[key];
+      if (typeof item === "string") summary[key] = excerpt(item, 600, "...[omitted]...");
+      else if (item === null || typeof item === "number" || typeof item === "boolean") summary[key] = item;
+    }
+    if (failed && typeof value.stderr === "string") summary.stderr = excerpt(value.stderr, 1200, "...[stderr omitted]...");
+    if (failed && typeof value.error === "string") summary.error = excerpt(value.error, 600, "...[error omitted]...");
+  } else if ("value" in output) summary.error = excerpt(serialized(output.value), 1200, "...[error omitted]...");
+  return { output: { type: "json", value: summary }, failed };
+}
+
+/** Preserve argument keys/types, while trimming oversized historical string values. */
+function shortenedInput(input: unknown, maximum: number): unknown {
+  if (serialized(input).length <= maximum) return input;
+  const box = { value: structuredClone(input) };
+  const strings: Array<{ owner: Record<string, unknown> | unknown[]; key: string | number }> = [];
+  const visit = (owner: Record<string, unknown> | unknown[], key: string | number) => {
+    const value = (owner as Record<string, unknown>)[key];
+    if (typeof value === "string") strings.push({ owner, key });
+    else if (Array.isArray(value)) value.forEach((_, index) => visit(value, index));
+    else if (value && typeof value === "object") Object.keys(value).forEach(child => visit(value as Record<string, unknown>, child));
+  };
+  visit(box, "value");
+  strings.sort((a, b) => String((b.owner as Record<string, unknown>)[b.key]).length
+    - String((a.owner as Record<string, unknown>)[a.key]).length);
+  for (const item of strings) {
+    const owner = item.owner as Record<string, unknown>;
+    const value = owner[item.key] as string;
+    if (value.length < 256) continue;
+    for (let attempt = 0; attempt < 5 && serialized(box.value).length > maximum; attempt++) {
+      const excess = serialized(box.value).length - maximum;
+      owner[item.key] = excerpt(owner[item.key] as string,
+        Math.max(INPUT_TRUNCATED.length, (owner[item.key] as string).length - excess), INPUT_TRUNCATED);
+    }
+    if (serialized(box.value).length <= maximum) break;
+  }
+  return box.value;
+}
+
+/** Changes only a model-facing clone, never executed calls or persisted history. */
 export function compactToolLoopMessages(
   input: readonly ModelMessage[],
   options: CompactToolLoopOptions = {},
 ): CompactToolLoopResult {
   const maximum = Math.max(1_000, options.maxToolChars ?? DEFAULT_STEP_TOOL_CONTEXT_CHARS);
   const perResult = Math.max(500, options.maxResultChars ?? DEFAULT_STEP_TOOL_RESULT_CHARS);
-  const keepRecent = Math.max(0, options.keepRecentResults ?? DEFAULT_STEP_RECENT_RESULTS);
+  const keepRecent = Math.max(0, Math.floor(options.keepRecentResults ?? DEFAULT_STEP_RECENT_RESULTS));
   const messages = structuredClone(input) as ModelMessage[];
-  const refs: Array<{ message: number; part: number; original: number }> = [];
-  for (let message = 0; message < messages.length; message += 1) {
-    const item = messages[message];
-    if (item.role !== "tool" || !Array.isArray(item.content)) continue;
-    for (let part = 0; part < item.content.length; part += 1) {
-      const content = item.content[part];
-      if (content.type !== "tool-result") continue;
-      refs.push({ message, part, original: serialized(content.output).length });
+  const callInstructions = new Map<string, ReturnType<typeof instructionPath>>();
+  const calls: Array<{ part: { input: unknown }; original: number }> = [];
+  for (const message of messages) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type !== "tool-call") continue;
+      if (part.toolName === "read_file") callInstructions.set(part.toolCallId, instructionPath(part.input));
+      calls.push({ part, original: serialized(part.input).length });
     }
   }
-  const originalToolChars = refs.reduce((sum, ref) => sum + ref.original, 0);
-  let retainedToolChars = 0;
-  let compactedResults = 0;
-  const omittedOutput: ToolResultPart["output"] = { type: "text", value: OMITTED };
-  const omittedSize = serialized(omittedOutput).length;
-  const recentCount = Math.min(keepRecent, refs.length);
-  const olderCount = refs.length - recentCount;
-  const recentCap = recentCount > 0
-    ? Math.max(500, Math.min(perResult, Math.floor(Math.max(0, maximum - olderCount * omittedSize) / recentCount)))
-    : perResult;
-  const prepared = refs.map((ref, index) => {
-    const message = messages[ref.message];
-    if (message.role !== "tool" || !Array.isArray(message.content)) return null;
-    const part = message.content[ref.part];
-    if (part.type !== "tool-result") return null;
-    const recent = index >= refs.length - keepRecent;
-    const capped = shortened(part.output, recent ? recentCap : perResult);
-    return { message, partIndex: ref.part, part, capped, cappedSize: serialized(capped).length, recent };
-  }).filter((item): item is NonNullable<typeof item> => item !== null);
-  // Start from the smallest protocol-valid representation, protecting the most
-  // recent results (still capped individually), then spend remaining budget on
-  // older evidence from newest to oldest.
-  for (const item of prepared) {
-    const output = item.recent ? item.capped : omittedOutput;
-    item.message.content[item.partIndex] = { ...item.part, output };
-    retainedToolChars += item.recent ? item.cappedSize : omittedSize;
-    if (serialized(item.part.output) !== serialized(output)) compactedResults += 1;
+  const originalInputChars = calls.reduce((sum, call) => sum + call.original, 0);
+  const inputMaximum = Math.max(1_000, options.maxToolInputChars ?? DEFAULT_STEP_TOOL_INPUT_CHARS);
+  if (originalInputChars > inputMaximum) {
+    const olderCount = Math.max(0, calls.length - keepRecent);
+    const recentSize = calls.slice(olderCount).reduce((sum, call) => sum + Math.min(16_000, call.original), 0);
+    const olderCap = Math.max(256, Math.min(4_000, Math.floor(Math.max(0, inputMaximum - recentSize) / Math.max(1, olderCount))));
+    calls.forEach((call, index) => { call.part.input = shortenedInput(call.part.input, index < olderCount ? olderCap : 16_000); });
   }
-  for (let index = prepared.length - keepRecent - 1; index >= 0; index -= 1) {
-    const item = prepared[index];
-    const delta = item.cappedSize - omittedSize;
-    // A short status/error can cost less than the omission marker. Always
-    // restore such results: this retains evidence and reduces replay size.
-    if (delta > 0 && retainedToolChars + delta > maximum) continue;
-    item.message.content[item.partIndex] = { ...item.part, output: item.capped };
-    retainedToolChars += delta;
-    if (serialized(item.part.output) !== serialized(omittedOutput)) compactedResults -= 1;
-    if (serialized(item.part.output) !== serialized(item.capped)) compactedResults += 1;
+
+  const refs: Array<{ message: Extract<ModelMessage, { role: "tool" }>; partIndex: number;
+    part: ToolResultPart; original: number; instruction: ReturnType<typeof instructionPath>;
+    status: ReturnType<typeof executionSummary>; superseded: boolean }> = [];
+  for (const message of messages) {
+    if (message.role !== "tool" || !Array.isArray(message.content)) continue;
+    for (const [partIndex, part] of message.content.entries()) {
+      if (part.type !== "tool-result") continue;
+      refs.push({ message, partIndex, part, original: serialized(part.output).length,
+        instruction: callInstructions.get(part.toolCallId), status: executionSummary(part.output), superseded: false });
+    }
   }
-  return { messages, originalToolChars, retainedToolChars, compactedResults };
+  const latestInstruction = new Map<string, number>();
+  refs.forEach((item, index) => { if (item.instruction) latestInstruction.set(item.instruction.key, index); });
+  refs.forEach((item, index) => { item.superseded = !!item.instruction && latestInstruction.get(item.instruction.key) !== index; });
+  let omitted: ToolResultPart["output"] = { type: "text", value: OMITTED };
+  if (refs.length * serialized(omitted).length > maximum / 2) omitted = { type: "text", value: "[earlier output omitted; reread focused evidence]" };
+  if (refs.length * serialized(omitted).length > maximum) omitted = { type: "text", value: "[omitted]" };
+  if (refs.length * serialized(omitted).length > maximum) {
+    throw new Error("Too many tool results for this context budget; checkpoint and start a new turn");
+  }
+  const outputs: ToolResultPart["output"][] = refs.map(item => item.superseded
+    ? { type: "text", value: "[superseded instruction read omitted; use the later read of this same file]" }
+    : omitted);
+  let retainedToolChars = outputs.reduce((sum, output) => sum + serialized(output).length, 0);
+  if (retainedToolChars > maximum) {
+    outputs.forEach((_, index) => { outputs[index] = omitted; });
+    retainedToolChars = outputs.reduce((sum, output) => sum + serialized(output).length, 0);
+  }
+  const selected = new Set<number>();
+  const restore = (index: number, desired: ToolResultPart["output"], limit = maximum): boolean => {
+    const before = serialized(outputs[index]).length;
+    const available = Math.min(limit, maximum - retainedToolChars + before);
+    if (available < 100 && serialized(desired).length > available) return false;
+    const output = serialized(desired).length <= available ? desired : shortened(desired, available);
+    const size = serialized(output).length;
+    if (size > available) return false;
+    outputs[index] = output;
+    retainedToolChars += size - before;
+    selected.add(index);
+    return true;
+  };
+  refs.forEach((item, index) => {
+    if (!item.superseded && item.original <= serialized(outputs[index]).length) restore(index, item.part.output);
+  });
+  let instructionSpent = 0;
+  const instructionBudget = Math.min(options.maxInstructionChars ?? DEFAULT_STEP_INSTRUCTION_CHARS, Math.floor(maximum / 2));
+  const instructionIndices = [...latestInstruction.values()].sort((a, b) =>
+    Number(refs[b].instruction?.primary) - Number(refs[a].instruction?.primary) || b - a);
+  for (const index of instructionIndices) {
+    if (selected.has(index) || refs[index].status?.failed) continue;
+    const allowance = Math.min(perResult, instructionBudget - instructionSpent);
+    if (allowance < 100) continue;
+    if (restore(index, refs[index].part.output, allowance)) instructionSpent += serialized(outputs[index]).length;
+  }
+  for (let index = refs.length - 1; index >= 0; index--) {
+    if (!selected.has(index) && !refs[index].superseded && refs[index].status?.failed) restore(index, refs[index].status!.output);
+  }
+  for (let index = Math.max(0, refs.length - keepRecent); index < refs.length; index++) {
+    if (!selected.has(index) && !refs[index].superseded) restore(index, refs[index].part.output, perResult);
+  }
+  for (let index = refs.length - keepRecent - 1; index >= 0; index--) {
+    if (selected.has(index) || refs[index].superseded) continue;
+    const desired = shortened(refs[index].part.output, perResult);
+    if (serialized(desired).length - serialized(outputs[index]).length <= maximum - retainedToolChars) restore(index, desired);
+    else if (refs[index].status) restore(index, refs[index].status!.output);
+  }
+  refs.forEach((item, index) => { item.message.content[item.partIndex] = { ...item.part, output: outputs[index] }; });
+  return {
+    messages,
+    originalToolChars: refs.reduce((sum, item) => sum + item.original, 0),
+    retainedToolChars,
+    compactedResults: refs.filter((item, index) => serialized(item.part.output) !== serialized(outputs[index])).length,
+    originalInputChars,
+    retainedInputChars: calls.reduce((sum, call) => sum + serialized(call.part.input).length, 0),
+    compactedInputs: calls.filter(call => serialized(call.part.input).length !== call.original).length,
+    retainedInstructionResults: instructionIndices.filter(index => selected.has(index) && !refs[index].status?.failed).length,
+    retainedExecutionSummaries: refs.filter((item, index) => selected.has(index) && item.status
+      && serialized(item.part.output) !== serialized(outputs[index])).length,
+  };
 }

@@ -91,6 +91,21 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it("bounds oversized project guidance while retaining its head, tail and local overrides", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-large-project-guidance-"));
+    await writeFile(join(dir, "AGENTS.md"), "CURRENT_PROJECT_RULE\n" + "obsolete audit checkpoint\n".repeat(50_000) + "\nTAIL_PROJECT_RULE");
+    await writeFile(join(dir, "AGENTS.local.md"), "LOCAL_PROJECT_OVERRIDE");
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+    await collect(new ChatSession({ apiKey: "sk-test" }, { cwd: dir, persist: false }).chat("continue"));
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("CURRENT_PROJECT_RULE");
+    expect(system).toContain("TAIL_PROJECT_RULE");
+    expect(system).toContain("LOCAL_PROJECT_OVERRIDE");
+    expect(Buffer.byteLength(system)).toBeLessThan(100_000);
+    expect(system).toMatch(/(?:omitted|excerpt|截断)/i);
+  });
+
   it("restricts actual tools and skips automatic workspace maps outside the allowlist", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-selected-tools-"));
