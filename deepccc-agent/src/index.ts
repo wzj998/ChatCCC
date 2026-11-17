@@ -192,7 +192,7 @@ function buildRuntimeWorkspacePrompt(cwd: string): string {
   return [
     `当前工作目录：${cwd}`,
     "需要理解代码、配置、项目结构、测试或 git 状态时，主动使用 read_file、list_dir、search_code 和命令执行工具。",
-    "单个程序优先使用 run_process 的结构化 executable/args；多行 Python/Node 使用 run_script；只有 &&、管道、重定向等 shell 场景才使用 run_command。用 cwd 参数切换目录，不要前置 cd。先检查 exitCode、stdout 和 stderr 再决定下一步。",
+    "单个程序优先使用 run_process 的结构化 executable/args；多行 Python/Node 使用 run_script，必须显式提供 language（python/node）和完整 code，不能仅传 code；只有 &&、管道、重定向等 shell 场景才使用 run_command。用 cwd 参数切换目录，不要前置 cd。先检查 exitCode、stdout 和 stderr 再决定下一步。",
     "编辑前先阅读相关文件范围。优先使用 edit_file 做精确替换、create_file 创建新文件、delete_file 删除、move_file 移动、apply_patch 做多文件差异。",
     "文件工具通过 DeepCCC 在本地执行。可行时优先使用带 SHA-256 前置条件的受保护编辑，避免覆盖并发用户修改。",
   ].join("\n");
