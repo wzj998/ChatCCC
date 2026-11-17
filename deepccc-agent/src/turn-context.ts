@@ -1,4 +1,6 @@
 import type { ModelMessage, ToolResultPart } from "ai";
+import { compactJsonValue } from "./tool-argument-replay.js";
+import { instructionPath } from "./instruction-replay.js";
 
 export const DEFAULT_STEP_TOOL_CONTEXT_CHARS = 96_000;
 export const DEFAULT_STEP_TOOL_RESULT_CHARS = 24_000;
@@ -7,7 +9,6 @@ export const DEFAULT_STEP_TOOL_INPUT_CHARS = 64_000;
 export const DEFAULT_STEP_INSTRUCTION_CHARS = 32_000;
 const OMITTED = "[earlier tool result omitted from subsequent model steps to keep this turn within its context budget; rerun a focused read/search if still needed]";
 const TRUNCATED = "...[tool result shortened for subsequent model steps]...";
-const INPUT_TRUNCATED = "...[historical tool input shortened; original execution/history unchanged; reread saved files before reuse]...";
 
 export interface CompactToolLoopOptions {
   maxToolChars?: number;
@@ -54,16 +55,6 @@ function shortened(output: ToolResultPart["output"], maximum: number): ToolResul
   return { type: "text", value: "[output omitted; reread evidence]" };
 }
 
-function instructionPath(input: unknown): { key: string; primary: boolean } | undefined {
-  if (!input || typeof input !== "object") return;
-  const path = (input as { path?: unknown }).path;
-  if (typeof path !== "string") return;
-  const normalized = path.replace(/\\/g, "/").replace(/\/\.\//g, "/");
-  if (!/(?:^|\/)skills\/.+\/(?:SKILL\.md|references\/.+\.md)$/i.test(normalized)) return;
-  return { key: /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized,
-    primary: /\/SKILL\.md$/i.test(normalized) };
-}
-
 function recordValue(output: ToolResultPart["output"]): Record<string, unknown> | undefined {
   let value: unknown = "value" in output ? output.value : undefined;
   if (typeof value === "string" && value.trim().startsWith("{")) {
@@ -98,30 +89,7 @@ function executionSummary(output: ToolResultPart["output"]): { output: ToolResul
 
 /** Preserve argument keys/types, while trimming oversized historical string values. */
 function shortenedInput(input: unknown, maximum: number): unknown {
-  if (serialized(input).length <= maximum) return input;
-  const box = { value: structuredClone(input) };
-  const strings: Array<{ owner: Record<string, unknown> | unknown[]; key: string | number }> = [];
-  const visit = (owner: Record<string, unknown> | unknown[], key: string | number) => {
-    const value = (owner as Record<string, unknown>)[key];
-    if (typeof value === "string") strings.push({ owner, key });
-    else if (Array.isArray(value)) value.forEach((_, index) => visit(value, index));
-    else if (value && typeof value === "object") Object.keys(value).forEach(child => visit(value as Record<string, unknown>, child));
-  };
-  visit(box, "value");
-  strings.sort((a, b) => String((b.owner as Record<string, unknown>)[b.key]).length
-    - String((a.owner as Record<string, unknown>)[a.key]).length);
-  for (const item of strings) {
-    const owner = item.owner as Record<string, unknown>;
-    const value = owner[item.key] as string;
-    if (value.length < 256) continue;
-    for (let attempt = 0; attempt < 5 && serialized(box.value).length > maximum; attempt++) {
-      const excess = serialized(box.value).length - maximum;
-      owner[item.key] = excerpt(owner[item.key] as string,
-        Math.max(INPUT_TRUNCATED.length, (owner[item.key] as string).length - excess), INPUT_TRUNCATED);
-    }
-    if (serialized(box.value).length <= maximum) break;
-  }
-  return box.value;
+  return compactJsonValue(input, maximum);
 }
 
 /** Changes only a model-facing clone, never executed calls or persisted history. */

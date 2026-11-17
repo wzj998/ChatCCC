@@ -573,9 +573,16 @@ describe("ChatSession context management", () => {
     await collect(session.chat("read many files"));
 
     const raw = await readFile(join(dir, "tool-cap", "context.json"), "utf8");
-    const state = JSON.parse(raw) as { messages: Array<{ content: string; timeline?: unknown }> };
+    const state = JSON.parse(raw) as { messages: Array<{ content: string; timeline?: Array<{ type: string; output?: string }> }> };
     expect(state.messages[1]?.content).toBe("done");
-    expect(JSON.stringify(state.messages[1]?.timeline)).toContain("工具记录已截断");
+    const results = state.messages[1]?.timeline?.filter(item => item.type === "tool_result") ?? [];
+    expect(results).toHaveLength(12);
+    expect(results.reduce((total, item) => total + (item.output?.length ?? 0), 0)).toBeLessThanOrEqual(24_000);
+    for (const item of results) {
+      const output = JSON.parse(item.output!) as { content: string };
+      expect(output.content.length).toBeLessThan(8_000);
+      expect(output.content).toContain("DEEPCCC_OMITTED_TOOL_OUTPUT");
+    }
   });
 
   it("persists structured tool calls without duplicating a text transcript", async () => {

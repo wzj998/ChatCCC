@@ -62,6 +62,8 @@ import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 import { buildWorkspaceMap, needsWorkspaceOrientation } from "./workspace-map.js";
 import { compactToolLoopMessages } from "./turn-context.js";
 import { readProjectInstructionFiles } from "./project-instructions.js";
+import { compactJsonText } from "./tool-argument-replay.js";
+import { InstructionReplayCache } from "./instruction-replay.js";
 import { ImageInputRuntime, redactImageData, type ImageUseNotice } from "./multimodal.js";
 import type { AttachmentStore } from "./attachments.js";
 
@@ -445,6 +447,7 @@ interface ChatMessage {
 }
 
 export class ChatSession {
+  private instructionReplay = new InstructionReplayCache();
   private allowedTools?: string[];
   private model: any;
   /** 子模型实例；未配置 subModel 时与主模型同一实例 */
@@ -808,7 +811,8 @@ export class ChatSession {
               throw new InputInjectionInterrupt();
             }
           }
-          const compacted = compactToolLoopMessages(messages);
+          this.instructionReplay.capture(messages);
+          const compacted = compactToolLoopMessages(this.instructionReplay.restore(messages));
           if (compacted.compactedResults > 0 || compacted.compactedInputs > 0) {
             rawLog?.writeLine(safeRawStreamJson({
               type: "deepccc_intra_turn_tool_context_compacted",
@@ -903,6 +907,7 @@ export class ChatSession {
                 safeAccumulated += safeText;
                 yield { type: "text", text: safeText, accumulated: safeAccumulated };
               } else if (part.type === "tool-call") {
+                this.instructionReplay.observeCall(part.toolCallId, part.toolName, part.input);
                 const input = safeJson(part.input);
                 toolContext.push(`tool_call ${part.toolName}: ${input}`);
                 toolCallsById.set(part.toolCallId, { id: part.toolCallId, name: part.toolName, input });
@@ -915,6 +920,7 @@ export class ChatSession {
                   input: applyPrivacyToJson(part.input),
                 };
               } else if (part.type === "tool-result") {
+                this.instructionReplay.observeFileResult(part.toolCallId, part.output);
                 const output = truncateToolContext(safeJson(part.output));
                 toolContext.push(`tool_result ${part.toolName}: ${output}`);
                 const call = toolCallsById.get(part.toolCallId);
@@ -929,6 +935,7 @@ export class ChatSession {
                 };
               } else if (part.type === "tool-error") {
                 const message = errorMessage(part.error);
+                this.instructionReplay.observeError(part.toolCallId, message);
                 toolContext.push(`tool_error ${part.toolName}: ${message}`);
                 const call = toolCallsById.get(part.toolCallId);
                 if (call) {
@@ -1196,7 +1203,8 @@ function safeRawStreamJson(value: unknown): string {
 }
 
 function truncateToolContext(value: string): string {
-  return value.length > 8000 ? `${value.slice(0, 8000)}...[truncated]` : value;
+  return compactJsonText(value, 8000, true)
+    ?? (value.length > 8000 ? `${value.slice(0, 8000)}...[truncated]` : value);
 }
 
 function formatDuration(ms: number): string {

@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
+import { isOmittedToolArgument } from "./tool-argument-replay.js";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
 
@@ -1500,6 +1501,9 @@ export async function runScriptForTool(
   if (typeof input.code !== "string" || !input.code.trim()) {
     throw new Error("code is required");
   }
+  if (isOmittedToolArgument(input.code)) {
+    throw new Error("This historical argument was omitted; read the complete saved file or rebuild the full script before reuse");
+  }
   if (Buffer.byteLength(input.code, "utf8") > MAX_SCRIPT_BYTES) {
     throw new Error(`script exceeds ${MAX_SCRIPT_BYTES} bytes`);
   }
@@ -1650,6 +1654,9 @@ export async function editFileForTool(cwd: string, input: EditFileInput): Promis
 }
 
 export async function createFileForTool(cwd: string, input: CreateFileInput): Promise<FileWriteOutput> {
+  if (isOmittedToolArgument(input.content)) {
+    throw new Error("This historical argument was omitted; read the complete saved file or rebuild the full content before reuse");
+  }
   const filePath = resolveToolPath(cwd, input.path);
   assertTextSize(filePath, input.content, MAX_CREATE_BYTES);
 

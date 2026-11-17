@@ -533,6 +533,42 @@ describe("BuiltinContextManager", () => {
     expect(JSON.stringify(message.toolCalls)).toContain("工具记录已截断");
   });
 
+  it("keeps oversized persisted tool arguments valid JSON without executable excerpts", () => {
+    const message = buildPersistedAssistantMessage({
+      fullText: "", transcriptLines: [], maxTranscriptChars: 600,
+      toolCalls: [{ id: "script", name: "run_script",
+        input: JSON.stringify({ language: "python", path: "saved.py", code: "HEAD_CODE\n" + "x".repeat(60_000) + "\nTAIL_CODE" }),
+        output: '{"exitCode":0}' }],
+    });
+    const args = JSON.parse(message.toolCalls![0].input!);
+    expect(args.language).toBe("python");
+    expect(args.path).toBe("saved.py");
+    expect(args.code).not.toContain("HEAD_CODE");
+    expect(args.code).not.toContain("TAIL_CODE");
+    expect(message.toolCalls![0].input!.length).toBeLessThanOrEqual(600);
+  });
+
+  it("preserves structured execution status when a persisted output body is oversized", () => {
+    const message = buildPersistedAssistantMessage({
+      fullText: "", transcriptLines: [], maxTranscriptChars: 600,
+      toolCalls: [{ id: "failed", name: "run_process", input: '{"executable":"validator"}',
+        output: JSON.stringify({ stdout: "x".repeat(60_000), exitCode: 7, stderr: "validation failed" }) }],
+    });
+    const result = JSON.parse(message.toolCalls![0].output!);
+    expect(result.exitCode).toBe(7);
+    expect(result.stderr).toBe("validation failed");
+    expect(result.stdout).not.toContain("x".repeat(500));
+  });
+
+  it("never replays a truncated legacy JSON fragment as raw executable tool arguments", () => {
+    const context = new BuiltinContextManager({ persist: false });
+    context.appendMessage({ role: "assistant", content: "", toolCalls: [{ id: "legacy", name: "run_script",
+      input: '{"code":"unfinished...[工具记录已截断]...', output: "interrupted" }] });
+    const replay = JSON.stringify(context.buildModelMessages());
+    expect(replay).not.toContain('"raw":');
+    expect(replay).not.toContain("unfinished");
+  });
+
   it("retains short task handles beside a large persisted tool result", () => {
     const input = JSON.stringify({ taskId: "agent-example", waitMs: 15000 });
     const output = JSON.stringify({ taskId: "agent-example", running: true });
