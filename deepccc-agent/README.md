@@ -379,6 +379,14 @@ deepccc-cli --stream-json --prompt "检查这个仓库并总结测试命令"
 echo "运行测试并解释失败原因" | deepccc-cli --stream-json
 ```
 
+`--stream-json` 默认对工具/正文事件应用展示层隐私替换。需要把执行路径、原文及其 SHA 交给本地程序继续处理时，可以显式使用原始流：
+
+```bash
+deepccc-cli --raw-stream-json --prompt "Read the specified files" > machine-events.jsonl
+```
+
+此选项隐含 JSONL 模式，保留工具参数、结果、错误和正文的原始字符串，`start.event_payloads` 为 `original`。原始流可能包含未脱敏内容，应存入受信任的本地工作流；公开展示前仍需脱敏。它不修改全局隐私设置、模型输入、持久化上下文或工具权限，也不输出模型推理正文。程序化集成可给 `ChatSession` 传 `redactEvents: false`；省略时维持默认展示脱敏。不要把展示流中的别名路径当作可执行路径，或把脱敏后的正文与原文件 SHA 当作逐字节一致的数据。
+
 输出是逐行 JSON：
 
 ```jsonl

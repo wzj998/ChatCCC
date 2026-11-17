@@ -16,6 +16,25 @@ const tsxCli = requireFromHere.resolve("tsx/cli");
 const cliArgs = (...args: string[]) => [tsxCli, cliSource, ...args];
 
 describe("deepccc cli --stream-json", () => {
+  it("documents explicit raw JSONL and keeps startup errors machine-readable", async () => {
+    const help = await execFileAsync(process.execPath, cliArgs("--help"), {
+      cwd: dirname(cliSource), timeout: 10_000, windowsHide: true,
+      env: { ...process.env, DEEPCCC_BASE_URL: "https://example.test/v1" },
+    });
+    expect(help.stdout).toContain("--raw-stream-json");
+    let caught: unknown;
+    try {
+      await execFileAsync(process.execPath, cliArgs("--raw-stream-json", "--prompt", "hello", "--api-key", ""), {
+        cwd: dirname(cliSource), timeout: 10_000, windowsHide: true,
+      });
+    } catch (error) { caught = error; }
+    expect(caught).toMatchObject({ code: 1 });
+    const lines = ((caught as { stdout?: string }).stdout ?? "").trim().split(/\r?\n/).filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
+    expect(JSON.parse(lines.at(-1)!)).toMatchObject({ type: "error" });
+  }, 20_000);
+
   it("documents a per-invocation allowlist and rejects missing or empty names", async () => {
     const help = await execFileAsync(process.execPath, cliArgs("--help"), {
       cwd: dirname(cliSource), timeout: 10_000, windowsHide: true,

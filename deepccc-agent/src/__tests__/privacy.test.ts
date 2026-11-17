@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,6 +55,8 @@ import {
   reloadPrivacyRules,
 } from "../privacy.js";
 import { ChatSession } from "../index.js";
+import type { ChatSessionOptions } from "../index.js";
+import { readFileForTool } from "../file-tools.js";
 
 const streamTextMock = aiMocks.streamText;
 const generateTextMock = aiMocks.generateText;
@@ -237,6 +239,64 @@ describe("applyPrivacyToJson", () => {
 });
 
 describe("ChatSession privacy integration", () => {
+  it("keeps opt-in machine events lossless while display privacy remains enabled", async () => {
+    writePrivacy(JSON.stringify({ enabled: true, rules: { "private-user": "display-user" } }));
+    reloadPrivacyRules();
+    const folder = mkdtempSync(join(tmpdir(), "deepccc-machine-events-"));
+    try {
+      const path = join(folder, "private-user.txt");
+      writeFileSync(path, "private-user original payload", "utf8");
+      const output = await readFileForTool(folder, { path });
+      const session = new ChatSession({ apiKey: "sk-test" }, {
+        sessionId: "machine-events", redactEvents: false,
+      } as ChatSessionOptions);
+      streamTextMock.mockReturnValueOnce({ fullStream: fullStream(
+        { type: "reasoning-delta", text: "hidden model reasoning" },
+        { type: "tool-call", toolCallId: "raw-call", toolName: "read_file", input: { path } },
+        { type: "tool-result", toolCallId: "raw-call", toolName: "read_file", output },
+        { type: "text-delta", text: "private-user result" },
+      ) });
+      const events = await collect(session.chat("read the original file"));
+      expect(events).toContainEqual({ type: "tool_use", id: "raw-call", name: "read_file", input: { path } });
+      expect(events).toContainEqual({ type: "tool_result", tool_use_id: "raw-call", name: "read_file", content: output, is_error: false });
+      const returned = (events.find((event: any) => event.type === "tool_result") as any).content;
+      expect(readFileSync(returned.path, "utf8")).toBe(returned.content);
+      expect(returned.sha256).toBe(output.sha256);
+      expect(events).toContainEqual({ type: "done", text: "private-user result" });
+      expect(JSON.stringify(events)).not.toContain("hidden model reasoning");
+      expect(getPrivacyConfig().enabled).toBe(true);
+      expect(applyPrivacy("private-user")).toBe("display-user");
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let one raw session disable redaction in later default sessions", async () => {
+    writePrivacy(JSON.stringify({ enabled: true, rules: { "private-user": "display-user" } }));
+    reloadPrivacyRules();
+    streamTextMock.mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: "private-user" }) });
+    const raw = new ChatSession({ apiKey: "sk-test" }, { sessionId: "raw-one", redactEvents: false } as ChatSessionOptions);
+    expect(await collect(raw.chat("raw"))).toContainEqual({ type: "done", text: "private-user" });
+    streamTextMock.mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: "private-user" }) });
+    const display = new ChatSession({ apiKey: "sk-test" }, { sessionId: "display-two" });
+    expect(await collect(display.chat("display"))).toContainEqual({ type: "done", text: "display-user" });
+  });
+
+  it("preserves raw malformed inputs and tool errors without treating them as executable objects", async () => {
+    writePrivacy(JSON.stringify({ enabled: true, rules: { "private-user": "display-user" } }));
+    reloadPrivacyRules();
+    const rawInput = '{"path":private-user}';
+    const session = new ChatSession({ apiKey: "sk-test" }, { sessionId: "raw-errors", redactEvents: false } as ChatSessionOptions);
+    streamTextMock.mockReturnValueOnce({ fullStream: fullStream(
+      { type: "tool-call", toolCallId: "invalid-call", toolName: "read_file", input: rawInput },
+      { type: "tool-error", toolCallId: "invalid-call", toolName: "read_file", error: new Error("private-user invalid input") },
+      { type: "text-delta", text: "private-user recovered" },
+    ) });
+    const events = await collect(session.chat("recover"));
+    expect(events).toContainEqual({ type: "tool_use", id: "invalid-call", name: "read_file", input: rawInput });
+    expect(events).toContainEqual({ type: "tool_result", tool_use_id: "invalid-call", name: "read_file", content: "private-user invalid input", is_error: true });
+  });
+
   it("replaces privacy tokens in text, done, tool_use and tool_result events", async () => {
     writePrivacy(JSON.stringify({ enabled: true, rules: { weizhangjian: "wzj" } }));
     reloadPrivacyRules();

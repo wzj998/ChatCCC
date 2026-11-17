@@ -129,6 +129,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
       listSessions = true;
     } else if (arg === "--stream-json") {
       streamJson = true;
+    } else if (arg === "--raw-stream-json") {
+      streamJson = true;
+      options.redactEvents = false;
     } else if (arg === "--prompt" && next !== undefined) {
       prompt = next;
       i++;
@@ -177,6 +180,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --resume [id]        Resume latest cwd session, or the explicit session id",
     "  --list-sessions      List saved sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",
+    "  --raw-stream-json    JSONL with original tool/text payloads for trusted local automation; bypasses display redaction",
     "  --prompt <text>      Prompt text for --stream-json",
     "  --image <path>      Attach a PNG/JPEG/WebP/GIF file (repeatable; quote paths with spaces)",
     "  Interactive: /image <path> queues one image for your next message; repeat for multiple images",
@@ -367,6 +371,7 @@ async function runStreamJson(args: ParsedArgs): Promise<number> {
     mode: resolvedSession.mode,
     cwd,
     model: args.config.model ?? runtime.appConfig.model,
+    event_payloads: args.options.redactEvents === false ? "original" : "display-redacted",
     attachments: attachments.map((attachment) => ({
       attachment_id: attachment.attachmentId,
       name: attachment.originalName,

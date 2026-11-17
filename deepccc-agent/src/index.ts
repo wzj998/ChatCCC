@@ -350,6 +350,10 @@ export interface ChatSessionConfig {
 }
 
 export interface ChatSessionOptions {
+  /** Event presentation only. Defaults to true; false emits original tool/text
+   * payloads for trusted local machine consumers. Does not change model input,
+   * persisted context, global privacy rules, or tool permissions. */
+  redactEvents?: boolean;
   /** Per-invocation builtin tool allowlist. Undefined keeps all tools; [] exposes none.
    * Does not bypass permissions or sandbox code run through an allowed tool. */
   allowedTools?: readonly string[];
@@ -447,6 +451,7 @@ interface ChatMessage {
 }
 
 export class ChatSession {
+  private readonly redactEvents: boolean;
   private instructionReplay = new InstructionReplayCache();
   private allowedTools?: string[];
   private model: any;
@@ -594,6 +599,7 @@ export class ChatSession {
       );
     }
 
+    this.redactEvents = options.redactEvents !== false;
     const baseURL = overrides.baseURL ?? appConfig.baseURL;
     const modelId = overrides.model ?? appConfig.model;
     this.modelId = modelId;
@@ -691,6 +697,14 @@ export class ChatSession {
       systemContent.push("", skillsPrompt);
     }
     return systemContent.join("\n");
+  }
+
+  private eventText(text: string): string {
+    return this.redactEvents ? applyPrivacy(text) : text;
+  }
+
+  private eventJson(value: unknown): unknown {
+    return this.redactEvents ? applyPrivacyToJson(value) : value;
   }
 
   async *chat(
@@ -901,9 +915,9 @@ export class ChatSession {
                 const previous = timeline[timeline.length - 1];
                 if (previous?.type === "text") previous.text += part.text;
                 else timeline.push({ type: "text", text: part.text });
-                // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
-                // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
-                const safeText = applyPrivacy(part.text);
+                // Event redaction defaults to display mode. Explicit machine
+                // consumers can opt out; persisted/model context stays original.
+                const safeText = this.eventText(part.text);
                 safeAccumulated += safeText;
                 yield { type: "text", text: safeText, accumulated: safeAccumulated };
               } else if (part.type === "tool-call") {
@@ -917,7 +931,7 @@ export class ChatSession {
                   type: "tool_use",
                   id: part.toolCallId,
                   name: part.toolName,
-                  input: applyPrivacyToJson(part.input),
+                  input: this.eventJson(part.input),
                 };
               } else if (part.type === "tool-result") {
                 this.instructionReplay.observeFileResult(part.toolCallId, part.output);
@@ -930,7 +944,7 @@ export class ChatSession {
                   type: "tool_result",
                   tool_use_id: part.toolCallId,
                   name: part.toolName,
-                  content: applyPrivacyToJson(part.output),
+                  content: this.eventJson(part.output),
                   is_error: false,
                 };
               } else if (part.type === "tool-error") {
@@ -947,7 +961,7 @@ export class ChatSession {
                   type: "tool_result",
                   tool_use_id: part.toolCallId,
                   name: part.toolName,
-                  content: applyPrivacy(message),
+                  content: this.eventText(message),
                   is_error: true,
                 };
               } else if (part.type === "error") {
@@ -956,7 +970,7 @@ export class ChatSession {
                   throw new InputInjectionInterrupt();
                 }
                 const message = errorMessage(part.error);
-                yield { type: "error", message: applyPrivacy(message) };
+                yield { type: "error", message: this.eventText(message) };
                 throw new Error(message);
               }
             }
@@ -1052,7 +1066,7 @@ export class ChatSession {
         yield { type: "done", text: safeAccumulated };
         return;
       }
-      yield { type: "error", message: applyPrivacy(message) };
+      yield { type: "error", message: this.eventText(message) };
       throw err;
     } finally {
       const rawLogConfig = appConfig.rawStreamLogs;
