@@ -31,4 +31,14 @@ describe("structured historical payloads", () => {
     expect(isOmittedToolArgument(`console.log(${JSON.stringify(marker)});`)).toBe(false);
     expect(isOmittedToolArgument("ordinary omitted wording")).toBe(false);
   });
+
+  it("keeps damaged and whitespace-wrapped reserved markers unavailable without guessing an artifact", () => {
+    for(const marker of [
+      `[[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=${"a".repeat(63)}.txt]]`,
+      ` \n${omittedToolArgument(40)}\n`,
+      "[[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=broken",
+    ])expect(isOmittedToolArgument(marker)).toBe(true);
+    expect(isOmittedToolArgument('console.log("[[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=broken]]");')).toBe(false);
+    expect(isOmittedToolArgument("[[DEEPCCC_OMITTED_TOOL_ARGUMENTS ordinary identifier]]")).toBe(false);
+  });
 });

@@ -4,7 +4,10 @@ export function omittedToolArgument(characters: number): string {
 }
 
 export function isOmittedToolArgument(value: unknown): boolean {
-  return typeof value === "string" && /^\[\[DEEPCCC_OMITTED_TOOL_ARGUMENT (?:chars=\d+; read the original saved file before reuse|artifact=[a-f0-9]{64}\.txt)\]\]$/.test(value);
+  // A model may damage the hash, delimiters or surrounding whitespace. Such a
+  // reserved metadata value is still unavailable input, never executable code.
+  // Literal marker text inside an ordinary script remains ordinary source.
+  return typeof value === "string" && /^\s*\[\[DEEPCCC_OMITTED_TOOL_ARGUMENT(?=\s|\]|$)/.test(value);
 }
 
 /** The callback saves an original string and returns a marker only after storage succeeds. */

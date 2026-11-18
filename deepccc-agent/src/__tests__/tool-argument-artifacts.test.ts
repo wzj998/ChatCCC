@@ -129,6 +129,32 @@ describe("recoverable tool argument artifacts", () => {
     expect(check).not.toHaveBeenCalled();await expect(access(join(dir,"never-written.txt"))).rejects.toThrow();
   });
 
+  it("rejects damaged whole-value references before permissions, execution or writes",async()=>{
+    const {dir}=await manager();const check=vi.fn().mockResolvedValue("allow");
+    const tools=createBuiltinFileTools(dir,{permissionGate:{check} as never}) as any;
+    const damaged=`[[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=${"a".repeat(63)}.txt]]`;
+    for(const marker of [damaged,` \n${damaged}\n`,"[[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=broken"]){
+      await expect(tools.run_script.execute({language:"node",code:marker},{})).rejects.toThrow(/historical argument/);
+      await expect(tools.create_file.execute({path:"never-malformed.txt",content:marker},{})).rejects.toThrow(/historical argument/);
+      await expect(tools.run_process.execute({executable:process.execPath,args:["-e",marker]},{})).rejects.toThrow(/historical argument/);
+    }
+    expect(check).not.toHaveBeenCalled();await expect(access(join(dir,"never-malformed.txt"))).rejects.toThrow();
+  });
+
+  it("points to the affected field and verified-name artifact without echoing other argument values",async()=>{
+    const {dir,context}=await manager();const marker=context.preserveToolArgument(code)!;
+    const check=vi.fn().mockResolvedValue("allow");
+    const tools=createBuiltinFileTools(dir,{permissionGate:{check} as never,toolArgumentArtifactDir:context.toolArgumentArtifactDirectory}) as any;
+    let error:unknown;
+    try{await tools.run_process.execute({executable:process.execPath,args:["PRIVATE_VALUE_DO_NOT_ECHO",marker]},{});}catch(e){error=e;}
+    const message=String(error);
+    expect(message).toContain("input.args[1]");
+    expect(message).toContain(join(context.toolArgumentArtifactDirectory,artifactName(marker)));
+    expect(message).not.toContain("PRIVATE_VALUE_DO_NOT_ECHO");
+    await expect(tools.run_script.execute({__deepccc_input_artifact:"broken"},{})).rejects.toThrow(/do not guess a hash/);
+    expect(check).not.toHaveBeenCalled();
+  });
+
   it("keeps unavailable fallback for inputs exceeding the readable artifact size limit", async () => {
     const {context}=await manager();
     expect(context.preserveToolArgument("x".repeat(MAX_TOOL_ARGUMENT_ARTIFACT_BYTES+1))).toBeUndefined();

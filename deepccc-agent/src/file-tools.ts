@@ -2036,21 +2036,31 @@ function requireCommandArguments(
   }
 }
 
-function requireCompleteHistoricalArguments(input: unknown): void {
-  const pending: unknown[] = [input];
+function requireCompleteHistoricalArguments(input: unknown, argumentArtifactDirectory?: string): void {
+  const pending: Array<{value:unknown;field:string}> = [{value:input,field:"input"}];
   const seen = new WeakSet<object>();
   while (pending.length) {
-    const value = pending.pop();
+    const {value,field} = pending.pop()!;
     const metadata = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
-    const artifactReference = typeof metadata?.__deepccc_input_artifact === "string"
-      && /^[a-f0-9]{64}\.txt$/.test(metadata.__deepccc_input_artifact);
+    const artifactReference = typeof metadata?.__deepccc_input_artifact === "string";
     if (isOmittedToolArgument(value) || artifactReference || metadata?.__deepccc_input_unavailable === true
         || metadata?.__deepccc_payload_unavailable === true) {
-      throw new Error("This historical argument was omitted; read its referenced artifact or original saved file before reuse");
+      const candidate = artifactReference ? metadata!.__deepccc_input_artifact as string
+        : typeof value === "string" ? value.match(/^\s*\[\[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=([a-f0-9]{64}\.txt)\]\]\s*$/)?.[1] : undefined;
+      const filename = candidate && /^[a-f0-9]{64}\.txt$/.test(candidate) ? candidate : undefined;
+      const hint = filename && argumentArtifactDirectory
+        ? `Try read_file at ${join(argumentArtifactDirectory,filename)}; the reader verifies the content hash. If absent, use the original saved file. `
+        : filename ? `Artifact reference: ${filename}. Read the original saved file or the actual session artifact directory. `
+        : "The reference is incomplete or has no recoverable artifact name; inspect the actual saved file/session artifacts and do not guess a hash. ";
+      throw new Error(`This historical argument was omitted at ${field}; ${hint}Read complete content and check the current task before reuse; never execute the marker.`);
     }
     if (value && typeof value === "object" && !seen.has(value)) {
       seen.add(value);
-      for (const child of Object.values(value)) pending.push(child);
+      if(Array.isArray(value))value.forEach((child,index)=>pending.push({value:child,field:`${field}[${index}]`}));
+      else for(const [key,child] of Object.entries(value)) {
+        const known=["code","content","args","command","path","executable","old_string","new_string","patch","input","raw"].includes(key);
+        pending.push({value:child,field:field+(known?`.${key}`:".[nested]")});
+      }
     }
   }
 }
@@ -2562,7 +2572,7 @@ export function createBuiltinFileTools(
     const execute = definition.execute;
     if (!execute) continue;
     definition.execute = (input, executionOptions) => {
-      try { requireCompleteHistoricalArguments(input); }
+      try { requireCompleteHistoricalArguments(input,options.toolArgumentArtifactDir); }
       catch (error) { return Promise.reject(error); }
       return execute(input, executionOptions);
     };
