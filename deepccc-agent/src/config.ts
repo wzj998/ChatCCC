@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type DeepCccProvider = "openai" | "anthropic";
+export type DeepCccProvider = "openai" | "openai-responses" | "anthropic";
 
 export interface DeepCccConfig {
   /** API protocol/provider. Defaults to OpenAI-compatible. */
@@ -118,8 +118,8 @@ function optionalPositiveInteger(value: unknown): number | undefined {
 export function normalizeDeepCccProvider(value: unknown): DeepCccProvider {
   if (value === undefined || value === null || String(value).trim() === "") return "openai";
   const normalized = String(value).trim().toLowerCase();
-  if (normalized === "openai" || normalized === "anthropic") return normalized;
-  throw new Error(`DEEPCCC_PROVIDER/provider must be "openai" or "anthropic", received: ${String(value)}`);
+  if (normalized === "openai" || normalized === "openai-responses" || normalized === "anthropic") return normalized;
+  throw new Error(`DEEPCCC_PROVIDER/provider must be "openai", "openai-responses" or "anthropic", received: ${String(value)}`);
 }
 
 export function loadConfig(): DeepCccConfig {

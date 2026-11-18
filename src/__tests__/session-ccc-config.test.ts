@@ -77,7 +77,7 @@ describe("CCC Agent ChatCCC configuration", () => {
     });
   });
 
-  it("forwards ccc.provider override to createCccAdapter", () => {
+  it.each(["anthropic", "openai-responses"])("forwards ccc.provider=%s override to createCccAdapter", (provider) => {
     Object.assign(config.ccc, {
       DEEPSEEK_API_KEY: "chatccc-api-key",
       DEEPSEEK_BASE_URL: "https://chatccc.example.com/v1",
@@ -85,7 +85,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       subModel: "",
       effort: "",
       maxOutputTokens: null,
-      provider: "anthropic",
+      provider,
       compactionTimeoutMs: 12345,
     });
 
@@ -95,7 +95,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       apiKey: "chatccc-api-key",
       baseURL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
-      provider: "anthropic",
+      provider,
       compactionTimeoutMs: 12345,
       contextWindow: config.ccc.contextWindow,
       hasPendingInjection: expect.any(Function),
