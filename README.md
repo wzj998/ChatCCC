@@ -484,6 +484,10 @@ Agent 的初始化、输入回显与重连通知不代表任务成功。Cursor�
 
 ---
 
+## 联合发布
+
+ChatCCC 与独立 Deepccc 是两个 npm 包。联合发布须分别更新版本、检查构建产物并发布，合并 ChatCCC PR 不代表 ChatCCC npm 已更新。流程为私有 dev 开发测试并推送、私有 PR 合并、同步公开 dev、公开 PR 以 merge commit 合并、同步独立 Deepccc main、验证并发布两个 npm 包；内核无新增变化时复用已验证的同版本包，不重复发布同一版本。发布完成以 registry 中两个版本及产物摘要核同为准，本机安装和运行中进程版本分别核验。
+
 ## 技术栈
 
 TypeScript（发布前编译为 JavaScript，tsx 仅用于开发）/ Node.js >= 20 / AI SDK / Anthropic Claude Agent SDK（按需下载）/ DeepSeek Harness SDK + JSON-RPC Runtime（按需下载，要求 Node.js >= 22.19.0）/ Cursor Agent CLI / Codex CLI / 飞书 WebSocket API / CardKit / 微信 iLink
