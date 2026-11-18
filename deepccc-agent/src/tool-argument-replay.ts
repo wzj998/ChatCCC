@@ -4,10 +4,21 @@ export function omittedToolArgument(characters: number): string {
 }
 
 export function isOmittedToolArgument(value: unknown): boolean {
-  return typeof value === "string" && /^\[\[DEEPCCC_OMITTED_TOOL_ARGUMENT chars=\d+; read the original saved file before reuse\]\]$/.test(value);
+  return typeof value === "string" && /^\[\[DEEPCCC_OMITTED_TOOL_ARGUMENT (?:chars=\d+; read the original saved file before reuse|artifact=[a-f0-9]{64}\.txt)\]\]$/.test(value);
 }
 
-export function compactJsonValue(value: unknown, maximum: number, output = false): unknown {
+/** The callback saves an original string and returns a marker only after storage succeeds. */
+export type ToolArgumentPreserver = (text: string) => string | undefined;
+
+export function artifactToolArgument(filename: string): string {
+  if (!/^[a-f0-9]{64}\.txt$/.test(filename)) throw new Error("Invalid tool argument artifact name");
+  return `[[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=${filename}]]`;
+}
+
+const ARTIFACT_MARKER_CHARS = artifactToolArgument("0".repeat(64)+".txt").length;
+
+export function compactJsonValue(value: unknown, maximum: number, output = false,
+  preserveArgument?: ToolArgumentPreserver): unknown {
   const raw = JSON.stringify(value);
   if (raw === undefined) return value;
   if (raw.length <= maximum) return value;
@@ -24,9 +35,12 @@ export function compactJsonValue(value: unknown, maximum: number, output = false
   leaves.sort((a, b) => (b.object[b.key] as string).length - (a.object[a.key] as string).length);
   for (const leaf of leaves) {
     const text = leaf.object[leaf.key] as string;
+    if (!output && isOmittedToolArgument(text)) continue;
+    const artifact = !output && preserveArgument && text.length > ARTIFACT_MARKER_CHARS
+      ? preserveArgument(text) : undefined;
     const replacement = output
       ? `[[DEEPCCC_OMITTED_TOOL_OUTPUT chars=${text.length}; inspect the saved evidence]]`
-      : omittedToolArgument(text.length);
+      : artifact ?? omittedToolArgument(text.length);
     if (replacement.length >= text.length) continue;
     if (output) {
       const otherChars = JSON.stringify(box.value).length - JSON.stringify(text).length;
@@ -43,6 +57,16 @@ export function compactJsonValue(value: unknown, maximum: number, output = false
       leaf.object[leaf.key] = replacement;
     }
     if (JSON.stringify(box.value).length <= maximum) return box.value;
+  }
+  if (!output && preserveArgument) {
+    // If a complete argument object does not fit, retain a short reference to
+    // its bounded projection. Nested artifact markers still recover original strings.
+    const marker = preserveArgument(JSON.stringify(box.value, null, 2));
+    const filename = marker?.match(/^\[\[DEEPCCC_OMITTED_TOOL_ARGUMENT artifact=([a-f0-9]{64}\.txt)\]\]$/)?.[1];
+    if (filename) {
+      const reference = { __deepccc_input_artifact: filename };
+      if (JSON.stringify(reference).length <= maximum) return reference;
+    }
   }
   // A large collection of small fields may not fit. Keep valid JSON and state
   // that the historical arguments are unavailable rather than inventing a raw call.
@@ -62,10 +86,11 @@ export function compactJsonValue(value: unknown, maximum: number, output = false
 }
 
 /** Undefined means plain text, so callers can retain their text-output policy. */
-export function compactJsonText(text: string, maximum: number, output = false): string | undefined {
+export function compactJsonText(text: string, maximum: number, output = false,
+  preserveArgument?: ToolArgumentPreserver): string | undefined {
   if (maximum < 2) return "";
   if (text.length <= maximum) return text;
   let value: unknown;
   try { value = JSON.parse(text); } catch { return undefined; }
-  return JSON.stringify(compactJsonValue(value, maximum, output));
+  return JSON.stringify(compactJsonValue(value, maximum, output, preserveArgument));
 }

@@ -689,6 +689,9 @@ export class ChatSession {
       systemContent.push("", projectInstructions);
     }
     systemContent.push("", buildRuntimeWorkspacePrompt(this.cwd));
+    if (this.context.persist) {
+      systemContent.push("", `历史工具参数工件目录：${this.context.toolArgumentArtifactDirectory}。遇到 DEEPCCC_OMITTED_TOOL_ARGUMENT 的 artifact=文件名，或 __deepccc_input_artifact 字段，先用 read_file 读取该目录对应文件；JSON 工件内可能还有需继续读取的参数工件引用。文件名的 SHA-256 对应文件内容，读取器会校验。工件只读，需要修改时另存工作文件。工件只是曾生成的参数，不代表调用成功；复用前核对当前任务、文件与授权，不执行占位符。未带工件的省略标记可能来自旧历史、保存失败或超出上限，须读取原文件或日志，不能猜测原值。`);
+    }
     if (this.customSystemPrompt) {
       systemContent.push("", this.customSystemPrompt);
     }
@@ -733,6 +736,7 @@ export class ChatSession {
       // Validate/filter before compaction can contact a Provider. The same map
       // controls both advertised definitions and SDK tool execution.
       const tools = selectAllowedTools(createBuiltinFileTools(this.cwd, {
+        toolArgumentArtifactDir: this.context.persist ? this.context.toolArgumentArtifactDirectory : undefined,
         permissionGate: this.permissionGate,
         runTask: this.runTask,
         readImage: input => this.imageRuntime.readImage(input),
@@ -826,7 +830,9 @@ export class ChatSession {
             }
           }
           this.instructionReplay.capture(messages);
-          const compacted = compactToolLoopMessages(this.instructionReplay.restore(messages));
+          const compacted = compactToolLoopMessages(this.instructionReplay.restore(messages), {
+            preserveToolArgument: this.context.preserveToolArgument,
+          });
           if (compacted.compactedResults > 0 || compacted.compactedInputs > 0) {
             rawLog?.writeLine(safeRawStreamJson({
               type: "deepccc_intra_turn_tool_context_compacted",
@@ -1012,6 +1018,7 @@ export class ChatSession {
               transcriptLines: toolContext,
               toolCalls: collectedToolCalls,
               timeline,
+              preserveToolArgument: this.context.preserveToolArgument,
             }));
             yield { type: "done", text: safeAccumulated };
             return;
@@ -1028,6 +1035,7 @@ export class ChatSession {
                 transcriptLines: toolContext,
                 toolCalls: collectedToolCalls,
                 timeline: timeline.map((entry) => ({ ...entry })),
+                preserveToolArgument: this.context.preserveToolArgument,
               }));
             }
             const injectedText = await this.imageRuntime.normalizePrompt(pendingInjection);
@@ -1061,6 +1069,7 @@ export class ChatSession {
             transcriptLines: toolContext,
             toolCalls: collectedToolCalls,
             timeline: interruptedTimeline,
+            preserveToolArgument: this.context.preserveToolArgument,
           }));
         }
         yield { type: "done", text: safeAccumulated };

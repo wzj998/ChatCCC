@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { isOmittedToolArgument } from "./tool-argument-replay.js";
+import { expectedToolArgumentArtifactHash } from "./tool-argument-artifacts.js";
 
 import { jsonSchema, tool, type ToolSet } from "ai";
 
@@ -642,8 +643,9 @@ function applyParsedHunks(path: string, text: string, hunks: ParsedPatchHunk[]):
   return output.join(eol);
 }
 
-export async function readFileForTool(cwd: string, input: ReadFileInput): Promise<ReadFileOutput> {
+export async function readFileForTool(cwd: string, input: ReadFileInput, argumentArtifactDirectory?: string): Promise<ReadFileOutput> {
   const filePath = resolveToolPath(cwd, input.path);
+  const expectedArtifactHash = expectedToolArgumentArtifactHash(argumentArtifactDirectory, filePath);
   const info = await stat(filePath);
   if (info.isDirectory()) {
     throw new Error(`Path is a directory: ${filePath}`);
@@ -657,8 +659,13 @@ export async function readFileForTool(cwd: string, input: ReadFileInput): Promis
   } finally {
     await handle.close();
   }
-  const fileSha256 = await sha256File(filePath);
-  const isBinary = isBinaryBuffer(buffer);
+  const fileSha256 = expectedArtifactHash
+    ? createHash("sha256").update(buffer).digest("hex") : await sha256File(filePath);
+  if (expectedArtifactHash && (info.size > MAX_READ_BYTES || fileSha256 !== expectedArtifactHash)) {
+    throw new Error("Saved tool argument artifact failed its content hash check; do not reuse it");
+  }
+  // Managed values were written from UTF-8 strings, including possible NULs.
+  const isBinary = !expectedArtifactHash && isBinaryBuffer(buffer);
   if (isBinary) {
     return {
       path: filePath,
@@ -676,7 +683,10 @@ export async function readFileForTool(cwd: string, input: ReadFileInput): Promis
   const startLine = toPositiveInt(input.startLine) ?? 1;
   const endLine = toPositiveInt(input.endLine) ?? totalLines;
   const normalizedEnd = Math.max(startLine, Math.min(endLine, totalLines));
-  const content = lines.slice(startLine - 1, normalizedEnd).join("\n");
+  const content = expectedArtifactHash
+    ? (startLine === 1 && normalizedEnd === totalLines ? text
+      : (text.match(/[^\n]*\n|[^\n]+$/g) ?? []).slice(startLine-1,normalizedEnd).join(""))
+    : lines.slice(startLine - 1, normalizedEnd).join("\n");
 
   return {
     path: filePath,
@@ -1804,6 +1814,8 @@ export async function applyPatchForTool(cwd: string, input: ApplyPatchInput): Pr
 }
 
 export interface BuiltinFileToolsOptions {
+  /** Current persisted session's content-addressed argument values. */
+  toolArgumentArtifactDir?: string;
   readImage?: (input: ReadImageInput) => Promise<ImageReference>;
   /** 权限门控：副作用工具（进程/脚本/命令执行与文件写操作）执行前会先经过 gate.check */
   permissionGate?: PermissionGate;
@@ -2024,6 +2036,25 @@ function requireCommandArguments(
   }
 }
 
+function requireCompleteHistoricalArguments(input: unknown): void {
+  const pending: unknown[] = [input];
+  const seen = new WeakSet<object>();
+  while (pending.length) {
+    const value = pending.pop();
+    const metadata = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+    const artifactReference = typeof metadata?.__deepccc_input_artifact === "string"
+      && /^[a-f0-9]{64}\.txt$/.test(metadata.__deepccc_input_artifact);
+    if (isOmittedToolArgument(value) || artifactReference || metadata?.__deepccc_input_unavailable === true
+        || metadata?.__deepccc_payload_unavailable === true) {
+      throw new Error("This historical argument was omitted; read its referenced artifact or original saved file before reuse");
+    }
+    if (value && typeof value === "object" && !seen.has(value)) {
+      seen.add(value);
+      for (const child of Object.values(value)) pending.push(child);
+    }
+  }
+}
+
 export function createBuiltinFileTools(
   cwd: string,
   options: BuiltinFileToolsOptions = {},
@@ -2055,7 +2086,7 @@ export function createBuiltinFileTools(
     }
   };
 
-  return {
+  const builtinTools: ToolSet = {
     read_file: tool<ReadFileInput, ReadFileOutput>({
       description: "从本地文件系统读取 UTF-8 文本文件。大文件请使用行范围。",
       inputSchema: jsonSchema<ReadFileInput>({
@@ -2068,7 +2099,9 @@ export function createBuiltinFileTools(
         },
         required: ["path"],
       }),
-      execute: (input) => readFileForTool(cwd, input),
+      execute: async (input) => {
+        return readFileForTool(cwd, input, options.toolArgumentArtifactDir);
+      },
     }),
     ...(options.readImage ? {read_image:tool<ReadImageInput, ImageReference>({
       description:"查看本地 PNG/JPEG/WebP/GIF 图片。图片作为视觉输入提供给模型，返回的是附件引用而非图片文字。可指定 question 聚焦细节；用于历史图片、报错截图、图表和工具生成的图片。",
@@ -2523,4 +2556,16 @@ export function createBuiltinFileTools(
         }),
     }),
   };
+  // Reject unavailable historical values before any permission prompt or side
+  // effect, including file-edit fields and nested process arguments.
+  for (const definition of Object.values(builtinTools)) {
+    const execute = definition.execute;
+    if (!execute) continue;
+    definition.execute = (input, executionOptions) => {
+      try { requireCompleteHistoricalArguments(input); }
+      catch (error) { return Promise.reject(error); }
+      return execute(input, executionOptions);
+    };
+  }
+  return builtinTools;
 }
