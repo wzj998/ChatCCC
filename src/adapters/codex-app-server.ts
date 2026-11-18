@@ -273,8 +273,12 @@ export class CodexAppServerManager {
   ensureStarted(command: string): Promise<number> {
     if (this.port !== null) return Promise.resolve(this.port);
     if (this.starting) return this.starting;
-    this.starting = this.start(command);
-    return this.starting;
+    const starting = this.start(command);
+    this.starting = starting;
+    starting.catch(() => {
+      if (this.starting === starting) this.starting = null;
+    });
+    return starting;
   }
 
   private async start(command: string): Promise<number> {
@@ -297,6 +301,8 @@ export class CodexAppServerManager {
       if (this.proc === proc) {
         this.proc = null;
         this.port = null;
+        // starting 仍持有已 resolve 的旧端口，不清掉会让后续连接永远打到死端口
+        this.starting = null;
       }
       if (code !== 0 && stderr.trim()) {
         console.error(`[Codex app-server] 退出码=${code}: ${stderr.trim().slice(0, 2000)}`);
