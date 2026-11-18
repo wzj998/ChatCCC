@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { compactJsonText } from "./tool-argument-replay.js";
+import { compactJsonText, type ToolArgumentPreserver } from "./tool-argument-replay.js";
+import { ToolArgumentArtifactStore } from "./tool-argument-artifacts.js";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -146,7 +147,9 @@ export function normalizeCompactedSummary(summary: string): string {
 }
 
 export function normalizeBuiltinSessionId(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "default";
+  const normalized = value.replace(/[^a-zA-Z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "default";
+  if (/^\.+$/.test(normalized)) throw new Error("Session ID cannot be a dot path segment");
+  return normalized;
 }
 
 export function defaultBuiltinSessionId(cwd: string = process.cwd()): string {
@@ -423,6 +426,7 @@ function toolPayloadBudgets(lengths: readonly number[], maximum: number): number
 function truncateStructuredToolCalls(
   calls: BuiltinContextToolCall[],
   maxChars: number,
+  preserveArgument?: ToolArgumentPreserver,
 ): BuiltinContextToolCall[] {
   const payloads = calls.flatMap((call) => [call.input ?? "", call.output ?? ""]).filter(Boolean);
   const total = payloads.reduce((sum, value) => sum + value.length, 0);
@@ -432,7 +436,7 @@ function truncateStructuredToolCalls(
   const truncatePayload = (value: string | undefined, output: boolean): string | undefined => {
     if (value === undefined || value.length === 0) return value;
     const budget = budgets[payloadIndex++]!;
-    return compactJsonText(value, budget, output)
+    return compactJsonText(value, budget, output, output ? undefined : preserveArgument)
       ?? truncateMiddle(value, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER);
   };
   return calls.map((call) => ({
@@ -456,6 +460,7 @@ export function buildPersistedAssistantMessage(params: {
   timeline?: readonly BuiltinContextTimelineEntry[];
   maxAssistantChars?: number;
   maxTranscriptChars?: number;
+  preserveToolArgument?: ToolArgumentPreserver;
 }): BuiltinContextMessage {
   const maxAssistantChars = params.maxAssistantChars ?? DEFAULT_PERSISTED_ASSISTANT_TEXT_CHARS;
   const maxTranscriptChars = params.maxTranscriptChars ?? DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS;
@@ -466,14 +471,14 @@ export function buildPersistedAssistantMessage(params: {
     ASSISTANT_TRUNCATED_MARKER,
   );
   const message: BuiltinContextMessage = { role: "assistant", content: persistedAssistantText };
-  const toolCalls = truncateStructuredToolCalls(normalizeToolCalls(params.toolCalls), maxTranscriptChars);
+  const toolCalls = truncateStructuredToolCalls(normalizeToolCalls(params.toolCalls), maxTranscriptChars, params.preserveToolArgument);
   if (toolCalls.length > 0) message.toolCalls = toolCalls;
-  const timeline = truncatePersistedTimeline(normalizeTimeline(params.timeline));
+  const timeline = truncatePersistedTimeline(normalizeTimeline(params.timeline), params.preserveToolArgument);
   if (timeline.length > 0) message.timeline = timeline;
   return message;
 }
 
-function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): BuiltinContextTimelineEntry[] {
+function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[], preserveArgument?: ToolArgumentPreserver): BuiltinContextTimelineEntry[] {
   const maxTextChars = DEFAULT_PERSISTED_ASSISTANT_TEXT_CHARS;
   const maxToolChars = DEFAULT_PERSISTED_TOOL_TRANSCRIPT_CHARS;
   const totalText = entries.reduce((sum, entry) => sum + (entry.type === "text" ? entry.text.length : 0), 0);
@@ -499,7 +504,7 @@ function truncatePersistedTimeline(entries: BuiltinContextTimelineEntry[]): Buil
     }
     if (entry.type === "tool_use" && entry.input !== undefined) {
       const budget = entry.input.length ? toolBudgets[toolPayloadIndex++]! : 0;
-      return { ...entry, input: compactJsonText(entry.input, budget)
+      return { ...entry, input: compactJsonText(entry.input, budget, false, preserveArgument)
         ?? truncatePayload(entry.input, budget, TOOL_TRANSCRIPT_TRUNCATED_MARKER) };
     }
     if (entry.type === "tool_result" && entry.output !== undefined) {
@@ -694,6 +699,7 @@ export class BuiltinContextManager {
   readonly keepRecentMessages: number;
 
   private readonly cwd?: string;
+  private readonly argumentArtifacts: ToolArgumentArtifactStore;
   private state: BuiltinContextState;
 
   constructor(options: BuiltinContextOptions = {}) {
@@ -701,6 +707,7 @@ export class BuiltinContextManager {
     this.contextDir = options.contextDir ?? DEFAULT_BUILTIN_CONTEXT_DIR;
     this.sessionId = normalizeBuiltinSessionId(options.sessionId ?? defaultBuiltinSessionId());
     this.cwd = options.cwd;
+    this.argumentArtifacts = new ToolArgumentArtifactStore(join(this.contextDir, this.sessionId));
     this.compactAtTokens = options.compactAtTokens
       ?? Math.floor((options.contextWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS) * COMPACTION_THRESHOLD_RATIO);
     this.maxToolContextTokens = Math.max(
@@ -727,6 +734,11 @@ export class BuiltinContextManager {
   get contextFilePath(): string {
     return contextFilePath(this.contextDir, this.sessionId);
   }
+
+  get toolArgumentArtifactDirectory(): string { return this.argumentArtifacts.directory; }
+
+  readonly preserveToolArgument: ToolArgumentPreserver = text =>
+    this.persist ? this.argumentArtifacts.preserve(text) : undefined;
 
   appendMessage(message: BuiltinContextMessage): void {
     this.state.messages.push(message);
@@ -815,6 +827,7 @@ export class BuiltinContextManager {
   }
 
   reset(): void {
+    if (this.persist) this.argumentArtifacts.clear();
     this.state = emptyState(this.sessionId, this.cwd);
     this.save();
   }

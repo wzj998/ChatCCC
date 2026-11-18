@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,6 +91,55 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it("keeps a recoverable original across a live caller injection instead of replaying a bare placeholder",async()=>{
+    const {ChatSession}=await import("../index.js");
+    const dir=await mkdtemp(join(tmpdir(),"deepccc-argument-injection-"));
+    try{
+      const code="// original before caller injection\n".repeat(3000);
+      streamTextMock.mockImplementationOnce(options=>({fullStream:(async function*(){
+        yield {type:"tool-call",toolCallId:"injected-argument-call",toolName:"run_script",input:{language:"node",code}};
+        yield {type:"tool-result",toolCallId:"injected-argument-call",toolName:"run_script",output:{exitCode:0,stdout:"ok"}};
+        await options.prepareStep({messages:options.messages,stepNumber:1});
+      })()}));
+      streamTextMock.mockReturnValueOnce({fullStream:fullStream({type:"text-delta",text:"continued"})});
+      const drain=vi.fn().mockReturnValueOnce("caller follow-up").mockReturnValue(undefined);
+      const session=new ChatSession({apiKey:"sk-test"},{cwd:dir,contextDir:dir,sessionId:"argument-injection",persist:true});
+      await collect(session.chat("continue",undefined,drain));
+      const state=JSON.parse(await readFile(join(dir,"argument-injection","context.json"),"utf8"));
+      const saved=state.messages.find((m:any)=>m.toolCalls?.some((c:any)=>c.id==="injected-argument-call"));
+      const marker=JSON.parse(saved.toolCalls[0].input).code;
+      const filename=marker.match(/artifact=([a-f0-9]{64}\.txt)/)?.[1];expect(filename).toBeDefined();
+      expect(await readFile(join(dir,"argument-injection","tool-arguments",filename),"utf8")).toBe(code);
+      expect(JSON.stringify(streamTextMock.mock.calls[1][0].messages)).toContain("artifact=");
+      expect(JSON.stringify(streamTextMock.mock.calls[1][0].messages)).toContain("caller follow-up");
+    }finally{await rm(dir,{recursive:true,force:true});}
+  });
+
+  it.each([false,true])("saves recoverable original tool arguments on persisted chat completion (interrupted=%s)",async interrupted=>{
+    const {ChatSession}=await import("../index.js");
+    const dir=await mkdtemp(join(tmpdir(),"deepccc-argument-transport-"));
+    try{
+      const code="// original generated input\n".repeat(4000)+"console.log('complete');\n";
+      async function* parts(){
+        yield {type:"tool-call",toolCallId:"argument-call",toolName:"run_script",input:{language:"node",code}};
+        yield {type:"tool-result",toolCallId:"argument-call",toolName:"run_script",output:{exitCode:0,stdout:"ok"}};
+        if(interrupted){const error=new Error("aborted");error.name="AbortError";throw error;}
+        yield {type:"finish",finishReason:"stop"};
+      }
+      streamTextMock.mockReturnValueOnce({fullStream:parts()});
+      const session=new ChatSession({apiKey:"sk-test"},{cwd:dir,contextDir:dir,sessionId:"argument-transport",persist:true});
+      await collect(session.chat("continue"));
+      const state=JSON.parse(await readFile(join(dir,"argument-transport","context.json"),"utf8"));
+      const saved=state.messages.find((m:any)=>m.role==="assistant");
+      const marker=JSON.parse(saved.toolCalls[0].input).code;
+      const filename=marker.match(/artifact=([a-f0-9]{64}\.txt)/)?.[1];expect(filename).toBeDefined();
+      expect(await readFile(join(dir,"argument-transport","tool-arguments",filename),"utf8")).toBe(code);
+      const request=streamTextMock.mock.calls[0][0];expect(request.system).toContain(join(dir,"argument-transport","tool-arguments"));
+      const read=await request.tools.read_file.execute({path:join(dir,"argument-transport","tool-arguments",filename)});
+      expect(read.content).toContain("original generated input");
+    }finally{await rm(dir,{recursive:true,force:true});}
+  });
+
   it("bounds oversized project guidance while retaining its head, tail and local overrides", async () => {
     const { ChatSession } = await import("../index.js");
     const dir = await mkdtemp(join(tmpdir(), "deepccc-large-project-guidance-"));

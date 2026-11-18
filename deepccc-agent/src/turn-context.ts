@@ -1,5 +1,5 @@
 import type { ModelMessage, ToolResultPart } from "ai";
-import { compactJsonValue } from "./tool-argument-replay.js";
+import { compactJsonValue, type ToolArgumentPreserver } from "./tool-argument-replay.js";
 import { instructionPath } from "./instruction-replay.js";
 
 export const DEFAULT_STEP_TOOL_CONTEXT_CHARS = 96_000;
@@ -16,6 +16,7 @@ export interface CompactToolLoopOptions {
   keepRecentResults?: number;
   maxToolInputChars?: number;
   maxInstructionChars?: number;
+  preserveToolArgument?: ToolArgumentPreserver;
 }
 export interface CompactToolLoopResult {
   messages: ModelMessage[];
@@ -88,8 +89,8 @@ function executionSummary(output: ToolResultPart["output"]): { output: ToolResul
 }
 
 /** Preserve argument keys/types, while trimming oversized historical string values. */
-function shortenedInput(input: unknown, maximum: number): unknown {
-  return compactJsonValue(input, maximum);
+function shortenedInput(input: unknown, maximum: number, preserveArgument?: ToolArgumentPreserver): unknown {
+  return compactJsonValue(input, maximum, false, preserveArgument);
 }
 
 /** Changes only a model-facing clone, never executed calls or persisted history. */
@@ -117,7 +118,7 @@ export function compactToolLoopMessages(
     const olderCount = Math.max(0, calls.length - keepRecent);
     const recentSize = calls.slice(olderCount).reduce((sum, call) => sum + Math.min(16_000, call.original), 0);
     const olderCap = Math.max(256, Math.min(4_000, Math.floor(Math.max(0, inputMaximum - recentSize) / Math.max(1, olderCount))));
-    calls.forEach((call, index) => { call.part.input = shortenedInput(call.part.input, index < olderCount ? olderCap : 16_000); });
+    calls.forEach((call, index) => { call.part.input = shortenedInput(call.part.input, index < olderCount ? olderCap : 16_000, options.preserveToolArgument); });
   }
 
   const refs: Array<{ message: Extract<ModelMessage, { role: "tool" }>; partIndex: number;
