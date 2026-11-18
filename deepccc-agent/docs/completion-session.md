@@ -5,6 +5,12 @@ entire `messages` array; no system guidance, workspace files, skills, tools,
 history or compaction is injected. This is useful when comparing integrations
 without rewriting their established prompt builders.
 
+Set `provider: 'openai-responses'` and `baseURL: 'https://api.openai.com/v1'`
+for the native Responses API. This mode sends JSON format as `text.format`,
+uses `store: false`, and omits temperature for reasoning-model compatibility.
+The default `openai` transport remains Chat Completions. Extensions cannot
+override Responses input, storage, reasoning state, or output limits.
+
 ```js
 import {CompletionSession} from 'deepccc';
 const session = new CompletionSession({

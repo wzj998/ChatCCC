@@ -1,6 +1,5 @@
 /** Bounded, text-only decisions with caller-owned context and explicit capabilities. */
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { createModelProvider, modelProviderOptions } from './model-provider.js';
 import { asSchema, streamText, tool, type FlexibleSchema, type ModelMessage, type ToolSet } from "ai";
 import { jsonObjectFetch } from "./json-mode-fetch.js";
 import { parseJsonResponse } from "./json-response.js";
@@ -116,7 +115,8 @@ function abortable<T>(work: PromiseLike<T>, signal: AbortSignal): Promise<T> {
 export class DecisionSession<T> {
   private readonly outputMode: "tools" | "json";
   private readonly model;
-  private readonly providerOptions: Record<string, Record<string, string>> | undefined;
+  private readonly providerOptions: ReturnType<typeof modelProviderOptions>;
+  private readonly provider;
   private readonly output;
   private readonly tools: Record<string, DecisionTool> = Object.create(null);
   private readonly modelTools: ToolSet = Object.create(null);
@@ -126,22 +126,20 @@ export class DecisionSession<T> {
 
   constructor(overrides: DecisionModelConfig, options: DecisionSessionOptions<T>) {
     const provider = normalizeDeepCccProvider(overrides.provider ?? config.provider);
+    this.provider = provider;
     this.outputMode = options.outputMode ?? "tools";
     if (this.outputMode !== "tools" && this.outputMode !== "json") throw new Error("Unknown output mode");
-    if (this.outputMode === "json" && (provider !== "openai" || (options.allowedTools?.length ?? 0) > 0)) {
+    if (this.outputMode === "json" && (provider === "anthropic" || (options.allowedTools?.length ?? 0) > 0)) {
       throw new Error("JSON mode requires OpenAI-compatible protocol and no allowed tools");
     }
     const apiKey = overrides.apiKey ?? config.apiKey;
     if (!apiKey) throw new Error("An API key is required");
     const baseURL = overrides.baseURL ?? config.baseURL;
-    const client = provider === "anthropic"
-      ? createAnthropic({ apiKey, baseURL: baseURL.trim().replace(/\/+$/, "") })
-      : createOpenAICompatible({ name: "deepccc", apiKey, baseURL, includeUsage: true,
-        ...(this.outputMode === "json" ? {fetch: jsonObjectFetch()} : {}) });
+    const client = createModelProvider(provider, { apiKey, baseURL,
+      ...(this.outputMode === "json" ? {fetch: jsonObjectFetch(globalThis.fetch, provider === 'openai-responses' ? provider : 'openai')} : {}) });
     this.model = client(overrides.model ?? config.model);
     const effort = (overrides.effort ?? config.effort ?? "").trim();
-    this.providerOptions = effort ? provider === "anthropic"
-      ? { anthropic: { effort } } : { deepccc: { reasoningEffort: effort } } : undefined;
+    this.providerOptions = modelProviderOptions(provider, effort);
     this.maxOutputTokens = positive(overrides.maxOutputTokens ?? config.maxOutputTokens, 2048, "maxOutputTokens");
     this.output = requireValidator(options.outputSchema);
     this.limits = {
@@ -214,7 +212,8 @@ export class DecisionSession<T> {
       check();
       metrics.contextChars = this.system.length + boundedJson(messages, this.limits.context).length;
       if (metrics.contextChars > this.limits.context) throw new DecisionFailure("context_limit", "Context budget exceeded");
-      const calls = await this.generate(messages, signal, metrics, check);
+      const generated = await this.generate(messages, signal, metrics, check);
+      const { calls } = generated;
       check();
       const ids = new Set(calls.map(c => c.toolCallId));
       if (!calls.length || ids.size !== calls.length) throw new DecisionFailure("invalid_output", "Expected unique structured tool calls");
@@ -239,7 +238,10 @@ export class DecisionSession<T> {
         if (!validated.success) throw new DecisionFailure("invalid_output", "Tool input validation failed", {code: "tool_input_invalid", stage: "validation"});
         inputs.push(validated.value);
       }
-      messages.push({ role: "assistant", content: calls.map(c => ({ type: "tool-call", ...c })) });
+      // Native Responses needs the returned reasoning items alongside function calls.
+      // Keep these local to this decision so concurrent requests never share history.
+      if (generated.responseMessages) messages.push(...generated.responseMessages);
+      else messages.push({ role: "assistant", content: calls.map(c => ({ type: "tool-call", ...c })) });
       for (let i = 0; i < calls.length; i++) {
         check();
         const c = calls[i];
@@ -260,7 +262,7 @@ export class DecisionSession<T> {
     throw new DecisionFailure("step_limit", "Step budget exhausted");
   }
 
-  private async generate(messages: ModelMessage[], signal: AbortSignal, metrics: DecisionMetrics, check: () => void): Promise<Call[]> {
+  private async generate(messages: ModelMessage[], signal: AbortSignal, metrics: DecisionMetrics, check: () => void): Promise<{calls: Call[]; responseMessages?: ModelMessage[]}> {
     const began = performance.now();
     metrics.modelCalls++;
     const result = streamText({ model: this.model, system: this.system, messages: [...messages],
@@ -306,12 +308,13 @@ export class DecisionSession<T> {
           const parsed = parseJsonResponse(jsonText);
           if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) throw new Error("Expected object");
           metrics.jsonRepairs = parsed.repaired ? 1 : 0;
-          return [{toolCallId: "json-result", toolName: SUBMIT, input: parsed.value}];
+          return {calls: [{toolCallId: "json-result", toolName: SUBMIT, input: parsed.value}]};
         } catch {
           throw new DecisionFailure("invalid_output", "Invalid JSON response", {code: "protocol_error", stage: "validation"});
         }
       }
-      return calls;
+      return {calls, ...(this.provider === 'openai-responses'
+        ? {responseMessages: (await abortable(result.response, signal)).messages} : {})};
     } finally {
       metrics.modelMs += performance.now() - began;
       // Do not let a stalled iterator's cleanup extend the caller's deadline.

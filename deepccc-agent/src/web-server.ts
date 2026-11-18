@@ -24,7 +24,7 @@ const MAX_BODY_BYTES = 512 * 1024;
 const HOST = "127.0.0.1";
 
 export interface PublicDeepCccConfig {
-  provider: "openai" | "anthropic";
+  provider: "openai" | "openai-responses" | "anthropic";
   baseURL: string;
   model: string;
   subModel: string;

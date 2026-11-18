@@ -182,10 +182,11 @@ API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic 
 可设为 `false` 或用 `DEEPCCC_GIT_COAUTHOR=false` 全局关闭。ChatCCC 的
 `ccc.gitCoAuthor` 是三态 override：`null`/缺失跟随这里，`true` 强制开启，`false` 强制关闭。
 
-`provider` 可选 `openai` 或 `anthropic`，默认 `openai`，也可以通过
+`provider` 可选 `openai`、`openai-responses` 或 `anthropic`，默认 `openai`，也可以通过
 `DEEPCCC_PROVIDER` 或命令行 `--provider` 覆盖：
 
 - `openai` 使用 OpenAI-compatible Chat Completions 协议，兼容 DeepSeek、OpenAI、LiteLLM、vLLM 等服务。
+- `openai-responses` 使用原生 OpenAI Responses API（`/responses`），支持流式/非流式工具循环、主/子/图片模型与摘要。适合 GPT-6.2 Sol/Astra 等要求 Responses 工具调用的模型。Base URL 填 `https://api.openai.com/v1`，不要追加 `/responses`；`effort` 映射为 `reasoning.effort`。默认 `store:false`，工具循环携带加密推理状态。摘要使用 `low` effort，不发送 temperature。原有 `openai` 不会自动切换。
 - `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` **完全按填写值使用，不自动补 `/v1`**，请填写到完整版本化地址，例如 DeepSeek 官方 Anthropic 端点为 `https://api.deepseek.com/anthropic/v1`（官方 Anthropic SDK 使用的 `https://api.deepseek.com/anthropic` 基址会拼接为 `.../anthropic/v1/messages`）。`effort` 在 OpenAI-compatible 模式映射为 `reasoning_effort`，在 Anthropic 模式映射为 `output_config.effort`；目标服务不支持时应留空。
 
 `streaming` 控制主对话是否使用流式请求，默认 `true`；也可以通过
@@ -234,6 +235,14 @@ API 拒绝（context length exceeded），实际窗口以模型与所用服务�
 ```bash
 deepccc-cli
 ```
+
+使用 OpenAI 官方 Responses API（密钥来自已关联订阅额度的 API 组织）：
+
+```bash
+deepccc-cli --provider openai-responses --base-url https://api.openai.com/v1 --api-key "$OPENAI_API_KEY" --model gpt-6.2-sol --effort medium
+```
+
+也可在 DeepCCC Web「API 与 Web 设置」选择 **OpenAI Responses**，或配置 `DEEPCCC_PROVIDER=openai-responses` / `~/.deepccc/config.json` 的 `provider`。ChatCCC 内嵌模式在「CCC Agent → API 协议」选择同名选项。不会自动创建密钥、切换已有账号或消耗额度。
 
 指定其他模型或 OpenAI-compatible 接口：
 

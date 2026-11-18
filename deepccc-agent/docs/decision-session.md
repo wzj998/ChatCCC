@@ -7,6 +7,13 @@ starts with exactly the supplied context. No conversation history, workspace
 instructions, global skills, file tools, model-based compaction or raw stream
 logging is loaded automatically.
 
+The model configuration accepts `provider: 'openai-responses'` with
+`baseURL: 'https://api.openai.com/v1'`. Both the tool loop and JSON-only mode
+support native Responses. Requests use `store: false`; encrypted reasoning
+items are carried between tool steps within a decision, without sharing
+history across independent decisions. Existing `openai` and `anthropic`
+configurations keep their original transports.
+
 This is not a simulator, a game-specific policy or a guarantee of model latency.
 Use an adapter to provide observations, validate decisions against current state,
 and execute actions. Keep application knowledge and private data outside the

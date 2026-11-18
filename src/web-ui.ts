@@ -70,7 +70,7 @@ interface AppConfig {
     effort?: string;
     maxOutputTokens?: number | null;
     /** 留空（""）= 不 override，跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER） */
-    provider?: "" | "openai" | "anthropic";
+    provider?: "" | "openai" | "openai-responses" | "anthropic";
     gitCoAuthor?: boolean | null;
   };
   dsh?: { enabled?: boolean; defaultAgent?: boolean; apiKey?: string; baseUrl?: string; model?: string; provider?: string; maxTokens?: number };
@@ -974,10 +974,11 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <label>API 协议（选填）</label>
               <select id="field-CHATCCC_CCC_PROVIDER">
                 <option value="">跟随 DeepCCC 内核配置（默认）</option>
-                <option value="openai">openai - OpenAI 兼容协议</option>
+                <option value="openai">openai - Chat Completions 兼容协议</option>
+                <option value="openai-responses">openai-responses - OpenAI Responses API</option>
                 <option value="anthropic">anthropic - Anthropic Messages 协议</option>
               </select>
-              <div class="hint">与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空时使用 ~/.deepccc/config.json 或 DEEPCCC_PROVIDER 的值。</div>
+              <div class="hint">与 Base URL 强相关：Chat Completions 兼容端点选 openai；OpenAI Responses 端点选 openai-responses（Base URL 填到 /v1）；Anthropic Messages 端点选 anthropic。留空时使用 ~/.deepccc/config.json 或 DEEPCCC_PROVIDER 的值。</div>
             </div>
             <div class="form-group">
               <label>Git 提交共同作者</label>
@@ -2338,7 +2339,7 @@ function editSection(section) {
     'CHATCCC_CHROME_DEVTOOLS_ENABLED': '依赖：本机 Google Chrome；ChatGPT 订阅到期查询需要在该 CDP Chrome 中登录 ChatGPT。',
     'CHATCCC_CHROME_DEVTOOLS_PORT': '默认 15166，健康检查端点为 http://127.0.0.1:15166/json/version。',
     'CHATCCC_CHROME_DEVTOOLS_PATH': '选填。留空时自动探测 Google Chrome。',
-    'CHATCCC_CCC_PROVIDER': '与 Base URL 强相关：OpenAI 兼容端点选 openai；Anthropic Messages 端点选 anthropic。留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER），改动需重启 ChatCCC 生效。',
+    'CHATCCC_CCC_PROVIDER': '与 Base URL 强相关：Chat Completions 兼容端点选 openai；OpenAI Responses 端点选 openai-responses（Base URL 填到 /v1）；Anthropic Messages 端点选 anthropic。留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_PROVIDER），改动需重启 ChatCCC 生效。',
     'CHATCCC_CCC_EFFORT': '留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_EFFORT）；内核也留空时使用模型服务端默认值。',
     'CHATCCC_CCC_MAX_OUTPUT_TOKENS': '正整数；留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_MAX_OUTPUT_TOKENS）；内核也未配置时使用模型服务端默认值。',
     'CHATCCC_CCC_GIT_COAUTHOR': '跟随全局时读取 ~/.deepccc/config.json 的 git.coAuthor.enabled（缺省为开启）。强制选项只影响 ChatCCC 内置 CCC Agent。',
@@ -2433,6 +2434,7 @@ function editSection(section) {
       html += '<select id="edit-' + key + '" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
       html += '<option value=""' + (providerVal === '' ? ' selected' : '') + '>跟随 DeepCCC 内核配置（默认）</option>';
       html += '<option value="openai"' + (providerVal === 'openai' ? ' selected' : '') + '>openai - OpenAI 兼容协议</option>';
+      html += '<option value="openai-responses"' + (providerVal === 'openai-responses' ? ' selected' : '') + '>openai-responses - OpenAI Responses API</option>';
       html += '<option value="anthropic"' + (providerVal === 'anthropic' ? ' selected' : '') + '>anthropic - Anthropic Messages 协议</option>';
       html += '</select>';
       if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';

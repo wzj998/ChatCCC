@@ -62,10 +62,10 @@ function parsePositiveIntegerOption(name: string, value: string): number {
   return parsed;
 }
 
-function parseProviderOption(value: string): "openai" | "anthropic" {
+function parseProviderOption(value: string): "openai" | "openai-responses" | "anthropic" {
   const normalized = value.trim().toLowerCase();
-  if (normalized === "openai" || normalized === "anthropic") return normalized;
-  throw new Error(`--provider must be "openai" or "anthropic", received: ${value}`);
+  if (normalized === "openai" || normalized === "openai-responses" || normalized === "anthropic") return normalized;
+  throw new Error(`--provider must be "openai", "openai-responses" or "anthropic", received: ${value}`);
 }
 
 function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
@@ -166,7 +166,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "Usage: deepccc-cli [options]",
     "",
     "Options:",
-    `  --provider <name>    API protocol: openai or anthropic (current default ${appConfig.provider})`,
+    `  --provider <name>    API protocol: openai, openai-responses or anthropic (current default ${appConfig.provider})`,
     `  --model <name>       Model name (current default ${appConfig.model})`,
     `  --sub-model <name>   Sub-model for lightweight steps (compaction/task; empty = follow main model)`,
     "  --vision-model <name> Optional image analysis model; empty uses native images in the main model",

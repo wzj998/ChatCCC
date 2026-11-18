@@ -250,16 +250,18 @@ DeepCCC 同时提供独立端口的本地 Web UI。ChatCCC 管理页顶部点击
 
 ChatCCC 会把 `ccc.DEEPSEEK_API_KEY`、`ccc.DEEPSEEK_BASE_URL` 和模型显式传给内置 Agent；API Key 为空时 CCC Agent 会自动保持禁用。`ccc.effort` 与 `ccc.maxOutputTokens` 是可选 override：非空时覆盖 DeepCCC，留空时跟随 `~/.deepccc/config.json` / `DEEPCCC_*` 环境变量，DeepCCC 也未配置时使用模型服务端默认值。DeepCCC 的传输层选项 `provider`（默认 `openai`）和 `streaming`（默认 `true`）同样可通过内核配置，无需额外安装独立 CLI。
 
-**协议 override：** 也可以在 ChatCCC 的配置（`config.json` 的 `ccc.provider`，或 Web 管理页的「CCC Agent → API 协议」）显式指定 `openai` / `anthropic` 覆盖内核配置；留空（默认）时跟随 `~/.deepccc/config.json` / `DEEPCCC_PROVIDER`。`streaming` 不做 override，始终由 DeepCCC 内核配置控制。
+**协议 override：** 也可以在 ChatCCC 的配置（`config.json` 的 `ccc.provider`，或 Web 管理页的「CCC Agent → API 协议」）显式指定 `openai` / `openai-responses` / `anthropic` 覆盖内核配置；留空（默认）时跟随 `~/.deepccc/config.json` / `DEEPCCC_PROVIDER`。`streaming` 不做 override，始终由 DeepCCC 内核配置控制。
 
 **Git 共同作者：** DeepCCC 默认给它创建的提交追加 `Co-authored-by: DeepCCC <20184052+wzj998@users.noreply.github.com>`，保留用户为主 Author。全局开关是 `~/.deepccc/config.json` 的 `git.coAuthor.enabled`（缺省 `true`）；ChatCCC 的 `ccc.gitCoAuthor` 为三态 override：`null`/缺失跟随全局，`true` 强制开启，`false` 强制关闭。Web 管理页的「CCC Agent → Git 提交共同作者」可设置同样的三种状态。
 
-**API 支持不限于 DeepSeek。** 默认的 `provider: "openai"` 使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点；设置 `provider: "anthropic"` 后改用 Anthropic Messages 协议（`@ai-sdk/anthropic`）。两种模式都支持流式输出，并复用相同的 API Key、Base URL 和模型配置。
+**OpenAI Responses：** Web 管理页「CCC Agent → API 协议」选择 `openai-responses`，Base URL 填 `https://api.openai.com/v1`，填写该 API 组织的密钥和可用模型（如 `gpt-6.2-sol`），保存后重启 ChatCCC。内嵌 DeepCCC 的主模型、子模型、图片模型和摘要共用此协议；原有配置不自动切换。Responses 使用 `store:false` 并在工具循环中续传加密推理状态。
+
+**API 支持不限于 DeepSeek。** 默认的 `provider: "openai"` 使用 OpenAI 兼容协议（`@ai-sdk/openai-compatible`），DeepSeek 只是出厂默认端点；设置 `provider: "anthropic"` 后改用 Anthropic Messages 协议（`@ai-sdk/anthropic`）。三种模式都支持流式输出，并复用相同的 API Key、Base URL 和模型配置。
 
 | 服务 | Base URL 示例 | 说明 |
 | --- | --- | --- |
 | DeepSeek（默认） | `https://api.deepseek.com/v1` | 官方端点，支持 `/usage` 余额查询 |
-| OpenAI | `https://api.openai.com/v1` | 官方模型 |
+| OpenAI | `https://api.openai.com/v1` | GPT-6.2 等模型的工具调用请选择 `openai-responses` |
 | Kimi / Moonshot | `https://api.moonshot.cn/v1` | 国内直连 |
 | 通义千问 / 智谱 GLM / 豆包 / MiniMax | 各家 `…/v1` 端点 | 国内 OpenAI 兼容服务 |
 | Ollama / vLLM / LM Studio | `http://localhost:11434/v1` | 本地或自建推理服务 |

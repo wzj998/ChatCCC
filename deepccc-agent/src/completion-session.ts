@@ -1,9 +1,9 @@
 /** Opt-in stateless completion transport for integrations owning their complete prompts. */
-import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
+import {createModelProvider, modelProviderOptions} from './model-provider.js';
 import {streamText,type ModelMessage} from 'ai';
 import {jsonObjectFetch} from './json-mode-fetch.js';
 
-export interface CompletionConfig {baseURL:string;apiKey:string;model:string}
+export interface CompletionConfig {baseURL:string;apiKey:string;model:string;provider?:'openai'|'openai-responses'}
 export interface CompletionRequest {
   messages:ModelMessage[];timeoutMs:number;json?:boolean;temperature?:number;maxOutputTokens?:number;
   /** Provider-specific JSON options; cannot replace transport, messages or tools. */
@@ -13,7 +13,7 @@ export interface CompletionRequest {
 export type CompletionResult = {metrics:{durationMs:number;modelCalls:number}} & (
   {status:'success';content:string;reasoning:string} |
   {status:'timed_out'|'cancelled'|'invalid_output'|'context_limit'|'error';diagnostic:{code:string;httpStatus?:number}});
-const protectedKeys=new Set(['messages','model','stream','tools','tool_choice','response_format','temperature','max_tokens','max_completion_tokens']);
+const protectedKeys=new Set(['messages','input','instructions','model','stream','tools','tool_choice','response_format','text','store','include','reasoning','previous_response_id','conversation','temperature','max_tokens','max_completion_tokens','max_output_tokens']);
 function positive(n:number):number{if(!Number.isSafeInteger(n)||n<1)throw new Error('Positive integer budget required');return n;}
 function raceAbort<T>(work:PromiseLike<T>,signal:AbortSignal):Promise<T>{
   return new Promise((resolve,reject)=>{
@@ -44,11 +44,13 @@ export class CompletionSession {
     const metrics=()=>({durationMs:performance.now()-started,modelCalls:calls});
     try{
       if(controller.signal.aborted)throw new Error('Interrupted');
-      const transport=request.json?jsonObjectFetch():globalThis.fetch;
-      const client=createOpenAICompatible({name:'completion',...this.config,includeUsage:true,
+      const provider=this.config.provider??'openai';
+      const transport=request.json?jsonObjectFetch(globalThis.fetch,provider):globalThis.fetch;
+      const client=createModelProvider(provider,{...this.config,
         fetch:async(url,init)=>transport(url,{...init,body:JSON.stringify({...JSON.parse(String(init?.body)),...extensions})})});
       calls++;
-      const result=streamText({model:client(this.config.model),messages,allowSystemInMessages:true,temperature:request.temperature,maxOutputTokens:request.maxOutputTokens,
+      const result=streamText({model:client(this.config.model),messages,allowSystemInMessages:true,
+        ...(provider==='openai-responses'?{providerOptions:modelProviderOptions(provider)}:{temperature:request.temperature}),maxOutputTokens:request.maxOutputTokens,
         maxRetries:0,abortSignal:controller.signal,onError:()=>{}});
       const iterator=result.fullStream[Symbol.asyncIterator]();
       let content='',reasoning='',finish:string|undefined;
