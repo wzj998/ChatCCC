@@ -283,6 +283,8 @@ function streamJsonEvent(event: ChatEvent): void {
       name: event.name,
       input: event.input,
     });
+  } else if (event.type === "model_tool_view") {
+    writeJsonLine({ ...event });
   } else if (event.type === "tool_result") {
     writeJsonLine({
       type: "tool_result",
@@ -372,6 +374,8 @@ async function runStreamJson(args: ParsedArgs): Promise<number> {
     cwd,
     model: args.config.model ?? runtime.appConfig.model,
     event_payloads: args.options.redactEvents === false ? "original" : "display-redacted",
+    ...(args.options.redactEvents === false && (args.config.streaming ?? runtime.appConfig.streaming)
+      ? { model_tool_view_protocol: "sha256-json-v1" } : {}),
     attachments: attachments.map((attachment) => ({
       attachment_id: attachment.attachmentId,
       name: attachment.originalName,

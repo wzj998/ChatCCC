@@ -10,6 +10,34 @@ function toolPair(id: string, value: string): ModelMessage[] {
 }
 
 describe("compactToolLoopMessages", () => {
+  it("keeps a fresh complete result above the historical per-result cap when it fits the turn budget", () => {
+    const text = "BEGIN_FRESH_BODY\n" + "clause ".repeat(6_000) + "\nEND_FRESH_BODY";
+    const input = toolPair("fresh-full", text);
+    const result = compactToolLoopMessages(input);
+    const modelPart = (result.messages.at(-1)!.content as any[])[0];
+    expect(JSON.stringify(modelPart.output) === JSON.stringify({ type: "text", value: text })).toBe(true);
+    expect(result.retainedToolChars).toBeLessThanOrEqual(96_000);
+  });
+
+  it("gives fresh results budget priority over old execution failure summaries", () => {
+    const oldFailures: ModelMessage[] = Array.from({ length: 30 }, (_, i) => [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: `old${i}`, toolName: "run_process", input: { executable: "test" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: `old${i}`, toolName: "run_process",
+        output: { type: "json", value: { exitCode: 1, stderr: "old failure ".repeat(120), stdout: "x".repeat(20_000) } } }] },
+    ] as ModelMessage[]).flat();
+    const text = "CURRENT_EVIDENCE\n" + "e".repeat(50_000);
+    const result = compactToolLoopMessages([...oldFailures, ...toolPair("fresh", text)]);
+    expect(JSON.stringify((result.messages.at(-1)!.content as any[])[0].output) === JSON.stringify({ type: "text", value: text })).toBe(true);
+    expect(result.retainedToolChars).toBeLessThanOrEqual(96_000);
+  });
+  it("keeps a fresh instruction read complete within its separate instruction allowance", () => {
+    const text="CURRENT_SKILL\n"+"i".repeat(28_000);
+    const input=toolPair("skill",text);
+    ((input[0].content as any[])[0].input as any).path="/work/.agents/skills/audit/SKILL.md";
+    const result=compactToolLoopMessages(input);
+    expect(JSON.stringify((result.messages.at(-1)!.content as any[])[0].output)===JSON.stringify({type:"text",value:text})).toBe(true);
+    expect(result.retainedToolChars).toBeLessThanOrEqual(96_000);
+  });
   it("omits an oversized historical script as a whole value instead of a code-shaped excerpt", () => {
     const input: ModelMessage[] = [
       { role: "assistant", content: [{ type: "tool-call", toolCallId: "script", toolName: "run_script",

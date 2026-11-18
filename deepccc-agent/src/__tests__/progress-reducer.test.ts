@@ -9,6 +9,13 @@ function feed(events: ChatEvent[]) {
 }
 
 describe("reduceProgress", () => {
+  it("does not render opt-in raw model-view contents in progress", () => {
+    const prev=progressView({headerTitle:"Generating..."});
+    const event:ChatEvent={type:"model_tool_view",sequence:1,step_number:1,tool_call_id:"actual",name:"read_file",
+      original_output_sha256:"source-hash",model_output_sha256:"view-hash",original_output_chars:100,model_output_chars:50,
+      changed:true,content:{type:"text",value:"RAW_PRIVATE_EVIDENCE"}};
+    expect(reduceProgress(prev,event)).toBe(prev);
+  });
   it("renders explicit compaction and generation phases", () => {
     const compacting = reduceProgress(
       progressView({ headerTitle: "Generating..." }),
