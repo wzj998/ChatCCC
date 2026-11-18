@@ -91,6 +91,35 @@ afterEach(() => {
 });
 
 describe("ChatSession response transport", () => {
+  it.each([false,true])("traces the actual prepared tool view only for explicit raw streaming (raw=%s)",async raw=>{
+    const {ChatSession}=await import("../index.js");
+    const content="original evidence\r\n"+"x".repeat(42_000)+"\r\nend";
+    let actualOutput:unknown;
+    streamTextMock.mockImplementationOnce(options=>({fullStream:(async function*(){
+      const call={type:"tool-call",toolCallId:"view-call",toolName:"read_file",input:{path:"evidence.txt"}};
+      const output={content,truncated:false};
+      yield call;
+      yield {type:"tool-result",toolCallId:"view-call",toolName:"read_file",output};
+      const prepared=await options.prepareStep({messages:[...options.messages,
+        {role:"assistant",content:[call]},
+        {role:"tool",content:[{type:"tool-result",toolCallId:"view-call",toolName:"read_file",output:{type:"json",value:output}}]}],stepNumber:1});
+      actualOutput=prepared.messages.at(-1).content[0].output;
+      yield {type:"text-delta",text:"observed"};
+      yield {type:"finish",finishReason:"stop"};
+    })()}));
+    const session=new ChatSession({apiKey:"sk-test"},{persist:false,redactEvents:!raw});
+    const events=await collect(session.chat("read specified evidence")) as any[];
+    const views=events.filter(event=>event.type==="model_tool_view");
+    expect(views.length).toBe(raw?1:0);
+    if(raw){
+      expect(views[0].tool_call_id).toBe("view-call");
+      expect(views[0].step_number).toBe(1);
+      expect(views[0].changed).toBe(false);
+      expect(views[0].content).toEqual(actualOutput);
+      expect(events.findIndex(event=>event.type==="model_tool_view")).toBeGreaterThan(events.findIndex(event=>event.type==="tool_result"));
+      expect(events.findIndex(event=>event.type==="model_tool_view")).toBeLessThan(events.findIndex(event=>event.type==="text"));
+    }
+  });
   it("keeps a recoverable original across a live caller injection instead of replaying a bare placeholder",async()=>{
     const {ChatSession}=await import("../index.js");
     const dir=await mkdtemp(join(tmpdir(),"deepccc-argument-injection-"));

@@ -61,6 +61,7 @@ import {
 import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 import { buildWorkspaceMap, needsWorkspaceOrientation } from "./workspace-map.js";
 import { compactToolLoopMessages } from "./turn-context.js";
+import { modelToolViews, type ModelToolView } from "./model-tool-view.js";
 import { readProjectInstructionFiles } from "./project-instructions.js";
 import { compactJsonText } from "./tool-argument-replay.js";
 import { InstructionReplayCache } from "./instruction-replay.js";
@@ -105,6 +106,7 @@ const SYSTEM_PROMPT = [
   "- 区分来源归属：用户原话/明确决策、助手写入文档的内容、助手推断是三件事。文档或摘要里有某条设定，不等于用户说过；说“你说过/你的设定”前必须能指向用户消息原文，否则说明这是此前助手写入的。",
   "- 把助手推断或未经用户确认的内容写进文档时，标注来源或“待定”，不要与用户确认的设定混排成同一口径。",
   "- 需要调用工具时，工具前只说明必要的调查动作，不先写一版长结论；工具完成后给一次合并后的回答，避免把 provisional 判断和最终结论重复展示。",
+  "- 工具原始输出与当前模型上下文可能不同；遇到结果缩短/省略标记时，未显示的中间正文不算已读。缩小单次读取范围并保存具体判断，不能仅凭原始日志完整就声称全文阅读或验收通过。",
   "",
   "## 行动前先调查",
   "- 深入任务前，先以低成本盘点环境：项目指令、目录布局、路由/API、现有测试和 git 状态。",
@@ -419,6 +421,7 @@ export type ChatEvent =
   | { type: "compact"; compactedMessages: number }
   | { type: "tool_use"; id?: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; name?: string; content: unknown; is_error?: boolean }
+  | ({ type: "model_tool_view"; sequence: number; step_number: number } & ModelToolView)
   | { type: "text"; text: string; accumulated: string }
   | { type: "text_reset" }
   | { type: "input_injected"; text: string }
@@ -815,6 +818,9 @@ export class ChatSession {
       // pendingInjection 是 prepareStep 与 catch 之间的注入信号槽。用标志而非
       // instanceof 判断，因为 provider SDK 可能包装抛出的错误。
       let pendingInjection: string | null = null;
+      const pendingModelViews: ChatEvent[] = [];
+      const previousModelViews = new Map<string, string>();
+      let modelViewSequence = 0;
       const baseGenerationOptions = {
         model: this.model,
         system,
@@ -848,6 +854,14 @@ export class ChatSession {
             }));
           }
           const images = await this.imageRuntime.prepare(compacted.messages,signal);
+          if (this.streaming && !this.redactEvents) {
+            const sequence = ++modelViewSequence;
+            for (const view of modelToolViews(messages, images.messages)) {
+              if (previousModelViews.get(view.tool_call_id) === view.model_output_sha256) continue;
+              previousModelViews.set(view.tool_call_id, view.model_output_sha256);
+              pendingModelViews.push({ type: "model_tool_view", sequence, step_number: stepNumber, ...view });
+            }
+          }
           return { messages: images.messages, ...(images.hasImages && images.model ? {model:this.providerFactory(images.model)} : {}) };
         },
         ...(this.maxOutputTokens !== undefined
@@ -905,6 +919,7 @@ export class ChatSession {
             }
 
             for await (const part of stream as AsyncIterable<TextStreamPart<any>>) {
+              for (const view of pendingModelViews.splice(0)) yield view;
               for (const notice of this.imageNotices.splice(0)) yield {type:"image_input",...notice};
               rawLog?.writeLine(safeRawStreamJson(part));
               if (part.type === "finish") { receivedFinish = true; finishReason = part.finishReason; }

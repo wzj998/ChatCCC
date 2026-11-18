@@ -166,14 +166,26 @@ export function compactToolLoopMessages(
     if (!item.superseded && item.original <= serialized(outputs[index]).length) restore(index, item.part.output);
   });
   let instructionSpent = 0;
+  const lastMessage = messages.at(-1);
+  const freshIds = new Set(lastMessage?.role === "tool" && Array.isArray(lastMessage.content)
+    ? lastMessage.content.filter(part => part.type === "tool-result").map(part => part.toolCallId) : []);
   const instructionBudget = Math.min(options.maxInstructionChars ?? DEFAULT_STEP_INSTRUCTION_CHARS, Math.floor(maximum / 2));
   const instructionIndices = [...latestInstruction.values()].sort((a, b) =>
     Number(refs[b].instruction?.primary) - Number(refs[a].instruction?.primary) || b - a);
   for (const index of instructionIndices) {
     if (selected.has(index) || refs[index].status?.failed) continue;
-    const allowance = Math.min(perResult, instructionBudget - instructionSpent);
+    const allowance = Math.min(freshIds.has(refs[index].part.toolCallId) ? instructionBudget : perResult,
+      instructionBudget - instructionSpent);
     if (allowance < 100) continue;
     if (restore(index, refs[index].part.output, allowance)) instructionSpent += serialized(outputs[index]).length;
+  }
+  // The latest tool batch has not yet been read by the next model step. Keep
+  // complete fresh results when the aggregate budget allows; perResult is a
+  // historical retention limit, not an unconditional first-display truncator.
+  for (let index = refs.length - 1; index >= 0; index--) {
+    if (!selected.has(index) && !refs[index].superseded && freshIds.has(refs[index].part.toolCallId)) {
+      restore(index, refs[index].part.output);
+    }
   }
   for (let index = refs.length - 1; index >= 0; index--) {
     if (!selected.has(index) && !refs[index].superseded && refs[index].status?.failed) restore(index, refs[index].status!.output);

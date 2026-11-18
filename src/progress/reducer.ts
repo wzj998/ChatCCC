@@ -115,6 +115,7 @@ export function reduceProgress(prev: ProgressView, event: ChatEvent): ProgressVi
       return withProgressView(prev, { status: "error", showStop: false });
 
     case "compact":
+    case "model_tool_view":
       // 旧上下文压缩不影响当前过程展示
       return prev;
 

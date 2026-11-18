@@ -393,6 +393,10 @@ deepccc-cli --raw-stream-json --prompt "Read the specified files" > machine-even
 
 此选项隐含 JSONL 模式，保留工具参数、结果、错误和正文的原始字符串，`start.event_payloads` 为 `original`。原始流可能包含未脱敏内容，应存入受信任的本地工作流；公开展示前仍需脱敏。它不修改全局隐私设置、模型输入、持久化上下文或工具权限，也不输出模型推理正文。程序化集成可给 `ChatSession` 传 `redactEvents: false`；省略时维持默认展示脱敏。不要把展示流中的别名路径当作可执行路径，或把脱敏后的正文与原文件 SHA 当作逐字节一致的数据。
 
+0.2.39 起，启用原始 JSONL 且使用流式模型请求时，`start.model_tool_view_protocol` 为 `sha256-json-v1`，并产生 `model_tool_view` 事件。它记录模型请求准备阶段实际保留的工具结果（`content` 是 SDK tool-output 包装），以及原始/模型结果的 JSON UTF-8 SHA256、JavaScript 字符数、工具调用 ID 和步骤。相同调用的视图变化时另记事件；这与原始 `tool_result` 是两种证据，均不认证语义理解或业务正确。普通展示模式不产生此类原始内容事件，推理正文仍不输出。
+
+当前最新工具批次在总预算允许时优先保留完整结果；历史单项上限不再无条件截短尚未读取的新结果。总预算仍生效，过大结果或多结果批次仍可能缩短，须按实际视图和缩短标记分段读取。原始日志完整不能代替这一步检查。
+
 输出是逐行 JSON：
 
 ```jsonl
