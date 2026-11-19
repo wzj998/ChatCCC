@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, execSync } from "node:child_process";
 import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
+import { exitWithStartupTrace } from "./shared.ts";
 import { resolveChatCccRuntimeSpawnSpec } from "./runtime-entry.ts";
 import { handleAgentTeamRequest } from "./agent-team/http/board-routes.ts";
 import { AGENT_TEAM_PAGE_HTML } from "./agent-team/web/agent-team-page.ts";
@@ -673,7 +674,7 @@ async function handleStopService(req: IncomingMessage, res: ServerResponse): Pro
 async function handleRestartService(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   jsonReply(res, 200, { ok: true, message: "Restarting..." });
   scheduleRestart();
-  process.exit(0);
+  exitWithStartupTrace(0, "web_restart");
 }
 
 async function handleValidate(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -2796,7 +2797,7 @@ export function startSetupMode(
     } else {
       console.error(`\n[WEB-UI] HTTP 服务器错误: ${err.message}`);
     }
-    process.exit(1);
+    exitWithStartupTrace(1, "setup_port_listen_failed");
   });
 
   server.listen(port, "127.0.0.1", () => {

@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -19,6 +21,24 @@ import { printServiceDidNotStart } from "./exit-banner.ts";
 const BANNER_LOG_DIR = join(homedir(), ".chatccc", "logs");
 
 const STARTUP_TRACE_FILE = join(BANNER_LOG_DIR, "startup-trace.log");
+const STARTUP_TRACE_MAX_BYTES = 8 * 1024 * 1024;
+
+export function appendRotatingTrace(path: string, line: string, maxBytes: number): void {
+  try {
+    const previousBytes = statSync(path).size;
+    if (previousBytes > 0 && previousBytes + Buffer.byteLength(line) > maxBytes) {
+      renameSync(path, path + ".1");
+    }
+  } catch {
+    // A missing file or a transient rename failure must not prevent this append.
+  }
+  appendFileSync(path, line, "utf8");
+}
+
+export function exitWithStartupTrace(code: number, reason: string): never {
+  appendStartupTrace("process exit requested", { code, reason });
+  process.exit(code);
+}
 
 /**
  * 同步写入启动诊断日志（不依赖 console 劫持与 stream 缓冲）。
@@ -28,10 +48,10 @@ export function appendStartupTrace(message: string, extra?: Record<string, unkno
   try {
     mkdirSync(BANNER_LOG_DIR, { recursive: true });
     const suffix = extra !== undefined && Object.keys(extra).length ? ` ${JSON.stringify(extra)}` : "";
-    appendFileSync(
+    appendRotatingTrace(
       STARTUP_TRACE_FILE,
       `[${new Date().toISOString()}] pid=${process.pid} ppid=${process.ppid} cwd=${process.cwd()} | ${message}${suffix}\n`,
-      "utf-8"
+      STARTUP_TRACE_MAX_BYTES,
     );
   } catch {
     // 诊断日志自身不得影响主流程
@@ -249,10 +269,7 @@ export function ensureSingleInstance(pidFile: string): void {
   appendStartupTrace("ensureSingleInstance: registered", { pid: process.pid });
 
   // 进程退出时自动清理 PID 文件；SIGINT/SIGTERM 由各 main() 自行接管
-  process.on("exit", (code) => {
-    appendStartupTrace("process exit handler", { code, pid: process.pid });
-    cleanupPidFile(pidFile);
-  });
+  process.on("exit", () => cleanupPidFile(pidFile));
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +305,7 @@ export interface CrashLoggingHandlers {
   unhandledRejection: (reason: unknown) => void;
   signalLogger: (sig: NodeJS.Signals) => void;
   beforeExit: (code: number) => void;
+  exit: (code: number) => void;
 }
 
 function coerceError(reason: unknown): Error {
@@ -348,6 +366,12 @@ export function buildCrashLoggingHandlers(opts: CrashHandlersOptions = {}): Cras
     beforeExit: (code) => {
       safeCall(tracer, "beforeExit", { code });
       safeCall(onBeforeExit, code);
+    },
+    exit: (code: number) => {
+      safeCall(tracer, "process exit handler", {
+        code, pid: process.pid, uptimeSeconds: Math.floor(process.uptime()),
+      });
+      safeCall(flush);
     },
   };
 }
@@ -410,6 +434,7 @@ export function installCrashLogging(opts: CrashHandlersOptions = {}): InstallCra
   add("uncaughtException", (err) => handlers.uncaughtException(err));
   add("unhandledRejection", (reason) => handlers.unhandledRejection(reason));
   add("beforeExit", (code) => handlers.beforeExit(code as number));
+  add("exit", (code) => handlers.exit(code as number));
 
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
   if (process.platform === "win32") signals.push("SIGBREAK");

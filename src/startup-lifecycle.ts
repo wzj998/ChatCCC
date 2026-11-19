@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
 const DEFAULT_SERVICE_HEALTH_INTERVAL_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 60_000;
 
 interface RefTimer {
   ref?: () => unknown;
@@ -18,6 +19,8 @@ interface ServiceLifecycleGuardOptions {
   clearIntervalImpl?: (timer: RefTimer) => void;
   tracer?: (message: string, extra?: Record<string, unknown>) => void;
   getActiveResourcesInfo?: () => string[];
+  getFeishuState?: () => string;
+  now?: () => number;
 }
 
 export interface ServiceLifecycleGuard {
@@ -48,6 +51,7 @@ export function createServiceLifecycleGuard(
   const clearIntervalImpl = options.clearIntervalImpl
     ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
   const tracer = options.tracer ?? (() => {});
+  const now = options.now ?? (() => performance.now());
   const getActiveResourcesInfo = options.getActiveResourcesInfo
     ?? (() => process.getActiveResourcesInfo());
 
@@ -56,6 +60,7 @@ export function createServiceLifecycleGuard(
   let recoverServer: (() => void | Promise<void>) | undefined;
   let recoveryPromise: Promise<void> | null = null;
   let shuttingDown = false;
+  let lastHeartbeatAt = now();
 
   const trace = (message: string, extra?: Record<string, unknown>): void => {
     try { tracer(message, extra); } catch { /* 诊断路径不能反过来打断服务 */ }
@@ -87,7 +92,20 @@ export function createServiceLifecycleGuard(
   };
 
   const checkNow = async (): Promise<void> => {
-    if (shuttingDown || !server) return;
+    if (shuttingDown) return;
+    const checkedAt = now();
+    if (checkedAt - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+      lastHeartbeatAt = checkedAt;
+      let feishuState = "unavailable";
+      try { feishuState = options.getFeishuState?.() ?? feishuState; } catch { /* diagnostic only */ }
+      trace("service-lifecycle: heartbeat", {
+        uptimeSeconds: Math.floor(process.uptime()),
+        serverListening: server?.listening ?? false,
+        serverAddress: serverAddress(),
+        feishuState,
+      });
+    }
+    if (!server) return;
     if (server.listening) {
       try { server.ref(); } catch (err) {
         trace("service-lifecycle: HTTP server ref failed", diagnostics({
