@@ -9,7 +9,7 @@ import { AGENT_TOOLS, type AgentTool } from "./agent-tool.ts";
 import { CHATCCC_PACKAGE_ROOT } from "./package-root.ts";
 
 import { printServiceDidNotStart } from "./exit-banner.ts";
-import { appendStartupTrace, setupFileLogging } from "./shared.ts";
+import { appendStartupTrace, exitWithStartupTrace, setupFileLogging } from "./shared.ts";
 import {
   CODEX_MIN_APP_SERVER_VERSION,
   anthropicConfigDisplay,
@@ -1196,7 +1196,7 @@ export function explainMissingFeishuCredentialsAndExit(): never {
   console.error(`\n【程序包根目录】\n  ${PROJECT_ROOT}`);
   console.error("\n" + "=".repeat(64) + "\n");
   printServiceDidNotStart(`未配置: ${missing.join("、")}`);
-  process.exit(1);
+  exitWithStartupTrace(1, "missing_feishu_credentials");
 }
 
 /** 群描述中用于识别 Claude Code 会话的前缀 */

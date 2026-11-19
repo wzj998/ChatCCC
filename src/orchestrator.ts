@@ -14,7 +14,7 @@ import { config as deepCccConfig } from "../deepccc-agent/src/config.ts";
 import { withGitCoAuthor } from "../deepccc-agent/src/file-tools.ts";
 
 import { makeTraceId, logTrace } from "./trace.ts";
-import { appendStartupTrace } from "./shared.ts";
+import { appendStartupTrace, exitWithStartupTrace } from "./shared.ts";
 import {
   CLAUDE_EFFORT,
   CLAUDE_MODEL,
@@ -818,7 +818,7 @@ async function exitForExternalSelfUpdate(): Promise<boolean> {
   child.unref();
   fileLog.flush();
   appendStartupTrace("update: parent exit for external helper", { childPid: child.pid });
-  process.exit(0);
+  exitWithStartupTrace(0, "update_handoff");
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,7 +1101,7 @@ async function executeSafeRestart(): Promise<boolean> {
   const shouldExit = await decideRestartParentExit(child, RESTART_CHILD_READY_MS);
   if (!shouldExit) return false;
   appendStartupTrace("safe-maintenance: restart parent exit", { childPid: child.pid });
-  process.exit(0);
+  exitWithStartupTrace(0, "safe_restart_handoff");
 }
 
 async function executeSafeUpdate(): Promise<boolean> {
@@ -1336,7 +1336,7 @@ async function handleCommandInternal(
     void decideRestartParentExit(child, RESTART_CHILD_READY_MS).then((shouldExit) => {
       if (!shouldExit) return;
       appendStartupTrace("restart: parent exit", { childPid: child.pid });
-      process.exit(0);
+      exitWithStartupTrace(0, "restart_handoff");
     });
     return;
   }

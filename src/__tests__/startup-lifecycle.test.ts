@@ -125,7 +125,7 @@ describe("ChatCCC startup lifecycle", () => {
 });
 
 describe("ChatCCC service lifecycle guard", () => {
-  function createHarness() {
+  function createHarness(health: { now?: () => number; getFeishuState?: () => string } = {}) {
     let intervalCallback: (() => void) | undefined;
     const timer = { ref: vi.fn() };
     const setIntervalImpl = vi.fn((callback: () => void) => {
@@ -148,6 +148,7 @@ describe("ChatCCC service lifecycle guard", () => {
       clearIntervalImpl,
       tracer,
       getActiveResourcesInfo: () => ["TCPServerWrap", "Timeout"],
+      ...health,
     });
 
     return {
@@ -171,6 +172,26 @@ describe("ChatCCC service lifecycle guard", () => {
     expect(h.setIntervalImpl).toHaveBeenCalledOnce();
     expect(h.setIntervalImpl).toHaveBeenCalledWith(expect.any(Function), 10_000);
     expect(h.timer.ref).toHaveBeenCalledOnce();
+  });
+
+  it("records HTTP and Feishu health once per minute and stops on shutdown", async () => {
+    let now = 0;
+    const h = createHarness({ now: () => now, getFeishuState: () => "connected" });
+    h.guard.start();
+    h.guard.attachServer(h.server);
+    now = 59_999;
+    await h.guard.checkNow();
+    expect(h.tracer.mock.calls.filter(([event]) => event === "service-lifecycle: heartbeat")).toHaveLength(0);
+    now = 60_000;
+    await h.guard.checkNow();
+    await h.guard.checkNow();
+    expect(h.tracer).toHaveBeenCalledWith("service-lifecycle: heartbeat", expect.objectContaining({
+      serverListening: true, feishuState: "connected",
+    }));
+    h.guard.beginShutdown("SIGTERM");
+    now = 120_000;
+    await h.guard.checkNow();
+    expect(h.tracer.mock.calls.filter(([event]) => event === "service-lifecycle: heartbeat")).toHaveLength(1);
   });
 
   it("keeps a listening HTTP server referenced", async () => {

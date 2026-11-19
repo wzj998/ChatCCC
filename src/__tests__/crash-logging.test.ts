@@ -8,10 +8,20 @@ import {
   buildCrashLoggingHandlers,
   installCrashLogging,
   installEpipeGuard,
+  appendRotatingTrace,
   setupFileLogging,
 } from "../shared.ts";
 
 describe("buildCrashLoggingHandlers", () => {
+  it("records the final exit synchronously with the exit code and flushes output", () => {
+    const tracer = vi.fn();
+    const flush = vi.fn();
+    buildCrashLoggingHandlers({ tracer, flush }).exit(7);
+    expect(tracer).toHaveBeenCalledWith("process exit handler", {
+      code: 7, pid: process.pid, uptimeSeconds: expect.any(Number),
+    });
+    expect(flush).toHaveBeenCalledOnce();
+  });
   it("uncaughtException: 写诊断、刷新日志、调用 onFatal", () => {
     const tracer = vi.fn();
     const flush = vi.fn();
@@ -156,6 +166,7 @@ describe("installCrashLogging", () => {
       uncaught: process.listenerCount("uncaughtException"),
       rejection: process.listenerCount("unhandledRejection"),
       beforeExit: process.listenerCount("beforeExit"),
+      exit: process.listenerCount("exit"),
       sigint: process.listenerCount("SIGINT"),
       sigterm: process.listenerCount("SIGTERM"),
     };
@@ -169,6 +180,7 @@ describe("installCrashLogging", () => {
     expect(process.listenerCount("uncaughtException")).toBe(before.uncaught + 1);
     expect(process.listenerCount("unhandledRejection")).toBe(before.rejection + 1);
     expect(process.listenerCount("beforeExit")).toBe(before.beforeExit + 1);
+    expect(process.listenerCount("exit")).toBe(before.exit + 1);
     expect(process.listenerCount("SIGINT")).toBe(before.sigint + 1);
     expect(process.listenerCount("SIGTERM")).toBe(before.sigterm + 1);
 
@@ -177,6 +189,7 @@ describe("installCrashLogging", () => {
     expect(process.listenerCount("uncaughtException")).toBe(before.uncaught);
     expect(process.listenerCount("unhandledRejection")).toBe(before.rejection);
     expect(process.listenerCount("beforeExit")).toBe(before.beforeExit);
+    expect(process.listenerCount("exit")).toBe(before.exit);
     expect(process.listenerCount("SIGINT")).toBe(before.sigint);
     expect(process.listenerCount("SIGTERM")).toBe(before.sigterm);
   });
@@ -216,6 +229,22 @@ describe("installCrashLogging", () => {
       cleanup();
     }
   });
+});
+
+it("rotates by UTF-8 size and retains the latest previous trace", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chatccc-trace-"));
+  const file = join(dir, "startup-trace.log");
+  try {
+    appendRotatingTrace(file, "你好\n", 8);
+    appendRotatingTrace(file, "a\n", 8);
+    expect(await readFile(file + ".1", "utf8")).toBe("你好\n");
+    expect(await readFile(file, "utf8")).toBe("a\n");
+    appendRotatingTrace(file, "1234567\n", 8);
+    expect(await readFile(file + ".1", "utf8")).toBe("a\n");
+    expect(await readFile(file, "utf8")).toBe("1234567\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 describe("installEpipeGuard", () => {

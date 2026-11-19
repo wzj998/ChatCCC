@@ -139,5 +139,9 @@ export function createFeishuConnectionSupervisor(options: Options) {
     }
     return startup;
   };
-  return { start, stop };
+  const getState = () => stopped ? "stopped"
+    : connected ? "connected"
+    : unhealthySince !== undefined ? "disconnected"
+    : "starting";
+  return { start, stop, getState };
 }

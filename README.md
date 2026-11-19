@@ -478,6 +478,8 @@ Codex 和 Cursor 在 Linux/macOS 下使用独立进程组。停止时先显示�
 
 飞书接收长连接启用 15 秒握手超时和 30 秒心跳应答超时；首次启动最多等待 45 秒真实连接确认后才提示就绪。运行期间连接持续异常 90 秒时，会关闭并重新建立接收连接，保留会话、消息去重和正在执行的任务。没有用户消息不会触发重连。连接状态与恢复记录写入运行日志和 `startup-trace.log`（`FEISHU-CONNECTION` / `feishu-connection`）。卡片更新遇到网络失败或序号冲突时不会当成送达成功，错误通知保留文本兜底；TLS 断线会明确显示为网络连接失败，已中断的 Agent 任务不会因此自动重放。
 
+排查服务退出时，查看 `~/.chatccc/logs/startup-trace.log` 及上一份 `startup-trace.log.1`。日志达到约 8 MiB 时轮转。服务约每分钟记录一次 PID、运行时长、HTTP 监听和飞书接收连接状态；收到关闭信号、进入重启或更新交接，或 Node 执行退出回调时，会同步写入对应记录。强制结束进程或系统突然断电时，日志可能只保留最后一次心跳。
+
 > **模型切换**：`/model` 查看当前会话 Agent 的可选模型清单，`/model <名称>` 模糊匹配切换，`/model clear` 恢复默认。可选模型来自当前 Agent 的配置：Claude 使用 `claude.model` / `claude.subagentModel`；Cursor、Codex、CCC Agent 和 DSH 使用各自的 `model` / `alternativeModel`。
 
 Agent 的初始化、输入回显与重连通知不代表任务成功。Cursor、Codex 和 Claude 缺少成功完成事件，或任一 Agent 没有产生有效回复时，会明确提示异常；已生成的部分回复会保留并标为可能不完整。Cursor 重连过程显示在状态区，上游的 `resource_exhausted` / `unavailable` 分别提示请求受限 / 服务暂不可用，不推断为余额耗尽。执行失败不会自动重放整条任务。

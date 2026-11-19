@@ -28,7 +28,7 @@ import { WSClient, EventDispatcher, Domain } from "@larksuiteoapi/node-sdk";
 import { createFeishuConnectionSupervisor } from "./feishu-connection.ts";
 import WebSocket from "ws";
 
-import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, freeRelayListenPort, installCrashLogging, installEpipeGuard, waitForPortFree } from "./shared.ts";
+import { appendStartupTrace, attachRelayWebSocket, ensureSingleInstance, exitWithStartupTrace, freeRelayListenPort, installCrashLogging, installEpipeGuard, waitForPortFree } from "./shared.ts";
 import { createUiRouter, setExtraApiHandler, setReloadConfigHook, startSetupMode } from "./web-ui.ts";
 import { configureAgentTeamMainAgent } from "./agent-team/main-agent-bootstrap.ts";
 import {
@@ -577,7 +577,7 @@ async function startBotServiceCore(): Promise<void> {
         }
       } catch { /* ignore */ }
     });
-    ws.on("close", () => { console.log("[WS] Local relay disconnected"); process.exit(0); });
+    ws.on("close", () => { console.log("[WS] Local relay disconnected"); exitWithStartupTrace(0, "local_relay_disconnected"); });
     ws.on("error", (err: Error) => {
       if (!localRelayOpened) {
         console.error(`[启动 6/7] 失败：无法连接本地中继。`);
@@ -587,7 +587,7 @@ async function startBotServiceCore(): Promise<void> {
         // 已经返回的事件循环外，调用方拿不到。约定：local 模式连接失败一律
         // 直接退出进程（与 setup-activate 模式无关 —— setup 模式不会用 local relay）。
         printServiceDidNotStart(`无法连接本地中继 ${LOCAL_RELAY_URL}`);
-        process.exit(1);
+        exitWithStartupTrace(1, "local_relay_connection_failed");
       }
       console.error(`[WS] Local relay error: ${err.message}`);
     });
@@ -759,7 +759,10 @@ async function main(): Promise<void> {
   // ChatCCC 是常驻服务，不能把“当前刚好有没有 Agent session”当作进程生命周期。
   // referenced timer 明确锚定服务进程；HTTP Server 接入后还会定期 ref/健康检查。
   // `/restart`、`/update` 都使用 process.exit()，不会被 timer 阻止。
-  const serviceLifecycle = createServiceLifecycleGuard({ tracer: appendStartupTrace });
+  const serviceLifecycle = createServiceLifecycleGuard({
+    tracer: appendStartupTrace,
+    getFeishuState: () => feishuConnection?.getState() ?? "unavailable",
+  });
   serviceLifecycle.start();
 
   // 黑匣子：所有未捕获异常 / 信号 / beforeExit 都同步写入 startup-trace.log（appendFileSync）。
@@ -816,7 +819,7 @@ async function main(): Promise<void> {
       simServer.listen(SIM_PORT, "127.0.0.1");
     }).catch((err: NodeJS.ErrnoException) => {
       console.error(`\n[启动] 监听失败：端口 ${SIM_PORT}（${err.code ?? "?"} — ${err.message}）`);
-      process.exit(1);
+      exitWithStartupTrace(1, "simulation_port_listen_failed");
     });
     serviceLifecycle.attachServer(
       simServer,
@@ -849,7 +852,7 @@ async function main(): Promise<void> {
     console.error(`  当前配置: ${CHATCCC_PORT}`);
     reportEnvironmentVariableReadout();
     printServiceDidNotStart("config.json 的 port 字段配置无效（须为 1–65535 的整数）");
-    process.exit(1);
+    exitWithStartupTrace(1, "invalid_service_port");
   }
 
   const isInternalRestart = process.env[INTERNAL_RESTART_ENV_VAR] === "1";
@@ -866,7 +869,7 @@ async function main(): Promise<void> {
     });
     if (!portReleased) {
       printServiceDidNotStart(`内部重启交接超时：端口 ${CHATCCC_PORT} 在 30 秒内未释放`);
-      process.exit(1);
+      exitWithStartupTrace(1, "restart_handoff_timeout");
     }
   }
 
@@ -955,7 +958,7 @@ async function main(): Promise<void> {
     appendStartupTrace("main: post-kill port wait finished", { CHATCCC_PORT, portReleased });
     if (!portReleased) {
       printServiceDidNotStart(`旧进程退出后端口 ${CHATCCC_PORT} 在 5 秒内仍未释放`);
-      process.exit(1);
+      exitWithStartupTrace(1, "service_port_not_released");
     }
   }
   const httpServer = createServer(createUiRouter());
@@ -965,7 +968,7 @@ async function main(): Promise<void> {
       "  处理建议: 关闭占用该端口的其它程序，或在 config.json 的 port 字段里改成其它未占用端口（如 18081）。"
     );
     printServiceDidNotStart(`本地中继端口 ${CHATCCC_PORT} 无法监听（${err.code ?? "?"} — ${err.message}）`);
-    process.exit(1);
+    exitWithStartupTrace(1, "service_port_listen_failed");
   });
   serviceLifecycle.attachServer(
     httpServer,
@@ -1060,7 +1063,7 @@ function installShutdownHandlers(
     wechatSignal.stopped = true;
     stopChromeDevtoolsGuard();
     httpServer.close();
-    process.exit(0);
+    exitWithStartupTrace(0, "SIGINT");
   });
   process.on("SIGTERM", () => {
     serviceLifecycle.beginShutdown("SIGTERM");
@@ -1068,7 +1071,7 @@ function installShutdownHandlers(
     wechatSignal.stopped = true;
     stopChromeDevtoolsGuard();
     httpServer.close();
-    process.exit(0);
+    exitWithStartupTrace(0, "SIGTERM");
   });
 }
 
@@ -1078,5 +1081,5 @@ main().catch((err: Error) => {
   console.error(`  ${err.message}`);
   if (err.stack) console.error(err.stack);
   printServiceDidNotStart(`main() 异常: ${err.message}`);
-  process.exit(1);
+  exitWithStartupTrace(1, "startup_fatal");
 });
