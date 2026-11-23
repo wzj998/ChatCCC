@@ -98,7 +98,7 @@ import {
   getSessionDrainSnapshot,
 } from "./session-chat-binding.ts";
 import { getCodexUsageSummary, getTenantAccessToken, sendPostMessage } from "./feishu-platform.ts";
-import { getCursorUsageSummary, type CursorUsageSummary } from "./cursor-usage.ts";
+import { asCursorUsageReport, getCursorUsageSummary, type CursorUsageReport, type CursorUsageSummary } from "./cursor-usage.ts";
 import { getChatGptSubscriptionStatus, type ChatGptSubscriptionResult } from "./chatgpt-subscription.ts";
 import { applySharedPrefix } from "./shared-prefix.ts";
 import {
@@ -341,7 +341,7 @@ function formatCodexUsageSummary(usage: CodexUsageSummary, chatGptSubscription: 
   ].filter((line, index, arr) => line !== "" || (index > 0 && arr[index - 1] !== "")).join("\n");
 }
 
-function formatCursorUsageSummary(usage: CursorUsageSummary): string {
+function formatCursorUsageSummary(usage: CursorUsageSummary | CursorUsageReport): string {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
     timeZone,
@@ -359,41 +359,71 @@ function formatCursorUsageSummary(usage: CursorUsageSummary): string {
     if (!Number.isFinite(timestamp)) return "暂无数据";
     return dateFormatter.format(new Date(timestamp));
   };
-  const formatMoney = (value: number | undefined) => {
-    if (typeof value !== "number" || !Number.isFinite(value)) return "暂无数据";
-    return `$${(value / 100).toFixed(2)}`;
+  const formatMoney = (value: number | string | undefined) => {
+    const amount = typeof value === "string" ? Number(value) : value;
+    if (typeof amount !== "number" || !Number.isFinite(amount)) return "暂无数据";
+    return `$${(amount / 100).toFixed(2)}`;
   };
   const formatPercent = (value: number | undefined) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return "暂无数据";
     return `${value}%`;
   };
-  const plan = usage.planUsage;
-  const spendLimit = usage.spendLimitUsage;
+  const formatPersonal = (summary: CursorUsageSummary) => {
+    const plan = summary.planUsage;
+    const spendLimit = summary.spendLimitUsage;
+    return [
+      "Cursor 用量：",
+      "",
+      `**计费周期:** ${formatDate(summary.billingCycleStart)} - ${formatDate(summary.billingCycleEnd)}`,
+      "",
+      "**Included usage:**",
+      `- Total: ${formatMoney(plan?.totalSpend)} / ${formatMoney(plan?.limit)} (${formatPercent(plan?.totalPercentUsed)})`,
+      `- Included: ${formatMoney(plan?.includedSpend)}`,
+      `- Bonus: ${formatMoney(plan?.bonusSpend)}`,
+      `- Auto: ${formatPercent(plan?.autoPercentUsed)}`,
+      `- API: ${formatPercent(plan?.apiPercentUsed)}`,
+      "",
+      "**On-Demand / Spend limit:**",
+      `- Individual used: ${formatMoney(spendLimit?.individualUsed)}`,
+      `- Pool used: ${formatMoney(spendLimit?.pooledUsed)} / ${formatMoney(spendLimit?.pooledLimit)}`,
+      `- Pool remaining: ${formatMoney(spendLimit?.pooledRemaining)}`,
+      `- Limit type: ${spendLimit?.limitType ?? "暂无数据"}`,
+      `- Display threshold: ${formatMoney(summary.displayThreshold)}`,
+      "",
+      `**Enabled:** ${summary.enabled === undefined ? "暂无数据" : String(summary.enabled)}`,
+      summary.displayMessage ? `**Message:** ${summary.displayMessage}` : "",
+      summary.autoModelSelectedDisplayMessage ? `**Auto model:** ${summary.autoModelSelectedDisplayMessage}` : "",
+      summary.namedModelSelectedDisplayMessage ? `**Named model:** ${summary.namedModelSelectedDisplayMessage}` : "",
+      summary.autoBucketModels?.length ? `**Auto bucket models:** ${summary.autoBucketModels.join(", ")}` : "",
+    ].filter(Boolean).join("\n");
+  };
 
+  const report = asCursorUsageReport(usage);
+  if (!report) return "Cursor 用量：\n\n暂无数据";
+  if (report.accountKind !== "team") return formatPersonal(report.current);
+
+  const weekly = report.current;
+  const monthly = report.team;
+  const monthlyPlan = monthly?.planUsage;
+  const monthlySpend = monthly?.spendLimitUsage;
   return [
-    "Cursor 用量：",
+    "Cursor 用量（团队版）：",
     "",
-    `**计费周期:** ${formatDate(usage.billingCycleStart)} - ${formatDate(usage.billingCycleEnd)}`,
+    "**本周 Included:**",
+    `- 周期: ${formatDate(weekly.billingCycleStart)} - ${formatDate(weekly.billingCycleEnd)}`,
+    `- 已用: ${formatPercent(weekly.planUsage?.totalPercentUsed)}`,
+    `- Auto: ${formatPercent(weekly.planUsage?.autoPercentUsed)}`,
+    weekly.displayMessage ? `- ${weekly.displayMessage}` : "",
     "",
-    "**Included usage:**",
-    `- Total: ${formatMoney(plan?.totalSpend)} / ${formatMoney(plan?.limit)} (${formatPercent(plan?.totalPercentUsed)})`,
-    `- Included: ${formatMoney(plan?.includedSpend)}`,
-    `- Bonus: ${formatMoney(plan?.bonusSpend)}`,
-    `- Auto: ${formatPercent(plan?.autoPercentUsed)}`,
-    `- API: ${formatPercent(plan?.apiPercentUsed)}`,
-    "",
-    "**On-Demand / Spend limit:**",
-    `- Individual used: ${formatMoney(spendLimit?.individualUsed)}`,
-    `- Pool used: ${formatMoney(spendLimit?.pooledUsed)} / ${formatMoney(spendLimit?.pooledLimit)}`,
-    `- Pool remaining: ${formatMoney(spendLimit?.pooledRemaining)}`,
-    `- Limit type: ${spendLimit?.limitType ?? "暂无数据"}`,
-    `- Display threshold: ${formatMoney(usage.displayThreshold)}`,
-    "",
-    `**Enabled:** ${usage.enabled === undefined ? "暂无数据" : String(usage.enabled)}`,
-    usage.displayMessage ? `**Message:** ${usage.displayMessage}` : "",
-    usage.autoModelSelectedDisplayMessage ? `**Auto model:** ${usage.autoModelSelectedDisplayMessage}` : "",
-    usage.namedModelSelectedDisplayMessage ? `**Named model:** ${usage.namedModelSelectedDisplayMessage}` : "",
-    usage.autoBucketModels?.length ? `**Auto bucket models:** ${usage.autoBucketModels.join(", ")}` : "",
+    "**本月团队额度:**",
+    `- 周期: ${formatDate(monthly?.billingCycleStart)} - ${formatDate(monthly?.billingCycleEnd)}`,
+    `- Included: ${formatMoney(monthlyPlan?.totalSpend)} / ${formatMoney(monthlyPlan?.limit)} (${formatPercent(monthlyPlan?.totalPercentUsed)})`,
+    `- API: ${formatPercent(monthlyPlan?.apiPercentUsed)}`,
+    `- On demand used: ${formatMoney(monthlySpend?.individualUsed)} / ${formatMoney(monthlySpend?.individualLimit)}`,
+    `- Pool used: ${formatMoney(monthlySpend?.pooledUsed)} / ${formatMoney(monthlySpend?.pooledLimit)}`,
+    `- Pool remaining: ${formatMoney(monthlySpend?.pooledRemaining)}`,
+    `- Limit type: ${monthlySpend?.limitType ?? "暂无数据"}`,
+    monthly?.displayMessage ? `- ${monthly.displayMessage}` : "",
   ].filter(Boolean).join("\n");
 }
 

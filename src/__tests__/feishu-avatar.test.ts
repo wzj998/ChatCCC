@@ -31,9 +31,13 @@ async function loadFeishuApiWithHome(homeDir: string, userDataDir: string) {
     toolDisplayName: (tool: string) => tool,
     config: mockConfig,
   }));
-  vi.doMock("../cursor-usage.ts", () => ({
-    getCursorUsageSummary: getCursorUsageSummaryMock,
-  }));
+  vi.doMock("../cursor-usage.ts", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../cursor-usage.ts")>();
+    return {
+      ...actual,
+      getCursorUsageSummary: getCursorUsageSummaryMock,
+    };
+  });
   return import("../feishu-api.ts");
 }
 
@@ -690,6 +694,52 @@ describe("Cursor avatar usage battery", () => {
     mockConfig.cursor.onDemandMonthlyBudget = 1000;
     getCursorUsageSummaryMock.mockResolvedValue({
       spendLimitUsage: { individualUsed: 25000 },
+    });
+    mockAvatarFetch(uploadedNames, new Response("unused", { status: 500 }));
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "cursor", "idle");
+
+      expect(uploadedNames).toEqual(["avatar_cursor_idle_battery_75.jpg"]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the weekly ring and team On demand battery for a team Cursor account", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    mockConfig.cursor.avatarBatteryMode = "apiPercent";
+    mockConfig.cursor.onDemandMonthlyBudget = 500;
+    mockAvatarUploadOnlyFetch(uploadedNames);
+
+    try {
+      const { setChatAvatar } = await loadFeishuApiWithHome(homeDir, userDataDir);
+      await setChatAvatar("tenant-token", "chat_1", "cursor", "idle", {
+        cursorUsage: {
+          accountKind: "team",
+          current: { planUsage: { totalPercentUsed: 20 } },
+          team: { spendLimitUsage: { individualUsed: 25000 } },
+        },
+      });
+
+      expect(uploadedNames).toEqual(["avatar_cursor_idle_battery_50_ring_80.jpg"]);
+      expect(getCursorUsageSummaryMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to total percentage when a personal Cursor plan has no API percentage", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-home-"));
+    const userDataDir = await mkdtemp(join(tmpdir(), "chatccc-avatar-data-"));
+    const uploadedNames: string[] = [];
+    getCursorUsageSummaryMock.mockResolvedValue({
+      planUsage: { totalPercentUsed: 25 },
     });
     mockAvatarFetch(uploadedNames, new Response("unused", { status: 500 }));
 

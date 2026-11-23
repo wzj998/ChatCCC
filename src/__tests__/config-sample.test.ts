@@ -42,6 +42,7 @@ describe("config.sample.json", () => {
     };
 
     expect(sample.cursor?.alternativeModel).toBe("");
+    expect((sample.cursor as { onDemandMonthlyBudget?: unknown } | undefined)?.onDemandMonthlyBudget).toBe(500);
     expect(sample.codex?.alternativeModel).toBe("");
     expect(sample.ccc?.alternativeModel).toBe("");
     expect(sample.codex?.fastMode).toBe(false);

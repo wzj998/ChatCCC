@@ -25,6 +25,7 @@ import {
 } from "./startup-lifecycle.ts";
 import { engineManager } from "./engines/engine-specs.ts";
 import { isSafeMaintenanceAdmissionClosed } from "./safe-maintenance.ts";
+import { readCursorAccountKind } from "./cursor-usage.ts";
 
 const PROJECT_ROOT = CHATCCC_PACKAGE_ROOT;
 const USER_DATA_DIR = join(homedir(), ".chatccc");
@@ -384,7 +385,7 @@ async function handleGetConfig(_req: IncomingMessage, res: ServerResponse): Prom
       ilinkAuthExists = Boolean(auth.token);
     } catch { /* ignore parse errors */ }
   }
-  jsonReply(res, 200, { vars, running, pid, ilinkAuthExists });
+  jsonReply(res, 200, { vars, running, pid, ilinkAuthExists, cursorAccountKind: readCursorAccountKind() });
 }
 
 async function handlePostConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1128,16 +1129,18 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
               <label>备选模型（选填）</label>
               <input type="text" id="field-CHATCCC_CURSOR_ALTERNATIVE_MODEL" placeholder="加入 /model 列表，便于会话内切换">
             </div>
-            <div class="form-group">
-              <label>头像电池电量</label>
+            <div class="hint" id="field-cursor-account-hint" style="margin-bottom:8px;line-height:1.6"></div>
+            <div class="form-group" id="field-cursor-battery-mode-row">
+              <label>头像电池电量（个人版）</label>
               <select id="field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE" onchange="onCursorBatteryModeChange('field-', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">
                 <option value="apiPercent">API 使用比例</option>
                 <option value="onDemandUse">On demand use 金额</option>
               </select>
             </div>
             <div class="form-group" id="field-cursor-on-demand-budget-row" style="display:none">
-              <label>每月On demand use预算</label>
-              <input type="number" id="field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET" min="1" step="1" placeholder="1000">
+              <label>每月 On demand use 预算</label>
+              <input type="number" id="field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET" min="1" step="1" placeholder="500">
+              <div class="hint">团队版电池和个人版 On demand 都用这个金额做分母，默认 500。</div>
             </div>
             <button class="btn btn-outline" onclick="validateCli('cursor')" style="margin-bottom:12px">检测 Cursor CLI</button>
             <div id="cursor-validate-result"></div>
@@ -1313,8 +1316,10 @@ header .badge{font-size:13px;padding:4px 12px;border-radius:12px;font-weight:500
         <div class="config-row"><span class="key">CLI 路径</span><span class="val" id="cfg-CURSOR_PATH">-</span></div>
         <div class="config-row"><span class="key">模型</span><span class="val" id="cfg-CURSOR_MODEL">-</span></div>
         <div class="config-row"><span class="key">备选模型</span><span class="val" id="cfg-CURSOR_ALTERNATIVE_MODEL">-</span></div>
-        <div class="config-row"><span class="key">头像电池电量</span><span class="val" id="cfg-CURSOR_AVATAR_BATTERY_MODE">-</span></div>
-        <div class="config-row" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW"><span class="key">每月On demand use预算</span><span class="val" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET">-</span></div>
+        <div class="config-row"><span class="key">本机 Cursor 账号</span><span class="val" id="cfg-CURSOR_ACCOUNT_KIND">-</span></div>
+        <div class="config-row" id="cfg-CURSOR_AVATAR_BATTERY_MODE_ROW"><span class="key">头像电池电量</span><span class="val" id="cfg-CURSOR_AVATAR_BATTERY_MODE">-</span></div>
+        <div class="config-row" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW"><span class="key">每月 On demand use 预算</span><span class="val" id="cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET">-</span></div>
+        <div class="hint" id="cfg-CURSOR_USAGE_HINT" style="margin-top:6px;line-height:1.6"></div>
         <label class="agent-default-row" style="margin-top:10px"><input type="checkbox" id="dash-default-cursor" onchange="setDashboardDefaultAgent('cursor', this.checked)"> 设为默认 Agent</label>
         <div class="hint" style="margin-top:6px;line-height:1.6">生效范围：保存后下一条消息或下个新会话生效，当前生成不中断。</div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="editSection('cursor')">编辑</button>
@@ -1388,7 +1393,8 @@ let state = {
   running: false,
   pid: null,
   // 平台开关；默认全开，renderStep1() 会按已存在 config 回填
-  platformsEnabled: { feishu: true, ilink: true }
+  platformsEnabled: { feishu: true, ilink: true },
+  cursorAccountKind: 'unknown'
 };
 
 // Step 2 输入事件是否已绑（避免每次 goStep(2) 重复绑定）
@@ -1482,10 +1488,33 @@ function toastConfigApplyResult(result, savedText) {
   }
 }
 
+function cursorAccountKindLabel(kind) {
+  if (kind === 'team') return '团队版';
+  if (kind === 'personal') return '个人版';
+  return '未检测到';
+}
+
+function cursorUsageHint(kind) {
+  if (kind === 'team') return '本机是团队版 Cursor：头像外圈固定为本周 Included 剩余，电池固定为本月 On demand use（按下方预算）。个人版电池模式在这台电脑上不生效。';
+  if (kind === 'personal') return '本机是个人版 Cursor：头像只有电池。API 使用比例没有 API 百分比时，改用总用量百分比。';
+  return '还没检测到本机 Cursor 登录。检测到团队账号后，外圈用本周 Included，电池用 On demand。';
+}
+
+function rememberCursorAccount(data) {
+  state.cursorAccountKind = (data && data.cursorAccountKind) || 'unknown';
+}
+
 function onCursorBatteryModeChange(prefix, value) {
+  var team = state.cursorAccountKind === 'team';
   var rowId = prefix === 'edit-' ? 'edit-cursor-on-demand-budget-row' : 'field-cursor-on-demand-budget-row';
   var row = document.getElementById(rowId);
-  if (row) row.style.display = value === 'onDemandUse' ? '' : 'none';
+  if (row) row.style.display = (team || value === 'onDemandUse') ? '' : 'none';
+  if (prefix === 'field-') {
+    var modeRow = document.getElementById('field-cursor-battery-mode-row');
+    if (modeRow) modeRow.style.display = team ? 'none' : '';
+    var hint = document.getElementById('field-cursor-account-hint');
+    if (hint) hint.textContent = cursorUsageHint(state.cursorAccountKind);
+  }
 }
 
 function toggleWizardChromeDevtoolsFields(enabled) {
@@ -1658,6 +1687,7 @@ async function showWizard() {
   try {
     var d = await api('/api/config');
     state.config = d.vars || {};
+    rememberCursorAccount(d);
   } catch (e) { state.config = state.config || {}; }
   goStep(1);
 }
@@ -1769,11 +1799,11 @@ function renderStep2() {
     var cursorMode = c.cursor.avatarBatteryMode || 'apiPercent';
     var cursorModeInput = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
     if (cursorModeInput) cursorModeInput.value = cursorMode;
-    prefillNested('field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET', c.cursor.onDemandMonthlyBudget || 1000);
+    prefillNested('field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET', c.cursor.onDemandMonthlyBudget || 500);
   } else {
     var defaultCursorModeInput = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
     if (defaultCursorModeInput) defaultCursorModeInput.value = 'apiPercent';
-    prefillNested('field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET', 1000);
+    prefillNested('field-CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET', 500);
   }
   var cursorBatteryModeEl = document.getElementById('field-CHATCCC_CURSOR_AVATAR_BATTERY_MODE');
   if (cursorBatteryModeEl && !cursorBatteryModeEl.value) cursorBatteryModeEl.value = 'apiPercent';
@@ -1901,6 +1931,9 @@ function collectAllFields() {
       var el = document.getElementById('field-' + key);
       if (el && el.value.trim()) vars[key] = el.value.trim();
     });
+    if ((state.cursorAccountKind === 'team' || vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse') && !vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET) {
+      vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET = '500';
+    }
   }
   if (state.agentsEnabled.codex) {
     AGENT_FIELDS.codex.forEach(function(key){
@@ -1987,9 +2020,14 @@ function renderStep3() {
       if (vars.CHATCCC_CURSOR_PATH) lines.push('<div class="config-row"><span class="key">CLI 路径</span><span class="val">' + vars.CHATCCC_CURSOR_PATH + '</span></div>');
       lines.push('<div class="config-row"><span class="key">模型</span><span class="val">' + (vars.CHATCCC_CURSOR_MODEL || '(留空)') + '</span></div>');
       lines.push('<div class="config-row"><span class="key">备选模型</span><span class="val">' + (vars.CHATCCC_CURSOR_ALTERNATIVE_MODEL || '(留空)') + '</span></div>');
-      lines.push('<div class="config-row"><span class="key">头像电池电量</span><span class="val">' + cursorBatteryModeLabel(vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE) + '</span></div>');
-      if (vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse') {
-        lines.push('<div class="config-row"><span class="key">每月On demand use预算</span><span class="val">' + (vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET || '1000') + '</span></div>');
+      lines.push('<div class="config-row"><span class="key">本机 Cursor 账号</span><span class="val">' + cursorAccountKindLabel(state.cursorAccountKind) + '</span></div>');
+      if (state.cursorAccountKind === 'team') {
+        lines.push('<div class="config-row"><span class="key">头像</span><span class="val">外圈本周 Included，电池 On demand</span></div>');
+      } else {
+        lines.push('<div class="config-row"><span class="key">头像电池电量</span><span class="val">' + cursorBatteryModeLabel(vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE) + '</span></div>');
+      }
+      if (state.cursorAccountKind === 'team' || vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse') {
+        lines.push('<div class="config-row"><span class="key">每月 On demand use 预算</span><span class="val">' + (vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET || '500') + '</span></div>');
       }
     } else if (t === 'codex') {
       lines.push('<h4 style="margin:10px 0 4px;color:#334155">Codex</h4>');
@@ -2115,6 +2153,7 @@ async function loadDashboard() {
 
   var configData = await api('/api/config');
   state.config = configData.vars || {};
+  rememberCursorAccount(configData);
   state.running = configData.running;
   state.pid = configData.pid;
   state.ilinkAuthExists = configData.ilinkAuthExists || false;
@@ -2224,10 +2263,16 @@ function updateDashboardUI() {
   document.getElementById('cfg-CURSOR_MODEL').textContent = (c.cursor && c.cursor.model) || '(留空)';
   document.getElementById('cfg-CURSOR_ALTERNATIVE_MODEL').textContent = (c.cursor && c.cursor.alternativeModel) || '(留空)';
   var cursorBatteryMode = (c.cursor && c.cursor.avatarBatteryMode) || 'apiPercent';
-  document.getElementById('cfg-CURSOR_AVATAR_BATTERY_MODE').textContent = cursorBatteryModeLabel(cursorBatteryMode);
+  var cursorTeam = state.cursorAccountKind === 'team';
+  document.getElementById('cfg-CURSOR_ACCOUNT_KIND').textContent = cursorAccountKindLabel(state.cursorAccountKind);
+  document.getElementById('cfg-CURSOR_AVATAR_BATTERY_MODE').textContent = cursorTeam ? '团队版固定为 On demand' : cursorBatteryModeLabel(cursorBatteryMode);
+  var cursorModeRow = document.getElementById('cfg-CURSOR_AVATAR_BATTERY_MODE_ROW');
+  if (cursorModeRow) cursorModeRow.style.display = '';
   var cursorBudgetRow = document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET_ROW');
-  if (cursorBudgetRow) cursorBudgetRow.style.display = cursorBatteryMode === 'onDemandUse' ? '' : 'none';
-  document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET').textContent = String((c.cursor && c.cursor.onDemandMonthlyBudget) || 1000);
+  if (cursorBudgetRow) cursorBudgetRow.style.display = (cursorTeam || cursorBatteryMode === 'onDemandUse') ? '' : 'none';
+  document.getElementById('cfg-CURSOR_ON_DEMAND_MONTHLY_BUDGET').textContent = String((c.cursor && c.cursor.onDemandMonthlyBudget) || 500);
+  var cursorUsageHintEl = document.getElementById('cfg-CURSOR_USAGE_HINT');
+  if (cursorUsageHintEl) cursorUsageHintEl.textContent = cursorUsageHint(state.cursorAccountKind);
   document.getElementById('cfg-CODEX_PATH').textContent = (c.codex && (c.codex.path || c.codex.command)) || 'codex';
   document.getElementById('cfg-CODEX_MODEL').textContent = (c.codex && c.codex.model) || '(留空)';
   document.getElementById('cfg-CODEX_ALTERNATIVE_MODEL').textContent = (c.codex && c.codex.alternativeModel) || '(留空)';
@@ -2326,7 +2371,7 @@ function editSection(section) {
     'CHATCCC_ANTHROPIC_API_KEY': 'API Key', 'CHATCCC_ANTHROPIC_BASE_URL': 'Base URL', 'CHATCCC_ANTHROPIC_MAX_TURN': 'Max Turns (0=无限制)',
     'CHATCCC_CURSOR_PATH': 'CLI 路径', 'CHATCCC_CURSOR_MODEL': '模型', 'CHATCCC_CURSOR_ALTERNATIVE_MODEL': '备选模型',
     'CHATCCC_CURSOR_AVATAR_BATTERY_MODE': '头像电池电量',
-    'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月On demand use预算',
+    'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '每月 On demand use 预算',
     'CHATCCC_CODEX_PATH': 'CLI 路径', 'CHATCCC_CODEX_MODEL': '模型', 'CHATCCC_CODEX_ALTERNATIVE_MODEL': '备选模型', 'CHATCCC_CODEX_EFFORT': 'Effort',
     'CHATCCC_CODEX_FAST_MODE': 'Fast 模式',
     'CHATCCC_CCC_API_KEY': 'API Key', 'CHATCCC_CCC_BASE_URL': 'Base URL',
@@ -2345,7 +2390,8 @@ function editSection(section) {
     'CHATCCC_CCC_MAX_OUTPUT_TOKENS': '正整数；留空 = 跟随 DeepCCC 内核配置（~/.deepccc/config.json 或 DEEPCCC_MAX_OUTPUT_TOKENS）；内核也未配置时使用模型服务端默认值。',
     'CHATCCC_CCC_GIT_COAUTHOR': '跟随全局时读取 ~/.deepccc/config.json 的 git.coAuthor.enabled（缺省为开启）。强制选项只影响 ChatCCC 内置 CCC Agent。',
     'CHATCCC_CCC_CONTEXT_WINDOW': '压缩阈值自动 = 窗口 × 80%（超出即把较早消息压缩为摘要）。⚠️ 超过模型/服务端实际上限时请求会被 API 直接拒绝（context length exceeded），实际窗口以模型与所用服务端为准（如 litellm 代理的 max_input_tokens）；单位 k = 1024 tokens，1M = 1,048,576 tokens。',
-    'CHATCCC_CCC_SUB_MODEL': '用于 DeepCCC 内部轻量环节（上下文压缩摘要生成、task 子代理任务）。留空 = 跟随主模型；改动需重启 ChatCCC 生效。'
+    'CHATCCC_CCC_SUB_MODEL': '用于 DeepCCC 内部轻量环节（上下文压缩摘要生成、task 子代理任务）。留空 = 跟随主模型；改动需重启 ChatCCC 生效。',
+    'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET': '团队版电池和个人版 On demand 都用这个金额做分母。默认 500。'
   };
 
   if (section === 'chromeDevtools') {
@@ -2377,7 +2423,7 @@ function editSection(section) {
         else if (key === 'CHATCCC_CURSOR_MODEL') val = state.config.cursor.model || '';
         else if (key === 'CHATCCC_CURSOR_ALTERNATIVE_MODEL') val = state.config.cursor.alternativeModel || '';
         else if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') val = state.config.cursor.avatarBatteryMode || 'apiPercent';
-        else if (key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET') val = (state.config.cursor.onDemandMonthlyBudget != null) ? String(state.config.cursor.onDemandMonthlyBudget) : '1000';
+        else if (key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET') val = (state.config.cursor.onDemandMonthlyBudget != null) ? String(state.config.cursor.onDemandMonthlyBudget) : '500';
       } else if (section === 'codex' && state.config.codex) {
         if (key === 'CHATCCC_CODEX_PATH') val = state.config.codex.path || state.config.codex.command || '';
         else if (key === 'CHATCCC_CODEX_MODEL') val = state.config.codex.model || '';
@@ -2414,12 +2460,18 @@ function editSection(section) {
       if (hintMap[key]) html += '<div class="hint" style="margin-top:6px;line-height:1.5">' + hintMap[key] + '</div>';
       html += '</div>';
     } else if (key === 'CHATCCC_CURSOR_AVATAR_BATTERY_MODE') {
-      var modeVal = val || 'apiPercent';
-      html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
-      html += '<select id="edit-' + key + '" onchange="onCursorBatteryModeChange(\\'edit-\\', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
-      html += '<option value="apiPercent"' + (modeVal === 'apiPercent' ? ' selected' : '') + '>API 使用比例</option>';
-      html += '<option value="onDemandUse"' + (modeVal === 'onDemandUse' ? ' selected' : '') + '>On demand use 金额</option>';
-      html += '</select></div>';
+      if (state.cursorAccountKind === 'team') {
+        html += '<div class="form-group"><label>头像用量</label><div class="hint" style="line-height:1.6">' + cursorUsageHint('team') + '</div></div>';
+      } else {
+        var modeVal = val || 'apiPercent';
+        html += '<div class="form-group"><label>' + (labelMap[key] || key) + '（个人版）</label>';
+        html += '<select id="edit-' + key + '" onchange="onCursorBatteryModeChange(\\'edit-\\', this.value)" style="width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none">';
+        html += '<option value="apiPercent"' + (modeVal === 'apiPercent' ? ' selected' : '') + '>API 使用比例</option>';
+        html += '<option value="onDemandUse"' + (modeVal === 'onDemandUse' ? ' selected' : '') + '>On demand use 金额</option>';
+        html += '</select>';
+        if (state.cursorAccountKind === 'unknown') html += '<div class="hint" style="margin-top:6px;line-height:1.6">' + cursorUsageHint('unknown') + '</div>';
+        html += '</div>';
+      }
     } else if (key === 'CHATCCC_CCC_GIT_COAUTHOR') {
       var coAuthorVal = val || 'inherit';
       html += '<div class="form-group"><label>' + (labelMap[key] || key) + '</label>';
@@ -2463,7 +2515,7 @@ function editSection(section) {
       var isNumber = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET' || key === 'CHATCCC_CHROME_DEVTOOLS_PORT' || key === 'CHATCCC_CCC_MAX_OUTPUT_TOKENS';
       var inputType = isNumber ? 'number' : (isSecret ? 'password' : 'text');
       var attrs = key === 'CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET'
-        ? ' min="1" step="1"'
+        ? ' min="1" step="1" placeholder="500"'
         : key === 'CHATCCC_CHROME_DEVTOOLS_PORT'
           ? ' min="1" max="65535" step="1" placeholder="15166"'
           : key === 'CHATCCC_CCC_MAX_OUTPUT_TOKENS'
@@ -2526,8 +2578,8 @@ async function saveEdit() {
   if (editSectionType === 'chromeDevtools' && !vars.CHATCCC_CHROME_DEVTOOLS_PORT) {
     vars.CHATCCC_CHROME_DEVTOOLS_PORT = '15166';
   }
-  if (editSectionType === 'cursor' && vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse' && !vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET) {
-    vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET = '1000';
+  if (editSectionType === 'cursor' && (state.cursorAccountKind === 'team' || vars.CHATCCC_CURSOR_AVATAR_BATTERY_MODE === 'onDemandUse') && !vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET) {
+    vars.CHATCCC_CURSOR_ON_DEMAND_MONTHLY_BUDGET = '500';
   }
   // 平台类型：feishu 编辑时额外采集下拉选择框的值
   if (editSectionType === 'feishu') {
@@ -2539,6 +2591,7 @@ async function saveEdit() {
   try {
     var fresh = await api('/api/config');
     state.config = fresh.vars || state.config;
+    rememberCursorAccount(fresh);
   } catch(e) {}
   closeEditModal();
   updateDashboardUI();

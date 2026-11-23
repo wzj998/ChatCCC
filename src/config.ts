@@ -477,7 +477,7 @@ function normalizeCursorAvatarBatteryMode(raw: unknown): CursorAvatarBatteryMode
 
 function normalizeCursorOnDemandMonthlyBudget(raw: unknown): number {
   const value = typeof raw === "string" ? Number(raw.trim()) : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 1000;
+  return Number.isFinite(value) && value > 0 ? value : 500;
 }
 
 function normalizePositiveInteger(raw: unknown, fallback: number): number {
@@ -531,7 +531,7 @@ function loadConfig(): AppConfig {
       model: "claude-opus-4-7-max",
       alternativeModel: "",
       avatarBatteryMode: "apiPercent",
-      onDemandMonthlyBudget: 1000,
+      onDemandMonthlyBudget: 500,
     },
     codex: { enabled: false, defaultAgent: false, path: "", model: "", alternativeModel: "", effort: "", fastMode: false },
     ccc: {
