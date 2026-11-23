@@ -202,6 +202,10 @@ export class JsonRpcClient {
     });
   }
 
+  notify(method: string): void {
+    this.ws.send(JSON.stringify({ method }));
+  }
+
   respond(id: number, result: unknown): void {
     this.ws.send(JSON.stringify({ id, result }));
   }

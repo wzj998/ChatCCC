@@ -33,7 +33,7 @@ import { simplifyToolUse, simplifyToolResult } from "./simplify.ts";
 import { logTrace } from "./trace.ts";
 import type { UnifiedBlock } from "./adapters/adapter-interface.ts";
 import type { ToolAdapter } from "./adapters/adapter-interface.ts";
-import type { ToolProcessInfo } from "./adapters/adapter-interface.ts";
+import type { CodexGoalStart, ToolProcessInfo } from "./adapters/adapter-interface.ts";
 import {
   appendExecutionTranscriptBlock,
   type ExecutionTranscriptEntry,
@@ -1495,9 +1495,11 @@ export async function resumeAndPrompt(
   tool: string,
   traceId?: string,
   initiatorOpenId?: string,
+  codexGoal?: CodexGoalStart,
 ): Promise<SessionRunOutcome> {
   return runAgentSession(sessionId, userText, platform, chatId, msgTimestamp, tool, traceId, {
     initiatorOpenId,
+    codexGoal,
   });
 }
 
@@ -1506,6 +1508,7 @@ export async function resumeAndPrompt(
 // ---------------------------------------------------------------------------
 
 interface RunAgentSessionOptions {
+  codexGoal?: CodexGoalStart;
   /**
    * 标记本轮是 response-stall 后的唯一一次内部续跑。若本轮再次因相同原因
    * 停滞，不再递归创建第三轮，避免服务异常期间无限消耗 token。
@@ -1908,6 +1911,7 @@ export async function runAgentSession(
     // 供 onInjectionRejected 退回的“最后一条已取出但未成功注入”的消息
     const injectionState: { lastShifted: QueuedMessage | null } = { lastShifted: null };
     for await (const unifiedMsg of adapter.prompt(sessionId, userTextWithCapabilities, cwd, controller.signal, {
+      ...(tool === "codex" && options.codexGoal ? { codexGoal: options.codexGoal } : {}),
       onProcessStart: (processInfo) => {
         startPromptProcessMonitor(sessionId, processInfo);
         if (processInfo.pid !== undefined) registerProcess(processInfo.pid, sessionId);

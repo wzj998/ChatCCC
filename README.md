@@ -459,6 +459,7 @@ ChatCCC 通过 Codex 的 **app-server 模式**（一个常驻进程 + WebSocket 
 | `/git <子命令>` | 在当前会话工作目录执行 `git ...` 并回传输出 |
 | `/abd<内容>` | 去掉 `/abd` 前缀后把内容发给 Agent，并在消息末尾追加第一性原理需求澄清提示 |
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
+| `/goal <目标>` | 在 Codex 会话中设置原生持久目标。`/goal` 查看，`/goal edit <目标>` 修改，`/goal pause` 暂停续跑，`/goal resume` 恢复，`/goal clear` 清除。 |
 | `/ask <内容>` | 只读问答模式：与 /plan 相同，仅允许读文件和 stop-stuck-loop 请求 |
 | `/restart` | 重启机器人进程 |
 | `/restart safe` / `/restartsf` | 停止接受新任务，等待现有会话、缓存消息和依赖安装完成后重启 |
