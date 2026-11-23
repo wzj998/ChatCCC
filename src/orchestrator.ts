@@ -12,6 +12,7 @@ import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { config as deepCccConfig } from "../deepccc-agent/src/config.ts";
 import { withGitCoAuthor } from "../deepccc-agent/src/file-tools.ts";
+import { createCodexAdapter, parseCodexGoalCommand } from "./adapters/codex-adapter.ts";
 
 import { makeTraceId, logTrace } from "./trace.ts";
 import { appendStartupTrace, exitWithStartupTrace } from "./shared.ts";
@@ -1222,6 +1223,7 @@ async function handleCommandInternal(
   const textLower = text.toLowerCase();
   const normalizedCommandText = textLower.trim().replace(/\s+/g, " ");
   const isCommandText = !sharedPrefix.matched && textLower.startsWith("/");
+  const codexGoalCommand = isCommandText ? parseCodexGoalCommand(text) : null;
   recordChatPlatform(chatId, platform);
   if (platform.kind === "feishu" && chatType === "p2p" && isValidFeishuOpenId(openId)) {
     const receivedAt = Number.isFinite(msgTimestamp) ? new Date(msgTimestamp).toISOString() : new Date().toISOString();
@@ -1948,6 +1950,25 @@ async function handleCommandInternal(
   }
 
   if (sessionId && descriptionTool && toolLabel) {
+    if (codexGoalCommand) {
+      if (descriptionTool !== "codex") {
+        await platform.sendText(chatId, "/goal 仅适用于 Codex 会话。");
+        return;
+      }
+      const { action } = codexGoalCommand;
+      if (action === "get" || action === "pause" || action === "clear") {
+        try {
+          await platform.sendText(chatId, await createCodexAdapter().controlGoal(sessionId, action));
+        } catch {
+          await platform.sendText(chatId, "Codex 目标操作失败，请检查目标状态和本机 Codex 版本。").catch(() => {});
+        }
+        return;
+      }
+      if (isSessionRunning(sessionId)) {
+        await platform.sendText(chatId, "当前 Codex 会话正在执行。请等待本轮结束，或先发送 /stop，再设置或恢复目标。");
+        return;
+      }
+    }
     // 有会话上下文 — 路由到命令处理或 prompt
     logTrace(tid, "BRANCH", { sessionId, tool: descriptionTool });
     const routeKind = isCommandText ? "command" : "prompt";
@@ -2838,6 +2859,8 @@ async function handleCommandInternal(
         descriptionTool,
         tid,
         openId,
+        codexGoalCommand?.action === "set" || codexGoalCommand?.action === "resume"
+          ? codexGoalCommand : undefined,
       );
       if (resumeOutcome === "error") {
         logTrace(tid, "DONE", { outcome: "resume_error", sessionId });
@@ -2860,6 +2883,11 @@ async function handleCommandInternal(
         "red",
       );
     }
+    return;
+  }
+
+  if (codexGoalCommand) {
+    await platform.sendText(chatId, "请先创建或进入 Codex 会话，再使用 /goal。");
     return;
   }
 

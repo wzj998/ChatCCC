@@ -157,7 +157,10 @@ export interface ToolProcessInfo {
   pid: number;
 }
 
+export type CodexGoalStart = { action: "set"; objective: string } | { action: "resume" };
+
 export interface ToolPromptOptions {
+  codexGoal?: CodexGoalStart;
   /** Called once a CLI-backed prompt process has been spawned. */
   onProcessStart?: (info: ToolProcessInfo) => void;
   /** Called when the adapter leaves the prompt process scope normally or by abort. */
