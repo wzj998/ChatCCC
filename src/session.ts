@@ -1508,6 +1508,8 @@ export async function resumeAndPrompt(
 // ---------------------------------------------------------------------------
 
 interface RunAgentSessionOptions {
+  /** Managed Goal owns continuation and stops on an uncertain turn outcome. */
+  managedGoal?: boolean;
   codexGoal?: CodexGoalStart;
   /**
    * 标记本轮是 response-stall 后的唯一一次内部续跑。若本轮再次因相同原因
@@ -1846,7 +1848,7 @@ export async function runAgentSession(
       // 预约先于 abort/收尾建立，isSessionRunning 会在整个交接窗口保持 true，
       // 因此恰好到达的用户消息只能排队，绝不可能抢在恢复 prompt 前。
       // 若当前已经是恢复轮，则不再预约第三轮。
-      if (!current.autoRecovery) {
+      if (!current.autoRecovery && !options.managedGoal) {
         reserveAutoRecovery(sessionId);
       }
       current.autoEnded = true;

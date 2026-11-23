@@ -459,7 +459,7 @@ ChatCCC 通过 Codex 的 **app-server 模式**（一个常驻进程 + WebSocket 
 | `/git <子命令>` | 在当前会话工作目录执行 `git ...` 并回传输出 |
 | `/abd<内容>` | 去掉 `/abd` 前缀后把内容发给 Agent，并在消息末尾追加第一性原理需求澄清提示 |
 | `/plan <内容>` | 只读计划模式：仅允许读文件和 stop-stuck-loop 请求，不执行任何写操作 |
-| `/goal <目标>` | 在 Codex 会话中设置原生持久目标。`/goal` 查看，`/goal edit <目标>` 修改，`/goal pause` 暂停续跑，`/goal resume` 恢复，`/goal clear` 清除。 |
+| `/goal <目标>` | 在 Codex、Cursor、DeepCCC 或 DSH 会话设置持久目标。`/goal` 查看，`/goal edit <目标>` 修改，`/goal pause` 暂停，`/goal resume` 恢复，`/goal clear` 清除。 |
 | `/ask <内容>` | 只读问答模式：与 /plan 相同，仅允许读文件和 stop-stuck-loop 请求 |
 | `/restart` | 重启机器人进程 |
 | `/restart safe` / `/restartsf` | 停止接受新任务，等待现有会话、缓存消息和依赖安装完成后重启 |
@@ -468,6 +468,8 @@ ChatCCC 通过 Codex 的 **app-server 模式**（一个常驻进程 + WebSocket 
 | `/safestatus` | 查看安全重启/更新的等待状态 |
 | `/cancelsf` | 取消尚未开始执行的安全重启/更新预约 |
 | `/deleteg` | 解散当前飞书会话群；Agent 会话记录保留 |
+
+Codex 使用原生 Goal。Cursor、DeepCCC、DSH 的目标由 ChatCCC 保存，按对应 Agent 的普通执行配置逐轮运行，支持命令、文件操作等已启用的工具。每次最多自动推进 8 轮，完成、受阻、状态缺失或结果重复时停止；服务重启后用 `/goal resume` 恢复。暂停和清除会停止后续调度。要中断正在执行的回合，使用 `/stop`。
 
 `/update`、`/update safe` 与短别名 `/updatesf` 会把飞书消息或按钮事件 ID 原子写入 `~/.chatccc/state/update-command-guard.json`。同一 ID 跨重启重投时会静默忽略；用户主动发送的新更新指令因事件 ID 不同，仍可执行。该保护不改变普通消息与重启指令的处理方式。
 

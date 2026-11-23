@@ -13,6 +13,8 @@ import { homedir } from "node:os";
 import { config as deepCccConfig } from "../deepccc-agent/src/config.ts";
 import { withGitCoAuthor } from "../deepccc-agent/src/file-tools.ts";
 import { createCodexAdapter, parseCodexGoalCommand } from "./adapters/codex-adapter.ts";
+import { createManagedGoalRunner, isManagedGoalTool } from "./managed-goal.ts";
+import { readStreamState } from "./stream-state.ts";
 
 import { makeTraceId, logTrace } from "./trace.ts";
 import { appendStartupTrace, exitWithStartupTrace } from "./shared.ts";
@@ -31,6 +33,7 @@ import {
   getDefaultEffortForTool,
   getDefaultCwd,
   LOG_DIR,
+  USER_DATA_DIR,
   setDefaultCwd,
   getRecentDirs,
   addRecentDir,
@@ -68,6 +71,7 @@ import {
   initClaudeSession,
   lastMsgTimestamps,
   resumeAndPrompt,
+  runAgentSession,
   sessionInfoMap,
   setSessionModelOverride,
   setSessionEffortOverride,
@@ -621,6 +625,7 @@ function isUntitledSessionChatName(name: string): boolean {
 }
 
 const sessionListViews = new Map<string, string[]>();
+const managedGoals = createManagedGoalRunner(join(USER_DATA_DIR, "state", "managed-goals"));
 
 function orderSessionsForCard(sessions: SessionsListEntry[]): SessionsListEntry[] {
   const tools = ["claude", "cursor", "codex", "ccc", "dsh"];
@@ -1309,7 +1314,7 @@ async function handleCommandInternal(
 
   const maintenanceAllowedCommands = new Set([
     "/stop", "/cancel", "/state", "/sessions", "/usage", "/safestatus", "/cancelsf", "/restart", "/restartsf", "/update", "/updatesf", "/reload", "/help",
-    "/pin", "/unpin", "/archive", "/unarchive",
+    "/pin", "/unpin", "/archive", "/unarchive", "/goal", "/goal pause", "/goal clear",
   ]);
   const maintenancePresentationCommand = normalizedCommandText.startsWith("/rename ")
     || normalizedCommandText.startsWith("/sessions ");
@@ -1951,8 +1956,43 @@ async function handleCommandInternal(
 
   if (sessionId && descriptionTool && toolLabel) {
     if (codexGoalCommand) {
+      if (isManagedGoalTool(descriptionTool)) {
+        const id = sessionId;
+        const tool = descriptionTool;
+        const send = (message: string) => platform.sendText(chatId, message).catch(() => {});
+        const action = codexGoalCommand.action;
+        try {
+          if (action === "get") {
+            const goal = managedGoals.read(id, tool);
+            await send(goal ? `目标：${goal.objective}\n状态：${goal.status} · 已执行 ${goal.rounds} 轮${goal.reason ? "\n" + goal.reason : ""}` : "当前会话没有目标。");
+          } else if (action === "pause" || action === "clear") {
+            if (action === "pause") managedGoals.pause(id, tool);
+            else managedGoals.clear(id, tool);
+            await send(action === "pause" ? "目标已暂停续跑。正在执行的回合可用 /stop 停止。" : "目标已清除。");
+          } else if (isSessionRunning(id) || managedGoals.isRunning(id, tool)) {
+            await send("当前会话正在执行。请先暂停或等待本轮结束，再设置或恢复目标。");
+          } else {
+            const result = await managedGoals.start(id, tool, codexGoalCommand.action === "set"
+              ? codexGoalCommand.objective : undefined, async prompt => {
+              if (isSafeMaintenanceAdmissionClosed()) return { outcome: "stopped", reply: "" };
+              const before = await readStreamState(id);
+              if (managedGoals.read(id, tool)?.status !== "active") return { outcome: "stopped", reply: "" };
+              const outcome = await runAgentSession(id, prompt, platform, chatId, Date.now(), tool, tid, {
+                initiatorOpenId: openId, managedGoal: true,
+              });
+              const state = await readStreamState(id);
+              const fresh = state?.status === "done" && state.turnCount === (before?.turnCount ?? 0) + 1;
+              return { outcome, reply: fresh ? state.finalReply : "" };
+            });
+            await send(`目标状态：${result.status} · 已执行 ${result.rounds} 轮${result.reason ? "\n" + result.reason : ""}`);
+          }
+        } catch (error) {
+          await send(`目标操作失败：${(error as Error).message}`);
+        }
+        return;
+      }
       if (descriptionTool !== "codex") {
-        await platform.sendText(chatId, "/goal 仅适用于 Codex 会话。");
+        await platform.sendText(chatId, "/goal 支持 Codex、Cursor、DeepCCC 和 DSH 会话。");
         return;
       }
       const { action } = codexGoalCommand;
@@ -2080,6 +2120,10 @@ async function handleCommandInternal(
 
     if (isCommandText && textLower === "/stop") {
       logTrace(tid, "BRANCH", { cmd: "/stop" });
+      if (isManagedGoalTool(descriptionTool)) {
+        try { managedGoals.pause(sessionId, descriptionTool); }
+        catch { console.warn("Failed to persist Goal pause"); }
+      }
       if (stopSession(sessionId)) {
         console.log(`[${ts()}] [STOP] User sent /stop, session=${sessionId}`);
         logTrace(tid, "DONE", { outcome: "stop_requested" });
@@ -2887,7 +2931,7 @@ async function handleCommandInternal(
   }
 
   if (codexGoalCommand) {
-    await platform.sendText(chatId, "请先创建或进入 Codex 会话，再使用 /goal。");
+    await platform.sendText(chatId, "请先进入 Codex、Cursor、DeepCCC 或 DSH 会话，再使用 /goal。");
     return;
   }
 
