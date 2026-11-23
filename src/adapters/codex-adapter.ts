@@ -379,7 +379,7 @@ class CodexAdapter implements ToolAdapter {
       const threadParams = {
         cwd,
         approvalPolicy: "never",
-        sandbox: goalCommand ? "workspace-write" : threadSandbox,
+        sandbox: threadSandbox,
         ...(model ? { model } : {}),
       };
       if (isFirstPrompt) {

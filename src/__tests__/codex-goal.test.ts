@@ -50,6 +50,9 @@ describe("Codex goal integration", () => {
     })) {
       events.push(event);
     }
+    expect(request).toHaveBeenCalledWith("thread/start", expect.objectContaining({
+      sandbox: "danger-full-access", approvalPolicy: "never",
+    }), expect.any(Number));
     expect(request).toHaveBeenCalledWith("thread/goal/set", { threadId, objective: "Finish tests", status: "active" }, expect.any(Number));
     expect(request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
     const replies = events.flatMap(event => event.blocks ?? []).filter(block => block.type === "text").map(block => block.text);
