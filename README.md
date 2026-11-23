@@ -362,7 +362,7 @@ ChatCCC 通过 Codex 的 **app-server 模式**（一个常驻进程 + WebSocket 
     "model": "",
     "alternativeModel": "",
     "avatarBatteryMode": "apiPercent",
-    "onDemandMonthlyBudget": 1000
+    "onDemandMonthlyBudget": 500
   },
   "codex": {
     "enabled": false,
@@ -403,8 +403,8 @@ ChatCCC 通过 Codex 的 **app-server 模式**（一个常驻进程 + WebSocket 
 | `*.defaultAgent` | `/new` 未指定 Agent 时使用哪个工具；飞书私聊会在下一条普通消息到达时跟随变化并创建新的空会话 |
 | `cursor.path` / `codex.path` | CLI 可执行文件路径；留空时自动探测或使用 PATH |
 | `codex.fastMode` | Codex Fast 模式的全局默认值；默认 `false`，每次调用都会显式覆盖 Codex CLI 的 service tier |
-| `cursor.avatarBatteryMode` | Cursor 头像电量显示来源：`apiPercent` 或 `onDemandUse` |
-| `cursor.onDemandMonthlyBudget` | `avatarBatteryMode=onDemandUse` 时用于计算电量的月预算 |
+| `cursor.avatarBatteryMode` | 个人版 Cursor 头像电量来源：`apiPercent` 或 `onDemandUse`。团队版固定为外圈本周 Included、电池 On demand，不使用这个选项 |
+| `cursor.onDemandMonthlyBudget` | On demand 电量的月预算，默认 500。团队版电池和个人版 `onDemandUse` 都用它做分母 |
 | `claude.model` / `claude.subagentModel` / `claude.effort` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.apiKey` / `claude.baseUrl` | 选填；设置后传给 Claude Agent SDK，留空以 `~/.claude/settings.json` 为准 |
 | `claude.maxTurn` | 选填；Claude 最大对话轮数，默认 0（无限制），可在 Web UI 编辑 |

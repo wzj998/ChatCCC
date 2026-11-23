@@ -5,12 +5,12 @@
  * 每个方法内部自行管理认证，消费者不感知 token 等认证细节。
  */
 
-import type { CursorUsageSummary } from "./cursor-usage.ts";
+import type { CursorUsageReport, CursorUsageSummary } from "./cursor-usage.ts";
 import type { CodexUsageSummary } from "./feishu-api.ts";
 
 export interface ChatAvatarUsageHints {
   codexUsage?: CodexUsageSummary | null;
-  cursorUsage?: CursorUsageSummary | null;
+  cursorUsage?: CursorUsageSummary | CursorUsageReport | null;
   fastMode?: boolean;
 }
 

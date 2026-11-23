@@ -64,9 +64,13 @@ vi.mock("../feishu-platform.ts", () => ({
   sendPostMessage: vi.fn(async () => true),
 }));
 
-vi.mock("../cursor-usage.ts", () => ({
-  getCursorUsageSummary: mockGetCursorUsageSummary,
-}));
+vi.mock("../cursor-usage.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../cursor-usage.ts")>();
+  return {
+    ...actual,
+    getCursorUsageSummary: mockGetCursorUsageSummary,
+  };
+});
 
 vi.mock("../chatgpt-subscription.ts", () => ({
   getChatGptSubscriptionStatus: mockGetChatGptSubscriptionStatus,
@@ -1242,6 +1246,53 @@ describe("handleCommand WeChat processing ack", () => {
       "cursor",
       "idle",
       { cursorUsage: expect.objectContaining({ displayMessage: "You've hit your usage limit" }) },
+    );
+  });
+
+  it("shows weekly included and monthly team usage for a team Cursor account", async () => {
+    const platform = mockPlatform("feishu");
+    await recordSessionRegistry({
+      chatId: "cursor-chat",
+      sessionId: "sid-cursor",
+      tool: "cursor",
+      chatName: "cursor-session",
+      running: false,
+    });
+    mockGetCursorUsageSummary.mockResolvedValue({
+      accountKind: "team",
+      current: {
+        billingCycleStart: "1795257317802",
+        billingCycleEnd: "1795862117802",
+        planUsage: { totalPercentUsed: 1.17, autoPercentUsed: 1.17 },
+        displayMessage: "You've used 1% of your included usage",
+      },
+      team: {
+        billingCycleStart: "1793491200000",
+        billingCycleEnd: "1796083200000",
+        planUsage: { totalSpend: 12, limit: 4615, apiPercentUsed: 0, totalPercentUsed: 0.26 },
+        spendLimitUsage: { individualUsed: 14, individualLimit: 3000, pooledUsed: "14", pooledLimit: "45050000", limitType: "team" },
+      },
+    });
+
+    await handleCommand(platform, "/usage", "cursor-chat", "ou-user", Date.now(), "group");
+
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "cursor-chat",
+      "Cursor Usage",
+      expect.stringContaining("**本周 Included:**"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "cursor-chat",
+      "Cursor Usage",
+      expect.stringContaining("已用: 1.17%"),
+      "blue",
+    );
+    expect(platform.sendCard).toHaveBeenCalledWith(
+      "cursor-chat",
+      "Cursor Usage",
+      expect.stringContaining("On demand used: $0.14 / $30.00"),
+      "blue",
     );
   });
 

@@ -94,7 +94,7 @@
     "model": "",
     "alternativeModel": "",
     "avatarBatteryMode": "apiPercent",
-    "onDemandMonthlyBudget": 1000
+    "onDemandMonthlyBudget": 500
   },
   "codex": {
     "enabled": false,
