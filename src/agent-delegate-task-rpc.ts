@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 
+import { AGENT_TOOLS } from "./agent-tool.ts";
 import { resolveDefaultAgentTool } from "./config.ts";
 import { readUtf8JsonBody } from "./agent-rpc-body.ts";
 import { delegateAgentTask } from "./agent-delegate-task.ts";
@@ -15,7 +16,7 @@ import {
 export const AGENT_DELEGATE_TASK_PATH = "/api/agent/delegate-task";
 
 const MAX_REQUEST_BYTES = 128 * 1024;
-const VALID_TOOLS = new Set(["claude", "cursor", "codex", "ccc", "dsh"]);
+const VALID_TOOLS = new Set<string>(AGENT_TOOLS);
 
 interface AgentDelegateTaskPayload {
   tool?: unknown;
@@ -150,13 +151,13 @@ export function buildAgentDelegateTaskCapabilityPrompt(input: { url: string; cwd
     `POST ${input.url}`,
     "Content-Type: application/json; charset=utf-8",
     "",
-    'Body: {"tool":"claude|cursor|codex|ccc|dsh","cwd":"absolute working directory","open_id":"initiator open_id","prompt":"optional first task"}',
+    'Body: {"tool":"claude|cursor|codex|ccc|dsh|antigravity","cwd":"absolute working directory","open_id":"initiator open_id","prompt":"optional first task"}',
     "",
     "Rules:",
     "- Use this when the user asks to start a new conversation/session, optionally in a specific directory.",
     "- Pass open_id exactly as provided to you; the new group will only include that requester.",
     "- Pass cwd as an absolute local path. When the user does not name a directory, use your current working directory.",
-    "- tool is optional; omit it to use the default agent, or pass one of claude/cursor/codex/ccc/dsh when the user names a tool.",
+    "- tool is optional; omit it to use the default agent, or pass one of claude/cursor/codex/ccc/dsh/antigravity when the user names a tool.",
     "- prompt is optional; omit it to just create the session without sending a first task.",
     "- The prompt is sent through the normal ChatCCC prompt path, so project prompt injection and IM skills still apply.",
     "- Request body must be UTF-8 encoded JSON bytes. Do not call Feishu Open Platform directly.",

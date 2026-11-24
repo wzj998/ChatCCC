@@ -16,6 +16,7 @@ import { createCodexAdapter, parseCodexGoalCommand } from "./adapters/codex-adap
 import { createManagedGoalRunner, isManagedGoalTool } from "./managed-goal.ts";
 import { readStreamState } from "./stream-state.ts";
 
+import { AGENT_TOOLS, isAgentTool } from "./agent-tool.ts";
 import { makeTraceId, logTrace } from "./trace.ts";
 import { appendStartupTrace, exitWithStartupTrace } from "./shared.ts";
 import {
@@ -628,8 +629,7 @@ const sessionListViews = new Map<string, string[]>();
 const managedGoals = createManagedGoalRunner(join(USER_DATA_DIR, "state", "managed-goals"));
 
 function orderSessionsForCard(sessions: SessionsListEntry[]): SessionsListEntry[] {
-  const tools = ["claude", "cursor", "codex", "ccc", "dsh"];
-  return tools.flatMap((tool) => sessions.filter((session) => session.tool === tool));
+  return AGENT_TOOLS.flatMap((tool) => sessions.filter((session) => session.tool === tool));
 }
 
 function parseSessionsCommand(text: string): { query?: string; includeArchived?: boolean; archivedOnly?: boolean } {
@@ -1575,13 +1575,12 @@ async function handleCommandInternal(
     const toolArg = text.slice(5).trim().toLowerCase();
     const tool = toolArg || resolveDefaultAgentTool();
     logTrace(tid, "BRANCH", { cmd: "/new", tool });
-    const validTools: AgentTool[] = ["claude", "cursor", "codex", "ccc", "dsh"];
-    if (!(validTools as readonly string[]).includes(tool)) {
+    if (!isAgentTool(tool)) {
       logTrace(tid, "DONE", { outcome: "new_invalid_tool", tool });
       await platform.sendCard(
         chatId,
         "Error",
-        `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex), ccc (CCC Agent), dsh (DeepSeek Harness)。`,
+        `未知的工具类型: "${toolArg}"。支持: claude (Claude Code), cursor (Cursor), codex (Codex), ccc (CCC Agent), dsh (DeepSeek Harness), antigravity (Antigravity CLI)。`,
         "red",
       );
       return;

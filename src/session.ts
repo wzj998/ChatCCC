@@ -39,6 +39,7 @@ import {
   type ExecutionTranscriptEntry,
 } from "./execution-transcript.ts";
 import { createClaudeAdapter } from "./adapters/claude-adapter.ts";
+import { createAntigravityAdapter } from "./adapters/antigravity-adapter.ts";
 import { createCursorAdapter } from "./adapters/cursor-adapter.ts";
 import { createCodexAdapter } from "./adapters/codex-adapter.ts";
 import { createCccAdapter } from "./adapters/ccc-adapter.ts";
@@ -641,6 +642,7 @@ export function getEffectiveModelForTool(tool: string, sessionId?: string): stri
   if (tool === "codex") return config.codex.model;
   if (tool === "ccc") return config.ccc.model;
   if (tool === "dsh") return config.dsh.model;
+  if (tool === "antigravity") return "";
   return CLAUDE_MODEL;
 }
 
@@ -775,6 +777,7 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
     effectiveEffort || "",
     effectiveFastMode,
   );
+  if (tool === "antigravity") return createAntigravityAdapter(config.antigravity);
   const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
@@ -1419,6 +1422,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
  * cursor-agent 决定，初次创建时尚未学习到，故显示占位）。
  */
 function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?: string): string {
+  if (tool === "antigravity") return "auth=Gemini API Key, protocol=ACP";
   if (tool === "cursor") {
     return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
   }

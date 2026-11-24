@@ -52,6 +52,7 @@
     "postinstall": "node scripts/postinstall-sharp-check.mjs"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "2.10.0",
     "@ai-sdk/anthropic": "^3.0.105",
     "@ai-sdk/openai": "^3.0.144",
     "@ai-sdk/openai-compatible": "^2.0.47",
