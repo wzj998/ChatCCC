@@ -17,6 +17,7 @@ import {
   fileLog,
   getDefaultCwd,
   getDefaultEffortForTool,
+  DEFAULT_ANTIGRAVITY_MODEL,
   isAnthropicConfigEmpty,
   toolDisplayName,
   ts,
@@ -642,7 +643,7 @@ export function getEffectiveModelForTool(tool: string, sessionId?: string): stri
   if (tool === "codex") return config.codex.model;
   if (tool === "ccc") return config.ccc.model;
   if (tool === "dsh") return config.dsh.model;
-  if (tool === "antigravity") return "";
+  if (tool === "antigravity") return config.antigravity?.model ?? DEFAULT_ANTIGRAVITY_MODEL;
   return CLAUDE_MODEL;
 }
 
@@ -777,7 +778,9 @@ export function getAdapterForTool(tool: string, sessionId?: string): ToolAdapter
     effectiveEffort || "",
     effectiveFastMode,
   );
-  if (tool === "antigravity") return createAntigravityAdapter(config.antigravity);
+  if (tool === "antigravity") {
+    return createAntigravityAdapter({ ...config.antigravity, model: effectiveModel });
+  }
   const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
@@ -1422,7 +1425,7 @@ export async function switchChatBinding(args: SwitchChatBindingArgs): Promise<Sw
  * cursor-agent 决定，初次创建时尚未学习到，故显示占位）。
  */
 function formatToolConfigForLog(tool: string, sessionModel?: string, sessionId?: string): string {
-  if (tool === "antigravity") return "auth=Gemini API Key, protocol=ACP";
+  if (tool === "antigravity") return `model=${getEffectiveModelForTool(tool, sessionId)}, auth=Gemini API Key`;
   if (tool === "cursor") {
     return `model=${sessionModel ?? "(由 cursor-agent 决定，init 事件后学习)"}`;
   }

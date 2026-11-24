@@ -162,10 +162,13 @@ export interface CccConfig {
   contextWindow: number;
 }
 
+export const DEFAULT_ANTIGRAVITY_MODEL = "gemini-3.1-flash-lite";
+
 export interface AntigravityConfig {
   enabled: boolean;
   defaultAgent: boolean;
   path: string;
+  model: string;
 }
 
 export interface DshConfig {
@@ -270,6 +273,8 @@ export function getAllModelsForTool(tool: string, cfg: AppConfig = config): stri
   } else if (tool === "dsh") {
     collect(cfg.dsh.model);
     collect(cfg.dsh.alternativeModel);
+  } else if (tool === "antigravity") {
+    collect(cfg.antigravity?.model ?? DEFAULT_ANTIGRAVITY_MODEL);
   }
 
   return Array.from(seen).slice(0, 100);
@@ -557,7 +562,7 @@ function loadConfig(): AppConfig {
       compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
       contextWindow: DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
     },
-    antigravity: { enabled: false, defaultAgent: false, path: "agy" },
+    antigravity: { enabled: false, defaultAgent: false, path: "agy", model: DEFAULT_ANTIGRAVITY_MODEL },
     dsh: {
       enabled: false,
       defaultAgent: false,
@@ -637,7 +642,7 @@ function loadConfig(): AppConfig {
       compactionTimeoutMs?: unknown;
       contextWindow?: unknown;
     };
-    antigravity?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown };
+    antigravity?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; model?: unknown };
     dsh?: {
       enabled?: unknown;
       defaultAgent?: unknown;
@@ -850,6 +855,7 @@ function loadConfig(): AppConfig {
       enabled: antigravityEnabled,
       defaultAgent: defaultTool === "antigravity",
       path: normalizeOptionalConfigField(antigravityRaw.path, { label: "antigravity.path" }) || "agy",
+      model: normalizeOptionalConfigField(antigravityRaw.model, { label: "antigravity.model" }) || DEFAULT_ANTIGRAVITY_MODEL,
     },
     dsh: {
       enabled: dshEnabled,

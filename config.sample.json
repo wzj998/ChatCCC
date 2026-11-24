@@ -43,12 +43,7 @@
       "retentionDays": 7,
       "keepCompleted": false
     },
-    "antigravity": {
-    "enabled": false,
-    "defaultAgent": false,
-    "path": "agy"
-  },
-  "dsh": {
+    "dsh": {
       "enabled": false,
       "maxBytesPerTurn": 52428800,
       "retentionDays": 7,
@@ -70,6 +65,12 @@
     "gitCoAuthor": null,
     "compactionTimeoutMs": 300000,
     "contextWindow": 1048576
+  },
+  "antigravity": {
+    "enabled": false,
+    "defaultAgent": false,
+    "path": "agy",
+    "model": "gemini-3.1-flash-lite"
   },
   "dsh": {
     "enabled": false,
