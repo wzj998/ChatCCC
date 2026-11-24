@@ -282,6 +282,12 @@ DeepSeek Harness 是可选 Agent。在首次配置向导或 Web 管理页打开 
 
 DSH 引擎安装在 `~/.chatccc/engines/dsh/`，不加入 ChatCCC 的 `dependencies`。配置 `dsh.apiKey`、`dsh.baseUrl`、`dsh.model`、`dsh.provider` 和 `dsh.maxTokens` 后，可设为默认 Agent 或使用 `/new dsh` 新建会话。安装验证只做本地 JSON-RPC Runtime 握手，不会调用付费模型。
 
+#### Antigravity CLI
+
+安装 [Antigravity CLI](https://antigravity.google/download)，并用 `agy acp --help` 验证 ACP 可用。在 ChatCCC 的 `config.json` 中设置 `"antigravity": { "enabled": true, "path": "agy" }`。如果 `agy` 不在 PATH 中，`path` 可以填写可执行文件的绝对路径。
+
+在启动 ChatCCC 的环境中设置 `GEMINI_API_KEY`，然后在飞书或微信发送 `/new antigravity`。ChatCCC 通过 `agy acp` 使用 [Gemini API Key 认证](https://antigravity.google/docs/ide/extensions/acp/#authentication)。API 用量和地区资格由 Gemini API 处理。此接入启用 CLI 沙箱，遇到需要在 ACP 客户端确认的权限请求时会取消该操作。
+
 #### Cursor Agent CLI
 
 Windows 推荐安装：

@@ -165,6 +165,7 @@ export function buildHelpCard(
     "发送 **/new codex** 创建新 Codex 会话",
     "发送 **/new ccc** 创建新 CCC Agent 会话",
     "发送 **/new dsh** 创建新 DeepSeek Harness 会话",
+    "发送 **/new antigravity** 创建新 Antigravity CLI 会话",
     "发送 **/forget** 重置当前会话（忘掉上下文，沿用当前工作目录，不切换）",
     "发送 **/rename 名称** 修改会话展示标题（不会修改群名）",
     "发送 **/sessions 关键词** 搜索会话，**/pin** 置顶，**/archive** 归档",
