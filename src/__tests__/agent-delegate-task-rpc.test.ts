@@ -185,8 +185,8 @@ describe("agent delegate task RPC", () => {
     }));
   });
 
-  it("accepts ccc and dsh tools", async () => {
-    for (const tool of ["ccc", "dsh"]) {
+  it("accepts ccc, dsh and antigravity tools", async () => {
+    for (const tool of ["ccc", "dsh", "antigravity"]) {
       const req = request({
         tool,
         cwd: "F:\\repo",
@@ -210,7 +210,7 @@ describe("agent delegate task RPC", () => {
     });
 
     expect(prompt).toContain("POST http://127.0.0.1:18080/api/agent/delegate-task");
-    expect(prompt).toContain('"tool":"claude|cursor|codex|ccc|dsh"');
+    expect(prompt).toContain('"tool":"claude|cursor|codex|ccc|dsh|antigravity"');
     expect(prompt).toContain('"cwd":"absolute working directory"');
     expect(prompt).toContain("project prompt injection and IM skills still apply");
     expect(prompt).toContain("Current working directory: F:/repo");

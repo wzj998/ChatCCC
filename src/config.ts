@@ -162,6 +162,12 @@ export interface CccConfig {
   contextWindow: number;
 }
 
+export interface AntigravityConfig {
+  enabled: boolean;
+  defaultAgent: boolean;
+  path: string;
+}
+
 export interface DshConfig {
   enabled: boolean;
   defaultAgent: boolean;
@@ -237,6 +243,7 @@ export interface AppConfig {
   codex: CodexConfig;
   ccc: CccConfig;
   dsh: DshConfig;
+  antigravity?: AntigravityConfig;
 }
 
 export type CursorAvatarBatteryMode = "apiPercent" | "onDemandUse";
@@ -550,6 +557,7 @@ function loadConfig(): AppConfig {
       compactionTimeoutMs: DEFAULT_CCC_COMPACTION_TIMEOUT_MS,
       contextWindow: DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
     },
+    antigravity: { enabled: false, defaultAgent: false, path: "agy" },
     dsh: {
       enabled: false,
       defaultAgent: false,
@@ -629,6 +637,7 @@ function loadConfig(): AppConfig {
       compactionTimeoutMs?: unknown;
       contextWindow?: unknown;
     };
+    antigravity?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown };
     dsh?: {
       enabled?: unknown;
       defaultAgent?: unknown;
@@ -656,6 +665,8 @@ function loadConfig(): AppConfig {
   const cursorRaw = (parsed.cursor ?? {}) as NonNullable<typeof parsed.cursor>;
   const codexRaw = (parsed.codex ?? {}) as NonNullable<typeof parsed.codex>;
   const cccRaw = (parsed.ccc ?? {}) as NonNullable<typeof parsed.ccc>;
+  const antigravityRaw = (parsed.antigravity ?? {}) as NonNullable<typeof parsed.antigravity>;
+  const antigravityEnabled = antigravityRaw.enabled === true;
   const dshRaw = (parsed.dsh ?? {}) as NonNullable<typeof parsed.dsh>;
   const webUiRaw = (parsed.webUi ?? {}) as NonNullable<typeof parsed.webUi>;
   const chromeDevtoolsRaw = (parsed.chromeDevtools ?? {}) as NonNullable<typeof parsed.chromeDevtools>;
@@ -718,6 +729,7 @@ function loadConfig(): AppConfig {
     typeof codexRaw.defaultAgent === "boolean" && codexRaw.defaultAgent && codexEnabled ? "codex" :
     typeof cccRaw.defaultAgent === "boolean" && cccRaw.defaultAgent && cccEnabled ? "ccc" :
     typeof dshRaw.defaultAgent === "boolean" && dshRaw.defaultAgent && dshEnabled ? "dsh" :
+    antigravityRaw.defaultAgent === true && antigravityEnabled ? "antigravity" :
     null;
   const fallbackDefaultTool: AgentTool =
     claudeEnabled ? "claude" :
@@ -725,6 +737,7 @@ function loadConfig(): AppConfig {
     codexEnabled ? "codex" :
     cccEnabled ? "ccc" :
     dshEnabled ? "dsh" :
+    antigravityEnabled ? "antigravity" :
     "claude";
   const defaultTool = explicitDefaultTool ?? fallbackDefaultTool;
 
@@ -832,6 +845,11 @@ function loadConfig(): AppConfig {
         cccRaw.contextWindow,
         DEFAULT_CCC_CONTEXT_WINDOW_TOKENS,
       ),
+    },
+    antigravity: {
+      enabled: antigravityEnabled,
+      defaultAgent: defaultTool === "antigravity",
+      path: normalizeOptionalConfigField(antigravityRaw.path, { label: "antigravity.path" }) || "agy",
     },
     dsh: {
       enabled: dshEnabled,
@@ -1208,6 +1226,7 @@ export const CODEX_SESSION_PREFIX = "Codex Session:";
 /** 群描述中用于识别 CCC Agent 会话的前缀 */
 export const CCC_SESSION_PREFIX = "CCC Session:";
 export const DSH_SESSION_PREFIX = "DSH Session:";
+export const ANTIGRAVITY_SESSION_PREFIX = "Antigravity Session:";
 
 /** 根据 tool 名称返回对应的群描述前缀 */
 export function sessionPrefixForTool(tool: string): string {
@@ -1215,6 +1234,7 @@ export function sessionPrefixForTool(tool: string): string {
   if (tool === "codex") return CODEX_SESSION_PREFIX;
   if (tool === "ccc") return CCC_SESSION_PREFIX;
   if (tool === "dsh") return DSH_SESSION_PREFIX;
+  if (tool === "antigravity") return ANTIGRAVITY_SESSION_PREFIX;
   return CLAUDE_SESSION_PREFIX;
 }
 
@@ -1224,14 +1244,15 @@ export function toolDisplayName(tool: string): string {
   if (tool === "codex") return "Codex";
   if (tool === "ccc") return "CCC Agent";
   if (tool === "dsh") return "DeepSeek Harness";
+  if (tool === "antigravity") return "Antigravity CLI";
   return "Claude Code";
 }
 
 /** 解析 /new 未指定工具时使用的默认 Agent。旧配置缺省 defaultAgent 时保持 Claude 优先。 */
 export function resolveDefaultAgentTool(cfg: AppConfig = config): AgentTool {
-  const explicit = AGENT_TOOLS.find((tool) => cfg[tool].enabled && cfg[tool].defaultAgent);
+  const explicit = AGENT_TOOLS.find((tool) => cfg[tool]?.enabled && cfg[tool].defaultAgent);
   if (explicit) return explicit;
-  const enabledFallback = AGENT_TOOLS.find((tool) => cfg[tool].enabled);
+  const enabledFallback = AGENT_TOOLS.find((tool) => cfg[tool]?.enabled);
   return enabledFallback ?? "claude";
 }
 

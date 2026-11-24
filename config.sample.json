@@ -43,7 +43,12 @@
       "retentionDays": 7,
       "keepCompleted": false
     },
-    "dsh": {
+    "antigravity": {
+    "enabled": false,
+    "defaultAgent": false,
+    "path": "agy"
+  },
+  "dsh": {
       "enabled": false,
       "maxBytesPerTurn": 52428800,
       "retentionDays": 7,
