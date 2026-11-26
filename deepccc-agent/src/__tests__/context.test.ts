@@ -19,6 +19,28 @@ import {
 } from "../tool-protocol.js";
 
 describe("BuiltinContextManager", () => {
+  it("prunes old bulky tool results before measuring without altering stored evidence", () => {
+    const context = new BuiltinContextManager({ compactAtTokens: 4000, maxToolContextTokens: 3500, persist: false });
+    const longOutput = "unique-evidence".repeat(1800);
+    context.appendMessage({ role: "user", content: "Keep this constraint." });
+    context.appendMessage({ role: "assistant", content: "Read the old file.", toolCalls: [
+      { id: "old-call", name: "read_file", input: '{"path":"example.txt"}', output: longOutput },
+    ] });
+    context.appendMessage({ role: "assistant", content: "Read latest.", toolCalls: [
+      { id: "recent-call", name: "read_file", input: '{"path":"latest.txt"}', output: "retain this" },
+    ] });
+    context.appendMessage({ role: "user", content: "Continue." });
+
+    expect(context.planCompaction()).toBeNull();
+    const replay = JSON.stringify(context.buildModelMessages());
+    expect(replay).toContain("old-call");
+    expect(replay).toContain("recent-call");
+    expect(replay).toContain("retain this");
+    expect(replay).toContain("Keep this constraint.");
+    expect(replay).not.toContain(longOutput);
+    expect(context.messages[1].toolCalls?.[0].output).toBe(longOutput);
+  });
+
   it("keeps sourced project facts separate from progress and assumptions in compaction instructions", () => {
     const prompt = buildSummaryPrompt({previousSummary:"",oldMessages:[],recentMessages:[]});
     expect(prompt).toContain("项目事实保留能力、实现入口、证据路径/符号");
@@ -40,15 +62,11 @@ describe("BuiltinContextManager", () => {
     expect(prompt).toContain("不把助手写入或推断的内容记成“用户已确认”");
   });
 
-  it("rewrites a legacy summary immediately without consuming recent raw messages", () => {
+  it("does not rewrite a legacy summary until measured pressure requires it", () => {
     const context = new BuiltinContextManager({ compactAtTokens: 100_000, persist: false });
     context.setSummary("## 用户目标\n- 旧格式摘要中的历史建议");
     context.appendMessage({ role: "user", content: "recent question" });
-    const plan = context.planCompaction();
-    expect(plan).not.toBeNull();
-    expect(plan?.previousSummary).toContain("旧格式摘要");
-    expect(plan?.oldMessages).toEqual([]);
-    expect(plan?.recentMessages).toEqual([{ role: "user", content: "recent question" }]);
+    expect(context.planCompaction()).toBeNull();
   });
   it("does not mistake ordinary DSML discussion for a malformed tool call", () => {
     expect(hasMalformedToolProtocolText("DSML is an internal protocol.")).toBe(false);

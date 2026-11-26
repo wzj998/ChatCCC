@@ -31,6 +31,7 @@ import {
 import {
   buildPersistedAssistantMessage,
   buildSummaryPrompt,
+  type BuiltinCompactionPlan,
   BuiltinContextManager,
   defaultBuiltinSessionId,
   type BuiltinContextTimelineEntry,
@@ -728,9 +729,10 @@ export class ChatSession {
         shouldYieldToInjection: this.shouldYieldToInjection,
         gitCoAuthor: { ...appConfig.git.coAuthor, enabled: this.gitCoAuthorEnabled },
       }), this.allowedTools);
-      if (this.context.planCompaction()) {
+      const { plan, pressure } = this.context.prepareCompaction();
+      if (plan) {
         yield { type: "status", phase: "compacting" };
-        const compactedMessages = await this.compactIfNeeded(signal);
+        const compactedMessages = await this.compactIfNeeded(plan, signal);
         if (compactedMessages > 0) {
           yield { type: "compact", compactedMessages };
         }
@@ -748,6 +750,7 @@ export class ChatSession {
           maxBytesPerTurn: rawLogConfig.maxBytesPerTurn,
           retentionDays: rawLogConfig.retentionDays,
         });
+        if (plan || pressure.beforeTokens !== pressure.afterTokens) rawLog?.writeLine(safeRawStreamJson({ type: "deepccc_history_pressure", ...pressure, summaryNeeded: Boolean(plan) }));
       } catch (err) {
         console.error(`[DeepCCC raw stream log] create failed: ${errorMessage(err)}`);
       }
@@ -1108,8 +1111,7 @@ export class ChatSession {
     this.context.reset();
   }
 
-  private async compactIfNeeded(signal?: AbortSignal): Promise<number> {
-    if (!this.context.planCompaction()) return 0;
+  private async compactIfNeeded(plan: BuiltinCompactionPlan, signal?: AbortSignal): Promise<number> {
 
     const timeoutController = new AbortController();
     const timeout = setTimeout(() => timeoutController.abort(), this.compactionTimeoutMs);
@@ -1119,9 +1121,6 @@ export class ChatSession {
       : timeoutController.signal;
 
     try {
-      const plan = this.context.planCompaction();
-      if (!plan) return 0;
-
       const result = await generateText({
         model: this.subModel,
         system: SUMMARY_SYSTEM_PROMPT,
@@ -1135,7 +1134,7 @@ export class ChatSession {
         maxOutputTokens: MAX_COMPACTION_OUTPUT_TOKENS,
       });
 
-      if (!result.text.trim()) {
+      if (result.finishReason === "length" || result.finishReason === "error" || !result.text.trim()) {
         throw new Error("Context compaction returned an empty summary");
       }
 
