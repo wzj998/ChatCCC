@@ -23,6 +23,8 @@ for(const provider of ["openai-chat-completions","anthropic"] as const) it(`send
   for await(const event of new ChatSession(config,options).chat(`请看图\n[图片] ${path}`))if(event.type==="image_input")notices.push(event);
   for await(const _ of new ChatSession(config,options).chat("再说一下图片颜色")) {}
   for(const body of bodies){
+    if(provider==='anthropic')expect(body.system.at(-1).cache_control).toEqual({type:'ephemeral'});
+    else expect(body.system ?? []).not.toContainEqual(expect.objectContaining({cache_control:expect.anything()}));
     const user=body.messages.find((m:any)=>m.role==="user"&&Array.isArray(m.content));
     if(provider==="openai-chat-completions")expect(user.content).toContainEqual({type:"image_url",image_url:{url:`data:image/png;base64,${PNG}`}});
     else expect(user.content).toContainEqual({type:"image",source:{type:"base64",media_type:"image/png",data:PNG}});
