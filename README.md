@@ -240,7 +240,7 @@ Claude Code、Cursor 和 Codex 需要对应的本地工具；CCC Agent 内置于
 
 CCC Agent 是 ChatCCC 内置的编程 Agent，不需要额外安装 CLI，开箱即用。在首次配置向导或 Web 管理页中启用后，填写 API Key、Base URL 和模型即可使用；它可以设为 `/new` 的默认 Agent，也可以通过 `/new ccc` 显式创建会话。
 
-CCC Agent 支持图片理解：飞书/微信发送的图片与独立 DeepCCC 的 Web/CLI 附件共用内核，可看多张截图、图表及本地 `read_image` 工具产物。支持 PNG/JPEG/WebP/GIF，每条最多 10 张、单图 20 MiB、图片合计 24 MiB。主模型支持视觉时直接传图；主模型不支持时，可在设置页填写“图片模型”（`ccc.visionModel`，如 `deepseek-flash`），先由它观察图片，再由主模型继续任务。留空跟随独立 DeepCCC 的 `visionModel`；两边都未配置则使用主模型原生视觉。图片模型复用当前 API Key/Base URL/协议，界面显示实际使用的模型；错误不会静默降级。历史保存附件引用，日志过滤图片编码。详见 [DeepCCC 图片与 CLI 用法](deepccc-agent/README.md)。
+CCC Agent 支持图片理解：飞书/微信发送的图片与独立 DeepCCC 的 Web/CLI 附件共用内核，可看多张截图、图表及本地 `read_image` 工具产物。支持 PNG/JPEG/WebP/GIF，每条最多 10 张、单图 20 MiB、图片合计 24 MiB。主模型支持视觉时直接传图；主模型不支持时，可在设置页填写“图片模型”（`ccc.visionModel`，如 `deepseek-flash`），先由它观察图片，再由主模型继续任务。留空跟随独立 DeepCCC 的 `visionModel`；两边都未配置则使用主模型原生视觉。专用图片模型默认开启；设置 `ccc.visionModelEnabled: false` 可忽略继承的图片模型，仍保留主模型原生识图。图片模型复用当前 API Key/Base URL/协议，界面显示实际使用的模型；错误不会静默降级。历史保存附件引用，日志过滤图片编码。详见 [DeepCCC 图片与 CLI 用法](deepccc-agent/README.md)。
 
 纯 CLI 用户可以运行 `cccagent --image "C:\截图\报错.png"` 后输入问题，或在运行中的交互终端等待回复结束后输入 `/image "图片路径"`，再发下一条问题。多图重复添加；一次性运行可用 `cccagent --stream-json --prompt "解释截图" --image "图片路径"`。`cccagent` 读取 `~/.deepccc/config.json` 或 `DEEPCCC_*` 环境变量。
 

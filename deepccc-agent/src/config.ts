@@ -17,6 +17,7 @@ export interface DeepCccConfig {
   subModel: string;
   /** Optional image model; unset/blank follows the actual session main model, including CLI overrides. */
   visionModel: string;
+  visionModelEnabled: boolean;
   /** Reasoning effort（none/minimal/low/medium/high/xhigh/max），留空不传 reasoning_effort */
   effort: string;
   /** 主对话最大输出 token；未配置时不传，使用 Provider 默认值。 */
@@ -61,6 +62,7 @@ export const DEFAULT_CONFIG: DeepCccConfig = {
   model: "deepseek-v4-pro",
   subModel: "",
   visionModel: "",
+  visionModelEnabled: true,
   effort: "",
   streaming: true,
   contextWindow: 1_048_576,
@@ -138,6 +140,7 @@ export function loadConfig(): DeepCccConfig {
     baseURL: env("DEEPCCC_BASE_URL") ?? env("DEEPSEEK_BASE_URL") ?? file.baseURL ?? DEFAULT_CONFIG.baseURL,
     model: env("DEEPCCC_MODEL") ?? env("DEEPSEEK_MODEL") ?? file.model ?? DEFAULT_CONFIG.model,
     subModel: env("DEEPCCC_SUB_MODEL") ?? file.subModel ?? DEFAULT_CONFIG.subModel,
+    visionModelEnabled: boolEnv("DEEPCCC_VISION_MODEL_ENABLED") ?? (file.visionModelEnabled !== false),
     visionModel: env("DEEPCCC_VISION_MODEL") ?? file.visionModel ?? DEFAULT_CONFIG.visionModel,
     effort: env("DEEPCCC_EFFORT") ?? env("DEEPSEEK_EFFORT") ?? file.effort ?? DEFAULT_CONFIG.effort,
     maxOutputTokens: optionalPositiveInteger(env("DEEPCCC_MAX_OUTPUT_TOKENS"))
@@ -170,7 +173,7 @@ export function ensureConfigDir(): void {
 
 export type DeepCccConfigPatch = Partial<Pick<
   DeepCccConfig,
-  "provider" | "apiKey" | "baseURL" | "model" | "subModel" | "visionModel" | "effort" | "maxOutputTokens" | "streaming" | "contextWindow"
+  "provider" | "apiKey" | "baseURL" | "model" | "subModel" | "visionModel" | "visionModelEnabled" | "effort" | "maxOutputTokens" | "streaming" | "contextWindow"
 >> & { web?: Partial<DeepCccConfig["web"]> };
 
 /** Persist only user-editable Web fields while preserving advanced configuration. */
@@ -185,6 +188,7 @@ export function saveConfigPatch(patch: DeepCccConfigPatch): DeepCccConfig {
   if (patch.provider !== undefined) next.provider = normalizeDeepCccProvider(patch.provider);
   if (patch.baseURL !== undefined && !patch.baseURL.trim()) throw new Error("baseURL must not be empty");
   if (patch.model !== undefined && !patch.model.trim()) throw new Error("model must not be empty");
+  if (patch.visionModelEnabled !== undefined && typeof patch.visionModelEnabled !== "boolean") throw new Error("visionModelEnabled must be a boolean");
   if (patch.visionModel !== undefined && typeof patch.visionModel !== "string") throw new Error("visionModel must be a string");
   if (patch.effort !== undefined && !["", "none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(patch.effort)) {
     throw new Error(`Unsupported effort: ${patch.effort}`);
