@@ -77,6 +77,13 @@ export interface BuiltinCompactionPlan {
   recentMessages: BuiltinContextMessage[];
 }
 
+export interface BuiltinContextPressure {
+  beforeTokens: number;
+  afterTokens: number;
+  beforeToolTokens: number;
+  afterToolTokens: number;
+}
+
 export interface BuiltinContextOptions {
   persist?: boolean;
   contextDir?: string;
@@ -751,6 +758,34 @@ export class BuiltinContextManager {
     this.save();
   }
 
+  /** Only the model view is pruned. The stored call/result pairs remain recoverable. */
+  private pruneHistory(messages: BuiltinContextMessage[]): BuiltinContextMessage[] {
+    let latestToolTurn = messages.length - 1;
+    while (latestToolTurn >= 0) {
+      const message = messages[latestToolTurn];
+      if (message.toolCalls?.some(call => call.output !== undefined) ||
+          message.timeline?.some(entry => entry.type === "tool_result" && entry.output !== undefined)) break;
+      latestToolTurn--;
+    }
+    return messages.map((message, index) => {
+      if (message.role !== "assistant" || index >= latestToolTurn) return message;
+      const prune = (output: string | undefined, name: string | undefined, failed: boolean | undefined) => {
+        // Preserve stateful tool results, failures and instructions verbatim.
+        if (failed || !output || !/^(read_file|search_code|list_dir|workspace_map)$/.test(name ?? "")) return output;
+        return truncateMiddle(output, 4096, "\n[Older tool output shortened; use the original call arguments for a focused reread.]\n");
+      };
+      return {
+        ...message,
+        ...(message.toolCalls ? { toolCalls: message.toolCalls.map(call =>
+          ({ ...call, output: prune(call.output, call.name, call.is_error) })) } : {}),
+        ...(message.timeline ? { timeline: message.timeline.map(entry => entry.type === "tool_result"
+          ? { ...entry, output: prune(entry.output, entry.name ??
+              message.toolCalls?.find(call => call.id === entry.tool_use_id)?.name, entry.is_error) }
+          : entry) } : {}),
+      };
+    });
+  }
+
   buildModelMessages(): ModelMessage[] {
     const messages: ModelMessage[] = [];
     if (this.state.summary.trim()) {
@@ -767,7 +802,7 @@ export class BuiltinContextManager {
     // Keep malformed provider output on disk for diagnosis, but quarantine it
     // from future prompts so one protocol failure cannot teach the model to
     // repeat the same invalid tool syntax on every later turn.
-    for (const [index, message] of this.modelSafeMessages().entries()) {
+    for (const [index, message] of this.pruneHistory(this.modelSafeMessages()).entries()) {
       if (message.role === "user") messages.push({ role: "user", content: message.content });
       else messages.push(...replayStructuredAssistantMessage(message, index));
     }
@@ -775,19 +810,33 @@ export class BuiltinContextManager {
   }
 
   planCompaction(): BuiltinCompactionPlan | null {
-    // The compaction model is still a model input: exclude quarantined protocol
-    // leaks here too, otherwise a later summary could reintroduce the bad syntax.
-    const messages = this.modelSafeMessages();
+    return this.prepareCompaction().plan;
+  }
+
+  prepareCompaction(): { plan: BuiltinCompactionPlan | null; pressure: BuiltinContextPressure } {
+    const original = this.modelSafeMessages();
+    const messages = this.pruneHistory(original);
     const estimated = estimateBuiltinContextTokens(this.state.summary, messages);
     const toolEstimated = estimateBuiltinToolContextTokens(messages);
+    const pressure = {
+      beforeTokens: estimateBuiltinContextTokens(this.state.summary, original),
+      afterTokens: estimated,
+      beforeToolTokens: estimateBuiltinToolContextTokens(original),
+      afterToolTokens: toolEstimated,
+    };
+    return { pressure, plan: this.planMeasuredCompaction(original, messages, pressure) };
+  }
+
+  private planMeasuredCompaction(original: BuiltinContextMessage[], messages: BuiltinContextMessage[],
+    pressure: BuiltinContextPressure): BuiltinCompactionPlan | null {
+    if (pressure.afterTokens <= this.compactAtTokens && pressure.afterToolTokens <= this.maxToolContextTokens) return null;
     if (this.state.summary.trim() && !isCanonicalBuiltinSummary(this.state.summary)) {
       return {
         previousSummary: this.state.summary,
         oldMessages: [],
-        recentMessages: messages,
+        recentMessages: original,
       };
     }
-    if (estimated <= this.compactAtTokens && toolEstimated <= this.maxToolContextTokens) return null;
 
     if (messages.length <= 1) return null;
 
@@ -815,7 +864,7 @@ export class BuiltinContextManager {
     return {
       previousSummary: this.state.summary,
       oldMessages: messages.slice(0, splitAt),
-      recentMessages: messages.slice(splitAt),
+      recentMessages: original.slice(splitAt),
     };
   }
 
