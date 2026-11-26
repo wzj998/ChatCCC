@@ -118,6 +118,7 @@ export interface CodexConfig {
 export interface CccConfig {
   /** Empty follows the DeepCCC global visionModel setting. */
   visionModel: string;
+  visionModelEnabled?: boolean;
   /** Whether the built-in CCC Agent is available for new sessions. */
   enabled: boolean;
   /** Whether /new without an explicit tool should use CCC Agent. */
@@ -623,6 +624,7 @@ function loadConfig(): AppConfig {
     codex?: { enabled?: unknown; defaultAgent?: unknown; path?: unknown; command?: unknown; model?: unknown; alternativeModel?: unknown; effort?: unknown; fastMode?: unknown };
     ccc?: {
       visionModel?: unknown;
+      visionModelEnabled?: unknown;
       enabled?: unknown;
       defaultAgent?: unknown;
       DEEPSEEK_API_KEY?: unknown;
@@ -828,6 +830,7 @@ function loadConfig(): AppConfig {
       }),
       model: normalizeOptionalConfigField(cccRaw.model, { label: "ccc.model", fallback: DEFAULT_CCC_MODEL }),
       subModel: normalizeOptionalConfigField(cccRaw.subModel, { label: "ccc.subModel" }),
+      ...(typeof cccRaw.visionModelEnabled === "boolean" ? { visionModelEnabled: cccRaw.visionModelEnabled } : {}),
       visionModel: normalizeOptionalConfigField(cccRaw.visionModel, { label: "ccc.visionModel" }),
       alternativeModel: normalizeOptionalConfigField(cccRaw.alternativeModel, { label: "ccc.alternativeModel" }),
       effort: normalizeOptionalConfigField(cccRaw.effort, { label: "ccc.effort" }),

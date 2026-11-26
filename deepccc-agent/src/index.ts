@@ -330,6 +330,8 @@ export interface ChatSessionConfig {
   subModel?: string;
   /** Optional dedicated image analysis model. Empty = native image input to the main model. */
   visionModel?: string;
+  /** False bypasses the dedicated model without disabling native image input. */
+  visionModelEnabled?: boolean;
   /**
    * Reasoning effort (none/minimal/low/medium/high/xhigh/max);
    * overrides config.effort; empty omits the reasoning_effort request field.
@@ -541,6 +543,7 @@ export class ChatSession {
           baseURL: this.baseURL,
           model: this.subModelId || this.modelId,
           visionModel: this.configuredVisionModelId,
+          visionModelEnabled: true, // visionModel already reflects the parent switch
           effort: this.effort,
           maxOutputTokens: this.maxOutputTokens,
         },
@@ -594,7 +597,8 @@ export class ChatSession {
     const modelId = overrides.model ?? appConfig.model;
     this.modelId = modelId;
     this.subModelId = (overrides.subModel ?? appConfig.subModel ?? "").trim();
-    this.configuredVisionModelId = (overrides.visionModel ?? appConfig.visionModel ?? "").trim();
+    this.configuredVisionModelId = (overrides.visionModelEnabled ?? appConfig.visionModelEnabled) === false
+      ? "" : (overrides.visionModel ?? appConfig.visionModel ?? "").trim();
     this.visionModelId = this.configuredVisionModelId || modelId;
     this.provider = normalizeDeepCccProvider(overrides.provider ?? appConfig.provider);
     this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const createCccAdapterMock = vi.hoisted(() => vi.fn(() => ({
   displayName: "CCC Agent",
@@ -18,6 +18,8 @@ import { _clearAdapterCacheForTest, getAdapterForTool } from "../session.ts";
 
 describe("CCC Agent ChatCCC configuration", () => {
   const original = { ...config.ccc };
+
+  beforeEach(() => { config.ccc.visionModelEnabled = undefined; });
 
   afterEach(() => {
     Object.assign(config.ccc, original);
@@ -57,6 +59,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       DEEPSEEK_BASE_URL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
       subModel: "chatccc-sub-model",
+      visionModelEnabled: false,
       effort: "high",
       maxOutputTokens: null,
       provider: "",
@@ -70,6 +73,7 @@ describe("CCC Agent ChatCCC configuration", () => {
       baseURL: "https://chatccc.example.com/v1",
       model: "chatccc-model",
       subModel: "chatccc-sub-model",
+      visionModelEnabled: false,
       effort: "high",
       compactionTimeoutMs: 12345,
       contextWindow: config.ccc.contextWindow,

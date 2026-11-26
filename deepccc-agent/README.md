@@ -171,7 +171,7 @@ Web UI 支持新建、恢复、重命名和删除多会话，多个会话可以�
 
 图片会转换成模型可见的原生视觉输入。Web 支持选择、粘贴和拖拽 PNG/JPEG/WebP/GIF；CLI 可用 `--image` 或交互命令 `/image`。每条消息最多 10 张、单图最大 20 MiB、图片合计最大 24 MiB，单边最多 8192 像素；超限时提示分图或缩小，保留原图细节。附件复制到 `~/.deepccc/attachments/<session-id>/`，聊天历史只保存引用，raw 日志过滤图片编码。删除 Web 会话时附件一并清理。
 
-识图模型未配置或为空白时，跟随当前会话实际主模型，包括 CLI --model 的覆盖值；子代理没有显式识图配置时跟随自身实际主模型，显式配置则继续继承。若主模型不支持视觉，可在 API 设置中指定 `visionModel`（如 `deepseek-flash`），或设置 `DEEPCCC_VISION_MODEL` / CLI `--vision-model`；该模型使用同一 API 协议、Base URL 和 Key，先分析图片，再由主模型结合观察继续任务。界面及 JSONL 会显示实际图片模型和模式。未配置图片模型的 `deepseek-v4-pro` 收图会明确报错；其他兼容模型需服务端支持图像，接口错误不会降级成“假装看过”。官方 DeepSeek 端点的旧 Flash 名称仅在视觉请求中映射到当前 `deepseek-flash`，自定义网关保留用户配置的名称。
+专用图片模型默认开启。设置 `visionModelEnabled: false`（或 `DEEPCCC_VISION_MODEL_ENABLED=false`）可跳过专用模型，仍由支持图片的主模型原生识图。识图模型未配置或为空白时，跟随当前会话实际主模型，包括 CLI --model 的覆盖值；子代理没有显式识图配置时跟随自身实际主模型，显式配置则继续继承。若主模型不支持视觉，可在 API 设置中指定 `visionModel`（如 `deepseek-flash`），或设置 `DEEPCCC_VISION_MODEL` / CLI `--vision-model`；该模型使用同一 API 协议、Base URL 和 Key，先分析图片，再由主模型结合观察继续任务。界面及 JSONL 会显示实际图片模型和模式。未配置图片模型的 `deepseek-v4-pro` 收图会明确报错；其他兼容模型需服务端支持图像，接口错误不会降级成“假装看过”。官方 DeepSeek 端点的旧 Flash 名称仅在视觉请求中映射到当前 `deepseek-flash`，自定义网关保留用户配置的名称。
 
 Agent 可用 `read_image` 查看本地截图、图表或工具产物，并通过 `question` 指定需要观察的细节；`present_file` 用于把图片展示给用户。后续追问会按预算重新加载近期图片；较早图片保留路径供 `read_image` 重新查看。独立图片模型的观察按原文问题、模型、端点与图片内容哈希缓存；细节追问可重新调用 `read_image`。压缩后的摘要应保留重要图片引用，缺失或损坏图片会明确报错。本版本支持图片输入，不包含音频、视频或 PDF 原生输入。
 

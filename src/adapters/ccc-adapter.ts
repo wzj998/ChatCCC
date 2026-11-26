@@ -68,6 +68,7 @@ export function createCccAdapter(options: CccAdapterOptions = {}): ToolAdapter {
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.subModel !== undefined ? { subModel: options.subModel } : {}),
+    ...(options.visionModelEnabled !== undefined ? { visionModelEnabled: options.visionModelEnabled } : {}),
     ...(options.visionModel !== undefined ? { visionModel: options.visionModel } : {}),
     ...(options.effort?.trim() ? { effort: options.effort.trim() } : {}),
     ...(options.maxOutputTokens !== undefined

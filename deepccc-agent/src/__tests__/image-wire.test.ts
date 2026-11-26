@@ -18,7 +18,7 @@ for(const provider of ["openai-chat-completions","anthropic"] as const) it(`send
   const address=server.address();if(!address||typeof address==="string")throw Error("no port");
   const cwd=await mkdtemp(join(tmpdir(),"deepccc-image-wire-"));dirs.push(cwd);const path=join(cwd,"image with spaces.png");await writeFile(path,Buffer.from(PNG,"base64"));
   const options={cwd,sessionId:"wire",persist:true,contextDir:join(cwd,"sessions"),attachmentStore:new AttachmentStore({rootDir:join(cwd,"attachments")})};
-  const config={apiKey:"test",provider,baseURL:`http://127.0.0.1:${address.port}/v1`,model:"vision-model",visionModel:"",streaming:false,effort:""};
+  const config={apiKey:"test",provider,baseURL:`http://127.0.0.1:${address.port}/v1`,model:"vision-model",visionModel:"configured-helper",visionModelEnabled:false,streaming:false,effort:""};
   const notices:any[]=[];
   for await(const event of new ChatSession(config,options).chat(`请看图\n[图片] ${path}`))if(event.type==="image_input")notices.push(event);
   for await(const _ of new ChatSession(config,options).chat("再说一下图片颜色")) {}

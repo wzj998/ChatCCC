@@ -115,6 +115,7 @@ export class DeepCccWebRuntime {
       model: input.meta.model || input.config.model,
       subModel: input.meta.subModel || input.config.subModel,
       visionModel: input.config.visionModel,
+      visionModelEnabled: input.config.visionModelEnabled,
       effort: input.meta.effort || input.config.effort,
       maxOutputTokens: input.config.maxOutputTokens,
       streaming: input.config.streaming,
