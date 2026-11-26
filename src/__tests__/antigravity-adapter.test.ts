@@ -10,12 +10,20 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 import { createAntigravityAdapter } from "../adapters/antigravity-adapter.ts";
 
+function fakeProcess() {
+  return Object.assign(new PassThrough(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
   spawn.mockReset();
 });
 
-describe("Antigravity ACP adapter", () => {
+describe("Antigravity adapter", () => {
   it("requires API credentials before launching agy", async () => {
     vi.stubEnv("GEMINI_API_KEY", "");
     await expect(createAntigravityAdapter({ enabled: true }).createSession(process.cwd()))
@@ -23,69 +31,80 @@ describe("Antigravity ACP adapter", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("authenticates with an API key, resumes a session, and streams its reply", async () => {
+  it("uses API-key authentication to create a session without sending a prompt", async () => {
     vi.stubEnv("GEMINI_API_KEY", "unit-test-key");
-    const permissions: unknown[] = [];
     const requests: Array<{ method: string; params: unknown }> = [];
-    spawn.mockImplementation(() => {
-      const stdin = new PassThrough();
-      const stdout = new PassThrough();
-      const stderr = new PassThrough();
-      const process = Object.assign(new PassThrough(), { stdin, stdout, stderr });
-      const send = (message: object) => stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
-      createInterface({ input: stdin }).on("line", (line) => {
-        const { id, method, params } = JSON.parse(line);
-        if (!method) {
-          if (id === 99) permissions.push(JSON.parse(line).result);
-          return;
-        }
-        requests.push({ method, params });
-        if (method === "initialize") {
-          send({ id, result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { resume: {} } } } });
-        } else if (method === "session/new") {
-          send({ id, result: { sessionId: "agy-test-session" } });
-        } else if (method === "session/prompt") {
-          send({
-            id: 99,
-            method: "session/request_permission",
-            params: { sessionId: params.sessionId, toolCall: { toolCallId: "call" }, options: [] },
-          });
-          send({
-            method: "session/update",
-            params: {
-              sessionId: params.sessionId,
-              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "你好" } },
-            },
-          });
-          send({ id, result: { stopReason: "end_turn" } });
-        } else {
-          send({ id, result: {} });
-        }
-      });
-      return process;
+    const proc = fakeProcess();
+    spawn.mockReturnValue(proc);
+    createInterface({ input: proc.stdin }).on("line", (line) => {
+      const { id, method, params } = JSON.parse(line);
+      requests.push({ method, params });
+      const result = method === "initialize" ? { protocolVersion: 1 }
+        : method === "session/new" ? { sessionId: "agy-test-session" }
+        : {};
+      proc.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
     });
-
     const store = { get: vi.fn(), set: vi.fn() };
-    const adapter = createAntigravityAdapter({ enabled: true, store });
     const cwd = process.cwd();
-    const { sessionId } = await adapter.createSession(cwd);
-    const blocks = [];
-    for await (const message of adapter.prompt(sessionId, "Say hi", cwd)) {
-      blocks.push(...message.blocks);
-    }
+    const adapter = createAntigravityAdapter({ enabled: true, store });
+    await expect(adapter.createSession(cwd)).resolves.toEqual({ sessionId: "agy-test-session" });
+    expect(requests.map(({ method }) => method)).toEqual(["initialize", "authenticate", "session/new"]);
+    expect(requests[1].params).toEqual({ methodId: "gemini-api-key" });
+    expect(store.set).toHaveBeenCalledWith("agy-test-session", { cwd, model: "gemini-3.1-flash-lite" });
+  });
 
-    expect(blocks).toEqual([{ type: "text", text: "你好" }]);
-    expect(permissions).toEqual([{ outcome: { outcome: "cancelled" } }]);
-    expect(store.set).toHaveBeenCalledWith(sessionId, { cwd });
-    expect(requests.filter((request) => request.method === "authenticate")).toEqual([
-      { method: "authenticate", params: { methodId: "gemini-api-key" } },
-      { method: "authenticate", params: { methodId: "gemini-api-key" } },
-    ]);
-    expect(requests).toContainEqual({ method: "session/resume", params: { sessionId, cwd, mcpServers: [] } });
-    expect(requests).toContainEqual({
-      method: "session/prompt",
-      params: { sessionId, prompt: [{ type: "text", text: "Say hi" }] },
+  it.each([
+    { model: undefined, expected: "gemini-3.1-flash-lite", plan: false },
+    { model: "gemini-2.5-flash-lite", expected: "gemini-2.5-flash-lite", plan: true },
+  ])("pins $expected before resuming and prompting", async ({ model, expected, plan }) => {
+    vi.stubEnv("GEMINI_API_KEY", "unit-test-key");
+    const proc = fakeProcess();
+    spawn.mockReturnValue(proc);
+    const sent = vi.fn();
+    createInterface({ input: proc.stdin }).on("line", (line) => {
+      sent(JSON.parse(line));
+      for (const data of [
+        { event: "step_update", step_update: { step_type: "agent_response", text_delta: "你好" } },
+        { event: "result", result: { status: "SUCCESS", response: "你好" } },
+      ]) {
+        proc.stdout.write(JSON.stringify(data) + "\n");
+      }
+      proc.stdout.end();
+      proc.emit("close", 0);
     });
-    expect(spawn).toHaveBeenLastCalledWith("agy", ["acp", "--sandbox"], expect.objectContaining({ cwd, shell: false }));
+
+    const cwd = process.cwd();
+    const store = { get: vi.fn(), set: vi.fn() };
+    const adapter = createAntigravityAdapter({ enabled: true, model, store });
+    const prompt = plan ? "[User message]\n/plan Say hi\n[/User message]" : "Say hi";
+    const blocks = [];
+    for await (const message of adapter.prompt("agy-test-session", prompt, cwd)) blocks.push(...message.blocks);
+
+    expect(blocks).toEqual([{ type: "text", text: "你好" }, { type: "text_final", text: "你好" }]);
+    expect(sent).toHaveBeenCalledWith({ event: "user", message: { content: prompt } });
+    const [executable, args, options] = spawn.mock.calls[0];
+    expect(executable).toBe("agy");
+    expect(args).toEqual(expect.arrayContaining(["--sandbox", "--conversation", "agy-test-session", "--model", "chatccc-gemini"]));
+    expect(args.includes("plan")).toBe(plan);
+    expect(options).toEqual(expect.objectContaining({ cwd, shell: false }));
+    expect(JSON.parse(args[args.indexOf("--settings") + 1])).toMatchObject({
+      modelProvider: "gemini",
+      customModelsConfig: { customModels: { "chatccc-gemini": { modelName: "gemini-api://" + expected } } },
+    });
+  });
+
+  it("propagates unavailable-model errors without launching a fallback", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "unit-test-key");
+    const proc = fakeProcess();
+    spawn.mockReturnValue(proc);
+    proc.stdin.on("finish", () => {
+      proc.stdout.end(JSON.stringify({ event: "result", result: { status: "ERROR", error: "model unavailable" } }) + "\n");
+      proc.emit("close", 1);
+    });
+
+    const adapter = createAntigravityAdapter({ enabled: true, model: "gemini-unavailable" });
+    const messages = adapter.prompt("agy-test-session", "Say hi", process.cwd());
+    await expect(messages[Symbol.asyncIterator]().next()).rejects.toThrow("model unavailable");
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 });

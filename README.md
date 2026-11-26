@@ -284,9 +284,9 @@ DSH 引擎安装在 `~/.chatccc/engines/dsh/`，不加入 ChatCCC 的 `dependenc
 
 #### Antigravity CLI
 
-安装 [Antigravity CLI](https://antigravity.google/download)，并用 `agy acp --help` 验证 ACP 可用。在 ChatCCC 的 `config.json` 中设置 `"antigravity": { "enabled": true, "path": "agy" }`。如果 `agy` 不在 PATH 中，`path` 可以填写可执行文件的绝对路径。
+安装 [Antigravity CLI](https://antigravity.google/download)，并用 `agy acp --help` 验证 ACP 可用。在 ChatCCC 的 `config.json` 中设置 `"antigravity": { "enabled": true, "path": "agy", "model": "gemini-3.1-flash-lite" }`。如果 `agy` 不在 PATH 中，`path` 可以填写可执行文件的绝对路径。`model` 留空或省略时使用 `gemini-3.1-flash-lite`，也可以填写其他 Gemini API 模型 ID。
 
-在启动 ChatCCC 的环境中设置 `GEMINI_API_KEY`，然后在飞书或微信发送 `/new antigravity`。ChatCCC 通过 `agy acp` 使用 [Gemini API Key 认证](https://antigravity.google/docs/ide/extensions/acp/#authentication)。API 用量和地区资格由 Gemini API 处理。此接入启用 CLI 沙箱，遇到需要在 ACP 客户端确认的权限请求时会取消该操作。
+在启动 ChatCCC 的环境中设置 `GEMINI_API_KEY`，然后在飞书或微信发送 `/new antigravity`。ChatCCC 通过 `agy acp` 创建会话，并通过 [非交互模式](https://antigravity.google/docs/cli/headless/) 使用 Gemini API Key 和指定模型发送消息及续聊。免费额度取决于模型、API 项目和 [可用地区](https://aistudio.google.com/docs/available-regions)，可查阅 [Gemini API 定价](https://aistudio.google.com/docs/pricing)。CLI 沙箱保持启用，非交互模式按 CLI 权限设置处理需要确认的操作。
 
 #### Cursor Agent CLI
 
