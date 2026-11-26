@@ -8,7 +8,7 @@ without rewriting their established prompt builders.
 Set `provider: 'openai-responses'` and `baseURL: 'https://api.openai.com/v1'`
 for the native Responses API. This mode sends JSON format as `text.format`,
 uses `store: false`, and omits temperature for reasoning-model compatibility.
-The default `openai` transport remains Chat Completions. Extensions cannot
+OpenAI Responses is the default (including the old `openai` spelling). Use `openai-chat-completions` explicitly for legacy gateways. Extensions cannot
 override Responses input, storage, reasoning state, or output limits.
 
 ```js

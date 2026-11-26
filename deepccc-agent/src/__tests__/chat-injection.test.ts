@@ -48,7 +48,7 @@ const original = {
 };
 
 beforeEach(() => {
-  config.provider = "openai";
+  config.provider = "openai-chat-completions";
   config.streaming = true;
   config.effort = "";
   config.maxOutputTokens = undefined;

@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type DeepCccProvider = "openai" | "openai-responses" | "anthropic";
+export type DeepCccProvider = "openai" | "openai-responses" | "openai-chat-completions" | "anthropic";
 
 export interface DeepCccConfig {
-  /** API protocol/provider. Defaults to OpenAI-compatible. */
+  /** API protocol/provider. Defaults to OpenAI Responses. */
   provider: DeepCccProvider;
   apiKey: string;
   baseURL: string;
@@ -55,7 +55,7 @@ export const CONFIG_PATH = join(DEEPCCC_HOME, "config.json");
  * 默认配置（不读环境/文件）。导出供测试断言默认值；运行时请用 loadConfig 结果。
  */
 export const DEFAULT_CONFIG: DeepCccConfig = {
-  provider: "openai",
+  provider: "openai-responses",
   apiKey: "",
   baseURL: "https://api.deepseek.com/v1",
   model: "deepseek-v4-pro",
@@ -115,11 +115,12 @@ function optionalPositiveInteger(value: unknown): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-export function normalizeDeepCccProvider(value: unknown): DeepCccProvider {
-  if (value === undefined || value === null || String(value).trim() === "") return "openai";
+export function normalizeDeepCccProvider(value: unknown): Exclude<DeepCccProvider, "openai"> {
+  if (value === undefined || value === null || String(value).trim() === "") return "openai-responses";
   const normalized = String(value).trim().toLowerCase();
-  if (normalized === "openai" || normalized === "openai-responses" || normalized === "anthropic") return normalized;
-  throw new Error(`DEEPCCC_PROVIDER/provider must be "openai", "openai-responses" or "anthropic", received: ${String(value)}`);
+  if (normalized === "openai") return "openai-responses";
+  if (normalized === "openai-responses" || normalized === "openai-chat-completions" || normalized === "anthropic") return normalized;
+  throw new Error(`DEEPCCC_PROVIDER/provider must be "openai-responses", "openai-chat-completions" or "anthropic" ("openai" aliases "openai-responses"), received: ${String(value)}`);
 }
 
 export function loadConfig(): DeepCccConfig {

@@ -143,7 +143,7 @@ export interface CccConfig {
   /** null follows DeepCCC config; a positive integer explicitly overrides it. */
   maxOutputTokens: number | null;
   /**
-   * API 协议 override（选填）：openai（Chat Completions）、openai-responses（Responses）或 anthropic（Anthropic
+   * API 协议 override（选填）：openai-chat-completions（Chat Completions）、openai-responses（Responses）或 anthropic（Anthropic
    * Messages 协议）。留空（""）表示不 override，跟随 DeepCCC 内核配置
    * （~/.deepccc/config.json 的 provider 或 DEEPCCC_PROVIDER 环境变量）。
    */

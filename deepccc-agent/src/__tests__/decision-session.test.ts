@@ -20,7 +20,7 @@ function response(parts: unknown[] = [call()], finish = "tool-calls") {
 }
 async function create(options: Record<string, unknown> = {}) {
   const { DecisionSession } = await import("../decision-session.js");
-  return new DecisionSession(config, { systemPrompt: "Choose an action.", outputSchema: schema, ...options });
+  return new DecisionSession({ provider: "openai-chat-completions", ...config }, { systemPrompt: "Choose an action.", outputSchema: schema, ...options });
 }
 afterEach(() => { streamMock.mockReset(); vi.useRealTimers(); });
 

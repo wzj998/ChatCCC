@@ -185,7 +185,7 @@ describe("builtin file-tools permission integration", () => {
 describe("builtin ChatSession permission integration", () => {
   it("permissionMode bypass lets high-risk run_command execute", async () => {
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { provider: "openai-chat-completions", apiKey: "sk-test" },
       { sessionId: "perm-bypass", permissionMode: "bypass" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
@@ -197,7 +197,7 @@ describe("builtin ChatSession permission integration", () => {
 
   it("default ask mode without resolver denies high-risk run_command", async () => {
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { provider: "openai-chat-completions", apiKey: "sk-test" },
       { sessionId: "perm-ask" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });

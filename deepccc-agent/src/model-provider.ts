@@ -56,5 +56,5 @@ export function modelProviderOptions(provider: DeepCccProvider, effort?: string)
 /** Reasoning-only Responses models reject temperature and effort=none. */
 export function summaryGenerationOptions(provider: DeepCccProvider) {
   return { ...(provider === 'openai-responses' ? {} : { temperature: 0 }),
-    providerOptions: modelProviderOptions(provider, provider === 'openai' ? 'none' : 'low') };
+    providerOptions: modelProviderOptions(provider, provider === 'openai-chat-completions' ? 'none' : 'low') };
 }

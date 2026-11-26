@@ -247,7 +247,7 @@ describe("ChatSession privacy integration", () => {
       const path = join(folder, "private-user.txt");
       writeFileSync(path, "private-user original payload", "utf8");
       const output = await readFileForTool(folder, { path });
-      const session = new ChatSession({ apiKey: "sk-test" }, {
+      const session = new ChatSession({ provider: "openai-chat-completions", apiKey: "sk-test" }, {
         sessionId: "machine-events", redactEvents: false,
       } as ChatSessionOptions);
       streamTextMock.mockReturnValueOnce({ fullStream: fullStream(
@@ -275,10 +275,10 @@ describe("ChatSession privacy integration", () => {
     writePrivacy(JSON.stringify({ enabled: true, rules: { "private-user": "display-user" } }));
     reloadPrivacyRules();
     streamTextMock.mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: "private-user" }) });
-    const raw = new ChatSession({ apiKey: "sk-test" }, { sessionId: "raw-one", redactEvents: false } as ChatSessionOptions);
+    const raw = new ChatSession({ provider: "openai-chat-completions", apiKey: "sk-test" }, { sessionId: "raw-one", redactEvents: false } as ChatSessionOptions);
     expect(await collect(raw.chat("raw"))).toContainEqual({ type: "done", text: "private-user" });
     streamTextMock.mockReturnValueOnce({ fullStream: fullStream({ type: "text-delta", text: "private-user" }) });
-    const display = new ChatSession({ apiKey: "sk-test" }, { sessionId: "display-two" });
+    const display = new ChatSession({ provider: "openai-chat-completions", apiKey: "sk-test" }, { sessionId: "display-two" });
     expect(await collect(display.chat("display"))).toContainEqual({ type: "done", text: "display-user" });
   });
 
@@ -286,7 +286,7 @@ describe("ChatSession privacy integration", () => {
     writePrivacy(JSON.stringify({ enabled: true, rules: { "private-user": "display-user" } }));
     reloadPrivacyRules();
     const rawInput = '{"path":private-user}';
-    const session = new ChatSession({ apiKey: "sk-test" }, { sessionId: "raw-errors", redactEvents: false } as ChatSessionOptions);
+    const session = new ChatSession({ provider: "openai-chat-completions", apiKey: "sk-test" }, { sessionId: "raw-errors", redactEvents: false } as ChatSessionOptions);
     streamTextMock.mockReturnValueOnce({ fullStream: fullStream(
       { type: "tool-call", toolCallId: "invalid-call", toolName: "read_file", input: rawInput },
       { type: "tool-error", toolCallId: "invalid-call", toolName: "read_file", error: new Error("private-user invalid input") },
@@ -302,7 +302,7 @@ describe("ChatSession privacy integration", () => {
     reloadPrivacyRules();
 
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { provider: "openai-chat-completions", apiKey: "sk-test" },
       { sessionId: "privacy-integration" },
     );
 
@@ -351,7 +351,7 @@ describe("ChatSession privacy integration", () => {
     reloadPrivacyRules();
 
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { provider: "openai-chat-completions", apiKey: "sk-test" },
       { persist: true, sessionId: "privacy-history" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: (async function* () { yield "C:\\Users\\weizhangjian\\repo"; })() });
@@ -367,7 +367,7 @@ describe("ChatSession privacy integration", () => {
     reloadPrivacyRules();
 
     const session = new ChatSession(
-      { apiKey: "sk-test" },
+      { provider: "openai-chat-completions", apiKey: "sk-test" },
       { sessionId: "privacy-disabled" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: (async function* () { yield "C:\\Users\\weizhangjian\\repo"; })() });

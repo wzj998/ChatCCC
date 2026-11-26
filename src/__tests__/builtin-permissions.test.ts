@@ -174,7 +174,7 @@ describe("builtin file-tools permission integration", () => {
 describe("builtin ChatSession permission integration", () => {
   it("permissionMode bypass lets high-risk run_command execute", async () => {
     const session = new ChatSession(
-      { apiKey: "sk-test", provider: "openai" },
+      { apiKey: "sk-test", provider: "openai-chat-completions" },
       { sessionId: "perm-bypass", permissionMode: "bypass" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
@@ -186,7 +186,7 @@ describe("builtin ChatSession permission integration", () => {
 
   it("default ask mode without resolver denies high-risk run_command", async () => {
     const session = new ChatSession(
-      { apiKey: "sk-test", provider: "openai" },
+      { apiKey: "sk-test", provider: "openai-chat-completions" },
       { sessionId: "perm-ask" },
     );
     streamTextMock.mockReturnValueOnce({ textStream: textStream("hi") });
@@ -203,7 +203,7 @@ describe("ccc-adapter uses bypass mode (aligns with claude/codex)", () => {
     const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
     const adapter = createCccAdapter({
       apiKey: "sk-test",
-      provider: "openai",
+      provider: "openai-chat-completions",
       contextDir: testHome.dir,
     });
     const { sessionId } = await adapter.createSession(testHome.dir);

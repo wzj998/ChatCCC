@@ -3,7 +3,7 @@ import {createModelProvider, modelProviderOptions} from './model-provider.js';
 import {streamText,type ModelMessage} from 'ai';
 import {jsonObjectFetch} from './json-mode-fetch.js';
 
-export interface CompletionConfig {baseURL:string;apiKey:string;model:string;provider?:'openai'|'openai-responses'}
+export interface CompletionConfig {baseURL:string;apiKey:string;model:string;provider?:'openai'|'openai-responses'|'openai-chat-completions'}
 export interface CompletionRequest {
   messages:ModelMessage[];timeoutMs:number;json?:boolean;temperature?:number;maxOutputTokens?:number;
   /** Provider-specific JSON options; cannot replace transport, messages or tools. */
@@ -44,8 +44,8 @@ export class CompletionSession {
     const metrics=()=>({durationMs:performance.now()-started,modelCalls:calls});
     try{
       if(controller.signal.aborted)throw new Error('Interrupted');
-      const provider=this.config.provider??'openai';
-      const transport=request.json?jsonObjectFetch(globalThis.fetch,provider):globalThis.fetch;
+      const provider=this.config.provider==='openai-chat-completions'?'openai-chat-completions':'openai-responses';
+      const transport=request.json?jsonObjectFetch(globalThis.fetch,provider==='openai-responses'?provider:'openai'):globalThis.fetch;
       const client=createModelProvider(provider,{...this.config,
         fetch:async(url,init)=>transport(url,{...init,body:JSON.stringify({...JSON.parse(String(init?.body)),...extensions})})});
       calls++;
