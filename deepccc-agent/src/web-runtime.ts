@@ -22,7 +22,7 @@ import {
 } from "./web-session-store.js";
 
 export interface WebRuntimeConfig extends ChatSessionConfig {
-  provider: "openai" | "openai-responses" | "anthropic";
+  provider: "openai" | "openai-responses" | "openai-chat-completions" | "anthropic";
   apiKey: string;
   baseURL: string;
   model: string;

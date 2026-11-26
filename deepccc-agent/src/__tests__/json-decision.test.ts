@@ -7,7 +7,7 @@ import { DecisionSession } from '../decision-session.js';
 const schema = jsonSchema<{action:string}>({type:'object',properties:{action:{type:'string'}},required:['action']}, {
   validate: (v:any) => v && typeof v.action === 'string' ? {success:true,value:v} : {success:false,error:new Error('Invalid')},
 });
-const model = {provider:'openai' as const,apiKey:'test-key',model:'test',baseURL:'https://example.invalid/v1'};
+const model = {provider:'openai-chat-completions' as const,apiKey:'test-key',model:'test',baseURL:'https://example.invalid/v1'};
 const request = {requestId:'test',stateVersion:1,context:{position:1},timeoutMs:1000};
 const create = () => new DecisionSession(model,{systemPrompt:'Choose.',outputSchema:schema,outputMode:'json'});
 function response(text:string, finish='stop') {

@@ -38,9 +38,9 @@ export function normalizeOptionalConfigField(
 
 /**
  * ccc.provider 的合法取值：空字符串表示不 override（跟随 DeepCCC 内核配置），
- * 或者显式指定 openai / openai-responses / anthropic 协议之一。
+ * 或者显式指定 openai-responses / openai-chat-completions / anthropic 协议之一。
  */
-export type CccProviderOverride = "" | "openai" | "openai-responses" | "anthropic";
+export type CccProviderOverride = "" | "openai-responses" | "openai-chat-completions" | "anthropic";
 
 /**
  * 归一化 `ccc.provider`（ChatCCC 主进程配置对 DeepCCC 内核传输层的 override）：
@@ -53,9 +53,10 @@ export function normalizeCccProviderOverride(value: unknown): CccProviderOverrid
   if (typeof value !== "string") return "";
   const trimmed = value.trim().toLowerCase();
   if (trimmed === "" || trimmed === "default") return "";
-  if (trimmed === "openai" || trimmed === "openai-responses" || trimmed === "anthropic") return trimmed;
+  if (trimmed === "openai") return "openai-responses";
+  if (trimmed === "openai-responses" || trimmed === "openai-chat-completions" || trimmed === "anthropic") return trimmed;
   console.warn(
-    `[CONFIG] ccc.provider 的值 "${value}" 非法，已忽略（仅支持 openai / openai-responses / anthropic / 空字符串）。`,
+    `[CONFIG] ccc.provider 的值 "${value}" 非法，已忽略（仅支持 openai-responses / openai-chat-completions / anthropic / 空字符串）。`,
   );
   return "";
 }

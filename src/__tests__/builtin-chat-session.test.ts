@@ -52,7 +52,7 @@ async function* fullStream(...parts: unknown[]): AsyncIterable<unknown> {
 }
 
 beforeEach(() => {
-  config.provider = "openai";
+  config.provider = "openai-chat-completions";
 });
 
 afterEach(() => {

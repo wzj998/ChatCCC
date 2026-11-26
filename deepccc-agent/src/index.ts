@@ -316,7 +316,7 @@ function normalizeMaxOutputTokens(value: number | undefined): number | undefined
 }
 
 export interface ChatSessionConfig {
-  /** API protocol/provider. Defaults to DEEPCCC_PROVIDER/config, then openai. */
+  /** API protocol/provider. Defaults to DEEPCCC_PROVIDER/config, then openai-responses. */
   provider?: DeepCccProvider;
   /** Provider service base URL. Defaults to DEEPCCC_BASE_URL/config. */
   baseURL?: string;

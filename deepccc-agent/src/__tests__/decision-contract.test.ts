@@ -22,7 +22,7 @@ describe("DecisionSession wire contract", () => {
     });
     servers.push(server);server.listen(0,'127.0.0.1');await once(server,'listening');
     const address=server.address() as {port:number};
-    const session=new DecisionSession({provider:'openai',apiKey:'test-key',baseURL:`http://127.0.0.1:${address.port}/v1`,model:'example-model'}, {
+    const session=new DecisionSession({provider:'openai-chat-completions',apiKey:'test-key',baseURL:`http://127.0.0.1:${address.port}/v1`,model:'example-model'}, {
       outputMode:'json',systemPrompt:'Choose an action.',outputSchema:jsonSchema<{action:string}>({type:'object',properties:{action:{type:'string'}}},{validate:(v:any)=>v?.action==='wait'?{success:true,value:v}:{success:false,error:new Error('Invalid')}}),
     });
     expect(await session.decide({requestId:'json',stateVersion:1,context:{position:1},timeoutMs:2000})).toMatchObject({status:'success',value:{action:'wait'},metrics:{modelCalls:1,jsonRepairs:1}});
@@ -46,7 +46,7 @@ describe("DecisionSession wire contract", () => {
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const address = server.address() as { port: number };
-    const session = new DecisionSession({ provider: "openai", apiKey: "test-key", baseURL: `http://127.0.0.1:${address.port}/v1`, model: "example-model", effort: "low" }, {
+    const session = new DecisionSession({ provider: "openai-chat-completions", apiKey: "test-key", baseURL: `http://127.0.0.1:${address.port}/v1`, model: "example-model", effort: "low" }, {
       systemPrompt: "Select a valid action.",
       outputSchema: jsonSchema<{ action: string }>({ type: "object", properties: { action: { type: "string", enum: ["wait"] } }, required: ["action"], additionalProperties: false }, {
         validate: (v: any) => v?.action === "wait" ? { success: true, value: v } : { success: false, error: new Error("Invalid") },

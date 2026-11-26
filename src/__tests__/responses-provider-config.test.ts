@@ -5,6 +5,8 @@ import { PAGE_HTML, unflattenConfig } from '../web-ui.ts';
 describe('Responses protocol in ChatCCC', () => {
   it('retains an explicit Responses override from the configuration form', () => {
     expect(normalizeCccProviderOverride('OPENAI-RESPONSES')).toBe('openai-responses');
+    expect(normalizeCccProviderOverride('OPENAI')).toBe('openai-responses');
+    expect(unflattenConfig({ CHATCCC_CCC_PROVIDER: 'openai' })).toMatchObject({ccc:{provider:'openai-responses'}});
     expect(unflattenConfig({ CHATCCC_CCC_PROVIDER: 'openai-responses' })).toMatchObject({ccc:{provider:'openai-responses'}});
     expect(PAGE_HTML).toContain('<option value="openai-responses">');
   });

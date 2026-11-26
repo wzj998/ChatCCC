@@ -43,7 +43,7 @@ describe("createCccAdapter", () => {
     const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-empty-ccc-"));
     streamTextMock.mockReturnValueOnce({ textStream: textStream("   ") });
-    const adapter = createCccAdapter({ apiKey: "sk-test", provider: "openai", contextDir });
+    const adapter = createCccAdapter({ apiKey: "sk-test", provider: "openai-chat-completions", contextDir });
     const { sessionId } = await adapter.createSession("F:/repo");
     await expect((async () => { for await (const _e of adapter.prompt(sessionId, "hi", "F:/repo")) {} })()).rejects.toThrow(/未产生有效回复/);
   });
@@ -67,7 +67,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-meta-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
-      provider: "openai",
+      provider: "openai-chat-completions",
       contextDir,
       model: "deepseek-v4-pro",
     });
@@ -88,7 +88,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-stream-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
-      provider: "openai",
+      provider: "openai-chat-completions",
       contextDir,
       model: "deepseek-v4-flash",
     });
@@ -116,7 +116,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-tools-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
-      provider: "openai",
+      provider: "openai-chat-completions",
       contextDir,
       model: "deepseek-v4-flash",
     });
@@ -152,7 +152,7 @@ describe("createCccAdapter", () => {
   it("maps DeepCCC reasoning heartbeats without exposing reasoning text", async () => {
     const { createCccAdapter } = await import("../adapters/ccc-adapter.ts");
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-reasoning-"));
-    const adapter = createCccAdapter({ apiKey: "sk-test", provider: "openai", contextDir });
+    const adapter = createCccAdapter({ apiKey: "sk-test", provider: "openai-chat-completions", contextDir });
     const { sessionId } = await adapter.createSession("F:\\repo");
     streamTextMock.mockReturnValueOnce({
       fullStream: fullStream(
@@ -176,7 +176,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-status-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
-      provider: "openai",
+      provider: "openai-chat-completions",
       contextDir,
       compactAtTokens: 1,
       keepRecentMessages: 1,
@@ -209,7 +209,7 @@ describe("createCccAdapter", () => {
     const contextDir = await mkdtemp(join(tmpdir(), "chatccc-ccc-adapter-effort-"));
     const adapter = createCccAdapter({
       apiKey: "sk-test",
-      provider: "openai",
+      provider: "openai-chat-completions",
       contextDir,
       effort: "xhigh",
     });

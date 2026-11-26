@@ -25,8 +25,8 @@ describe("normalizeCccProviderOverride", () => {
   });
 
   it("normalizes openai / anthropic case-insensitively", () => {
-    expect(normalizeCccProviderOverride("openai")).toBe("openai");
-    expect(normalizeCccProviderOverride("OPENAI")).toBe("openai");
+    expect(normalizeCccProviderOverride("openai")).toBe("openai-responses");
+    expect(normalizeCccProviderOverride("OPENAI")).toBe("openai-responses");
     expect(normalizeCccProviderOverride(" anthropic ")).toBe("anthropic");
     expect(normalizeCccProviderOverride("Anthropic")).toBe("anthropic");
     expect(warnSpy).not.toHaveBeenCalled();

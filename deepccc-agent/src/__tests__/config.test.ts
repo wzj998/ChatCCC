@@ -40,10 +40,10 @@ describe("builtin ChatSession config", () => {
     });
   });
 
-  it("defaults provider selection to openai and accepts anthropic case-insensitively", () => {
-    expect(normalizeDeepCccProvider(undefined)).toBe("openai");
-    expect(normalizeDeepCccProvider("")).toBe("openai");
-    expect(normalizeDeepCccProvider("OPENAI")).toBe("openai");
+  it("defaults provider selection to Responses and accepts anthropic case-insensitively", () => {
+    expect(normalizeDeepCccProvider(undefined)).toBe("openai-responses");
+    expect(normalizeDeepCccProvider("")).toBe("openai-responses");
+    expect(normalizeDeepCccProvider("OPENAI")).toBe("openai-responses");
     expect(normalizeDeepCccProvider("Anthropic")).toBe("anthropic");
     expect(() => normalizeDeepCccProvider("antropic")).toThrow(/openai.*anthropic/i);
   });

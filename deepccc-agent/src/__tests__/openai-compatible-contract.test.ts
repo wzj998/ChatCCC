@@ -52,8 +52,8 @@ describe("OpenAI-compatible wire contract", () => {
     if (!address || typeof address === "string") throw new Error("test server did not bind a TCP port");
 
     config.streaming = false;
-    const session = new ChatSession({
-      provider: "openai",
+    const session = new ChatSession({ provider: "openai-chat-completions",
+      provider: "openai-chat-completions",
       apiKey: "sk-contract-test",
       baseURL: `http://127.0.0.1:${address.port}/v1`,
       model: "contract-model",

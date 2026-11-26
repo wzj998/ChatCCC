@@ -51,9 +51,10 @@ function mockResponses(outputs: any[][], bodies: any[]) {
 }
 
 describe('OpenAI Responses transport', () => {
-  it('accepts explicit Responses while retaining the existing default', () => {
+  it('defaults OpenAI and its old spelling to Responses', () => {
     expect(normalizeDeepCccProvider('OPENAI-RESPONSES')).toBe('openai-responses');
-    expect(normalizeDeepCccProvider(undefined)).toBe('openai');
+    expect(normalizeDeepCccProvider(undefined)).toBe('openai-responses');
+    expect(normalizeDeepCccProvider('OPENAI')).toBe('openai-responses');
   });
 
   it('uses /responses, maps effort and output limits, and does not store requests', async () => {
@@ -63,7 +64,7 @@ describe('OpenAI Responses transport', () => {
       bodies.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify(response([answer])), { headers: { 'content-type': 'application/json' } });
     }));
-    const session = new ChatSession({ provider: 'openai-responses', apiKey: 'test-key',
+    const session = new ChatSession({ provider: 'openai', apiKey: 'test-key',
       baseURL: 'https://example.invalid/v1', model: 'gpt-6.2-sol', effort: 'high',
       maxOutputTokens: 512, streaming: false }, { persist: false, allowedTools: [] });
     const events = [];

@@ -66,7 +66,7 @@ async function* malformedThenAbort(text: string): AsyncIterable<unknown> {
 }
 
 beforeEach(() => {
-  config.provider = "openai";
+  config.provider = "openai-chat-completions";
   config.streaming = true;
   config.effort = "";
   config.maxOutputTokens = undefined;
@@ -461,7 +461,7 @@ describe("ChatSession response transport", () => {
     expect(session.history.map((message) => message.content).join("\n")).not.toContain("DSML");
   });
 
-  it("uses the OpenAI-compatible provider by default", async () => {
+  it("uses the explicitly selected Chat Completions provider", async () => {
     const { ChatSession } = await import("../index.js");
 
     new ChatSession({ apiKey: "sk-test", baseURL: "https://gateway.example", model: "model-a" });
@@ -589,7 +589,7 @@ describe("ChatSession response transport", () => {
     const { ChatSession } = await import("../index.js");
     streamTextMock.mockReturnValueOnce({ textStream: textStream("done") });
     const session = new ChatSession({
-      provider: "openai",
+      provider: "openai-chat-completions",
       apiKey: "sk-test",
       baseURL: "https://gateway.example",
       model: "model-a",

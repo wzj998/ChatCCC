@@ -182,10 +182,10 @@ API 设置采用单一 Provider 配置，支持 OpenAI-compatible 与 Anthropic 
 可设为 `false` 或用 `DEEPCCC_GIT_COAUTHOR=false` 全局关闭。ChatCCC 的
 `ccc.gitCoAuthor` 是三态 override：`null`/缺失跟随这里，`true` 强制开启，`false` 强制关闭。
 
-`provider` 可选 `openai`、`openai-responses` 或 `anthropic`，默认 `openai`，也可以通过
+`provider` 可选 `openai-responses`、`openai-chat-completions` 或 `anthropic`，默认 `openai-responses`（旧值 `openai` 自动映射为 Responses），也可以通过
 `DEEPCCC_PROVIDER` 或命令行 `--provider` 覆盖：
 
-- `openai` 使用 OpenAI-compatible Chat Completions 协议，兼容 DeepSeek、OpenAI、LiteLLM、vLLM 等服务。
+- `openai-chat-completions` 显式使用 OpenAI-compatible Chat Completions 协议，兼容 DeepSeek、OpenAI、LiteLLM、vLLM 等服务。
 - `openai-responses` 使用原生 OpenAI Responses API（`/responses`），支持流式/非流式工具循环、主/子/图片模型与摘要。适合 GPT-6.2 Sol/Astra 等要求 Responses 工具调用的模型。Base URL 填 `https://api.openai.com/v1`，不要追加 `/responses`；`effort` 映射为 `reasoning.effort`。默认 `store:false`，工具循环携带加密推理状态。摘要使用 `low` effort，不发送 temperature。原有 `openai` 不会自动切换。
 - `anthropic` 使用 Anthropic Messages 协议。配置中的 `baseURL` **完全按填写值使用，不自动补 `/v1`**，请填写到完整版本化地址，例如 DeepSeek 官方 Anthropic 端点为 `https://api.deepseek.com/anthropic/v1`（官方 Anthropic SDK 使用的 `https://api.deepseek.com/anthropic` 基址会拼接为 `.../anthropic/v1/messages`）。`effort` 在 OpenAI-compatible 模式映射为 `reasoning_effort`，在 Anthropic 模式映射为 `output_config.effort`；目标服务不支持时应留空。
 
