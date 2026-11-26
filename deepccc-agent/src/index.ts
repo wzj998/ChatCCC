@@ -801,7 +801,10 @@ export class ChatSession {
       let modelViewSequence = 0;
       const baseGenerationOptions = {
         model: this.model,
-        system,
+        // Cache a stable prefix, not the evolving user messages or tool results.
+        system: this.provider === "anthropic"
+          ? { role: "system" as const, content: system, providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } }
+          : system,
         tools,
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
